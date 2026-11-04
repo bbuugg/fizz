@@ -6,12 +6,34 @@
  *
  * | 位置 | 内容 |
  * | --- | --- |
- * | 左侧图标栏 | 「Redis」一颗 |
- * | **侧栏** | **连接管理器**：列出所有连接（含状态）、新增 / 编辑 / 删除 / 连接 / 断开 |
- * | **主视图区标签页** | 每个连接一个「Key 浏览」页（侧栏里点连接就开出来） |
+ * | 左侧图标栏 | **没有专属图标** —— 插件共用一颗「插件」，侧栏是插件列表 |
+ * | **插件列表 → 「Redis 客户端」** | 打开下面两个标签页中的第一个 |
+ * | **标签页 `connections`** | 连接管理器：列出所有连接（含状态）、新增 / 编辑 / 删除 |
+ * | **标签页 `key`** | 某个连接的 Key 浏览（连接列表里点一条就开出来，一个连接一页） |
  *
- * 「一个连接一个标签」靠 `ctx.ui.view` 的**参数**（`params: { conn }`）实现：同一个面
- * 用不同参数开出多屏，宿主把参数原样带回 `render` / `onAction`（见 SKILL.md 3.5）。
+ * 界面**都不是**服务端 `render()` 吐的块，而是插件自带的前端半画的（见下一节）。
+ *
+ * ## 双面包：本文件是服务端半，`client.jsx` 是前端半
+ *
+ * | 文件 | 角色 |
+ * | --- | --- |
+ * | `plugin.json` | 声明 `icon`、两个 `view` 面（`connections` / `key`）与 `client.entry` |
+ * | **`index.ts`（本文件）** | 服务端半：只挂 `ctx.rpc` 处理器与 Redis 连接池，**不注册任何 `ctx.ui` 面** |
+ * | `client.jsx` | 前端半源码：React 组件 + 按 surface id 认领渲染函数 |
+ * | `client.js` | 前端半**构建产物**（`npm run build:plugins`，别手改） |
+ *
+ * 同一个面**只能有一个渲染者**：`plugin.json` 声明了，本文件就别再 `ctx.ui.view(...)` ——
+ * 两边都声明时服务端会报「同时由服务端半和前端半声明」，只保留服务端那份（见
+ * `apps/server/src/server/plugin-ui.ts`）。
+ *
+ * 清单里**只能声明 `view` 面**（标签页）：插件不占图标栏、也没有自己的侧栏。点插件时默认
+ * 打开 `order` 最小的那一面，所以 `connections` 的 order 是 0、`key` 是 10。
+ *
+ * 「一个连接一个标签」走 `ctx.openView`（前端半里）：`key` 这个面配**不同 params**
+ * 就能开出多屏，宿主负责标签 key、分屏与关闭保护（见 SKILL.md 3.7）。
+ *
+ * 状态（SCAN 游标、过滤器、命令行历史）**全在浏览器里**，每个标签页各一份 —— 服务端每个
+ * handler 都必须能被并发调用，不存任何请求级状态。
  *
  * ## 连接存在哪（⚠️ 密码是明文）
  *
@@ -350,52 +372,14 @@ const clients = new Map<string, { client: RedisClient; key: string }>()
 /** 各连接最近一次出错的原因（侧栏的状态徽章显示它） */
 const errors = new Map<string, string>()
 
-/**
- * 一个连接的管理面板状态（对齐 dogi：一个连接 = 一个面板，内部再分「数据 / 信息 / 命令行」）。
+/*
+ * 这里原本有一张 `browsing` 表：每个连接的「已加载 key / 游标 / 当前哪一屏 / 过滤词 /
+ * 点开哪个 key / 命令行输出」都存在**服务端模块作用域**里。
  *
- * 全是**每连接独立**的：两个连接各开一个标签页，各自的模式、过滤词、点开的 key、命令行
- * 输出互不干扰（宿主靠 `params.conn` 区分，插件靠这张表区分）。
+ * 那是块式界面的产物（服务端渲染必须自己攒状态），而且有个真问题：**同一连接开两个标签页
+ * 会共用一个 `cursor`**，一边「继续加载」就让另一边跳页。现在这些状态全在浏览器里（每个
+ * 标签页各一份），服务端只回答「下一页给我什么」。
  */
-interface Browse {
-  keys: { key: string; type: string; binary: boolean }[]
-  cursor: number
-  done: boolean
-  pattern: string
-  opened: string | null
-  pendingDelete: string | null
-  /** 面板当前哪一屏：数据 / 信息 / 命令行 */
-  mode: 'data' | 'info' | 'cli'
-  /** 删集合条目的模式：开着时点一行 = 删它（没有「确认弹窗」形态，就做成两步） */
-  entryDelete: boolean
-  /** 命令行输出：最新在前，封顶 50 条（dogi 同款） */
-  log: { ok: boolean; text: string }[]
-  /** 「信息」屏的过滤词 */
-  infoFilter: string
-  /** 「信息」屏是否看原始文本（否则看分节概览） */
-  infoRaw: boolean
-}
-const browsing = new Map<string, Browse>()
-
-function browseOf(conn: Conn): Browse {
-  let state = browsing.get(conn.id)
-  if (!state) {
-    state = {
-      keys: [],
-      cursor: 0,
-      done: false,
-      pattern: conn.pattern?.trim() || '*',
-      opened: null,
-      pendingDelete: null,
-      mode: 'data',
-      entryDelete: false,
-      log: [],
-      infoFilter: '',
-      infoRaw: false
-    }
-    browsing.set(conn.id, state)
-  }
-  return state
-}
 
 /** 命令行里「会改动数据」的命令：命中就在执行后自动刷新（dogi 同款白名单） */
 const WRITE_CMD =
@@ -415,34 +399,6 @@ async function selectDb(conn: Conn, db: number): Promise<void> {
   await withConn(conn, (c) => c.command('SELECT', String(db)))
   conn.db = db
   await saveConns()
-}
-
-/** 命令行：跑一条，把结果记进输出日志 */
-async function execCommand(conn: Conn, line: string): Promise<void> {
-  const state = browseOf(conn)
-  const args = tokenize(line.trim())
-  if (!args.length) return
-  const cmd = args[0].toUpperCase()
-  const write = WRITE_CMD.test(cmd)
-  try {
-    const value = await withConn(conn, (c) => c.command(...args))
-    state.log.unshift({ ok: true, text: `$ ${args.join(' ')}\n${stringifyReply(value)}` })
-    // 写命令之后列表已经变了 —— 自动拉一遍（dogi 也是这么做的）
-    if (write) {
-      await scanKeys(conn, true)
-      if (state.opened) {
-        // 当前 key 被删了 / 结构变了：回到列表，免得停在一个不存在的值上
-        const still = state.keys.find((k) => k.key === state.opened)
-        if (!still) state.opened = null
-      }
-    }
-  } catch (e) {
-    state.log.unshift({
-      ok: false,
-      text: `$ ${args.join(' ')}\n(error) ${e instanceof Error ? e.message : String(e)}`
-    })
-  }
-  if (state.log.length > 50) state.log.length = 50
 }
 
 /** 把任意回复画成一行文字（命令行输出用） */
@@ -546,7 +502,7 @@ async function withConn<T>(conn: Conn, run: (c: RedisClient) => Promise<T>): Pro
   const client = await clientFor(conn)
   try {
     return await run(client)
-  }   catch (e) {
+  } catch (e) {
     // ⚠️ 只有**连接真的断了**才关它：Redis 的 `-ERR …` 回复（如「目标 key 已存在」）
     // 是应用级报错，连接还是好的 —— 早先一律 `close()`，于是改个名失败就把连接关了，
     // 侧栏徽章也跟着变成「未连接」（其实它一点事都没有）。
@@ -559,32 +515,41 @@ async function withConn<T>(conn: Conn, run: (c: RedisClient) => Promise<T>): Pro
   }
 }
 
-async function scanKeys(conn: Conn, reset: boolean): Promise<void> {
-  const state = browseOf(conn)
-  await withConn(conn, async (c) => {
+interface ScannedKey {
+  key: string
+  type: string
+  binary: boolean
+}
+
+/**
+ * 扫一页 key（`SCAN` 天然就是「游标 + 一批」）。
+ *
+ * ⚠️ **跨页判重挪到界面那边**：`SCAN` 文档明确写着「同一个元素可能被返回多次」（它只
+ * 保证「遍历开始时就存在的元素至少返回一次」），而「继续加载」是往**同一个数组**追加的。
+ * 不判重就会出现两条同 key 的项，界面按 `key` 做 React 列表标识 → 直接报
+ * `Encountered two children with the same key`。
+ *
+ * 界面手里有完整列表，判重比这里准；这一页内部的重复仍在这里去掉（省掉 `TYPE` 往返）。
+ */
+async function scanPage(
+  conn: Conn,
+  pattern: string,
+  cursor: number
+): Promise<{ cursor: number; done: boolean; keys: ScannedKey[] }> {
+  // 一整页在**一次** `withConn` 里跑完：`TYPE` 每条 key 一次往返，拆开就要重复取客户端
+  return withConn(conn, async (c) => {
     const res = (await c.command(
       'SCAN',
-      String(reset ? 0 : state.cursor),
+      String(cursor || 0),
       'MATCH',
-      state.pattern || '*',
+      pattern || '*',
       'COUNT',
       '200'
     )) as unknown[]
     const next = Number(textVal(res?.[0])) || 0
     const raw = Array.isArray(res?.[1]) ? (res[1] as unknown[]) : []
-    if (reset) state.keys = []
-    /**
-     * 已收录的 key 名 —— **必须判重**。
-     *
-     * ⚠️ Redis 的 `SCAN` 文档明确写着「同一个元素可能被返回多次」（它只保证
-     * 「遍历开始时就存在的元素至少返回一次」，不保证恰好一次）；而「继续加载」
-     * 又是往**同一个数组**追加的。不判重的话列表里会出现两条同 key 的项，
-     * 界面上按 `id: item.key` 做 React 列表标识 → 直接报
-     * `Encountered two children with the same key`，还可能丢项 / 重复渲染。
-     *
-     * 顺带也省掉重复项的 `TYPE` 往返（每条 key 都要问一次类型）。
-     */
-    const seen = new Set(state.keys.map((item) => item.key))
+    const keys: ScannedKey[] = []
+    const seen = new Set<string>()
     for (const k of raw) {
       // 非法 UTF-8 的 key 名会被整体 hex 化，那**不是**真 key（拿它去 GET/DEL 只会落空）——
       // 标出来，界面上这一项就不带点击动作，免得点一个永远取不到数据的死条目。
@@ -593,588 +558,42 @@ async function scanKeys(conn: Conn, reset: boolean): Promise<void> {
       if (seen.has(name)) continue
       seen.add(name)
       let type = 'unknown'
-      try {
-        type = textVal(await c.command('TYPE', k as string))
-      } catch {
-        /* 类型取不到就留 unknown */
+      // 二进制 key 名没法按文本发回去（`TYPE` 只会落空）→ 不白跑一次往返
+      if (!binary) {
+        try {
+          type = textVal(await c.command('TYPE', name))
+        } catch {
+          /* 类型取不到就留 unknown */
+        }
       }
-      state.keys.push({ key: name, type, binary })
+      keys.push({ key: name, type, binary })
     }
-    state.cursor = next
-    state.done = next === 0
+    return { cursor: next, done: next === 0, keys }
   })
 }
 
-// ---------------------------------------------------------------------------
-// 界面：块
-// ---------------------------------------------------------------------------
 
-type Block = Record<string, unknown>
-type Args = Record<string, string | number | boolean>
+type Args = Record<string, unknown>
 
-const STATUS_TONE = { on: 'success', off: 'muted', bad: 'danger' } as const
-
-function connStatus(conn: Conn): { label: string; tone: string } {
-  const held = clients.get(conn.id)
-  if (errors.has(conn.id)) return { label: `出错：${errors.get(conn.id)}`, tone: STATUS_TONE.bad }
-  if (held?.client.connected) return { label: '已连接', tone: STATUS_TONE.on }
-  // 连过又掉了：**把掉线原因说出来**（对端关的 / 网络断了）—— 只说「未连接」，
-  // 用户看不出是「压根没连」还是「刚刚断了」。
-  if (held?.client.droppedReason) {
-    return { label: `已断开：${held.client.droppedReason}`, tone: STATUS_TONE.bad }
-  }
-  return { label: '未连接', tone: STATUS_TONE.off }
+interface Entry {
+  /** 这一条在该类型里的标识：hash=字段名、list=下标、set/zset=成员、stream=entry id */
+  id: string
+  /** 界面上显示的短名（list 是 `#0`、stream 是 entry id） */
+  label: string
+  /** 副文本（值 / 分数 / 字段数） */
+  detail?: string
 }
 
 /**
- * 连接的字段（新增 / 编辑共用）。
+ * 集合条目按类型该发什么命令（改 / 删 / 新增）。
  *
- * 这两个动作走**弹窗**（动作结果里返回 `openDialog`，由宿主用 shadcn Dialog 渲染），
- * 而不是面里的 `form` 块 —— 用户预期「新增 / 编辑一条配置」是弹个窗，不是侧栏换一屏。
+ * 「hash 两栏、list 一个值、zset 成员+分数」这些差异在这里只写一遍，rpc 那边就只剩
+ * 「取参数 → 跑」两步。返回 null 的类型不支持逐条改（string 整块改、stream 只读）。
  */
-function connFields(conn: Conn | null) {
-  return [
-    { id: 'name', label: '名称', value: conn?.name ?? '', placeholder: '本机 Redis' },
-    { id: 'host', label: '地址', value: conn?.host ?? '127.0.0.1', placeholder: '127.0.0.1' },
-    { id: 'port', label: '端口', value: String(conn?.port ?? 6379), placeholder: '6379' },
-    { id: 'username', label: '用户名（ACL，可空）', value: conn?.username ?? '' },
-    { id: 'password', label: '密码（可空）', value: conn?.password ?? '', secret: true },
-    { id: 'db', label: '数据库编号（0-15）', value: String(conn?.db ?? 0), placeholder: '0' },
-    // 这两个是 dogi 连接表单里就有、这里补上的：TLS 走 `node:tls`，超时直接给 socket
-    { id: 'tls', label: 'TLS：true / false', value: conn?.tls ? 'true' : 'false' },
-    {
-      id: 'timeoutMs',
-      label: '连接超时（毫秒）',
-      value: String(conn?.timeoutMs ?? 10000),
-      placeholder: '10000'
-    }
-  ]
-}
-
-/**
- * 连接行的样子**对齐会话行**：名字 + 地址 + 状态徽章，行尾 hover 浮出「编辑 / 删除」
- * 两个图标按钮；点行本身 = 在主视图打开这个连接的管理面板。
- *
- * 没有「连接 / 断开」按钮 —— 连接是**用的时候自动建**的（打开面板、跑一条命令都会连），
- * 状态看徽章就够了；多一排按钮只会让人犹豫「要不要先点一下连接」。
- */
-async function managerBlocks(): Promise<Block[]> {
-  const list = await loadConns()
-  const blocks: Block[] = []
-
-  if (list.length === 0) {
-    blocks.push({
-      kind: 'note',
-      text: '还没有连接 —— 点右上角的 + 加一个（连接存在插件目录的 .redis-connections.json，密码明文）。',
-      tone: 'muted'
-    })
-  } else {
-    blocks.push({
-      kind: 'list',
-      items: list.map((conn) => {
-        const status = connStatus(conn)
-        return {
-          id: conn.id,
-          label: conn.name,
-          // 不显示 `host:port/db`：侧栏只有两百来像素宽，那串等宽字会把名字挤没，
-          // 而地址信息在面板头（点开连接就能看到）—— 这里只留名字。
-          // 徽章空间有限：出错原因很长就截断，完整的在面板里能看到
-          badge: status.label.length > 14 ? `${status.label.slice(0, 14)}…` : status.label,
-          tone: status.tone as 'success' | 'muted' | 'danger',
-          actionId: 'openTab',
-          args: { conn: conn.id },
-          actions: [
-            {
-              actionId: 'edit',
-              icon: 'pencil',
-              label: `编辑「${conn.name}」`,
-              args: { conn: conn.id }
-            },
-            {
-              actionId: 'askDeleteConn',
-              icon: 'trash',
-              label: `删除「${conn.name}」`,
-              args: { conn: conn.id },
-              danger: true
-            }
-          ]
-        }
-      })
-    })
-  }
-
-  // 「新增连接」不在这里了 —— 它是顶栏那颗加号（见 `headerActions`）
-  return blocks
-}
-
-async function keyListBlocks(conn: Conn): Promise<Block[]> {
-  const state = browseOf(conn)
-  const blocks: Block[] = [
-    {
-      kind: 'input',
-      id: 'pattern',
-      label: '过滤',
-      value: state.pattern || '*',
-      placeholder: 'orders:*',
-      actionId: 'filter',
-      submitLabel: '过滤'
-    },
-    { kind: 'buttons', items: [{ actionId: 'refresh', label: '刷新' }] }
-  ]
-  try {
-    if (state.keys.length === 0 && !state.done) await scanKeys(conn, true)
-    if (state.keys.length === 0) {
-      const err = errors.get(conn.id)
-      blocks.push({
-        kind: 'note',
-        text: err ? `连不上或取不到：${err}` : '这个库里没有匹配到的 key。',
-        tone: err ? 'danger' : 'muted'
-      })
-      return blocks
-    }
-    blocks.push({
-      kind: 'list',
-      label: `Key（已加载 ${state.keys.length}）`,
-      items: state.keys.slice(0, 500).map((item) => ({
-        id: item.key,
-        label: item.key,
-        detail: item.type,
-        ...(item.binary
-          ? { badge: '二进制名', tone: 'warn' as const }
-          : { actionId: 'openKey', args: { key: item.key } })
-      }))
-    })
-    if (!state.done) {
-      blocks.push({ kind: 'buttons', items: [{ actionId: 'more', label: '再加载 200 个' }] })
-    } else {
-      // 扫完了才说「共 N 个」：没扫完时报数会让人以为是总数
-      blocks.push({
-        kind: 'note',
-        text: `已扫完，共 ${state.keys.length} 个 key。`,
-        tone: 'muted'
-      })
-    }
-  } catch (e) {
-    blocks.push({ kind: 'note', text: e instanceof Error ? e.message : String(e), tone: 'danger' })
-  }
-  return blocks
-}
-
-async function keyDetailBlocks(conn: Conn, key: string): Promise<Block[]> {
-  const blocks: Block[] = []
-  try {
-    const info = await withConn(conn, async (c) => {
-      const type = textVal(await c.command('TYPE', key))
-      const ttl = Number(await c.command('TTL', key))
-      return { type, ttl: Number.isFinite(ttl) ? ttl : -1 }
-    })
-    blocks.push({
-      kind: 'kv',
-      rows: [
-        { label: 'key', value: key },
-        { label: '类型', value: info.type },
-        { label: 'TTL', value: ttlLabel(info.ttl) }
-      ]
-    })
-
-    if (browseOf(conn).pendingDelete === key) {
-      // 破坏性动作两步：没有确认弹框，就把「确认」做成第二次点击
-      blocks.push({ kind: 'note', text: `确认删除「${key}」？这一步不可撤销。`, tone: 'danger' })
-      blocks.push({
-        kind: 'buttons',
-        items: [
-          { actionId: 'confirmDelete', label: '确认删除', args: { key } },
-          { actionId: 'cancelDelete', label: '取消' }
-        ]
-      })
-      return blocks
-    }
-
-    blocks.push(...(await valueBlocks(conn, key, info.type)))
-
-    const actions: { actionId: string; label: string; args?: Args }[] = [
-      { actionId: 'back', label: '返回列表' },
-      { actionId: 'askDelete', label: '删除这个 key', args: { key } }
-    ]
-    // 只有集合类型有「条目」：string 是一整块、stream 只读（与 dogi 的 EDITABLE 同款）
-    if (EDITABLE.has(info.type)) {
-      actions.push(
-        browseOf(conn).entryDelete
-          ? { actionId: 'exitDeleteEntry', label: '退出「删条目」' }
-          : { actionId: 'enterDeleteEntry', label: '删条目（点一行就删）' }
-      )
-    }
-    blocks.push({ kind: 'buttons', items: actions })
-
-    // TTL 预设（dogi 同款：1 分钟 / 10 分钟 / 1 小时 / 1 天 / 永不过期）
-    blocks.push({
-      kind: 'buttons',
-      items: [
-        { actionId: 'setTtl', label: 'TTL 1 分钟', args: { ttl: 60 } },
-        { actionId: 'setTtl', label: '10 分钟', args: { ttl: 600 } },
-        { actionId: 'setTtl', label: '1 小时', args: { ttl: 3600 } },
-        { actionId: 'setTtl', label: '1 天', args: { ttl: 86400 } },
-        { actionId: 'setTtl', label: '永不过期', args: { ttl: 0 } }
-      ]
-    })
-    blocks.push({
-      kind: 'input',
-      id: 'newKey',
-      label: '改名',
-      value: key,
-      actionId: 'rename',
-      submitLabel: '改名'
-    })
-  } catch (e) {
-    blocks.push({ kind: 'note', text: e instanceof Error ? e.message : String(e), tone: 'danger' })
-    blocks.push({ kind: 'buttons', items: [{ actionId: 'back', label: '返回列表' }] })
-  }
-  return blocks
-}
-
-/** 取值封顶（与 dogi 的 `VCAP` 对齐）：误点开一个百万成员的 key 也不至于把界面拖死 */
-const VCAP = 500
-
-/** 能逐条改的类型（与 dogi 的 `EDITABLE` 同款：string 整体改、stream 只读） */
-const EDITABLE = new Set(['hash', 'list', 'set', 'zset'])
-
-/** 「只画了前 N 条」的提示（dogi 里 zset 漏了这个字段，这里每种类型都给） */
-function truncatedNote(shown: number, total: number, unit: string): Block[] {
-  if (total <= shown) return []
-  return [
-    {
-      kind: 'note',
-      text: `仅展示前 ${shown} ${unit}（共 ${total}）—— 剩下的用命令行查。`,
-      tone: 'warn'
-    }
-  ]
-}
-
-/**
- * 集合类的一行（点它 = 改这一条；开着「删条目」模式时 = 删它）。
- *
- * 一行只能挂一个动作（块的语义如此），所以「编辑」与「删除」用**模式切换**分开：
- * 底部那颗「删条目」切过去后，同一个列表的每一行就变成删它 —— 与「删 key 两步确认」
- * 是同一个套路，不需要「确认弹窗」这种形态。
- */
-function entryItems(
-  entries: { id: string; label: string; detail?: string }[],
-  deleting: boolean
-): { id: string; label: string; detail?: string; actionId: string; args: Args }[] {
-  return entries.map((item) => ({
-    ...(item.detail === undefined ? {} : { detail: item.detail }),
-    id: item.id,
-    label: item.label,
-    actionId: deleting ? 'delEntry' : 'editEntry',
-    args: { entry: item.id }
-  }))
-}
-
-/** 按类型把值画成块：string 用 kv + 文本，集合类用可点的行 + 「新增」入口 */
-async function valueBlocks(conn: Conn, key: string, type: string): Promise<Block[]> {
-  const state = browseOf(conn)
-  const deleting = state.entryDelete
-  switch (type) {
-    case 'string': {
-      const buf = await withConn(conn, (c) => c.command('GET', key))
-      const binary = isBinaryBuf(buf)
-      const text = textVal(buf)
-      return [
-        {
-          kind: 'kv',
-          rows: [
-            {
-              label: '长度',
-              value: fmtBytes(Buffer.isBuffer(buf) ? buf.length : String(buf ?? '').length)
-            },
-            { label: '编码', value: binary ? '二进制（HEX，只读）' : 'UTF-8', tone: binary ? 'warn' : 'normal' }
-          ]
-        },
-        { kind: 'text', text: text.length > 2000 ? `${text.slice(0, 2000)}…` : text, mono: true },
-        // 二进制值不给编辑入口：写回去必然写坏数据（dogi 也是把编辑器设成只读）
-        ...(binary
-          ? []
-          : [
-              {
-                kind: 'buttons',
-                items: [{ actionId: 'editValue', label: '编辑这个值', args: { key } }]
-              }
-            ])
-      ]
-    }
-    case 'hash': {
-      const [flat, total] = await withConn(conn, async (c) => [
-        (await c.command('HGETALL', key)) as unknown[],
-        Number(await c.command('HLEN', key))
-      ])
-      const arr = Array.isArray(flat) ? flat : []
-      const entries: { id: string; label: string; detail: string }[] = []
-      for (let i = 0; i + 1 < arr.length && entries.length < VCAP; i += 2) {
-        entries.push({ id: textVal(arr[i]), label: textVal(arr[i]), detail: textVal(arr[i + 1]) })
-      }
-      return [
-        { kind: 'list', label: `字段（${entries.length}/${total}）`, items: entryItems(entries, deleting) },
-        ...truncatedNote(entries.length, total, '个字段'),
-        { kind: 'buttons', items: [{ actionId: 'addHashEntry', label: '新增 / 改字段' }] }
-      ]
-    }
-    case 'list': {
-      const [arr, total] = await withConn(conn, async (c) => [
-        (await c.command('LRANGE', key, '0', String(VCAP - 1))) as unknown[],
-        Number(await c.command('LLEN', key))
-      ])
-      const list = Array.isArray(arr) ? arr : []
-      const entries = list.map((v, i) => ({
-        id: String(i),
-        label: `#${i}`,
-        detail: textVal(v)
-      }))
-      return [
-        { kind: 'list', label: `元素（${entries.length}/${total}）`, items: entryItems(entries, deleting) },
-        ...truncatedNote(entries.length, total, '个元素'),
-        { kind: 'buttons', items: [{ actionId: 'pushList', label: '推入一个元素' }] }
-      ]
-    }
-    case 'set': {
-      const [arr, total] = await withConn(conn, async (c) => [
-        (await c.command('SMEMBERS', key)) as unknown[],
-        Number(await c.command('SCARD', key))
-      ])
-      const members = (Array.isArray(arr) ? arr : []).slice(0, VCAP)
-      const entries = members.map((v) => ({ id: textVal(v), label: textVal(v) }))
-      return [
-        { kind: 'list', label: `成员（${entries.length}/${total}）`, items: entryItems(entries, deleting) },
-        ...truncatedNote(entries.length, total, '个成员'),
-        { kind: 'buttons', items: [{ actionId: 'addSetEntry', label: '新增成员' }] }
-      ]
-    }
-    case 'zset': {
-      const [flat, total] = await withConn(conn, async (c) => [
-        (await c.command('ZRANGE', key, '0', String(VCAP - 1), 'WITHSCORES')) as unknown[],
-        Number(await c.command('ZCARD', key))
-      ])
-      const arr = Array.isArray(flat) ? flat : []
-      const entries: { id: string; label: string; detail: string }[] = []
-      for (let i = 0; i + 1 < arr.length && entries.length < VCAP; i += 2) {
-        entries.push({ id: textVal(arr[i]), label: textVal(arr[i]), detail: textVal(arr[i + 1]) })
-      }
-      return [
-        { kind: 'list', label: `成员（${entries.length}/${total}）`, items: entryItems(entries, deleting) },
-        ...truncatedNote(entries.length, total, '个成员'),
-        { kind: 'buttons', items: [{ actionId: 'addZsetEntry', label: '新增 / 改分数' }] }
-      ]
-    }
-    case 'stream': {
-      const [body, total] = await withConn(conn, async (c) => [
-        (await c.command('XRANGE', key, '-', '+', 'COUNT', String(VCAP))) as unknown[],
-        Number(await c.command('XLEN', key))
-      ])
-      // stream 只读（dogi 的 `EDITABLE` 里也没有它）：改它没有意义，只能追加
-      const items = (Array.isArray(body) ? body : []).map((item) => {
-        const pair = Array.isArray(item) ? item : []
-        const fieldCount = Array.isArray(pair[1]) ? pair[1].length / 2 : 0
-        return { id: textVal(pair[0]), label: textVal(pair[0]), detail: `${fieldCount} 个字段` }
-      })
-      return [
-        { kind: 'list', label: `条目（${items.length}/${total}，只读）`, items },
-        ...truncatedNote(items.length, total, '个条目')
-      ]
-    }
-    default:
-      return [{ kind: 'note', text: `这个类型（${type}）还没有做展示。`, tone: 'muted' }]
-  }
-}
-
-// ---------------------------------------------------------------------------
-// 面板：一个连接一屏，内部再分「数据 / 信息 / 命令行」（对齐 dogi 的右侧面板）
-// ---------------------------------------------------------------------------
-
-const MODE_LABEL = { data: '数据', info: '信息', cli: '命令行' } as const
-
-/** INFO 小节的中文名（dogi 同款映射） */
-const SECTION_LABEL: Record<string, string> = {
-  server: '服务器',
-  clients: '客户端',
-  memory: '内存',
-  persistence: '持久化',
-  stats: '统计',
-  replication: '复制',
-  cpu: 'CPU',
-  cluster: '集群',
-  keyspace: '键空间',
-  commandstats: '命令统计',
-  latencystats: '延迟统计',
-  errorstats: '错误统计',
-  modules: '模块'
-}
-
-/** 面板顶部：连接信息 + 三屏切换 + DB 切换（DB 是**每连接**的，dogi 同款） */
-function panelHeader(conn: Conn, state: Browse): Block[] {
-  const status = connStatus(conn)
-  return [
-    {
-      kind: 'kv',
-      rows: [
-        { label: '连接', value: conn.name },
-        { label: '地址', value: `${conn.host}:${conn.port}` },
-        { label: 'DB', value: `db${conn.db}` },
-        {
-          label: '状态',
-          value: status.label,
-          tone: status.tone as 'success' | 'muted' | 'danger'
-        }
-      ]
-    },
-    {
-      kind: 'buttons',
-      items: (['data', 'info', 'cli'] as const).map((m) => ({
-        actionId: 'mode',
-        // 当前这一屏用「·数据·」标出来：块没有「选中态」这个概念，只能在标签上写
-        label: m === state.mode ? `·${MODE_LABEL[m]}·` : MODE_LABEL[m],
-        args: { mode: m }
-      }))
-    },
-    {
-      kind: 'input',
-      id: 'db',
-      label: '切到 DB（0-15）',
-      value: String(conn.db),
-      placeholder: '0',
-      actionId: 'setDb',
-      submitLabel: '切换'
-    }
-  ]
-}
-
-/** 「信息」屏：概览指标 + 分节表（可过滤）/ 原始文本（可搜索），对齐 dogi */
-async function infoBlocks(conn: Conn): Promise<Block[]> {
-  const state = browseOf(conn)
-  let raw: string
-  let dbsize: number
-  try {
-    ;[raw, dbsize] = await withConn(conn, async (c) => [
-      textVal(await c.command('INFO', 'ALL')),
-      Number(await c.command('DBSIZE'))
-    ])
-  } catch (e) {
-    return [{ kind: 'note', text: e instanceof Error ? e.message : String(e), tone: 'danger' }]
-  }
-  const filter = state.infoFilter.trim().toLowerCase()
-
-  // 原始文本视图：按行过滤（dogi 的「搜索」）
-  if (state.infoRaw) {
-    const lines = raw.split('\n').filter((l) => !filter || l.toLowerCase().includes(filter))
-    return [
-      {
-        kind: 'input',
-        id: 'filter',
-        label: '搜索原始文本',
-        value: state.infoFilter,
-        actionId: 'infoFilter',
-        submitLabel: '过滤'
-      },
-      {
-        kind: 'buttons',
-        items: [
-          { actionId: 'infoToggle', label: '看分节概览' },
-          { actionId: 'infoRefresh', label: '刷新' }
-        ]
-      },
-      { kind: 'text', text: lines.slice(0, 300).join('\n') || '(没有匹配的行)', mono: true }
-    ]
-  }
-
-  const sections = parseInfo(raw)
-  const server = sections.server ?? {}
-  const clients = sections.clients ?? {}
-  const memory = sections.memory ?? {}
-  const stats = sections.stats ?? {}
-  const hits = Number(stats.keyspace_hits ?? 0)
-  const misses = Number(stats.keyspace_misses ?? 0)
-  const rate = hits + misses > 0 ? `${((hits / (hits + misses)) * 100).toFixed(1)}%` : '-'
-
-  const blocks: Block[] = [
-    {
-      kind: 'input',
-      id: 'filter',
-      label: '过滤参数名 / 值',
-      value: state.infoFilter,
-      actionId: 'infoFilter',
-      submitLabel: '过滤'
-    },
-    {
-      kind: 'buttons',
-      items: [
-        { actionId: 'infoToggle', label: '看原始文本' },
-        { actionId: 'infoRefresh', label: '刷新' }
-      ]
-    },
-    {
-      kind: 'kv',
-      rows: [
-        { label: '版本', value: server.redis_version ?? '-' },
-        { label: '运行时长', value: fmtUptime(server.uptime_in_seconds) },
-        { label: '客户端连接', value: clients.connected_clients ?? '-' },
-        {
-          label: '内存占用',
-          value: fmtBytes(
-            Number.isFinite(Number(memory.used_memory)) ? Number(memory.used_memory) : NaN
-          )
-        },
-        { label: '命中率', value: rate },
-        { label: '累计命令', value: stats.total_commands_processed ?? '-' },
-        { label: '当前 DB key 数', value: String(Number.isFinite(dbsize) ? dbsize : 0) }
-      ]
-    }
-  ]
-  for (const [name, rows] of Object.entries(sections)) {
-    const items = Object.entries(rows)
-      .filter(
-        ([k, v]) => !filter || k.toLowerCase().includes(filter) || v.toLowerCase().includes(filter)
-      )
-      .map(([k, v]) => ({ id: `${name}:${k}`, label: k, detail: v }))
-    if (!items.length) continue
-    blocks.push({ kind: 'list', label: SECTION_LABEL[name] ?? name, items })
-  }
-  return blocks
-}
-
-/** 「命令行」屏：一条输入框 + 输出日志（最新在上，封顶 50） */
-function cliBlocks(conn: Conn): Block[] {
-  const state = browseOf(conn)
-  return [
-    {
-      kind: 'input',
-      id: 'cmd',
-      label: '执行 Redis 命令',
-      placeholder: 'GET user:1、TYPE orders:1、DBSIZE',
-      actionId: 'exec',
-      submitLabel: '执行'
-    },
-    {
-      kind: 'note',
-      text: '写命令（SET / DEL / HSET / …）执行后会自动刷新列表。',
-      tone: 'muted'
-    },
-    ...state.log.map((entry) => ({
-      kind: 'text',
-      text: entry.text,
-      tone: entry.ok ? ('normal' as const) : ('danger' as const),
-      mono: true
-    }))
-  ]
-}
-
-/**
- * 集合条目按类型该发什么命令（改 / 删），以及弹窗长什么样。
- *
- * 「hash 两栏、list 一个值、zset 成员+分数」这些差异在这里只写一遍，动作处理那边
- * 就只剩「取出来 → 提交 → 跑」三步。返回 null 的类型不支持逐条改（string 整块改、
- * stream 只读）。
- */
-function entryCommandOf(type: string): {
+function entryCommands(type: string): {
   fields: { id: string; label: string; multiline?: boolean }[]
   save: (c: RedisClient, key: string, entry: string, args: Args) => Promise<void>
+  add: (c: RedisClient, key: string, args: Args) => Promise<void>
   remove: (c: RedisClient, key: string, entry: string) => Promise<void>
 } | null {
   switch (type) {
@@ -1191,6 +610,11 @@ function entryCommandOf(type: string): {
           if (field !== entry) await c.command('HDEL', key, entry)
           await c.command('HSET', key, field, String(args.value ?? ''))
         },
+        add: async (c, key, args) => {
+          const field = String(args.field ?? '').trim()
+          if (!field) throw new Error('字段名不能为空')
+          await c.command('HSET', key, field, String(args.value ?? ''))
+        },
         remove: async (c, key, entry) => {
           await c.command('HDEL', key, entry)
         }
@@ -1202,6 +626,9 @@ function entryCommandOf(type: string): {
           const index = Number(entry)
           if (!Number.isInteger(index) || index < 0) throw new Error('下标不对')
           await c.command('LSET', key, String(index), String(args.value ?? ''))
+        },
+        add: async (c, key, args) => {
+          await c.command('RPUSH', key, String(args.value ?? ''))
         },
         // Redis 没有「按下标删」，dogi 的写法：先 LSET 成一个随机哨兵，再 LREM 掉它
         remove: async (c, key, entry) => {
@@ -1219,6 +646,11 @@ function entryCommandOf(type: string): {
           const member = String(args.member ?? entry).trim()
           if (!member) throw new Error('成员不能为空')
           if (member !== entry) await c.command('SREM', key, entry)
+          await c.command('SADD', key, member)
+        },
+        add: async (c, key, args) => {
+          const member = String(args.member ?? '').trim()
+          if (!member) throw new Error('成员不能为空')
           await c.command('SADD', key, member)
         },
         remove: async (c, key, entry) => {
@@ -1239,6 +671,13 @@ function entryCommandOf(type: string): {
           if (member !== entry) await c.command('ZREM', key, entry)
           await c.command('ZADD', key, String(score), member)
         },
+        add: async (c, key, args) => {
+          const member = String(args.member ?? '').trim()
+          const score = Number(args.score)
+          if (!member) throw new Error('成员不能为空')
+          if (!Number.isFinite(score)) throw new Error('分数要是数字')
+          await c.command('ZADD', key, String(score), member)
+        },
         remove: async (c, key, entry) => {
           await c.command('ZREM', key, entry)
         }
@@ -1246,11 +685,6 @@ function entryCommandOf(type: string): {
     default:
       return null
   }
-}
-
-/** 这个 key 现在是什么类型（每次现查：命令行可能刚改过它） */
-async function typeOf(conn: Conn, key: string): Promise<string> {
-  return withConn(conn, async (c) => textVal(await c.command('TYPE', key)))
 }
 
 /** 编辑弹窗里要带出的当前值（按类型取那一条） */
@@ -1280,472 +714,375 @@ async function currentEntry(
   }
 }
 
-// ---------------------------------------------------------------------------
-// 插件本体
-// ---------------------------------------------------------------------------
-
-/**
- * 插件图标：**Redis 官方 logo**（Simple Icons 那份，`#FF4438` 品牌红，978 字符）。
- *
- * 早先是自己画的一个带深色圆角底的方块 —— 那种「衬底」在列表里会被别的图标挤成
- * 一小块色块，logo 本身的形状反而看不清。**直接用官方 logo、不加衬底**：矢量图在
- * 40px 下也清楚（`object-contain` 保证不变形）。
- */
-const ICON =
-  'data:image/svg+xml,%3Csvg%20fill%3D%22%23FF4438%22%20role%3D%22img%22%20viewBox%3D%220%200%2024%2024%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Ctitle%3ERedis%3C%2Ftitle%3E%3Cpath%20d%3D%22M22.71%2013.145c-1.66%202.092-3.452%204.483-7.038%204.483-3.203%200-4.397-2.825-4.48-5.12.701%201.484%202.073%202.685%204.214%202.63%204.117-.133%206.94-3.852%206.94-7.239%200-4.05-3.022-6.972-8.268-6.972-3.752%200-8.4%201.428-11.455%203.685C2.59%206.937%203.885%209.958%204.35%209.626c2.648-1.904%204.748-3.13%206.784-3.744C8.12%209.244.886%2017.05%200%2018.425c.1%201.261%201.66%204.648%202.424%204.648.232%200%20.431-.133.664-.365a100.49%20100.49%200%200%200%205.54-6.765c.222%203.104%201.748%206.898%206.014%206.898%203.819%200%207.604-2.756%209.33-8.965.2-.764-.73-1.361-1.261-.73zm-4.349-5.013c0%201.959-1.926%202.922-3.685%202.922-.941%200-1.664-.247-2.235-.568%201.051-1.592%202.092-3.225%203.21-4.973%201.972.334%202.71%201.43%202.71%202.619z%22%2F%3E%3C%2Fsvg%3E'
-
-/**
- * 弹窗开着时是在编辑**哪一条**（模块级：插件模块在进程内缓存，所以能跨 render 保留）。
- *
- * 弹窗里的字段提交回来时只带字段值（`args`），不带「编辑的是谁」—— 所以这里记一笔：
- * 点「编辑」时写入，提交或取消时清掉。
- */
-let editingId: string | null = null
-/** 待确认删除的**连接**（两步：还没有「确认弹窗」这种形态，就把确认做成第二次点击） */
-let pendingConnDelete: string | null = null
-
-/**
- * `ctx.ui` 的结构化手写型（插件目录里不 import `@fizz/plugin` 的类型）。
- * 只声明本插件用到的那几个方法。
- */
-interface UiLike {
-  icon(dataUri: string): unknown
-  activityBar(item: Record<string, unknown>): unknown
-  sider(spec: {
-    id: string
-    title: string
-    icon?: string
-    /** 顶栏右侧那排图标按钮（宿主渲染成 SidebarTopBar 的 extra 槽位） */
-    headerActions?: { actionId: string; icon: string; label: string; args?: Args }[]
-    render: () => Block[] | Promise<Block[]>
-    onAction?: (action: {
-      actionId: string
-      args?: Args
-      /** 插件内部弹提示：宿主用 sonner 弹，随这次响应带回 */
-      toast?: (message: string, kind?: 'success' | 'error' | 'info' | 'warning') => void
-    }) => unknown
-  }): unknown
-  view(spec: {
-    id: string
-    title: string
-    icon?: string
-    render: (ctx: { params?: Args }) => Block[] | Promise<Block[]>
-    onAction?: (action: {
-      actionId: string
-      args?: Args
-      params?: Args
-      toast?: (message: string, kind?: 'success' | 'error' | 'info' | 'warning') => void
-    }) => unknown
-  }): unknown
+/** 丢掉一个连接上的客户端（配置改了 / 连接被删了） */
+function dropClient(id: string): void {
+  const held = clients.get(id)
+  if (held) held.client.close()
+  clients.delete(id)
+  errors.delete(id)
 }
 
+/** 取值封顶（与 dogi 的 `VCAP` 对齐）：误点开一个百万成员的 key 也不至于把界面拖死 */
+const VCAP = 500
+
+/*
+ * `editable` 由 `keyPayload` 逐类型给：hash / list / set / zset 可逐条改，string 只能整块改
+ * （且二进制值连整块改都不给），stream 只读。别在这一层搞一张「可编辑类型表」——
+ * 判断逻辑就在各自的分支里，多一张表迟早会不同步。
+ */
+
+/**
+ * 按类型取一个 key 的内容。
+ *
+ * 返回值是**纯数据**（不是块）：界面按 `kind` 决定怎么画。每种类型都给 `total`，
+ * 「只画了前 N 条」由界面自己提示 —— 服务端不替它组织文案。
+ */
+async function keyPayload(conn: Conn, key: string, type: string): Promise<Record<string, unknown>> {
+  switch (type) {
+    case 'string': {
+      const buf = await withConn(conn, (c) => c.command('GET', key))
+      const binary = isBinaryBuf(buf)
+      return {
+        kind: 'string',
+        text: textVal(buf),
+        // 二进制值不给编辑入口：写回去必然写坏数据（dogi 也是把编辑器设成只读）
+        editable: !binary,
+        binary,
+        bytes: Buffer.isBuffer(buf) ? buf.length : String(buf ?? '').length
+      }
+    }
+    case 'hash': {
+      const [flat, total] = await withConn(conn, async (c) => [
+        (await c.command('HGETALL', key)) as unknown[],
+        Number(await c.command('HLEN', key))
+      ])
+      const arr = Array.isArray(flat) ? flat : []
+      const entries: Entry[] = []
+      for (let i = 0; i + 1 < arr.length && entries.length < VCAP; i += 2) {
+        entries.push({ id: textVal(arr[i]), label: textVal(arr[i]), detail: textVal(arr[i + 1]) })
+      }
+      return { kind: 'hash', total, entries, editable: true }
+    }
+    case 'list': {
+      const [arr, total] = await withConn(conn, async (c) => [
+        (await c.command('LRANGE', key, '0', String(VCAP - 1))) as unknown[],
+        Number(await c.command('LLEN', key))
+      ])
+      const entries: Entry[] = (Array.isArray(arr) ? arr : []).map((v, i) => ({
+        id: String(i),
+        label: `#${i}`,
+        detail: textVal(v)
+      }))
+      return { kind: 'list', total, entries, editable: true }
+    }
+    case 'set': {
+      const [arr, total] = await withConn(conn, async (c) => [
+        (await c.command('SMEMBERS', key)) as unknown[],
+        Number(await c.command('SCARD', key))
+      ])
+      const entries: Entry[] = (Array.isArray(arr) ? arr : [])
+        .slice(0, VCAP)
+        .map((v) => ({ id: textVal(v), label: textVal(v) }))
+      return { kind: 'set', total, entries, editable: true }
+    }
+    case 'zset': {
+      const [flat, total] = await withConn(conn, async (c) => [
+        (await c.command('ZRANGE', key, '0', String(VCAP - 1), 'WITHSCORES')) as unknown[],
+        Number(await c.command('ZCARD', key))
+      ])
+      const arr = Array.isArray(flat) ? flat : []
+      const entries: Entry[] = []
+      for (let i = 0; i + 1 < arr.length && entries.length < VCAP; i += 2) {
+        entries.push({ id: textVal(arr[i]), label: textVal(arr[i]), detail: textVal(arr[i + 1]) })
+      }
+      return { kind: 'zset', total, entries, editable: true }
+    }
+    case 'stream': {
+      const [body, total] = await withConn(conn, async (c) => [
+        (await c.command('XRANGE', key, '-', '+', 'COUNT', String(VCAP))) as unknown[],
+        Number(await c.command('XLEN', key))
+      ])
+      // stream 只读（dogi 的 `EDITABLE` 里也没有它）：改它没有意义，只能追加
+      const entries: Entry[] = (Array.isArray(body) ? body : []).map((item) => {
+        const pair = Array.isArray(item) ? item : []
+        const fieldCount = Array.isArray(pair[1]) ? (pair[1] as unknown[]).length / 2 : 0
+        return { id: textVal(pair[0]), label: textVal(pair[0]), detail: `${fieldCount} 个字段` }
+      })
+      return { kind: 'stream', total, entries, editable: false }
+    }
+    default:
+      return { kind: 'other', type }
+  }
+}
+
+/** payload 是不可信输入：每条 rpc 都从这里取值，别直接 `p.xxx` */
+const asStr = (v: unknown, fallback = ''): string =>
+  typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : fallback
+const asNum = (v: unknown, fallback: number): number => {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : fallback
+}
+
+/** 按 id 找连接；找不到就说清楚（多半是在另一个窗口把它删了） */
+async function connById(id: unknown): Promise<Conn> {
+  const list = await loadConns()
+  const conn = list.find((item) => item.id === asStr(id))
+  if (!conn) throw new Error('这条连接已经不在了（可能在别的窗口被删掉）')
+  return conn
+}
+
+/**
+ * 连接状态（侧栏徽章）：只回答「现在什么样」，**不主动连**。
+ *
+ * 侧栏刷新一下不该把所有没在用的连接都拨一遍 —— 那既慢又会在对端留下连接日志。
+ */
+function connStatus(conn: Conn): { label: string; tone: 'success' | 'muted' | 'danger' } {
+  if (errors.has(conn.id)) return { label: `出错：${errors.get(conn.id)}`, tone: 'danger' }
+  const held = clients.get(conn.id)
+  if (held?.client.connected) return { label: '已连接', tone: 'success' }
+  // 连过又掉了：**把掉线原因说出来**（对端关的 / 网络断了）—— 只说「未连接」，
+  // 用户看不出是「压根没连」还是「刚刚断了」。
+  if (held?.client.droppedReason) {
+    return { label: `已断开：${held.client.droppedReason}`, tone: 'danger' }
+  }
+  return { label: '未连接', tone: 'muted' }
+}
+
+/**
+ * 给浏览器看的连接。
+ *
+ * **不带密码**，只带「有没有设」：界面编辑时留空就表示不改。早先那份是把明文塞进
+ * 弹窗字段里过一遍的，没必要。
+ */
+function connView(conn: Conn) {
+  return {
+    id: conn.id,
+    name: conn.name,
+    host: conn.host,
+    port: conn.port,
+    username: conn.username,
+    hasPassword: Boolean(conn.password),
+    db: conn.db,
+    tls: conn.tls,
+    timeoutMs: conn.timeoutMs,
+    ...(conn.pattern ? { pattern: conn.pattern } : {}),
+    status: connStatus(conn)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// rpc：界面能做的每一件事
+// ---------------------------------------------------------------------------
+
+/** 插件目录里不 import `@fizz/plugin`：只声明本插件用到的那一点形状 */
+interface RpcLike {
+  handle(method: string, handler: (payload?: Args) => unknown): unknown
+}
+
+interface PluginCtx {
+  rpc: RpcLike
+}
+
+/**
+ * 前端半的全部后端入口。
+ *
+ * 一条纪律：**每个 handler 都要能被并发调用**。插件实例每次调用都会现挂一份
+ * （和块式渲染同一口径），所以这里不存任何请求级状态 —— 状态在浏览器那边。
+ */
 export default {
-  name: 'Redis 客户端',
-  inject: ['ui'],
+  name: 'redis',
+  inject: ['rpc'],
+  apply(ctx: PluginCtx) {
+    // ---- 连接管理 ---------------------------------------------------------
+    ctx.rpc.handle('conns.list', async () => ({ conns: (await loadConns()).map(connView) }))
 
-  apply(ctx: { ui: UiLike }) {
-    ctx.ui.icon(ICON)
+    ctx.rpc.handle('conns.get', async (p) => connView(await connById(p?.id)))
 
-    ctx.ui.activityBar({ id: 'home', title: 'Redis', icon: ICON, order: 10, opens: 'sider:home' })
+    ctx.rpc.handle('conns.save', async (p) => {
+      const list = await loadConns()
+      const id = asStr(p?.id)
+      const held = id ? list.find((item) => item.id === id) : undefined
+      const password = asStr(p?.password)
+      const next: Conn = {
+        id: held?.id ?? randomUUID(),
+        name: asStr(p?.name).trim() || '未命名连接',
+        host: asStr(p?.host).trim() || '127.0.0.1',
+        port: asNum(p?.port, 6379),
+        username: asStr(p?.username).trim(),
+        // 密码留空 = 不改（界面不回显明文，只回「已设置」这个事实）
+        password: password || held?.password || '',
+        db: asNum(p?.db, 0),
+        tls: p?.tls === true || p?.tls === 'true',
+        timeoutMs: asNum(p?.timeoutMs, 10000)
+      }
+      // 配置改了就把旧客户端丢掉：否则下次用还是连着旧地址
+      if (!held || keyOf(held) !== keyOf(next)) dropClient(next.id)
+      conns = held ? list.map((item) => (item.id === next.id ? next : item)) : [...list, next]
+      await saveConns()
+      return { id: next.id }
+    })
 
-    // ---------- 侧栏：连接管理器 ----------
-    ctx.ui.sider({
-      id: 'home',
-      title: 'Redis 连接',
-      /*
-       * 顶栏右侧那排图标按钮（宿主渲染成 `SidebarTopBar` 的 extra 槽位，与 AI Agent
-       * 侧栏的「刷新列表」同一处）：刷新连接状态 + 新增连接。
-       * 原来「新增连接」是一颗占整行的文字按钮块，现在收成加号图标挪到顶栏。
-       */
-      headerActions: [
-        { actionId: 'refresh', icon: 'refresh', label: '刷新' },
-        { actionId: 'add', icon: 'plus', label: '新增连接' }
-      ],
-      render: async () => {
-        const list = await loadConns()
-        // 删连接走**对话框**（与新增 / 编辑同一条路）：纯确认框，没有字段
-        return managerBlocks()
-      },
+    ctx.rpc.handle('conns.remove', async (p) => {
+      const id = asStr(p?.id)
+      const list = await loadConns()
+      conns = list.filter((item) => item.id !== id)
+      await saveConns()
+      dropClient(id)
+      return {}
+    })
 
-      onAction: async ({ actionId, args, toast }) => {
-        const list = await loadConns()
-        const id = typeof args?.conn === 'string' ? args.conn : ''
-        const conn = list.find((c) => c.id === id) ?? null
+    // ---- Key 浏览 ---------------------------------------------------------
+    ctx.rpc.handle('keys.scan', async (p) => {
+      const conn = await connById(p?.conn)
+      return scanPage(conn, asStr(p?.pattern).trim(), asNum(p?.cursor, 0))
+    })
 
-        switch (actionId) {
-          case 'refresh':
-            /*
-             * 刷新连接状态：什么都不返回 = 宿主自己把这一面重新拉一遍（见
-             * PluginSurfaceBody.runAction 的收尾分支）—— 每次 render 都会重新
-             * `connStatus()` 探一遍各连接，所以「刷新」不需要额外做什么。
-             */
-            return
-          case 'add':
-            // 弹窗：请求宿主用 shadcn Dialog 收这几个字段，提交回 `saveAdd`
-            return {
-              openDialog: {
-                title: '新增连接',
-                description: '连接存在插件目录的 .redis-connections.json（密码是明文存的）。',
-                fields: connFields(null),
-                actionId: 'saveAdd',
-                submitLabel: '保存'
-              }
-            }
-          case 'edit':
-            if (!conn) return
-            editingId = conn.id
-            return {
-              openDialog: {
-                title: `编辑「${conn.name}」`,
-                fields: connFields(conn),
-                actionId: 'saveEdit',
-                submitLabel: '保存'
-              }
-            }
-          case 'saveAdd': {
-            const item = normalizeConn({ ...(args ?? {}), id: randomUUID() })
-            list.push(item)
-            await saveConns()
-            // 插件内部直接 toast（宿主用 sonner 弹）；`message` 字段是它的 success 糖
-            toast?.(`已新增「${item.name}」`, 'success')
-            return
-          }
-          case 'saveEdit': {
-            const target = list.find((c) => c.id === editingId) ?? null
-            if (!target) return
-            const next = normalizeConn({ ...target, ...(args ?? {}) })
-            list[list.indexOf(target)] = next
-            await saveConns()
-            // 配置变了：丢掉旧连接，下次用新的
-            clients.get(next.id)?.client.close()
-            clients.delete(next.id)
-            errors.delete(next.id)
-            editingId = null
-            return { message: `已保存「${next.name}」` }
-          }
-          case 'askDeleteConn':
-            if (!conn) return
-            /*
-             * 记住要删的是谁：对话框提交只带**字段值**（这里是纯确认框，没有字段），
-             * 不带 `conn`，所以归属由插件自己记着（`editingId` 同一条思路）。
-             */
-            pendingConnDelete = id
-            return {
-              openDialog: {
-                title: `确认删除连接「${conn.name}」？`,
-                description: '只删本地这条配置，不动 Redis 里的数据。这一步不可撤销。',
-                fields: [],
-                actionId: 'confirmDeleteConn',
-                submitLabel: '删除'
-              }
-            }
-            return
-          case 'cancelDeleteConn':
-            pendingConnDelete = null
-            return
-          case 'confirmDeleteConn': {
-            if (!conn) return
-            clients.get(conn.id)?.client.close()
-            clients.delete(conn.id)
-            errors.delete(conn.id)
-            browsing.delete(conn.id)
-            conns = list.filter((c) => c.id !== conn.id)
-            await saveConns()
-            editingId = null
-            pendingConnDelete = null
-            toast?.(`已删除连接「${conn.name}」`, 'success')
-            // 它的管理页标签可能还开着：提示一句，免得用户对着一个「请选连接」发懵
-            toast?.('如果它的管理页还开着，下次刷新会显示为空', 'info')
-            return
-          }
-          case 'openTab':
-            if (!conn) return
-            // ⬇️ 请求宿主在主视图区开一个标签页：同一个 view 面 + `params.conn` 参数，
-            //    所以每个连接各占一页（宿主会把参数原样带回下面的 render / onAction）
-            return {
-              openView: {
-                surfaceId: 'panel',
-                params: { conn: conn.id },
-                label: conn.name,
-                title: `${conn.name} · Redis 管理`
-              }
-            }
-          default:
-            return
+    ctx.rpc.handle('key.detail', async (p) => {
+      const conn = await connById(p?.conn)
+      const key = asStr(p?.key)
+      const { type, ttl } = await withConn(conn, async (c) => ({
+        type: textVal(await c.command('TYPE', key)),
+        ttl: Number(await c.command('TTL', key))
+      }))
+      const payload = await keyPayload(conn, key, type)
+      return { key, type, ttl: Number.isFinite(ttl) ? ttl : -1, payload }
+    })
+
+    ctx.rpc.handle('key.set', async (p) => {
+      const conn = await connById(p?.conn)
+      await withConn(conn, (c) => c.command('SET', asStr(p?.key), asStr(p?.value)))
+      return {}
+    })
+
+    ctx.rpc.handle('key.remove', async (p) => {
+      const conn = await connById(p?.conn)
+      await withConn(conn, (c) => c.command('DEL', asStr(p?.key)))
+      return {}
+    })
+
+    ctx.rpc.handle('key.rename', async (p) => {
+      const conn = await connById(p?.conn)
+      const from = asStr(p?.key)
+      const to = asStr(p?.to).trim()
+      if (!to) throw new Error('新名字不能为空')
+      if (to === from) return {}
+      await withConn(conn, (c) => c.command('RENAME', from, to))
+      return { key: to }
+    })
+
+    ctx.rpc.handle('key.expire', async (p) => {
+      const conn = await connById(p?.conn)
+      const key = asStr(p?.key)
+      const ttl = asNum(p?.ttl, 0)
+      await withConn(conn, (c) =>
+        ttl > 0 ? c.command('EXPIRE', key, String(ttl)) : c.command('PERSIST', key)
+      )
+      return {}
+    })
+
+    // ---- 集合条目 ---------------------------------------------------------
+    ctx.rpc.handle('entry.get', async (p) => {
+      const conn = await connById(p?.conn)
+      const type = asStr(p?.type)
+      const spec = entryCommands(type)
+      if (!spec) throw new Error(`这个类型（${type}）不支持逐条修改`)
+      return {
+        fields: spec.fields,
+        values: await currentEntry(conn, type, asStr(p?.key), asStr(p?.entry))
+      }
+    })
+
+    ctx.rpc.handle('entry.save', async (p) => {
+      const conn = await connById(p?.conn)
+      const type = asStr(p?.type)
+      const spec = entryCommands(type)
+      if (!spec) throw new Error(`这个类型（${type}）不支持逐条修改`)
+      await withConn(conn, (c) =>
+        spec.save(c, asStr(p?.key), asStr(p?.entry), (p?.args ?? {}) as Args)
+      )
+      return {}
+    })
+
+    ctx.rpc.handle('entry.add', async (p) => {
+      const conn = await connById(p?.conn)
+      const type = asStr(p?.type)
+      const spec = entryCommands(type)
+      if (!spec) throw new Error(`这个类型（${type}）不支持逐条修改`)
+      await withConn(conn, (c) => spec.add(c, asStr(p?.key), (p?.args ?? {}) as Args))
+      return {}
+    })
+
+    ctx.rpc.handle('entry.remove', async (p) => {
+      const conn = await connById(p?.conn)
+      const type = asStr(p?.type)
+      const spec = entryCommands(type)
+      if (!spec) throw new Error(`这个类型（${type}）不支持逐条修改`)
+      await withConn(conn, (c) => spec.remove(c, asStr(p?.key), asStr(p?.entry)))
+      return {}
+    })
+
+    // ---- DB / 信息 / 命令行 -----------------------------------------------
+    ctx.rpc.handle('db.select', async (p) => {
+      const conn = await connById(p?.conn)
+      const db = asNum(p?.db, -1)
+      if (!Number.isInteger(db) || db < 0 || db > 15) throw new Error('DB 编号要是 0-15')
+      await withConn(conn, (c) => c.command('SELECT', String(db)))
+      conn.db = db
+      await saveConns()
+      // 已经在那个库上了：把指纹对齐，免得下次当成「配置变了」重连一次
+      const held = clients.get(conn.id)
+      if (held) held.key = keyOf(conn)
+      return { db }
+    })
+
+    ctx.rpc.handle('info', async (p) => {
+      const conn = await connById(p?.conn)
+      const [raw, dbsize] = await withConn(conn, async (c) => [
+        textVal(await c.command('INFO', 'ALL')),
+        Number(await c.command('DBSIZE'))
+      ])
+      const sections = parseInfo(raw)
+      const stats = sections.stats ?? {}
+      const hits = Number(stats.keyspace_hits ?? 0)
+      const misses = Number(stats.keyspace_misses ?? 0)
+      return {
+        raw,
+        dbsize: Number.isFinite(dbsize) ? dbsize : 0,
+        // 分节给成数组：`Object.entries` 的原样搬运，**顺序就是 Redis 输出的顺序**
+        // （对象键序在 JS 里对非数字键是插入序，但插件不该赌这件事）
+        sections: Object.entries(sections).map(([name, rows]) => ({
+          name,
+          rows: Object.entries(rows)
+        })),
+        overview: {
+          version: sections.server?.redis_version ?? '-',
+          uptime: sections.server?.uptime_in_seconds ?? '-',
+          clients: sections.clients?.connected_clients ?? '-',
+          memory: sections.memory?.used_memory ?? '-',
+          commands: stats.total_commands_processed ?? '-',
+          /** 命中率（0-100，算不出来时给 null，界面上显示 -） */
+          hitRate: hits + misses > 0 ? Math.round((hits / (hits + misses)) * 1000) / 10 : null
         }
       }
     })
 
-    // ---------- 标签页：某个连接的管理面板（数据 / 信息 / 命令行） ----------
-    ctx.ui.view({
-      id: 'panel',
-      title: 'Redis 管理',
-      render: async ({ params }) => {
-        const list = await loadConns()
-        const connId = typeof params?.conn === 'string' ? params.conn : ''
-        const conn = list.find((c) => c.id === connId) ?? null
-        if (!conn) {
-          return [
-            {
-              kind: 'note',
-              text: '请在左侧「Redis」侧栏里点一个连接 —— 这个标签页是按连接开的。',
-              tone: 'muted'
-            }
-          ]
-        }
-        const state = browseOf(conn)
-        const body =
-          state.mode === 'info'
-            ? await infoBlocks(conn)
-            : state.mode === 'cli'
-              ? cliBlocks(conn)
-              : state.opened
-                ? await keyDetailBlocks(conn, state.opened)
-                : await keyListBlocks(conn)
-        // 头（连接信息 + 三屏 + DB）永远在最上面：切屏时不用找回去
-        return [...panelHeader(conn, state), ...body]
-      },
-
-      onAction: async ({ actionId, args, params }) => {
-        const list = await loadConns()
-        const conn =
-          list.find((c) => c.id === (typeof params?.conn === 'string' ? params.conn : '')) ?? null
-        if (!conn) return
-        const state = browseOf(conn)
-        // 条目类动作不带 key（改的是当前点开那个），所以回落到这里
-        const key = typeof args?.key === 'string' ? args.key : (state.opened ?? '')
-
-        switch (actionId) {
-          // ---- 三屏 / DB ----
-          case 'mode': {
-            const m = String(args?.mode ?? 'data')
-            state.mode = m === 'info' ? 'info' : m === 'cli' ? 'cli' : 'data'
-            return
-          }
-          case 'setDb': {
-            const db = Math.floor(Number(args?.db))
-            if (!Number.isInteger(db) || db < 0 || db > 15) throw new Error('DB 要在 0–15 之间')
-            await selectDb(conn, db)
-            state.opened = null
-            state.pendingDelete = null
-            await scanKeys(conn, true)
-            return { message: `已切到 db${db}` }
-          }
-
-          // ---- 命令行 ----
-          case 'exec':
-            await execCommand(conn, String(args?.cmd ?? ''))
-            return
-
-          // ---- 信息屏 ----
-          case 'infoFilter':
-            state.infoFilter = String(args?.filter ?? '')
-            return
-          case 'infoToggle':
-            state.infoRaw = !state.infoRaw
-            return
-          case 'infoRefresh':
-            return
-
-          // ---- 数据屏：Key 列表 ----
-          case 'refresh':
-            await scanKeys(conn, true)
-            return
-          case 'filter':
-            state.pattern = String(args?.pattern ?? '*').trim() || '*'
-            await scanKeys(conn, true)
-            return
-          case 'more':
-            await scanKeys(conn, false)
-            return
-          case 'openKey':
-            state.opened = key
-            state.pendingDelete = null
-            state.entryDelete = false
-            return
-          case 'back':
-            state.opened = null
-            state.pendingDelete = null
-            state.entryDelete = false
-            await scanKeys(conn, true)
-            return
-
-          // ---- 删 key（两步） ----
-          case 'askDelete':
-            state.pendingDelete = key
-            return
-          case 'cancelDelete':
-            state.pendingDelete = null
-            return
-          case 'confirmDelete':
-            await withConn(conn, (c) => c.command('DEL', key))
-            state.opened = null
-            state.pendingDelete = null
-            await scanKeys(conn, true)
-            return { message: `已删除「${key}」` }
-
-          // ---- 改名 / TTL ----
-          case 'rename': {
-            const target = String(args?.newKey ?? '').trim()
-            if (!target) throw new Error('新 key 不能为空')
-            if (target === state.opened) return
-            await withConn(conn, async (c) => {
-              // 目标已存在时拒绝：RENAME 会直接覆盖，界面里不该静默毁数据
-              const exists = Number(textVal(await c.command('EXISTS', target)))
-              if (exists > 0) throw new Error(`目标 key「${target}」已存在`)
-              await c.command('RENAME', state.opened as string, target)
-            })
-            state.opened = target
-            await scanKeys(conn, true)
-            return { message: '已改名' }
-          }
-          case 'setTtl': {
-            const sec = Math.floor(Number(args?.ttl))
-            if (!Number.isFinite(sec)) throw new Error('TTL 要是数字（秒）')
-            await withConn(conn, async (c) => {
-              if (sec <= 0) await c.command('PERSIST', key)
-              else await c.command('EXPIRE', key, String(sec))
-            })
-            return { message: sec <= 0 ? '已设为永不过期' : `TTL 设为 ${sec}s` }
-          }
-
-          // ---- string 整块改（弹窗） ----
-          case 'editValue': {
-            const buf = await withConn(conn, (c) => c.command('GET', key))
-            return {
-              openDialog: {
-                title: `编辑「${key}」`,
-                description: '保存会保留原来的 TTL。',
-                fields: [
-                  { id: 'value', label: '值（UTF-8）', value: textVal(buf), multiline: true }
-                ],
-                actionId: 'saveValue',
-                submitLabel: '保存'
-              }
-            }
-          }
-          case 'saveValue': {
-            const value = String(args?.value ?? '')
-            await withConn(conn, async (c) => {
-              // SET 会把 TTL 清掉 —— 先读 PTTL，写完补回去（Redis 5 没有 KEEPTTL，
-              // dogi 也是这么兜的）
-              const ttl = Number(await c.command('PTTL', key))
-              await c.command('SET', key, value)
-              if (Number.isFinite(ttl) && ttl > 0) await c.command('PEXPIRE', key, String(ttl))
-            })
-            return { message: '已保存' }
-          }
-
-          // ---- 集合条目：改（弹窗）/ 删（模式 + 点一行） ----
-          case 'enterDeleteEntry':
-            state.entryDelete = true
-            return
-          case 'exitDeleteEntry':
-            state.entryDelete = false
-            return
-          case 'editEntry': {
-            const type = await typeOf(conn, key)
-            const spec = entryCommandOf(type)
-            if (!spec) return
-            const current = await currentEntry(conn, type, key, String(args?.entry ?? ''))
-            return {
-              openDialog: {
-                title: `改一条（${key} · ${type}）`,
-                fields: spec.fields.map((f) => ({ ...f, value: current[f.id] ?? '' })),
-                actionId: 'saveEntry',
-                submitLabel: '保存'
-              }
-            }
-          }
-          case 'saveEntry': {
-            const type = await typeOf(conn, key)
-            const spec = entryCommandOf(type)
-            if (!spec) return
-            await withConn(conn, (c) => spec.save(c, key, String(args?.entry ?? ''), args ?? {}))
-            return { message: '已保存' }
-          }
-          case 'delEntry': {
-            const type = await typeOf(conn, key)
-            const spec = entryCommandOf(type)
-            if (!spec) return
-            await withConn(conn, (c) => spec.remove(c, key, String(args?.entry ?? '')))
-            return { message: '已删掉这一条' }
-          }
-
-          // ---- 集合新增（弹窗） ----
-          case 'addHashEntry':
-            return {
-              openDialog: {
-                title: '新增 / 改字段',
-                fields: [
-                  { id: 'field', label: '字段' },
-                  { id: 'value', label: '值', multiline: true }
-                ],
-                actionId: 'addHashSave',
-                submitLabel: '保存'
-              }
-            }
-          case 'addHashSave': {
-            const field = String(args?.field ?? '').trim()
-            if (!field) throw new Error('字段名不能为空')
-            await withConn(conn, (c) => c.command('HSET', key, field, String(args?.value ?? '')))
-            return { message: `已写入字段「${field}」` }
-          }
-          case 'pushList':
-            return {
-              openDialog: {
-                title: '推入一个元素',
-                fields: [
-                  { id: 'value', label: '值' },
-                  { id: 'side', label: '方向：R = 右边（默认），L = 左边', value: 'R' }
-                ],
-                actionId: 'pushListSave',
-                submitLabel: '推入'
-              }
-            }
-          case 'pushListSave': {
-            const side = String(args?.side ?? 'R').trim().toUpperCase() === 'L' ? 'LPUSH' : 'RPUSH'
-            await withConn(conn, (c) => c.command(side, key, String(args?.value ?? '')))
-            return { message: `已${side === 'LPUSH' ? '从左' : '从右'}推入` }
-          }
-          case 'addSetEntry':
-            return {
-              openDialog: {
-                title: '新增成员',
-                fields: [{ id: 'member', label: '成员' }],
-                actionId: 'addSetSave',
-                submitLabel: '加入'
-              }
-            }
-          case 'addSetSave': {
-            const member = String(args?.member ?? '').trim()
-            if (!member) throw new Error('成员不能为空')
-            await withConn(conn, (c) => c.command('SADD', key, member))
-            return { message: `已加入成员「${member}」` }
-          }
-          case 'addZsetEntry':
-            return {
-              openDialog: {
-                title: '新增 / 改分数',
-                fields: [
-                  { id: 'member', label: '成员' },
-                  { id: 'score', label: '分数', value: '0' }
-                ],
-                actionId: 'addZsetSave',
-                submitLabel: '保存'
-              }
-            }
-          case 'addZsetSave': {
-            const member = String(args?.member ?? '').trim()
-            const score = Number(args?.score)
-            if (!member) throw new Error('成员不能为空')
-            if (!Number.isFinite(score)) throw new Error('分数要是数字')
-            await withConn(conn, (c) => c.command('ZADD', key, String(score), member))
-            return { message: `已写入「${member}」= ${score}` }
-          }
-
-          default:
-            return
+    ctx.rpc.handle('command', async (p) => {
+      const conn = await connById(p?.conn)
+      const args = tokenize(asStr(p?.line).trim())
+      if (!args.length) throw new Error('先写一条命令')
+      const wrote = WRITE_CMD.test(args[0].toUpperCase())
+      try {
+        const value = await withConn(conn, (c) => c.command(...args))
+        return { ok: true, text: `$ ${args.join(' ')}\n${stringifyReply(value)}`, wrote }
+      } catch (e) {
+        /**
+         * 命令报错是**正常结果**（`-ERR` 也是数据），不是 rpc 失败：
+         * 原样交给命令行区显示，别让宿主弹「调用失败」。
+         */
+        return {
+          ok: false,
+          text: `$ ${args.join(' ')}\n(error) ${e instanceof Error ? e.message : String(e)}`,
+          wrote: false
         }
       }
     })

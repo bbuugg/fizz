@@ -28,6 +28,9 @@ import { prunePanelWidths } from '@fizz/agent-kit/shared/lib/panel-width'
 import { setMobileSidebarOpen, useMobileSidebarOpen } from '@fizz/agent-kit/shared/lib/mobile-sidebar'
 import { allTabKeys, openTab, useIsTabOpen } from '@fizz/agent-kit/shared/lib/panel-store'
 import { NEW_TAB_KEY } from '@fizz/agent-kit/shared/lib/panel-tabs'
+// 名字避开本组件自己导出的 `openSettingsTab`（那个是「带分组打开」的对外动作），
+// 这里要的是底层那条「把设置标签开出来」的工具函数
+import { openSettingsTab as openSettingsPanelTab } from '@fizz/agent-kit/shared/lib/tool-tabs'
 import {
   aliveTabs,
   draftPanelKey,
@@ -48,7 +51,6 @@ import {
   type AppContextValue,
   type NewDialogKind
 } from '@fizz/agent-kit/shared/hooks/use-app-context'
-import { getAgentHost } from '@fizz/agent-client/host'
 import type { TerminalProcess } from '@fizz/agent-client/web-host'
 
 /** 面板实例自增 id：渲染 key 用它，草稿 → 首个会话迁移时 key 不变、组件不重挂 */
@@ -167,20 +169,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const closeNewDialog = useCallback((): void => setNewTarget(null), [])
 
   /**
-   * ---- 「打开设置并落到某个分组」：desktop 的设置只走独立窗口（`?window=settings`），
-   * web / mobile 是应用内弹窗。宿主有 `openSettingsWindow` 就交给它，否则记下分组由
-   * `AppShell` 打开弹窗。
+   * ---- 「打开设置并落到某个分组」：**主区域的一条标签**（`settings:list`），任何宽度
+   * 都走这条 —— 标签条在窄屏也在（见 `AppShell` 的 `openSettings` 注释），按 `isMobile()`
+   * 分叉成弹窗只会让同一份设置出现两种外壳。
+   *
+   * 与对话共享同一个 `AppProvider`，所以设置里改完立刻生效，不需要跨窗口广播。
+   * 原先「宿主有 `openSettingsWindow` 就交给它」那条分支就是两个渲染进程的来源，
+   * 已随独立设置窗口一起退场。
+   *
+   * `settingsTab` / `clearSettingsTab` 两个契约成员在 web / desktop 里**恒为空**：
+   * 分组直接写进标签登记表（`ToolTab.settingsTab`）。留着它们只为 `apps/mobile` ——
+   * 那边是整页 `SettingsPage`，要靠「请求了哪一页」来决定首屏落到哪个分组。
    */
-  const [settingsTab, setSettingsTab] = useState<'models' | 'acp' | null>(null)
+  const settingsTab = null
   const openSettingsTab = useCallback((tab: 'models' | 'acp'): void => {
-    const openSettingsWindow = getAgentHost().openSettingsWindow
-    if (openSettingsWindow) {
-      void openSettingsWindow(tab)
-      return
-    }
-    setSettingsTab(tab)
+    openSettingsPanelTab(tab)
   }, [])
-  const clearSettingsTab = useCallback((): void => setSettingsTab(null), [])
+  const clearSettingsTab = useCallback((): void => {}, [])
 
   // ---------------------------------------------------------------------------
   // 会话面板现场：**按会话常驻、隐藏不销毁**（状态在这里，跨导航存活）

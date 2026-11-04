@@ -31,7 +31,7 @@ import {
 } from '@fizz/ui/dialog'
 import { formatCommandArgs, parseCommandArgs } from '@fizz/agent-kit/shared/lib/command-args'
 import { ConfirmDeleteDialog } from '@fizz/agent-kit/shared/components/ConfirmDeleteDialog'
-import { Tabs, TabsList, TabsTrigger } from '@fizz/ui/tabs'
+import { Segmented } from '@fizz/agent-kit/shared/components/Segmented'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 // 只引 `/types` 子路径：这三个是纯函数，`@fizz/mcp` 根入口会把 MCP SDK 拖进浏览器产物
@@ -278,29 +278,26 @@ export function McpTab({ app }: { app: AgentApp }) {
             }}
           >
             {/*
-              三种传输方式做成 Tabs（shadcn 那一套：Root + List + Trigger）—— 有哪几种、当前是
-              哪种都是一眼的事，比下拉少一次点击。标签只放短名（弹窗才 24rem 宽，带全称会挤成
-              一团），完整含义见上面的说明文案。切方式不清草稿：用户多半是在几种写法间来回试，
-              填一半的东西不该被抹掉。
+              三种传输方式用分段控件 —— 有哪几种、当前是哪种都是一眼的事，比下拉少一次点击。
+              标签只放短名（弹窗才 24rem 宽，带全称会挤成一团），完整含义见上面的说明文案。
+              切方式不清草稿：用户多半是在几种写法间来回试，填一半的东西不该被抹掉。
 
-              ⚠️ 这里**只用 Tabs 做选择器，没有 `TabsContent`**，字段仍由 `mcpTransport` 条件
-              渲染（见下面那段）。两个原因：
-              - `http` / `sse` 用的是**同一组字段**（地址 + 请求头），按 Content 拆就得把同一份
-                JSX 抄两遍，改一处忘一处；
-              - Radix 的 Content 是**惰性挂载**的，切走再切回来输入框会重挂一次 —— 值在 state
-                里不丢，但光标位置和滚动位置会掉。
+              这里**只做取值选择，没有面板**：`http` / `sse` 共用同一组字段（地址 + 请求头），
+              字段仍由 `mcpTransport` 条件渲染（见下面那段）。按面板拆就得把同一份 JSX 抄两遍，
+              改一处忘一处；而且面板是惰性挂载的，切走再切回来输入框会重挂一次 —— 值在 state
+              里不丢，但光标位置和滚动位置会掉。
             */}
-            <Tabs
+            <Segmented
+              ariaLabel={tr('传输方式')}
+              fullWidth
               value={mcpTransport}
-              onValueChange={(value) => setMcpTransport(value as McpTransport)}
-            >
-              {/* `w-full` 让它撑满弹窗（Trigger 自己已经是 `flex-1`，三个等宽） */}
-              <TabsList className="w-full">
-                <TabsTrigger value="stdio">stdio</TabsTrigger>
-                <TabsTrigger value="http">http</TabsTrigger>
-                <TabsTrigger value="sse">sse</TabsTrigger>
-              </TabsList>
-            </Tabs>
+              onChange={(value) => setMcpTransport(value as McpTransport)}
+              options={[
+                { value: 'stdio', label: 'stdio' },
+                { value: 'http', label: 'http' },
+                { value: 'sse', label: 'sse' }
+              ]}
+            />
 
             <Input
               placeholder={tr('名称，如 filesystem')}
@@ -384,8 +381,12 @@ export function McpTab({ app }: { app: AgentApp }) {
 
             {toolsProbe && toolsProbe !== 'loading' && (
               <>
+                {/* 报错可能是多行（主消息 + 子进程 stderr 尾巴），保留换行才看得懂 */}
                 {toolsProbe.errors.map((err, i) => (
-                  <div key={i} className="text-xs text-amber-600 dark:text-amber-500">
+                  <div
+                    key={i}
+                    className="whitespace-pre-wrap break-words text-xs text-amber-600 dark:text-amber-500"
+                  >
                     ⚠ {err}
                   </div>
                 ))}

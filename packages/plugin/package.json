@@ -17,6 +17,10 @@
     "./loader": {
       "types": "./src/loader.ts",
       "default": "./src/loader.ts"
+    },
+    "./deps": {
+      "types": "./src/deps.ts",
+      "default": "./src/deps.ts"
     }
   },
   "files": [

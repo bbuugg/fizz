@@ -14,7 +14,6 @@ import { Input } from '@fizz/ui/input'
 import { Slider } from '@fizz/ui/slider'
 import { Button } from '@fizz/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@fizz/ui/tabs'
-import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import {
   DEFAULT_THEME_BACKGROUND,
   TEXTURE_CSS,
@@ -32,7 +31,7 @@ import {
   type ThemeVars
 } from '@fizz/agent-kit/shared/hooks/useColorTheme'
 import { ThemeBackgroundEditor } from '@fizz/agent-kit/features/settings/ThemeBackgroundEditor'
-import { ChoiceChips } from '@fizz/agent-kit/features/settings/ChoiceChips'
+import { Segmented } from '@fizz/agent-kit/shared/components/Segmented'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 
 const MODES: Array<{ key: ThemeModeKey; label: string }> = [
@@ -158,24 +157,12 @@ export function ThemeEditor({
               aria-label={tr('主题名称')}
               className="h-9 max-w-56"
             />
-            <div className="flex rounded-md border border-border/60 p-0.5">
-              {MODES.map((item) => (
-                <button
-                  key={item.key}
-                  type="button"
-                  aria-pressed={mode === item.key}
-                  onClick={() => setMode(item.key)}
-                  className={cn(
-                    'rounded px-2.5 py-1 text-xs transition-colors',
-                    mode === item.key
-                      ? 'bg-secondary text-foreground'
-                      : 'text-muted-foreground hover:text-foreground'
-                  )}
-                >
-                  {tr(item.label)}
-                </button>
-              ))}
-            </div>
+            <Segmented
+              ariaLabel={tr('明暗')}
+              value={mode}
+              onChange={setMode}
+              options={MODES.map(({ key, label }) => ({ value: key, label }))}
+            />
           </div>
 
           <ThemePreview vars={vars[mode]} radius={radius} texture={texture} />
@@ -307,7 +294,7 @@ export function ThemeEditor({
 
               <section className="space-y-2">
                 <h4 className="text-xs font-medium text-muted-foreground">{tr('背景质感')}</h4>
-                <ChoiceChips
+                <Segmented
                   ariaLabel={tr('背景质感')}
                   value={texture}
                   onChange={setTexture}

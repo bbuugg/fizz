@@ -21,7 +21,7 @@ import {
 } from '@fizz/agent-kit/shared/hooks/useColorTheme'
 import { Button } from '@fizz/ui/button'
 import { Slider } from '@fizz/ui/slider'
-import { ChoiceChips } from '@fizz/agent-kit/features/settings/ChoiceChips'
+import { Segmented } from '@fizz/agent-kit/shared/components/Segmented'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 
 export interface ThemeBackgroundEditorProps {
@@ -156,7 +156,7 @@ export function ThemeBackgroundEditor({
           </div>
           <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
             <span className="w-14 shrink-0">{tr('显示')}</span>
-            <ChoiceChips
+            <Segmented
               ariaLabel={tr('背景显示方式')}
               value={background.fit}
               onChange={(fit) => onChange({ fit })}

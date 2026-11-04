@@ -50,10 +50,8 @@ import {
   updaterStatus
 } from './updater'
 import {
-  isDesktopSettingsTab,
   WINDOW_IPC,
   type DesktopAppInfo,
-  type DesktopSettingsTab,
   type DesktopThemeMode,
   type RemoteAccessInput,
   type RemoteAccessState
@@ -62,8 +60,6 @@ import {
 const APP_NAME = 'Fizz'
 
 let mainWindow: BrowserWindow | null = null
-/** 独立设置窗口（单例；渲染端 `?window=settings`）；关掉后置空 */
-let settingsWindow: BrowserWindow | null = null
 /** 会话浮窗（**单例**）；关闭即置空。开关语义见 openConversationWindow */
 let conversationWindow: BrowserWindow | null = null
 /** 托盘常驻：关闭窗口后应用继续在后台跑（流式回复 / 正在跑的 Agent 都不受影响） */
@@ -471,11 +467,8 @@ function registerWindowIpc(): void {
   })
 
   // ---------- 顶栏「打开」：文件管理器 / 已安装 IDE ----------
-  // 设置：开在独立窗口里（单例），见 openSettingsWindow
-  ipcMain.handle(WINDOW_IPC.openSettings, (_e, tab?: unknown) => {
-    // 渲染端来的参数一律不可信：认不出来的分组名当没带（落回「通用」）
-    openSettingsWindow(isDesktopSettingsTab(tab) ? tab : undefined)
-  })
+  // 设置已并回主区域的标签页（`agent-kit` 的 `settings:list`），主进程不再参与：
+  // 原先是 `WINDOW_IPC.openSettings` 在这里 new 一个独立 BrowserWindow。
   // 会话浮窗：**单例**，见 openConversationWindow；首参是首次创建时的初始会话种子
   ipcMain.handle(WINDOW_IPC.openConversationWindow, (_e, initialConversationId?: string) => {
     openConversationWindow(typeof initialConversationId === 'string' ? initialConversationId : undefined)
@@ -661,37 +654,22 @@ function sharedWebPreferences(): Electron.WebPreferences {
 }
 
 /**
- * 手机断点，与渲染端 `useIsMobile()` 的 `MOBILE_QUERY`（`(max-width: 767px)`）同源。
- *
- * 主进程不能 import `@fizz/agent-kit`（会把 React 全家拖进 main 产物），所以这里再写一份；
- * 改正则要两个文件一起改。它不只是「小屏提示」——`SettingsDialog` 拿它**换壳**
- * （两栏 → 手机版两级菜单），所以窗口下限必须压在它上面，见 `SETTINGS_WINDOW_SIZE`。
- */
-const MOBILE_BREAKPOINT = 768
-
-/**
  * 各窗口的尺寸策略：**期望值 + 硬下限**，实际开多大由 `initialWindowSize` 算。
  *
- * 期望值按「内容真的需要多宽」定：
- * - 主窗口 = 侧栏 288 + 卡片内边距 + 对话列 `max-w-4xl`(768) ≈ 1110，给到 1180 留点余量；
- * - 设置窗口 = `px-6`×2 + 分组菜单 `w-44`(176) + `gap-5`(20) + 内容区 ≈ 640 → 880。
+ * 期望值按「内容真的需要多宽」定：主窗口 = 侧栏 288 + 卡片内边距 + 对话列
+ * `max-w-4xl`(768) ≈ 1110，给到 1180 留点余量。
  *
- * 下限不只是「排版别挤烂」：**设置窗口的下限同时是布局模式的闸**。原来给 720，用户往窄里
- * 拖就跨过 768，`useIsMobile()` 当场变 true —— 左分组 + 右内容翻成手机版两级菜单（点进去
- * 才看得到一项），拖宽又翻回来，看着像界面在抽搐。改成断点 + 32px（给窗框 / 缩放取整留量），
- * 窗口再怎么拖都停在同一套布局里。
+ * （这里原先还有一项 `SETTINGS_WINDOW_SIZE`。设置已并回主区域的标签页，不再有独立
+ * 设置窗口，那套「下限卡在布局断点 + 32px，防止拖动时 `useIsMobile()` 来回翻」的
+ * 约束随之作废 —— 标签宽度由面板自己管。）
  */
 const MAIN_WINDOW_SIZE = {
   preferred: { width: 1080, height: 720 },
   min: { width: 1024, height: 640 }
 }
-const SETTINGS_WINDOW_SIZE = {
-  preferred: { width: 880, height: 580 },
-  min: { width: MOBILE_BREAKPOINT + 32, height: 520 }
-}
 /**
  * 会话浮窗**故意**是窄的（贴在主窗口边上的小助手）：它一直在断点以下、按手机版排版渲染，
- * 「窄」不是 bug。别照着设置窗口的样子把下限抬到 768 —— 那会把它变成一个正常的大窗口。
+ * 「窄」不是 bug。别把下限抬到 768 —— 那会把它变成一个正常的大窗口。
  */
 const CONVERSATION_WINDOW_SIZE = {
   preferred: { width: 380, height: 620 },
@@ -931,57 +909,6 @@ function loadRenderer(window: BrowserWindow, query?: Record<string, string>): vo
   const file = join(import.meta.dirname, '../renderer/index.html')
   if (query) void window.loadFile(file, { query })
   else void window.loadFile(file)
-}
-
-/**
- * 独立设置窗口：同一份渲染端 + `?window=settings`，渲染端据此只渲染设置面板
- * （左分组菜单 + 右内容区，整窗铺满）。
- *
- * 单例：已经开着就拉到前面，不再开第二个（连点设置按钮不该堆一屏窗口）。
- * 用系统原生边框 —— 设置窗口不需要自绘标题栏，能拖能关就够了。
- *
- * `tab` = 打开后先落到哪个分组（模型下拉的「去设置里加模型」这类入口带过来的）：
- * 首开走查询参数；**已开着**时不能重载页面（会冲掉正在填的表单），改用一条事件让它自己切。
- */
-function openSettingsWindow(tab?: DesktopSettingsTab): void {
-  if (settingsWindow && !settingsWindow.isDestroyed()) {
-    if (settingsWindow.isMinimized()) settingsWindow.restore()
-    settingsWindow.show()
-    settingsWindow.focus()
-    if (tab) {
-      // 首帧之前发过去没人接（订阅在挂载之后才挂上）—— 还没加载完就等 load 完再发
-      if (settingsWindow.webContents.isLoading()) {
-        settingsWindow.webContents.once('did-finish-load', () => {
-          if (!settingsWindow || settingsWindow.isDestroyed()) return
-          settingsWindow.webContents.send(WINDOW_IPC.settingsTab, tab)
-        })
-      } else {
-        settingsWindow.webContents.send(WINDOW_IPC.settingsTab, tab)
-      }
-    }
-    return
-  }
-  settingsWindow = new BrowserWindow({
-    ...initialWindowSize(SETTINGS_WINDOW_SIZE),
-    minWidth: SETTINGS_WINDOW_SIZE.min.width,
-    minHeight: SETTINGS_WINDOW_SIZE.min.height,
-    show: false,
-    autoHideMenuBar: true,
-    title: '设置',
-    // 与主窗口同一套自绘标题栏处理：Win/Linux 隐藏系统标题栏（渲染端画「设置 + 关闭」），
-    // mac 用 hiddenInset 保留交通灯
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
-    ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 12, y: 11 } } : {}),
-    ...windowIconOption(),
-    webPreferences: sharedWebPreferences()
-  })
-  settingsWindow.on('ready-to-show', () => settingsWindow?.show())
-  settingsWindow.on('closed', () => {
-    settingsWindow = null
-  })
-  blockPageReload(settingsWindow)
-  routeExternalLinks(settingsWindow)
-  loadRenderer(settingsWindow, { window: 'settings', ...(tab ? { tab } : {}) })
 }
 
 /** 浮窗开 / 关状态推给主窗口标题栏（窗口可能正在销毁，先判活） */

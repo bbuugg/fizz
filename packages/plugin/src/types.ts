@@ -56,6 +56,47 @@ export interface PluginRoot<S extends string = string> {
 export type StandardPluginSource = 'builtin' | 'workspace' | 'user'
 
 /**
+ * 插件自带前端 bundle 里声明的一个界面。
+ *
+ * 为什么声明放 manifest 而不是让 bundle 运行时注册：界面清单是**服务端驱动**的
+ * （`listPluginSurfaces` 一次返回全部条目，前端按下标渲染）。让 bundle 再注册一遍就会有两份
+ * 真源 —— 刷新前后条目顺序会变、插件没加载出来时列表整段消失。所以清单只声明「我有哪些面」，
+ * bundle 只负责「这个面长什么样」（按 `id` 认领）。
+ *
+ * **面只有一种：`view`（标签页）**。插件不占图标栏、也没有自己的侧栏 —— 活动栏里那颗
+ * 「插件」打开的是插件列表，点插件就在主区域开标签页（见 `activity-ids.ts` 的说明）。
+ */
+export interface PluginStaticSurface {
+  /** 面种类：清单里只能是 `view`（标签页） */
+  kind: 'view'
+  /** 面 id（插件内唯一；bundle 用它认领渲染函数） */
+  id: string
+  /** 展示名（标签标题） */
+  title: string
+  /** 这一面的图标（data URI）；一般不用写 —— 插件图标在 `PluginManifest.icon` */
+  icon?: string
+  /** 排序（升序；缺省 100）。最小的那个就是点插件时默认打开的面 */
+  order?: number
+}
+
+/**
+ * 插件的前端半（浏览器端）。
+ *
+ * `entry` 指向插件目录里**已经构建好**的单文件 JS（浏览器跑不了 TS/TSX，宿主不做运行时转译——
+ * 那等于把编译器塞进服务端、还多一份「插件源码能执行任意编译期代码」的攻击面）。
+ *
+ * bundle 契约（见 `packages/agent-kit/src/features/plugins/plugin-client.ts`）：
+ * 顶层调用 `window.__FIZZ_PLUGIN__(<id>, factory)`，factory 收到宿主注入的模块表，
+ * 返回 `{ render(surfaceId, ctx) }`。**React 只能从模块表取**，自带一份会让 hooks 报错。
+ */
+export interface PluginClientManifest {
+  /** bundle 相对路径（目录内，如 `client.js`；必须以 `.js` 结尾） */
+  entry: string
+  /** 这个插件要占的界面 */
+  surfaces?: PluginStaticSurface[]
+}
+
+/**
  * 插件目录里的 `plugin.json`（**唯一的接口判据**：没有它 / 字段不合格的目录不会被加载）。
  *
  * 一个插件 = 一个目录，入口由 manifest 的 `entry` 指定（不再支持单文件插件）。
@@ -72,10 +113,36 @@ export interface PluginManifest {
   apiVersion: number
   /** 入口源码（目录内相对路径，如 `index.ts` / `src/main.ts`） */
   entry: string
+  /**
+   * 插件图标：`data:image/*` 的 data URI（「插件」侧栏的列表行用它）。
+   *
+   * 写在这里比在 `apply()` 里调 `ctx.ui.icon(...)` 更省事 —— 静态声明，列表不必先把插件
+   * 跑起来；服务端取它优先于 `ctx.ui.icon(...)` 的声明。尺寸控制在 64KB 以内（太重会让
+   * 每次拉清单都变慢），只放行 `data:image/` 开头。
+   */
+  icon?: string
   /** 可选说明 */
   description?: string
   /** 可选作者 */
   author?: string
+  /**
+   * 前端半（可选）。给了它，这个插件的界面就在**浏览器里**渲染，
+   * 由 `manifest.client.surfaces` 声明有哪些面。
+   */
+  client?: PluginClientManifest
+  /**
+   * 这个插件要装哪些 npm 包（包名 → semver range）。
+   *
+   * 装到**插件根目录**的一份共享 `node_modules` 里（不是每个插件一份）：
+   * pnpm + `nodeLinker: hoisted`，缺的 peer 由宿主的解析层兜底，于是全进程只有一个
+   * `@fizz/plugin` 实例。代价是同一个包的两个不兼容版本只能有一个生效（安装时会给 warning）。
+   *
+   * 禁止写 `@fizz/*`：那是宿主自己的包，插件版本一旦覆盖上去，`ctx` 的 `instanceof`
+   * 判定就全乱了（见 `loader.ts` 的 `HOST_SHARED_PACKAGES`）。
+   */
+  dependencies?: Record<string, string>
+  /** 兼容性声明：`{ "fizz": ">=1.2.0" }`。不满足时**不加载**（与配置无关，是作者声明） */
+  engines?: { fizz?: string }
 }
 
 /** 扫描到的一个插件（一个目录 + 一份 manifest） */
@@ -88,6 +155,8 @@ export interface PluginCandidate<S extends string = string> {
   manifest: PluginManifest
   /** 入口文件绝对路径（manifest.entry 解析后） */
   file: string
+  /** 前端 bundle 绝对路径（`manifest.client.entry` 解析后；没有就是 undefined） */
+  clientFile?: string
   /** 插件目录 */
   dir: string
   /** 来源根目录 */

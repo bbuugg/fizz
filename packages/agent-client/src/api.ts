@@ -160,6 +160,7 @@ import type { McpServerConfig, McpServerInput, McpToolInfo } from "@fizz/mcp";
 import type { SkillListResult } from "@fizz/skills";
 import type {
   BrowserRuntimeResult,
+  PluginRpcResponse,
   PluginSurfaceActionResult,
   PluginSurfaceContent,
   PluginSurfacesResult,
@@ -2078,11 +2079,17 @@ export function createApi(
         body: JSON.stringify(input),
       }),
 
-    // ---------- 插件界面（图标栏 / 侧栏 / 标签页）----------
+    // ---------- 插件界面（标签页）----------
     //
     // 内容**不在前端算**：插件的 `render()` 在服务端跑，这里拿到的只是一串「块」
     // （`PluginBlock`）。插件因此不需要写 React，也不会往界面注入代码。
-    /** 当前可见插件注册的所有界面（图标栏项 / 侧栏 / 标签页） */
+    /**
+     * 当前可见插件注册的所有界面。
+     *
+     * 正常情况下全是 `view`（标签页）——「插件」侧栏的列表与 `PanelView` 的标签都吃它。
+     * 老插件仍可能返回 `activityBar` / `sider`（界面上已没有它们的位置，`sider` 会被
+     * 当成标签页打开）。
+     */
     listPluginSurfaces: (workspaceId?: string) =>
       request<PluginSurfacesResult>(
         `/api/plugins/surfaces${workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : ""}`,
@@ -2120,6 +2127,60 @@ export function createApi(
       workspaceId?: string;
     }) =>
       request<PluginSurfaceActionResult>("/api/plugins/surfaces/action", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+
+    /**
+     * 插件前端半的 bundle 源码（`renderMode: "client"` 的面用它）。
+     *
+     * 为什么返回**文本**而不是给一个 `<script src>`：desktop 的渲染进程没有 HTTP 端口
+     * （走 IPC 桥，`<script>` 根本发不出去），而且 `<script>` 带不了 `authorization` 头。
+     * 三端共用这一条 JSON 通道，前端拿到源码后用 `new Function` 执行并只喂给模块表。
+     */
+    /*
+     * `workspaceId` 不能省：**项目级插件**只在那一个项目的插件根里，不带它会 404
+     * （表现是「这个插件的前端面在别的项目里好好的，在这个项目里打不开」）。
+     */
+    loadPluginClient: (pluginId: string, workspaceId?: string) =>
+      request<{ code: string; rev: string }>(
+        `/api/plugins/client?pluginId=${encodeURIComponent(pluginId)}${
+          workspaceId ? `&workspaceId=${encodeURIComponent(workspaceId)}` : ''
+        }`,
+      ),
+
+    /**
+     * 调插件注册的 RPC 方法（插件端是 `ctx.rpc.handle(name, fn)`）。
+     *
+     * 插件前端半**唯一的**后端入口：它不能在宿主进程里注册路由（desktop 没有端口），
+     * 也不想让它直接摸到 `/api/*` 的其它能力。体积上限 256KB，超时 60s。
+     */
+    pluginRpc: (input: {
+      pluginId: string;
+      method: string;
+      payload?: unknown;
+      workspaceId?: string;
+    }) =>
+      request<PluginRpcResponse>("/api/plugins/rpc", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+
+    /**
+     * 同步一个插件根的 npm 依赖（`plugin.json` 的 `dependencies`）。
+     *
+     * 走「安装插件」装的会自动装，这个接口只服务**手工拷进去**的插件：点了设置页那颗
+     * 「安装依赖」才跑。`changed: false` = 这个根里没有任何插件声明依赖，什么都没做。
+     * 失败时服务端会把 pnpm 的原话放在 400 的 `error` 里（pnpm 没装 / 版本冲突 / 网络不通）。
+     */
+    syncPluginDeps: (input: { scope: "global" | "workspace"; workspaceId?: string }) =>
+      request<{
+        ok: boolean;
+        changed: boolean;
+        root: string;
+        warnings: string[];
+        output: string;
+      }>("/api/plugins/deps", {
         method: "POST",
         body: JSON.stringify(input),
       }),

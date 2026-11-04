@@ -243,7 +243,7 @@ export function BrowserTab({ app }: { app: AgentApp }) {
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
           {tr(
-            '不想装这份运行时，可以在「MCP」页加一条 Playwright 官方 MCP（npx @playwright/mcp@latest）。会话里挂了带同名工具的 MCP 时，内置浏览器工具会自动让位，不需要手动关。注意两点：MCP 用自己的浏览器实例，右侧「浏览器」面板看不到它的画面；卸载这份运行时会让网页抓取与截图一起不可用。'
+            '不想装这份运行时，可以在「MCP」页加一条 Playwright 官方 MCP（npx @playwright/mcp@latest）。会话里挂了带同名工具的 MCP 时，内置浏览器工具会自动让位，不需要手动关。注意两点：MCP 用自己的浏览器实例，右侧「浏览器」面板看不到它的画面；没装这份运行时，网页截图工具不会挂出来，网页抓取也只剩不需要浏览器的 fetch 引擎。'
           )}
         </p>
       </section>
@@ -254,7 +254,7 @@ export function BrowserTab({ app }: { app: AgentApp }) {
             <AlertDialogTitle>{tr('卸载内置浏览器？')}</AlertDialogTitle>
             <AlertDialogDescription>
               {tr(
-                '会删掉这份 headless shell（约 150MB）。卸载期间先关掉所有浏览器会话；之后浏览器工具、网页抓取（JS 渲染）与网页截图都会不可用，想再用需要重新下载。'
+                '会删掉这份 headless shell（约 150MB）。卸载期间先关掉所有浏览器会话；之后浏览器工具与网页截图不再挂出来，网页抓取只剩不需要浏览器的 fetch 引擎，想再用需要重新下载。'
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>

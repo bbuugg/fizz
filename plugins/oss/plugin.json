@@ -3,5 +3,6 @@
   "name": "oss",
   "version": "1.0.0",
   "apiVersion": 1,
-  "entry": "index.ts"
+  "entry": "index.ts",
+  "description": "把附件与文件传到任意 S3 兼容对象存储（OSS / COS / R2 / MinIO），并给模型一个上传工具"
 }

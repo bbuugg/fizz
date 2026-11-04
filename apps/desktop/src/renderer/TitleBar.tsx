@@ -44,43 +44,10 @@ function useConversationWindowOpen(): boolean {
   return open
 }
 
-/**
- * 设置窗口的标题栏：**左边一个「设置」标题 + 右边一个关闭按钮**
- * （设置窗口不需要最小化 / 最大化）。
- * 拖拽区、关闭按钮的样式与主窗口一致，切主题时颜色也跟着走（共用同一套语义类）。
- */
-export function SettingsTitleBar() {
-  return (
-    <header className="app-drag flex h-9 shrink-0 items-stretch">
-      {/* macOS：左边这 76px 让给系统交通灯（主进程 hiddenInset + trafficLightPosition x:12） */}
-      {IS_MAC && <div className="w-[76px] shrink-0" />}
-
-      {/*
-        窗口身份：这个窗口只有一个用途，标题栏上直接写出来（任务栏标题在窗口切换时才看得到）。
-        `pl-2` 与主窗口品牌区的内边距一致，两扇窗口左边缘的起点对齐；
-        文字本身**不包 `app-no-drag`** —— 整条仍是拖拽区，点标题也能拖窗口。
-      */}
-      <span className="flex shrink-0 items-center pl-2 pr-2 text-xs font-semibold text-foreground">
-        设置
-      </span>
-
-      {/* 中间整段留空作拖拽区 */}
-      <div className="min-w-0 flex-1" />
-
-      {!IS_MAC && (
-        <div className="app-no-drag flex items-stretch">
-          <TitleBarButton
-            title="关闭"
-            destructive
-            onClick={() => void window.fizzWindow.close()}
-          >
-            <X className="size-3.5" />
-          </TitleBarButton>
-        </div>
-      )}
-    </header>
-  )
-}
+/*
+  `SettingsTitleBar` 已删除：那是独立设置窗口的自绘标题栏（「设置」+ 关闭）。
+  设置现在是主区域的一条标签，标题就是标签名，不需要第二套标题栏。
+*/
 
 export function TitleBar() {
   const [maximized, setMaximized] = useState(false)

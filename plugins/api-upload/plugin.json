@@ -3,5 +3,6 @@
   "name": "API 文件上传",
   "version": "1.0.0",
   "apiVersion": 1,
-  "entry": "index.ts"
+  "entry": "index.ts",
+  "description": "把对话附件传到自己的文件上传服务，交给模型的是可直接访问的绝对地址"
 }

@@ -439,11 +439,11 @@ export function ConversationTab({
         title: tr('浏览器画面'),
         icon: <Globe className="size-4" />,
         /*
-         * `active`：只让**正看着浏览器画面**的面板「连上就自动拉起浏览器」。
-         * 两个条件缺一不可 —— 会话标签可能在后台（`active=false`），也可能前台但面板
-         * 停在文件 / 终端上（浏览器标签只是挂着没在看）：那两种都会白起一个 Chromium。
+         * 不传「正被看着」这类信号、也不给面板内关闭按钮：浏览器**不自动启动**了，面板里
+         * 给一颗「启动浏览器」按钮由用户点（见 `BrowserPane` 文件头）；收起面板就是关标签
+         * （标签条上的 X 一步到位），顶栏再放一颗只是重复。
          */
-        content: <BrowserPane conversationId={key} active={active && sideTab === 'browser'} />,
+        content: <BrowserPane conversationId={key} />,
         onClose: () => closeSideTabOf(key, tabKey)
       }
     }
@@ -493,7 +493,7 @@ export function ConversationTab({
         titleHint={
           workspace
             ? workspace.scratch
-              ? tr('{title} · 临时会话：不绑定项目的对话（目录在服务端数据目录）', { title: headerTitle })
+              ? tr('{title} · 临时会话：不指定项目的对话（目录在服务端数据目录）', { title: headerTitle })
               : `${workspaceName}（${workspace.path}）`
             : undefined
         }

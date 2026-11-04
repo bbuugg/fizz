@@ -613,7 +613,8 @@ export function buildAgentSetup(opts: {
       console.warn(`[agent] 插件挂载失败，本轮跳过：${name}`, err)
     }
   }
-  // ④ web_fetch / screenshot 是全局只读工具：不依赖工作区，任何会话（含未绑定目录的「任务」会话）都可用
+  // ④ web_fetch / screenshot 是全局只读工具：不依赖工作区，任何会话（含未绑定目录的「任务」会话）都可用。
+  //    `screenshot` 只在装了内置浏览器运行时的那一轮挂上（判据在 webToolsPlugin 里）。
   // ② 内置 web 工具。`web_fetch` 也接同一张停止表：抓一个卡住的站点动辄 30s，
   //    用户应该能只停这一条，而不是中止整轮。
   ctx.plugin(

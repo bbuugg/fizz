@@ -12,7 +12,13 @@
  * priority / origin 的取值都写死为「内置」——覆盖内置工具必须由插件显式调高 priority，
  * 见 `@fizz/plugin` 的 ToolsService 注释。
  */
-import { buildAgentTools, buildScreenshotTool, buildWebFetchTool, type AgentToolOptions } from '@fizz/tools'
+import {
+  browserRuntimeInfo,
+  buildAgentTools,
+  buildScreenshotTool,
+  buildWebFetchTool,
+  type AgentToolOptions
+} from '@fizz/tools'
 import { HOOKS, hookValue } from '@fizz/plugin'
 import type { HooksService, Plugin, PluginObject, ResolvedTool, ToolOrigin } from '@fizz/plugin'
 import type { AgentConfirmInput, AiPermissionMode } from '@fizz/contracts/types'
@@ -47,6 +53,12 @@ export function fileToolsPlugin(root: string, options: AgentToolOptions): Plugin
 /**
  * 全局只读的联网工具插件：web_fetch + screenshot。不依赖工作区，任何会话都可用
  * （无工作区时 `root` 传空串 = 超长正文只截断不落盘，见 spillToWorkspace）。
+ *
+ * 两个工具的**挂载条件不同**，别一起当成「总是挂」：
+ * - `web_fetch`：总是挂（fetch 引擎不需要浏览器）；装没装浏览器由它自己决定要不要暴露
+ *   `engine` 这个入参，见 `buildWebFetchTool`。
+ * - `screenshot`：整个工具都靠无头浏览器，**没装运行时就不挂**。挂上去只有一种结果 ——
+ *   每次调用都回一句「请先去设置里装」，白占 schema 与步数，模型还可能反复试。
  */
 export function webToolsPlugin(
   root: string,
@@ -61,6 +73,9 @@ export function webToolsPlugin(
         origin: BUILTIN_ORIGIN,
         source: 'builtin:web_fetch'
       })
+      // 装配期现读（与 chat-turn 里 browser_* 的装配闸同源判据）：装好后下一轮自然挂上，
+      // 不用重启；卸掉运行时则下一轮就不挂了。
+      if (!browserRuntimeInfo().installed) return
       ctx.tools.registerAll(buildScreenshotTool(), {
         priority: 0,
         origin: BUILTIN_ORIGIN,

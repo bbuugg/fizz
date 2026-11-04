@@ -278,17 +278,14 @@ export interface AgentHost {
    */
   loadCloseToTray?(): boolean
   saveCloseToTray?(enabled: boolean): void
-  /**
-   * 把设置**开在一个独立窗口**里（只有 desktop 实现；窗口由主进程创建，加载同一份
-   * 渲染端并带上 `?window=settings`）。
-   *
-   * 实现了 = 设置走新窗口（左分组菜单 + 右内容，整窗铺满）；
-   * 没实现（web 没有多窗口概念）= 退回应用内弹窗。
-   *
-   * `tab` = 打开后先落到哪个分组（「模型下拉 → 去设置里加模型」这类入口带的）；
-   * 窗口已经开着时按「聚焦 + 切分组」处理，不会重复开窗。
-   */
-  openSettingsWindow?(tab?: 'models' | 'acp'): void
+  /*
+    ⚠️ 这里原先有 `openSettingsWindow?(tab)`：desktop 实现 = 设置开独立窗口，没实现 =
+    退回应用内弹窗。
+
+    设置现在是**主区域的一条标签**（`agent-kit` 的 `settings:list`），三端同一形态，
+    不再需要宿主能力来分叉 —— 别再加回来。两个渲染进程 = 两份模块级 store 单例，
+    正是「设置里改完主窗口不知道」的根因（面板宽度、插件图标、系统监控开关都踩过）。
+  */
 
   // -------------------------------------------------------------------------
   // 远程访问（只有 desktop 实现）：把进程内后端暴露到一个真实端口，供浏览器里的 web 端连
@@ -431,9 +428,8 @@ export interface AgentHost {
    * 打开**浏览器画面**连接（会话 screencast + 状态）；渲染端据此实时显示 Agent 操作的浏览器。
    * 不实现（web）= 浏览器实现打 `/api/browser`。
    *
-   * `autostart`：连上就让服务端把浏览器拉起来。**只在面板正被看着时置 true** ——
-   * 标签内容一律常挂载，后台标签也挂着面板，无条件自动拉起等于刷新一次页面就给每个
-   * 开过浏览器标签的会话白起一个 Playwright。
+   * `autostart`：连上就让服务端把浏览器拉起来。**只在用户点了「启动浏览器」之后
+   * 需要重连时置 true** —— 面板打开只订阅、不启动（手动启动走连接上的 `ensure`）。
    */
   openBrowserSocket?(
     conversationId: string,

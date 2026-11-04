@@ -36,22 +36,13 @@ export const API_CLIENT_ACTIVITY_ID = 'api-client'
 export const NOTES_ACTIVITY_ID = 'notes'
 
 /**
- * 插件界面的活动栏前缀：`plugin:<插件id>`。
+ * 插件：**所有插件共用的一个入口**。
  *
- * 插件 id 就是它的入口文件绝对路径（所以不同目录里的同名插件也不会撞）。
- * 点这颗图标打开谁由插件自己声明（`ctx.ui.activityBar({ opens: 'sider:xx' })`），
- * 解析在 `features/plugins/PluginSidebar.tsx` 里 —— id 只负责「是哪一插件」。
+ * 图标栏里只有这一颗，侧栏是「插件列表」（`features/plugins/PluginsSidebar.tsx`），
+ * 点某个插件就在 `PanelView` 里开它的标签页 —— 插件**不占**图标栏、也没有自己的侧栏。
+ *
+ * 为什么不像早先那样「一个插件一颗图标 + 一份侧栏」：图标栏会被插件数量撑成一片，
+ * 而每颗图标后面那列只服务一个插件，用户还得先记住「哪个图标是哪个插件」。
+ * 一个入口 + 一份列表把这件事收敛成一次点击。
  */
-export const PLUGIN_ACTIVITY_PREFIX = 'plugin:'
-
-/** 某个插件在活动栏里的 id */
-export function pluginActivityId(pluginId: string): string {
-  return `${PLUGIN_ACTIVITY_PREFIX}${pluginId}`
-}
-
-/** 从活动栏 id 反解插件 id（不是插件的功能区 → null） */
-export function pluginIdOfActivityId(activityId: string): string | null {
-  return activityId.startsWith(PLUGIN_ACTIVITY_PREFIX)
-    ? activityId.slice(PLUGIN_ACTIVITY_PREFIX.length)
-    : null
-}
+export const PLUGINS_ACTIVITY_ID = 'plugins'

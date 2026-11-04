@@ -36,7 +36,7 @@ import {
 } from '@fizz/agent-kit/shared/hooks/useColorTheme'
 import { ThemeEditor } from '@fizz/agent-kit/features/settings/ThemeEditor'
 import { ThemeBackgroundEditor } from '@fizz/agent-kit/features/settings/ThemeBackgroundEditor'
-import { ChoiceChips } from '@fizz/agent-kit/features/settings/ChoiceChips'
+import { Segmented } from '@fizz/agent-kit/shared/components/Segmented'
 import { ToggleGroup, ToggleGroupItem } from '@fizz/ui/toggle-group'
 import { Button } from '@fizz/ui/button'
 import {
@@ -181,7 +181,7 @@ export function AppearanceTab() {
         <p className="text-xs leading-4 text-muted-foreground">
           {tr('跟随系统时会自动切换明暗；每套配色都包含亮暗两份。')}
         </p>
-        <ChoiceChips
+        <Segmented
           ariaLabel={tr('明暗')}
           value={mode}
           onChange={setMode}

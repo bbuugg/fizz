@@ -55,12 +55,12 @@ function handleConnection(ws: WebSocket, url: URL): void {
     return
   }
   /**
-   * `autostart=1`：面板一挂上就把浏览器拉起来。
+   * `autostart=1`：连上就把浏览器拉起来。
    *
-   * 用户点开浏览器标签就是要看 / 要用它 —— 不该再等 Agent 先调一次 `browser_navigate`，
-   * 也不该让人先手输一个网址。**只有正被看着的面板**会带这个参数（后台标签不带），
-   * 否则刷新一次页面就会给每个开过浏览器标签的会话白起一个 Playwright
-   * （见 `ensureBrowserSession` 的注释）。
+   * 面板**不再自动启动**了（打开标签只是订阅），这个参数现在只有一处会用：`closed`
+   * 之后用户在面板里点「启动浏览器」——那条旧连接已经被我们 `ws.close()` 掉，发不出
+   * `ensure`，只能重连一次并把 `autostart` 带上（见 `BrowserPane` 的 `restartBrowser`）。
+   * 平时手动启动走的是连接上的 `ensure` 消息，与这里无关。
    */
   const autostart = url.searchParams.get('autostart') === '1'
 

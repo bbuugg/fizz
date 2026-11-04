@@ -4,10 +4,9 @@ import { setAgentHost } from '@fizz/agent-client/host'
 import { applyThemeClass, bootstrapLanguage, hydrateConnection, resolveTheme } from '@fizz/agent-kit'
 import { bootstrapColorTheme } from '@fizz/agent-kit/shared/hooks/useColorTheme'
 import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
-import { SettingsTitleBar, TitleBar } from './TitleBar'
+import { TitleBar } from './TitleBar'
 import { ClientRoot } from './app/client-root'
 import { ConversationWindow } from './app/ConversationWindow'
-import { SettingsWindow } from './app/SettingsWindow'
 import { resolveWindowKind } from './app/window-kind'
 import { openDeepLink } from './app/layout/use-deep-link'
 import { desktopHost } from './host'
@@ -20,7 +19,7 @@ if (!container) throw new Error('找不到 #root 容器')
  * 宿主**必须在 render 之前注入**：UI 内部靠它拿请求实现 / 连接信息 / 本机终端
  * （见 `@fizz/agent-client` 的 `host.ts`）。
  *
- * ⚠️ 这里**不再注入路由适配器**：前端路由已整体移除。下面那个 `?window=settings`
+ * ⚠️ 这里**不再注入路由适配器**：前端路由已整体移除。下面那个 `?window=conversation`
  * 是**查询参数**、不是路由 —— 主进程用 `loadFile(file, { query })` 传，这里直接读
  * `location.search`，与前端路由无关，别把它一起删了。
  */
@@ -34,36 +33,30 @@ hydrateConnection()
 
 /**
  * 首帧之前就把主题类名落上：`index.html` 里写死的是 `class="dark"`，浅色主题的用户
- * 否则会先闪一下深色再被 React 的 effect 纠正（两个窗口都走这里）。
+ * 否则会先闪一下深色再被 React 的 effect 纠正（两种窗口都走这里）。
  */
 applyThemeClass(resolveTheme(desktopHost.loadTheme()))
 
 /**
- * 一个渲染端服务三种窗口（主进程用查询参数区分，见 main/index.ts 的 loadRenderer）：
+ * 一个渲染端服务**两种**窗口（主进程用查询参数区分，见 main/index.ts 的 loadRenderer）：
  * - 默认：主界面（自绘标题栏 + ClientRoot）；
- * - `?window=settings`：独立设置窗口（自绘标题栏「设置 + 关闭」+ 设置面板）；
  * - `?window=conversation[&conversationId=…]`：会话浮窗（单窗口，可在窗内切换）。
  * 判定收在 `resolveWindowKind`（纯函数、带单测）。
  *
- * ⚠️ 必须在 `bootstrapLanguage()` / `bootstrapColorTheme()` **之前**算出来：下面渲染分支要按它选根节点
- * （设置窗口那份带 `data-fizz-opaque`）。
+ * 设置**不是**一种窗口：它是主区域的一条标签（`settings:list`），与对话共享同一个
+ * `AppProvider`。`?window=settings` 那条分支已于 2026-11 删除 —— 再开一个渲染进程就是
+ * 第二份 store 单例，设置里改完主窗口不知道，见 `window-kind.ts` 的注释。
  */
 const windowKind = resolveWindowKind(location.search)
 
 bootstrapLanguage()
 
 /**
- * 配色主题（`<html data-theme>`）同理：三种窗口都要在首帧前落上。
- * 设置窗口是**独立 BrowserWindow**，在那边换主题时主窗口只收得到 `storage` ——
- * `useColorTheme` 又只活在设置面板里，所以监听必须挂在窗口这一层（见 bootstrapColorTheme）。
+ * 配色主题（`<html data-theme>`）同理：两种窗口都要在首帧前落上。
  *
- * ⚠️ 背景媒体（图 / 视频）**三种窗口一视同仁**，这里不关它。以前对设置窗口调过
- * `setBackgroundMediaEnabled(false)`，理由是「整块不透明、看不见」—— 但那只对**面板**成立：
- * 根节点的 `bg-sidebar` 不在 `[data-fizz-opaque]` 的覆盖范围内（那条规则只换
- * `--background` / `--surface-1` / `--surface-2`，**不换 `--sidebar`**），所以面板之外的
- * 标题栏 / 左栏 / 留白本来就是半透明、图片背景一直透得出来。视频层要过 JS 开关才挂，
- * 于是出现「配图片能看到背景、配视频看不到」的割裂（用户报的就是这个）。
- * 两条路必须一致 —— 要让设置窗口彻底不透，得同时补 `--sidebar` 与这里的开关，别只关一半。
+ * 主题现在只在主窗口里改（设置是同一个渲染进程的标签），但**浮窗仍是独立 BrowserWindow**：
+ * 它只收得到 `storage` 事件，所以监听还得挂在窗口这一层（见 bootstrapColorTheme）。
+ * 背景媒体（图 / 视频）也两种窗口一视同仁，这里不关它。
  */
 bootstrapColorTheme()
 
@@ -93,26 +86,6 @@ createRoot(container).render(
   <StrictMode>
     {windowKind.kind === 'conversation' ? (
       <ConversationWindow initialConversationId={windowKind.initialConversationId} />
-    ) : windowKind.kind === 'settings' ? (
-      /*
-        设置窗口：**面板不透明、窗口底色照旧透背景**。
-
-        `data-fizz-opaque` 挂在根节点上，但它只覆盖 `--background` / `--surface-1` /
-        `--surface-2`（规则由 useColorTheme 的 buildStyle 生成），**不覆盖 `--sidebar`** ——
-        所以根节点的 `bg-sidebar` 仍是有背景媒体时那份半透明遮罩，标题栏 / 左栏 / 面板四周
-        的留白会透出主题背景（图片与视频都一样，见上面 `bootstrapColorTheme()` 那段注释）。
-        右侧面板自己画 `bg-background`，在 opaque 子树里被换回**不透明**底色 ——
-        滑块 / 输入框永远读得清，这才是 `data-fizz-opaque` 真正要保护的那块。
-
-        别把 `data-fizz-opaque` 去掉换半透明：面板会透出下层、字底发花；也别指望它能让整窗
-        不透（`--sidebar` 不在覆盖范围里）。
-      */
-      <div data-fizz-opaque="" className="flex h-full flex-col overflow-hidden bg-sidebar">
-        <SettingsTitleBar />
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <SettingsWindow initialTab={windowKind.initialTab} />
-        </div>
-      </div>
     ) : (
       /*
         主窗口根**不画底色**（`bg-transparent`）。

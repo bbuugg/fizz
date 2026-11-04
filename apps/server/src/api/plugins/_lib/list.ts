@@ -18,6 +18,7 @@ import {
   withRuntimeConfig
 } from '@/lib/server/plugin-roots'
 import { domain } from '@/lib/server/state'
+import { iconOnlyUi } from './stopped-icons'
 
 /** 请求的作用域：global = 内置 + 用户级（设置页）；其余 = 某个项目（项目弹窗） */
 export type PluginScope = 'global' | 'workspace'
@@ -83,8 +84,14 @@ export async function listWorkspace(workspaceId?: string | null) {
 }
 
 /**
- * 共用响应装配。只收集**已启用**插件的声明（UI + 上传源）：停用的插件不该在列表里显示
- * 它声明的东西。
+ * 共用响应装配。
+ *
+ * 声明（设置项 / 面板 / 界面 / 上传源）**只收已启用**的插件：停用的插件不该在列表里
+ * 显示「它给了我什么能力」，更不该占着「配置」入口。
+ *
+ * **但图标例外** —— 见下面 `stoppedIcons`。图标是插件的**身份**（列表里那一格小图），
+ * 不是它对外提供的能力：把插件停用之后它在列表里退化成统一占位图，用户会认不出
+ * 刚停用的是哪一个，也会以为「停用把插件弄坏了」。
  *
  * 收集声明要真跑一遍 apply，所以这里顺带就是「加载 + 校验」的体检结果（含工具形状报错、
  * 上传源形状报错，见 ToolsService.register / UploadsService.register）。**原样回给前端**，
@@ -98,16 +105,32 @@ async function respond(
   settings: { disabled: string[] },
   roots: Array<{ source: string; dir: string }>
 ) {
-  const { ui, uploads, errors } = await inspectPluginUi(
-    withRuntimeConfig(plugins.filter((p) => p.enabled))
-  )
+  const enabled = plugins.filter((p) => p.enabled)
+  const stopped = plugins.filter((p) => !p.enabled)
+  const { ui, uploads, errors } = await inspectPluginUi(withRuntimeConfig(enabled))
+
+  /**
+   * 停用插件的**图标**：单独再 inspect 一遍，只取 `icon`（为什么只留它，规则写在
+   * `iconOnlyUi` 的文件头）。
+   *
+   * 之所以要多这一遍：图标是 `ctx.ui.icon()` **命令式**声明的，`plugin.json` 里没有静态
+   * 副本 —— 只 inspect 启用插件的话 `ui[id]` 整条不存在，前端就退回统一占位图，
+   * 于是「禁用插件」看起来像把插件弄坏了。
+   *
+   * 代价是每个停用插件多一次 apply（与它启用时那份相同量级）：禁用的收益在**对话轮次**
+   * 里不再挂载它，而不是「连设置页列表都不碰它」。
+   */
+  const stoppedIcons = stopped.length
+    ? iconOnlyUi((await inspectPluginUi(withRuntimeConfig(stopped))).ui)
+    : {}
+
   for (const err of errors) console.warn('[server] 插件加载/校验失败：', err)
   return Response.json({
     plugins,
     settings,
     roots,
     ui: toPluginUiView(
-      ui,
+      { ...ui, ...stoppedIcons },
       Object.fromEntries(plugins.map((p) => [p.id, p.name]))
     ),
     uploads,

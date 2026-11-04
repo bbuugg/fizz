@@ -293,36 +293,35 @@ export default {
 5. **注册时机**：服务端启动、每轮对话 / 定时任务 / 助手回合前、保存插件设置 / 安装卸载后都会
    按「插件目录源码 + 设置值」指纹重建；改完插件下一轮对话就生效。
 
-### 3.6 注册界面（`ctx.ui.activityBar` / `sider` / `view`）
+### 3.6 注册界面（`ctx.ui.icon` / `view`）
 
-插件可以往三个地方挂界面（互相独立，可以只要其中一个，也可以组合）：
+插件在界面上只有两样东西：
 
-| 方法 | 落在哪 | 说明 |
+| 东西 | 落在哪 | 说明 |
 | --- | --- | --- |
-| `ctx.ui.activityBar({ id, title, icon?, order?, opens? })` | **左侧图标栏**里的一颗 | 它只是**入口**。点它打开 `opens`（`'sider:<id>'` / `'view:<id>'`）；不给 opens 就打开同 id 的 sider |
-| `ctx.ui.sider({ id, title, icon?, render, onAction? })` | 图标栏右边那**一列**（侧栏） | `render` 出内容 |
-| `ctx.ui.view({ id, title, icon?, render, onAction? })` | 主视图区里的一个**标签页** | 同上。**开标签由插件请求**（`openView`，见下）—— 宿主不再替你在侧栏里放一颗「打开」按钮 |
+| `plugin.json` 的 `icon`（或 `apply()` 里 `ctx.ui.icon(dataUri)`） | **「插件」侧栏**里这一行的图标 | 清单里的 `icon` 优先，没写才用 `ctx.ui.icon(...)`；都没有就画一个占位 |
+| `ctx.ui.view({ id, title, render, onAction? })` / 清单里的 `client.surfaces` | 主视图区的**标签页** | 点插件时打开 `order` 最小的那一面 |
+
+**插件不占图标栏、也没有自己的侧栏。** 图标栏里只有一颗「插件」：侧栏是**插件列表**（一个插件一行），点一行就在主区域开它的标签页。这样加插件不会把图标栏挤满，用户也不用先记住「哪颗图标是哪个插件」。
 
 ```ts
-let clicks = 0
 export default {
   name: 'Redis 管理',
   inject: ['ui'],
   apply(ctx) {
-    ctx.ui.activityBar({ id: 'home', title: 'Redis', icon: ICON, order: 5, opens: 'sider:home' })
-    ctx.ui.sider({
-      id: 'home',
-      title: 'Redis 状态',
-      render: () => [
-        { kind: 'kv', rows: [{ label: '连接', value: host }, { label: '内存', value: usedMemory }] },
-        { kind: 'buttons', items: [{ actionId: 'refresh', label: '刷新' }] }
-      ],
-      onAction: ({ actionId }) => { if (actionId === 'refresh') void reload() }
+    // 列表行那个图标（也可以写在 plugin.json 的 icon 里，静态声明更省事）
+    ctx.ui.icon(ICON)
+    ctx.ui.view({
+      id: 'keys',
+      title: 'Key 列表',
+      order: 0,
+      render: () => [{ kind: 'list', items: keys.map((k) => ({ id: k, label: k, actionId: 'open', args: { key: k } })) }]
     })
-    ctx.ui.view({ id: 'keys', title: 'Key 列表', render: () => [{ kind: 'list', items: keys.map((k) => ({ id: k, label: k, actionId: 'open', args: { key: k } })) }] })
   }
 }
 ```
+
+> **早先的 `ctx.ui.activityBar(...)` 与 `ctx.ui.sider(...)` 仍然能调用**（老插件不会崩），但界面上已经没有它们的位置：既不占图标栏，也不出现在侧栏。老插件的 sider 面会作为**标签页**出现在插件列表里 —— 迁移只要把内容改成 `ctx.ui.view`，或者直接改写前端半（见 3.7）。新插件不要再用这两个。
 
 五条要点：
 
@@ -340,7 +339,7 @@ export default {
    | 什么都不返回 | 前端自己重新拉一遍 |
 
    ⚠️ `openView` / `openDialog` 是**请求**不是命令：块里没有「开标签 / 弹窗」这种语义，那是宿主的能力，插件只能请求。事务性的破坏操作仍然**要两步**（没有「确认弹框」这一种形态）：第一次点击只切到确认态（一条 `note` + 确认 / 取消两个按钮），真的执行放在确认那一步 —— 见 `~/.fizz/plugins/redis/index.ts` 的删 key。
-4. **面的参数（`params`）= 一个面开出多屏**：`render(ctx)` 的 `ctx.params` 与 `onAction` 的 `params` 是**打开这一屏时带的参数**（如「哪个连接」）。宿主只负责原样带回，插件自己区分实例 —— 于是「每个连接一个管理页」就是**同一个 view 面 + 不同参数**，写一遍代码开 N 个标签。侧栏里点一条时：
+4. **面的参数（`params`）= 一个面开出多屏**：`render(ctx)` 的 `ctx.params` 与 `onAction` 的 `params` 是**打开这一屏时带的参数**（如「哪个连接」）。宿主只负责原样带回，插件自己区分实例 —— 于是「每个连接一个管理页」就是**同一个 view 面 + 不同参数**，写一遍代码开 N 个标签。列表里点一条时：
 
    ```ts
    if (actionId === 'openTab') {
@@ -352,13 +351,94 @@ export default {
 
 #### 图标：用官方 logo，不加衬底
 
-`ctx.ui.icon(...)` 与每个面的 `icon` 只收 **`data:image/*` 的 data URI**（不收远程 URL、也不收裸 SVG 源码 —— 后者等于给插件一个往界面注入标记的口子），上限 96KB。
+插件图标（`plugin.json` 的 `icon` / `ctx.ui.icon(...)`）只收 **`data:image/*` 的 data URI**（不收远程 URL、也不收裸 SVG 源码 —— 后者等于给插件一个往界面注入标记的口子），上限 64KB。
 
-- **直接用该项目的官方 logo**（Simple Icons 之类），**不要自己画一个带深色圆角底的方块**：列表里是 40px 展示，衬底会吃掉大半面积，剩下的只是一小块色块，图形本身反而看不清。
+- **优先写在 `plugin.json` 里**：静态声明，插件不必先跑起来列表就能画对；`plugin.json` 没写才用 `apply()` 里的 `ctx.ui.icon(...)`。
+- **直接用该项目的官方 logo**（Simple Icons 之类），**不要自己画一个带深色圆角底的方块**：列表里是 16px 展示，衬底会吃掉大半面积，剩下的只是一小块色块，图形本身反而看不清。
 - 矢量 SVG 最佳：`data:image/svg+xml,` + `encodeURIComponent(svg源码)`，几百字符、任意尺寸都清楚。
-- 没有图标的插件由宿主画一个同尺寸占位，所以各行文字左边界是齐的。
+- 没有图标的插件由宿主画一个同尺寸的占位图标，所以各行文字左边界是齐的。
 
-**停用的插件不会在图标栏里留一颗点不动的图标**（与上传源同一取舍）。改完插件目录 / 设置，下一次请求就是新代码（挂载是每次现挂一次的，见 `apps/server/src/server/plugin-ui.ts`）。
+**停用的插件不会出现在插件列表里**（与上传源同一取舍）。改完插件目录 / 设置，下一次请求就是新代码（挂载是每次现挂一次的，见 `apps/server/src/server/plugin-ui.ts`）。
+
+### 3.7 自带前端半（`client`）与 npm 依赖（`dependencies`）
+
+服务端 `render()` 吐 `UiBlock[]` 是默认路线；要拖拽画布、富交互这类块表达不了的界面，就写**前端半**。两者可以共存：服务端半继续提供工具 / 钩子 / `ctx.rpc` 处理器。
+
+**先读仓库里的 `plugins/redis/`**：`plugin.json`（清单）+ `index.ts`（服务端半，只有 rpc）+ `client.jsx`（前端半源码）+ `client.js`（构建产物），是双面包的参考实现。
+
+```json
+{
+  "id": "redis",
+  "name": "Redis 管理",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "index.ts",
+  "icon": "data:image/svg+xml,...",
+  "client": {
+    "entry": "client.js",
+    "surfaces": [
+      { "kind": "view", "id": "connections", "title": "连接", "order": 0 },
+      { "kind": "view", "id": "keys", "title": "Redis Keys", "order": 10 }
+    ]
+  },
+  "dependencies": { "ioredis": "^5.4.1" }
+}
+```
+
+`surfaces` 里**只能写 `view`**：插件不占图标栏、也没有自己的侧栏。点插件时打开 `order` 最小的那一面，其余面由插件自己用 `openView` 开出来。
+
+十一条要点：
+
+1. **`client.entry` 是已经构建好的单文件 JS**。浏览器跑不了 TS/TSX，宿主也不做运行时转译（等于把编译器塞进服务端）。仓库里现成一条路：把源码写成 `client.jsx`（或 `.js`），跑 `npm run build:plugins`（`scripts/build-plugin-client.mjs`，用仓库自带的 `typescript` 做 `--jsx react` 经典转换 → 产物里全是 `React.createElement`），产出 `client.js`。产物里**出现任何 `import` / `export` 都会直接报错退出**（进不了 `new Function`）；要 React 就从 `host` 取，别打包一份进去。**可直接抄 `assets/client-bundle-template.js`**：契约、`ctx.rpc`、`injectStyle`、`dispose` 都在里面写全了。
+2. **`surfaces` 只声明「有哪些面」**，不描述长什么样。插件列表 / 标签条由服务端一次返回全部（`listPluginSurfaces`），bundle 按 `id` 认领 —— 让 bundle 再注册一遍就会出现两份真源（刷新前后顺序还会变）。清单里写 `activityBar` / `sider` 会被 loader 直接拒绝。
+3. **bundle 契约**：顶层**同步**注册，`render` 返回 React 节点。`render` 是**纯渲染**（宿主在自己的渲染函数里同步调它），所以**不许在 `render` 里调 hooks** —— 要状态就返回一个组件，hooks 写在组件里。
+
+   ```js
+   window.__FIZZ_PLUGIN__('redis', (host) => {
+     const { React, ui, icons, lib, injectStyle } = host
+     injectStyle('.redis-key { font-family: var(--font-mono) }')
+
+     // rpc / openView 是 **ctx** 上的（不是 host 上的）：由 render 的参数传进来
+     function Keys({ rpc, openView }) {
+       const [keys, setKeys] = React.useState([])
+       React.useEffect(() => { void rpc('keys', { match: '*' }).then(setKeys) }, [rpc])
+       return React.createElement(
+         'div',
+         { className: lib.cn('flex flex-col gap-2 p-3') },
+         keys.map((key) =>
+           React.createElement(
+             ui.Button,
+             {
+               key,
+               variant: 'ghost',
+               size: 'sm',
+               // 点一个 key → 请宿主开新标签（同一个面 + 不同 params = 另一屏）
+               onClick: () => openView({ surfaceId: 'key', params: { key }, label: key })
+             },
+             key
+           )
+         )
+       )
+     }
+
+     return {
+       render: (surfaceId, ctx) => (surfaceId === 'keys' ? React.createElement(Keys, ctx) : null)
+     }
+   })
+   ```
+
+4. **React 只能从 `host` 取**（自带一份 = 两个 React，hooks 直接报错）。`host.ui` 是 `@fizz/ui` 的原语（`Button` / `Input` / `Card` / `Badge` / `Tabs` / `Progress` / `Spinner` / `Table` / `Select` / `Dialog*` …），`host.lib.cn` 是那份 `cn()`，`host.icons` 是常用 lucide 图标；不认识的组件自己写原生元素 + 类名即可。
+5. **`injectStyle(css)` 只插一次**，插件停用 / 卸载 / 热更新时宿主会把带 `data-fizz-plugin` 标记的样式整段删掉。别往 `document.head` 里裸插 `<style>`。
+6. **bundle 里不能 import**（`new Function` 执行，没有模块解析）：第三方依赖要么打进 bundle，要么从 `host` 取。也**不要用顶层 await**。
+7. **`ctx.rpc(method, payload)` 是前端半唯一的后端入口**：服务端半用 `ctx.rpc.handle(method, fn)` 注册，超时 60s，抛错原话回前端。别从插件前端直接 `fetch('/api/...')` —— 桌面端渲染进程没有 HTTP 端口。注意**每次调用都会现挂一次插件实例**（与服务端渲染同一口径），所以 handler 要无状态：连接池 / 缓存放模块作用域，别指望实例字段活到下一次调用。
+8. **面的崩溃被 ErrorBoundary 兜住**（一屏红字 + 重试），不会带崩整个主界面；但**别在 render 里做副作用**，每次都可能是新实例。
+9. **`ctx.openView({ surfaceId, params, label, title })` 是它开新标签的唯一手段**（列表里点一条连接 → 开出它的详情页）。标签的 key / 拖拽分屏 / 关闭保护都归宿主；同一个面 + 同一份 `params` 只会聚焦已有标签，不重复开。别自己造「第二块屏」。
+10. **弹窗用 `host.ui` 的 `Dialog*` 那一套**（`Dialog` / `DialogContent` / `DialogHeader` / `DialogTitle` / `DialogDescription` / `DialogFooter` / `DialogClose`），别自绘遮罩 —— focus trap、`Esc`、滚动锁都在原语里。服务端 blocks 那条路的 `openDialog` 在 client 面没有对应物，自己 `useState` 管开合。
+11. **client 面的头部（含顶栏按钮）由插件自己画**。清单里写 `headerActions` 对 client 面**不生效**：宿主不替它渲染 `SidebarTopBar`。理由是按钮回调往往要改插件组件的 state（打开弹窗 / 重拉列表），而宿主渲染的按钮只能拿到模块级回调。标签页里从 `PluginTabContent` 往下整块都是插件的，宿主只画标签条。
+
+**`dependencies` 的代价**：所有插件声明的包合成**插件根目录的一份共享 `node_modules`**（pnpm + `nodeLinker: hoisted`，全进程只有一个 `@fizz/plugin` 实例）。同一个包的两个不兼容大版本只能生效一个 —— 冲突时给 warning，按插件 **id 字典序先到先得**。禁止写 `@fizz/*`（会覆盖宿主的包，`ctx` 的 `instanceof` 判定全乱）。
+
+何时装：走「安装插件」时服务端自动装，失败会**撤回插件**；**手工拷进目录**的插件点设置页那颗「安装依赖」。装依赖要联网，离线环境下插件会因 `Cannot find module` 起不来（工具全缺席，但不会带崩其它插件）。
 
 ## 4. import 解析
 
@@ -368,7 +448,7 @@ export default {
 | --- | --- |
 | `zod`、`ai` | ✅ 都行（宿主别名，版本与宿主一致）—— 带参数的工具因此可以放在**任意位置** |
 | `@fizz/*`（仓库内部包） | 只在「沿目录树能命中仓库」时可用（`<仓库>/.fizz/plugins`），别指望 |
-| 其它第三方包 | ❌ 解析不到就 `Cannot find module 'x'`（插件目录没有 `node_modules`）—— 要么别用，要么用无参工具 + 内置能力 |
+| 其它第三方包 | 先写进 `plugin.json` 的 `dependencies`（见 3.7），装好后由插件根的 `node_modules` 解析；没声明就是 `Cannot find module 'x'` |
 
 所以：**带参数的工具就用 `zod`**（`inputSchema: z.object({...})`），它现在不挑插件位置。写 `import { z } from 'zod'` / `import { tool } from 'ai'` 都行；只想要最少的依赖面，就别用 `tool()` 包装，直接给 `{ description, inputSchema, execute }`（两者都对，见 3.1 的形态表）。
 

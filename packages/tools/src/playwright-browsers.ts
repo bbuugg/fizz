@@ -41,9 +41,14 @@
  * ⚠️ **谁会触发下载**：设置页「浏览器」的『安装』是唯一显式入口。只剩内置浏览器引擎的
  * launch 兜底（`browser/engine.ts` 的 `ensureChromiumReady()`）还会在缺失时自愈 —— 那是
  * 「装配闸放过了、但运行时事后没了」的最后一道，正常路径走不到。
- * `web_fetch` 的 `engine="browser"`（`BrowserRuntimeMissingError`）与 `screenshot` 都
- * **不再**触发，没装就直接回一句去设置里装；`browser_*` 工具与浏览器面板也各自在
- * 装配 / 连接处先挡（`chat-turn.ts`、`browser-ws.ts`）。
+ *
+ * 依赖这里的**三个工具面**都在装配期按 `browserRuntimeInfo().installed` 先挡一道，没装就
+ * 不给模型看见，避免「每次调用都只回一句去设置里装」：
+ * - `browser_*` 工具集与浏览器面板：`chat-turn.ts` / `browser-ws.ts` 挡；
+ * - `screenshot`：`webToolsPlugin` 直接不挂；
+ * - `web_fetch`：照挂，但 schema 里没有 `engine` 入参（只有 fetch 引擎）。
+ * 剩下的 `BrowserRuntimeMissingError` / `playwright 未安装` 那几句只兜「装配之后运行时被
+ * 卸掉」这种赛况。
  */
 
 import { spawn } from 'node:child_process'

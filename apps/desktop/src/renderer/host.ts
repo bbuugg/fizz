@@ -819,13 +819,6 @@ export const desktopHost: AgentHost = {
   saveCloseToTray: (enabled) => {
     void window.fizzWindow.setCloseToTray(enabled)
   },
-  /**
-   * 设置开在独立窗口里（主进程建窗口，加载同一份渲染端 + ?window=settings）。
-   * 带 `tab` 时窗口已开着就只切分组 —— 不重载页面，免得冲掉正在填的表单。
-   */
-  openSettingsWindow: (tab) => {
-    void window.fizzWindow.openSettings(tab)
-  },
   /** 系统通知：主进程做前台判定（在前台时不弹，改由渲染端发应用内 toast），点通知拉回主窗口 */
   notify: (notice) => window.fizzWindow.notify(notice),
   /**
@@ -919,7 +912,8 @@ export const desktopHost: AgentHost = {
    * 浏览器画面：连**进程内后端**的内部 WS 端口，sessionId 由 conversationId 推出
    * （与后端引擎、Agent 工具是同一个会话）。desktop 必须实现这条，否则 UI 退回浏览器
    * 实现、`file://` 下拼不出地址，面板永远连不上。
-   * `autostart` 透传成查询参数（面板正被看着时由调用方带），服务端据此连上就拉起浏览器。
+   * `autostart` 透传成查询参数（只有面板「启动浏览器」后的那次重连会带），
+   * 服务端据此连上就拉起浏览器。
    */
   openBrowserSocket: (conversationId, opts) =>
     openBridgeWorkbench(

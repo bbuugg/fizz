@@ -26,6 +26,7 @@ import { PromptService } from './services/prompt'
 import { ToolsService } from './services/tools'
 import { UiService } from './services/ui'
 import { UploadsService } from './services/uploads'
+import { RpcService } from './services/rpc'
 import { ModelsService } from './services/models'
 import { WorkspaceService } from './services/workspace'
 import { HooksService } from './hooks'
@@ -215,6 +216,23 @@ export class Context {
   get hooks(): HooksService {
     const s = this.get<HooksService>('hooks')
     if (!s) throw new Error('hooks 服务未提供：请先 ctx.set("hooks", new HooksService(ctx))')
+    return s
+  }
+
+  /**
+   * 插件 RPC（前端半拿数据的通道，见 `services/rpc.ts`）。
+   *
+   * 只挂在**长驻 context** 上（与 uploads 同级）：前端可能在任意时刻调用它，
+   * 而回合结束时 turn context 已经销毁了。想在回合里注册方法就写 `inject: ['rpc']`。
+   */
+  get rpc(): RpcService {
+    const s = this.get<RpcService>('rpc')
+    if (!s) {
+      throw new Error(
+        'rpc 服务未提供：这个 context 没有 RPC 能力（只挂在长驻 context 上，' +
+          '回合里请用 inject: ["rpc"] 声明依赖）'
+      )
+    }
     return s
   }
 

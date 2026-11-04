@@ -28,8 +28,8 @@ import { AssistantPanel } from "@fizz/agent-kit/features/projects/AssistantPanel
 import { APP_EVENTS } from "@fizz/agent-kit/shared/lib/app-events";
 import {
   findShortcutByEvent,
+  isShortcutRecording,
   PANEL_SCOPED_SHORTCUT_ACTIONS,
-  setShortcutRecording,
   setShortcuts,
   useShortcuts,
   type AgentShortcutAction,
@@ -43,6 +43,7 @@ import { WebTitleBar } from "@fizz/agent-kit/shell/layout/WebTitleBar";
 import {
   openHostTab,
   openLocalTerminalTab,
+  openSettingsTab,
 } from "@fizz/agent-kit/shared/lib/tool-tabs";
 import {
   useDirtyTabCountSync,
@@ -70,7 +71,6 @@ import { NewWorktreeDialog } from "@fizz/agent-kit/features/projects/NewWorktree
 import { QuickActionsDialog } from "@fizz/agent-kit/features/projects/QuickActionsDialog";
 import { PluginsDialog } from "@fizz/agent-kit/features/projects/PluginsDialog";
 import { ResizeHandle } from "@fizz/agent-kit/shared/components/ResizeHandle";
-import { SettingsDialog } from "@fizz/agent-kit/features/settings/SettingsDialog";
 import { TooltipProvider } from "@fizz/ui/tooltip";
 import { ConfirmProvider } from "@fizz/agent-kit/shared/components/ConfirmProvider";
 import { DndProvider } from "react-dnd";
@@ -113,8 +113,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     newTarget,
     openNewDialog,
     closeNewDialog,
-    settingsTab,
-    clearSettingsTab,
     activePanel,
     toggleSideTab,
     showSideTab,
@@ -170,9 +168,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    *   带 `prompt` 时先记下待预填草稿 —— 打开动作会让新会话的 ChatPanel 挂上来,
    *   那边挂好后主动来取 (lib/pending-draft.ts)。⚠️ 顺序不能反:必须先记再打开;
    * - `project-created` 不处理:项目清单本来就自动刷新,抢把工作区切走反而突兀;
-   * - `browser-active`:Agent 调了 `browser_*` → 自动把浏览器画面面板挂出来。两道闸:
+   * - `browser-active`:Agent 调了 `browser_*` → 自动把浏览器画面面板挂出来。三道闸:
    *   ① 只在「正看的这个会话」里动作(后台会话用浏览器不该抢当前会话的面板);
-   *   ② 已挂出过就不动(Agent 一轮里会连着 snapshot / click,逐个弹会反复抢焦点)。
+   *   ② 已挂出过就不动(Agent 一轮里会连着 snapshot / click,逐个弹会反复抢焦点);
+   *   ③ 这个会话**真的开了内置浏览器**(会话开关 + 运行时已装)。
    */
   useEffect(() => {
     const onUiAction = (e: Event): void => {
@@ -195,6 +194,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       if (detail?.action === "browser-active") {
         if (detail.conversationId !== current.activeConversationId) return;
         if (activePanel?.browserMounted) return;
+        /**
+         * 第三道闸的由来:动作只凭**工具名**判(`browser_*`),而外部 playwright-mcp 的
+         * 工具名与内置这套完全相同(`browser_navigate` / `browser_click` …)。
+         * 于是「会话没开内置浏览器、只是选了 playwright MCP」时,模型一调工具就把内置
+         * 浏览器面板弹出来 —— 画面永远是空的,因为页面跑在 MCP 自己那个浏览器里。
+         * 所以这里按「这个会话实际能不能挂内置 browser_*」复核一遍。
+         *
+         * ⚠️ 残留:开关开着、同时又挂了带同名工具的外部 MCP(内置已让位给 MCP,见
+         *    apps/server/src/server/chat-turn.ts)时,仍会为 MCP 的调用弹一次空面板 ——
+         *    让位发生在服务端装配时,客户端没有这份信息。要彻底精确得让 `start` 帧
+         *    带上「本轮挂了内置浏览器」标志,收益不值当。
+         */
+        const conversation = current.conversations.find((c) => c.id === detail.conversationId);
+        if (!current.browserInstalled || !conversation?.browserSettings?.enabled) return;
         showSideTab("browser");
       }
     };
@@ -263,13 +276,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     ? (app.workspaces.find((w) => w.id === importWorkspaceId) ?? null)
     : null;
 
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
   // ---- 可配置快捷键：配置在共享存储里（设置页写、这里分发），分发监听也在这里 ----
   const shortcuts = useShortcuts();
-  /** 设置页录制中：全局分发要让路，否则组合键既被录进去又执行一遍 */
-  const shortcutRecordingRef = useRef(false);
+  /*
+    「设置页录制中」不再是一个 ref：设置是主区域里的标签，`SettingsTabContent` 与
+    这里的全局分发是两棵子树，靠 ref 传不过去。录制态由 `setShortcutRecording()`
+    广播到模块级状态，所有监听器统一读 `isShortcutRecording()` —— 一个布尔值只有
+    一份，才不会出现「在设置里录 Ctrl+W，结果把设置标签关掉了」。
+  */
   /** 「按住说话」的按下状态：记下是哪颗物理键按下的，松手时只认那颗键，
    *  不依赖 keyup 重新匹配组合（松开瞬间修饰键状态可能已变，重匹配会漏发 voiceStop，
    *  导致麦克风卡在开启、后续再按被 Composer 的 listening 守卫拦掉）。 */
@@ -358,23 +374,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useDirtyTabCountSync();
 
   /**
-   * 打开设置：宿主有独立设置窗口（desktop）就交给它，否则用应用内弹窗（web / mobile）。
-   * 普通入口不指定分组，落回「通用」。
+   * 打开设置：**主区域的一条标签**，所有宽度、所有端都一样。
+   *
+   * 不要去按 `isMobile()` 分叉成「窄屏弹窗」—— 标签条在窄屏**照样在**（`PanelGroupView`
+   * 没有手机分支，标签多了横向滚），分叉只会让同一个入口在窄屏开弹窗、标签栏里却还留着
+   * 一条 `settings:list`，同一份设置出现两种外壳。窄屏的「两级菜单」形态由
+   * `SettingsShell` 自己的 `settingsNavForm()` 决定，与外壳无关。
+   *
+   * 桌面端原先走宿主 `openSettingsWindow` 开独立 BrowserWindow —— 那是另一个渲染进程 =
+   * 另一份模块级 store 单例，设置里改完主窗口不知道（插件图标 / 系统监控开关 / 子任务
+   * 偏好都踩过）。
+   *
+   * 普通入口不指定分组：`openSettingsTab()` 不带参时保留上次看的那一页。
    */
   const openSettings = (): void => {
-    const openSettingsWindow = getAgentHost().openSettingsWindow;
-    if (openSettingsWindow) {
-      void openSettingsWindow();
-      return;
-    }
-    clearSettingsTab();
-    setSettingsOpen(true);
+    openSettingsTab();
   };
-
-  /** 模型选择下拉的设置入口请求到了某个分组：开弹窗，initialTab 随 props 透传下去 */
-  useEffect(() => {
-    if (settingsTab) setSettingsOpen(true);
-  }, [settingsTab]);
 
   const runShortcutAction = (action: AgentShortcutAction): void => {
     switch (action) {
@@ -445,7 +460,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // 输入法组合中 / 长按重复 / 设置页录制中都不参与匹配。
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.isComposing || e.repeat || shortcutRecordingRef.current) return;
+      if (e.isComposing || e.repeat || isShortcutRecording()) return;
       const hit = findShortcutByEvent(shortcuts, e);
       if (!hit) return;
       // 面板级动作（推送）：全局分发不碰它 —— 不拦截、不执行，留给面板自己在可见时挂的
@@ -474,7 +489,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // 导致 voiceStop 漏发、麦克风卡死、后续再按被 Composer 的 listening 守卫拦掉。
     // 是否真的停麦由 Composer 依据自身状态决定（避免误关按钮开启的麦、或在未收音时乱聚焦）。
     const onKeyUp = (e: KeyboardEvent): void => {
-      if (shortcutRecordingRef.current) return;
+      if (isShortcutRecording()) return;
       if (!voiceHeldRef.current) return;
       const isMainKey = e.code === voiceHeldRef.current;
       const isModifier = /^(?:Alt|Control|Meta|Shift)(?:Left|Right)?$/.test(
@@ -771,25 +786,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               }
             />
 
-            <SettingsDialog
-              app={app}
-              open={settingsOpen}
-              onOpenChange={(open) => {
-                setSettingsOpen(open);
-                // 关掉时清掉「指定分组」请求：下次从普通入口打开落回「通用」
-                if (!open) clearSettingsTab();
-              }}
-              initialTab={settingsTab ?? undefined}
-              shortcuts={shortcuts}
-              onSaveShortcuts={(next) => setShortcuts(next)}
-              onShortcutRecordingChange={(recording) => {
-                shortcutRecordingRef.current = recording;
-                // 面板级快捷键（推送 / 关闭当前标签）的监听器也读这个状态：录制时按下的键
-                // 既会被录下来，也会撞上面板自己的 window 监听 —— 不广播一下，录制 `Ctrl+W`
-                // 会顺手把当前标签关掉。见 shortcuts.ts 的 isShortcutRecording。
-                setShortcutRecording(recording);
-              }}
-            />
+            {/*
+              设置**不再有弹窗形态**：它是主区域的一条标签（`settings:list`，见
+              `openSettings`）。原先这里挂的 `SettingsDialog` 是「桌面端没有独立设置
+              窗口时」的兜底，导致窄屏一个弹窗、标签栏里还留着一条设置 —— 两种外壳。
+            */}
             {/* 快捷功能管理弹窗（落在当前工作区的 .fizz/workspace.json；入口是顶栏 ⚡ 下拉最底部） */}
             <QuickActionsDialog
               workspaceId={app.activeWorkspaceId ?? ""}

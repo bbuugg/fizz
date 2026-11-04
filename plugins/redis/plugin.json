@@ -3,5 +3,24 @@
   "name": "Redis 客户端",
   "version": "1.0.0",
   "apiVersion": 1,
-  "entry": "index.ts"
+  "entry": "index.ts",
+  "description": "Redis 连接管理与 Key 浏览，界面由插件自带的图形前端渲染",
+  "icon": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%3E%3Cellipse%20cx%3D%2712%27%20cy%3D%275.4%27%20rx%3D%277.2%27%20ry%3D%272.9%27%20fill%3D%27%23DC382D%27/%3E%3Cpath%20d%3D%27M4.8%205.4v6.4c0%201.6%203.2%202.9%207.2%202.9s7.2-1.3%207.2-2.9V5.4%27%20fill%3D%27none%27%20stroke%3D%27%23DC382D%27%20stroke-width%3D%271.7%27%20stroke-linecap%3D%27round%27/%3E%3Cpath%20d%3D%27M4.8%2011.8v6.4c0%201.6%203.2%202.9%207.2%202.9s7.2-1.3%207.2-2.9v-6.4%27%20fill%3D%27none%27%20stroke%3D%27%23DC382D%27%20stroke-width%3D%271.7%27%20stroke-linecap%3D%27round%27/%3E%3C/svg%3E",
+  "client": {
+    "entry": "client.js",
+    "surfaces": [
+      {
+        "kind": "view",
+        "id": "connections",
+        "title": "连接",
+        "order": 0
+      },
+      {
+        "kind": "view",
+        "id": "key",
+        "title": "Key",
+        "order": 10
+      }
+    ]
+  }
 }

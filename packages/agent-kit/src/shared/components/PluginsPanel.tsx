@@ -31,6 +31,7 @@ import {
   Copy,
   Folder,
   FolderOpen,
+  Package,
   Puzzle,
   RotateCw,
   Search,
@@ -334,20 +335,37 @@ export function PluginsPanel({
   const tr = useT()
   const [data, setData] = useState<PluginsResponse | null>(null)
   const [loading, setLoading] = useState(false)
-  /** 正在切换的那一项（防重复点击；切换是一次同步打服务端） */
-  const [busyId, setBusyId] = useState<string | null>(null)
+  /**
+   * 正在保存的那几项（启停 / 卸载）。
+   *
+   * 同一项连点会算出两份互相覆盖的清单，直接挡掉；**不同项可以连着点，但要串行落地**
+   * （见 `saveChainRef`）—— 每笔写回的都是整份停用清单，并发时谁后落地谁赢，
+   * 前一笔的改动会被后一笔带着的旧清单整条抹掉。用户看到的就是「点了好几次才停用」。
+   */
+  const [busyIds, setBusyIds] = useState<string[]>([])
   /** 搜索词（纯前端过滤：名字 / 路径 / 来源） */
   const [keyword, setKeyword] = useState('')
   /** 正在编辑设置项的那个插件 id（null = 弹窗关着） */
   const [configPluginId, setConfigPluginId] = useState<string | null>(null)
   /** 正在安装（读文件 + 发过去 + 服务端体检期间） */
   const [installing, setInstalling] = useState(false)
+  /** 正在装插件根里声明过的 npm 依赖（pnpm 可能跑几十秒） */
+  const [syncingDeps, setSyncingDeps] = useState(false)
   /** 待确认卸载的插件 id —— 卸载是**删磁盘上的文件**，所以两步：先点一次出确认 */
   const [pendingUninstall, setPendingUninstall] = useState<string | null>(null)
   /** 选本地文件的隐藏 input（常挂树上、靠 ref 触发：每次新建 input 在 Safari 上会掉权限） */
   const installInputRef = useRef<HTMLInputElement | null>(null)
   /** 代次防护：作用域 / 项目切换时旧响应可能后到，直接丢弃（脏展示很难查） */
   const loadGenRef = useRef(0)
+  /**
+   * 最新一份清单。
+   *
+   * 异步流程里读 `data` 读到的是**那次渲染的闭包快照**：连着点两个开关时，第二下若还按
+   * 旧清单算 `next`，第一下的改动就被覆盖了。所有写入都走 `applyData`，这里始终是当下的值。
+   */
+  const dataRef = useRef<PluginsResponse | null>(null)
+  /** 启停保存的串行链（见 `busyIds` 的说明） */
+  const saveChainRef = useRef<Promise<unknown>>(Promise.resolve())
 
   const targetId = scope === 'workspace' ? (workspaceId ?? null) : null
   /** 拉不了就没有可管理的东西（项目弹窗传了空 id / 没连接） */
@@ -365,6 +383,33 @@ export function PluginsPanel({
    */
   const api = app.api
 
+  /** 改清单，并同步 `dataRef`（异步流程要读**刚写的**那一份，不是渲染快照） */
+  const applyData = useCallback((next: PluginsResponse | null): void => {
+    dataRef.current = next
+    setData(next)
+  }, [])
+
+  /** 标记 / 取消某一项的「保存中」 */
+  const markBusy = useCallback((id: string, on: boolean): void => {
+    setBusyIds((prev) =>
+      on ? (prev.includes(id) ? prev : [...prev, id]) : prev.filter((x) => x !== id)
+    )
+  }, [])
+
+  /**
+   * 重拉**界面清单**（图标栏 / 侧栏 / 标签条那一份是前端模块级缓存，见
+   * `shared/lib/plugin-surfaces.ts`）。
+   *
+   * - 不重拉的话：启停之后图标栏纹丝不动，要等某个 `usePluginSurfaces` 的宿主重新挂载
+   *   （比如点一下那颗图标）才刷新 —— 用户实测就是「改了没反应，点它才消失」；
+   * - 必须用**活动项目**（`app.activeWorkspaceId`）而不是正在管的作用域：那份缓存就是按
+   *   活动项目取用的，全局作用域传 `targetId` 会掉成 `null`（= 只扫内置 + 用户级），
+   *   活动项目自己的插件图标会集体从活动栏消失，直到切项目才回来。
+   */
+  const refreshSurfaces = (): void => {
+    refreshPluginSurfaces(app, app.activeWorkspaceId ?? undefined)
+  }
+
   const fetchList = useCallback((): Promise<PluginsResponse> => {
     if (!api) return Promise.reject(new Error(tr('还没有连接到服务端')))
     if (scope === 'global') return api.listGlobalPlugins()
@@ -378,42 +423,62 @@ export function PluginsPanel({
     setLoading(true)
     try {
       const next = await fetchList()
-      if (gen === loadGenRef.current) setData(next)
+      if (gen === loadGenRef.current) applyData(next)
     } catch (err) {
       if (gen === loadGenRef.current) toast.error(tr('读取插件失败：{error}', { error: messageOf(err) }))
     } finally {
       if (gen === loadGenRef.current) setLoading(false)
     }
-  }, [ready, fetchList])
+  }, [ready, fetchList, applyData])
 
   // 只在**作用域 / 目标项目**变化时清空（`load` 的依赖已经收敛到 `api` + 这两项，不会
   // 被对话推送带着重跑；清空自然也只该跟它们走）。
   useEffect(() => {
-    setData(null)
-  }, [scope, targetId])
+    applyData(null)
+  }, [applyData, scope, targetId])
 
   useEffect(() => {
     void load()
   }, [load])
 
+  /**
+   * 启停。
+   *
+   * 三件必须一起做（少任何一件都会变成「点了没反应 / 点好几次才生效」）：
+   * 1. **先翻本地开关**：服务端回来前 `checked` 还停在旧值，开关不动用户就会再点一次；
+   * 2. **串行落地**：`disabled` 是完整清单，两笔并发谁后到谁赢，先点的那笔会被抹掉；
+   * 3. **重拉界面清单**：图标栏是前端缓存，不重拉的话停用后那颗图标还在（见 `refreshSurfaces`）。
+   */
   const toggle = async (id: string, enabled: boolean): Promise<void> => {
-    if (!api || !data || !ready) return
+    const current = dataRef.current
+    if (!api || !current || !ready) return
+    if (busyIds.includes(id)) return
     // disabled 是完整清单：读当前 → 加/减一个 → 全量写回（与技能页同款）
-    const disabled = data.settings.disabled
+    const disabled = current.settings.disabled
     const next = enabled ? disabled.filter((x) => x !== id) : [...new Set([...disabled, id])]
-    setBusyId(id)
+    const gen = loadGenRef.current
+    markBusy(id, true)
+    applyData({ ...current, settings: { ...current.settings, disabled: next } })
+    const run = saveChainRef.current.then(() =>
+      scope === 'global'
+        ? api.saveGlobalPlugins(next)
+        : api.savePlugins(targetId as string, next)
+    )
+    // 链上失败不能把后面几笔一起带走：吞掉错误，只让这一次的调用方看到
+    saveChainRef.current = run.catch(() => undefined)
     try {
-      const gen = loadGenRef.current
-      const result =
-        scope === 'global'
-          ? await api.saveGlobalPlugins(next)
-          : await api.savePlugins(targetId as string, next)
+      const result = await run
       // 保存期间若用户切了作用域 / 项目，这次结果就不该落到当前视图上
-      if (gen === loadGenRef.current) setData(result)
+      if (gen === loadGenRef.current) {
+        applyData(result)
+        refreshSurfaces()
+      }
     } catch (err) {
       toast.error(tr('保存失败：{error}', { error: messageOf(err) }))
+      // 乐观改过的本地值不能留着：按服务端那份重新对齐
+      if (gen === loadGenRef.current) void load()
     } finally {
-      setBusyId(null)
+      markBusy(id, false)
     }
   }
 
@@ -423,9 +488,9 @@ export function PluginsPanel({
    * 目录里必须有 `plugin.json`（接口见 `@fizz/plugin` 的 `PluginManifest`）。路径去掉
    * 最外层目录名（`my-plugin/index.ts` → `index.ts`），服务端用 manifest.id 当安装目录名。
    *
-   * 服务端返回的就是重扫后的完整清单，所以这里直接 `setData` —— 不必再拉一次。
-   * 另外**强制重拉界面清单**（`refreshPluginSurfaces`）：图标栏 / 侧栏那一份是前端缓存
-   * 的，不重拉的话新插件的图标要等下次进设置才出现。
+   * 服务端返回的就是重扫后的完整清单，所以这里直接 `applyData` —— 不必再拉一次。
+   * 另外**强制重拉界面清单**（`refreshSurfaces`）：图标栏 / 侧栏那一份是前端缓存的，
+   * 不重拉的话新插件的图标要等下次进设置才出现。
    */
   const install = async (picked: FileList): Promise<void> => {
     if (!api || !ready) return
@@ -460,8 +525,8 @@ export function PluginsPanel({
         files: payload
       })
       if (gen !== loadGenRef.current) return
-      setData(result)
-      refreshPluginSurfaces(app, targetId ?? undefined)
+      applyData(result)
+      refreshSurfaces()
       toast.success(tr('已安装「{name}」', { name: rootName }))
     } catch (err) {
       // 服务端会把「坏插件已撤回」的原因原样带回来，直接给用户看
@@ -473,12 +538,12 @@ export function PluginsPanel({
 
   /**
    * **卸载**：删掉插件整个目录。服务端顺带清掉它的设置值与启停名单里的残留
-   * （插件 id 是绝对路径，不清的话同名文件重装回来会接着上一次的状态）。
+   * （不清的话同一个插件装回来会接着上一次的状态）。
    */
   const uninstall = async (id: string, name: string): Promise<void> => {
     if (!api || !ready) return
     const gen = loadGenRef.current
-    setBusyId(id)
+    markBusy(id, true)
     try {
       const result = await api.uninstallPlugin({
         scope,
@@ -486,8 +551,8 @@ export function PluginsPanel({
         pluginId: id
       })
       if (gen !== loadGenRef.current) return
-      setData(result)
-      refreshPluginSurfaces(app, targetId ?? undefined)
+      applyData(result)
+      refreshSurfaces()
       setPendingUninstall(null)
       // 它的设置弹窗可能还开着：关掉，免得对着一个已删除的插件编辑
       if (configPluginId === id) setConfigPluginId(null)
@@ -495,7 +560,37 @@ export function PluginsPanel({
     } catch (err) {
       toast.error(tr('卸载失败：{error}', { error: messageOf(err) }))
     } finally {
-      setBusyId(null)
+      markBusy(id, false)
+    }
+  }
+
+  /**
+   * **安装依赖**：把这一作用域里所有插件的 `dependencies` 合成一份，交给 pnpm 装进插件根。
+   *
+   * 只在「有插件声明了 dependencies」时才出现那颗按钮（见 `hasDeps`）—— 绝大多数人
+   * 不写依赖，常驻一颗永远不会有反应的按钮只会让面板变糊。
+   *
+   * 它服务的是**手工拷进目录**的插件：走「安装插件」的那条路服务端已经自动装过了。
+   */
+  const syncDeps = async (): Promise<void> => {
+    if (!api || !ready) return
+    setSyncingDeps(true)
+    try {
+      const result = await api.syncPluginDeps({
+        scope,
+        ...(targetId ? { workspaceId: targetId } : {})
+      })
+      if (!result.changed) {
+        toast.info(tr('这个作用域里没有插件声明 npm 依赖，什么都没做'))
+      } else {
+        toast.success(tr('插件依赖已安装（{root}）', { root: result.root }))
+      }
+      for (const warning of result.warnings) toast.warning(warning)
+    } catch (err) {
+      // pnpm 的原话最有信息量（没装 / 版本冲突 / 网络不通），原样给用户
+      toast.error(tr('依赖安装失败：{error}', { error: messageOf(err) }))
+    } finally {
+      setSyncingDeps(false)
     }
   }
 
@@ -546,6 +641,11 @@ export function PluginsPanel({
    */
   const mixedSources = new Set(plugins.map((p) => p.source)).size > 1
   /**
+   * 有没有插件声明了 npm 依赖 —— 「安装依赖」那颗按钮只在有依赖时出现。
+   * 依赖是**按插件根**合成一份的（不是每插件一份），所以这是作用域级而不是卡片级操作。
+   */
+  const hasDeps = plugins.some((p) => Object.keys(p.manifest.dependencies ?? {}).length > 0)
+  /**
    * 弹窗里的那个插件：**按 id 现查**，而不是开弹窗时存一份快照 —— 保存设置后会 `load()` 重拉
    * 清单，现查才能让「已设置 / 未设置」这类状态立刻反映到表单上；插件从清单里消失（被删 /
    * 改名）时它自然变成 null，弹窗跟着关掉。
@@ -588,13 +688,31 @@ export function PluginsPanel({
             <Upload className={cn('size-3', installing && 'animate-pulse')} />
             {installing ? tr('安装中…') : tr('安装插件')}
           </Button>
+          {/* 只在真有插件写了 dependencies 时出现：没有依赖的人看到它只会疑惑「点了没反应」 */}
+          {hasDeps && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 gap-1 px-2 text-xs"
+              disabled={loading || !ready || syncingDeps || installing}
+              title={tr('把插件声明的 npm 依赖装进这个作用域的插件目录（手工拷进来的插件点这里）')}
+              onClick={() => void syncDeps()}
+            >
+              <Package className={cn('size-3', syncingDeps && 'animate-pulse')} />
+              {syncingDeps ? tr('安装中…') : tr('安装依赖')}
+            </Button>
+          )}
           <Button
             size="sm"
             variant="outline"
             className="h-7 gap-1 px-2 text-xs"
             disabled={loading || !ready}
             title={tr('重新扫描磁盘上的插件目录（手放进去的文件点这里）')}
-            onClick={() => void load()}
+            onClick={() => {
+              // 手放进去的插件也要立刻出现在图标栏：清单和界面清单是两份缓存
+              refreshSurfaces()
+              void load()
+            }}
           >
             <RotateCw className={cn('size-3', loading && 'animate-spin')} />
             {loading ? tr('扫描中…') : tr('刷新')}
@@ -709,11 +827,14 @@ export function PluginsPanel({
           const decl = data?.ui[plugin.id]
           const declSettings = decl?.settings ?? []
           const declPanels = decl?.panels ?? []
-          // 插件图标（`ctx.ui.icon`，data URI）：服务端只放行 data:image/*，
-          // 所以这里当图片源用即可（**绝不**把声明内容拼进 DOM）
-          const pluginIcon = decl?.icon
+          // 插件图标（data URI）：清单里静态声明的 `plugin.json` 优先（不用跑插件就能拿到，
+          // 也是插件列表那一行用的同一份），否则用 `ctx.ui.icon`。两个来源都只放行
+          // data:image/*，所以这里当图片源用即可（**绝不**把声明内容拼进 DOM）
+          const pluginIcon = plugin.manifest.icon ?? decl?.icon
           // 它注册的上传源：显示出来，用户才知道「这个插件给了我一个附件上传目标」
           const uploadSources = data?.uploads?.[plugin.id] ?? []
+          // 它要的 npm 依赖（按插件根合成后共享一份 node_modules）与自带前端半的界面
+          const deps = Object.entries(plugin.manifest.dependencies ?? {})
           return (
             <div
               key={plugin.id}
@@ -818,13 +939,32 @@ export function PluginsPanel({
                     ))}
                   </div>
                 )}
+                {/* 依赖按插件根合成一份，冲突只告警不阻断 —— 卡上直接摊开写了哪些包，
+                    省得用户为了「到底装没装」去翻 node_modules。 */}
+                {deps.length > 0 && (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                    <Package className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+                    {deps.map(([name, range]) => (
+                      <span
+                        key={`d:${name}`}
+                        className="rounded bg-muted px-1 font-mono text-[0.625rem] leading-4 text-muted-foreground"
+                        title={tr('{name}@{range}（装在这个插件根的共享 node_modules 里）', {
+                          name,
+                          range
+                        })}
+                      >
+                        {name}@{range}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* 右：操作（启停 / 配置）。窄屏折到第二行并横向右对齐（见卡片容器那段注释） */}
               <div className="flex shrink-0 flex-col items-end gap-1.5 max-sm:basis-full max-sm:flex-row max-sm:items-center max-sm:justify-end">
                 <Switch
                   checked={enabled}
-                  disabled={busyId === plugin.id}
+                  disabled={busyIds.includes(plugin.id)}
                   onCheckedChange={(next) => void toggle(plugin.id, next)}
                   aria-label={enabled ? tr('停用插件 {name}', { name: plugin.name }) : tr('启用插件 {name}', { name: plugin.name })}
                 />
@@ -856,7 +996,7 @@ export function PluginsPanel({
                         <Button
                           size="xs"
                           variant="outline"
-                          disabled={busyId === plugin.id}
+                          disabled={busyIds.includes(plugin.id)}
                           onClick={() => setPendingUninstall(null)}
                         >
                           {tr('取消')}
@@ -864,7 +1004,7 @@ export function PluginsPanel({
                         <Button
                           size="xs"
                           variant="destructive"
-                          disabled={busyId === plugin.id}
+                          disabled={busyIds.includes(plugin.id)}
                           onClick={() => void uninstall(plugin.id, plugin.name)}
                         >
                           {tr('删除')}
@@ -876,7 +1016,7 @@ export function PluginsPanel({
                       type="button"
                       title={tr('卸载（把它的文件从磁盘删掉）')}
                       aria-label={tr('卸载插件 {name}', { name: plugin.name })}
-                      disabled={busyId === plugin.id}
+                      disabled={busyIds.includes(plugin.id)}
                       onClick={() => setPendingUninstall(plugin.id)}
                       className="rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-destructive"
                     >
@@ -914,9 +1054,6 @@ export function PluginsPanel({
                 {/* `min-w-0 flex-1`：flex 子项默认不肯缩到内容宽度以下，超长插件名会把标题顶宽 */}
                 <span className="min-w-0 flex-1 truncate">{configPlugin.name}</span>
               </DialogTitle>
-              <DialogDescription className="break-words">
-                {tr('值存在服务端，改完立刻生效（不必重启服务端）；密钥项加密保存，明文不回传浏览器。')}
-              </DialogDescription>
             </DialogHeader>
             {/*
               `overflow-x-hidden` 不是多余的：只写 `overflow-y-auto` 时，**另一轴会被算成 auto**，

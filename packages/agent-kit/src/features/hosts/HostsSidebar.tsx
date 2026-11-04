@@ -142,7 +142,8 @@ import { SectionContent, SectionShell } from '@fizz/agent-kit/shared/components/
 import {
   SidebarAction,
   SidebarActions,
-  SidebarGroup
+  SidebarGroup,
+  SidebarRowsSkeleton
 } from '@fizz/agent-kit/shared/components/SidebarGroups'
 import { HOSTS_LIST_SECTION } from '@fizz/agent-kit/shared/lib/section-ids'
 import {
@@ -646,18 +647,28 @@ export function HostsSidebar({
                     </RowActionButton>
                   </IconTip>
                 }
-                // 只有「一条主机 / 终端都没有、也没有分组」时才算空 —— 有分组时要让分组行露出来
+                // 只有「一条主机 / 终端都没有、也没有分组」时才算空 —— 有分组时要让分组行露出来。
+                // **加载中不传**：清单还没落地时 hosts / groups 也是空数组，摆出来就是
+                // 「先闪一句还没有主机或终端，再冒出内容」（骨架在 children 里，见下）
                 empty={
-                  hosts.length === 0 && groups.length === 0
+                  hosts.length === 0 &&
+                  groups.length === 0 &&
+                  (app.hostsLoaded || app.error)
                     ? '还没有主机或终端。'
                     : undefined
                 }
               >
-                <div className="flex flex-col gap-0.5">
-                  {/* 分组树（递归：每层子树自带左侧竖线）+ 未分组条目平铺在最下面 */}
-                  {groupTree.map(renderGroupNode)}
-                  {ungrouped.map((h) => renderHost(h, false))}
-                </div>
+                {/* 清单没落地 = 加载窗口：上骨架，别先闪空态。加载失败（app.error）
+                    回退真实空态，错误信息另有横幅展示 */}
+                {!app.hostsLoaded && !app.error ? (
+                  <SidebarRowsSkeleton rows={2} />
+                ) : (
+                  <div className="flex flex-col gap-0.5">
+                    {/* 分组树（递归：每层子树自带左侧竖线）+ 未分组条目平铺在最下面 */}
+                    {groupTree.map(renderGroupNode)}
+                    {ungrouped.map((h) => renderHost(h, false))}
+                  </div>
+                )}
               </SidebarGroup>
             </div>
           </SectionContent>

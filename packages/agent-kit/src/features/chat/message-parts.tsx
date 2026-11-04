@@ -383,8 +383,10 @@ function MessagePartsInner({
     label: string
     active: boolean
     live: boolean
-    /** 尾 part 的类型 —— 抬头名字左边那颗图标（扳手 / 脑）靠它，口径与左格文案一致 */
+    /** 尾 part 的类型 —— 抬头名字左边那颗图标（工具 / 脑）靠它，口径与左格文案一致 */
     kind: 'tool' | 'reasoning'
+    /** 尾 part 是工具时给工具名：抬头那颗图标要靠它认出「执行命令 → 终端」 */
+    toolName?: string
     preview?: { text: string; lineKey: number }
     /**
      * 这一段「此刻能就地停掉」时给那一步的 `toolCallId`（`undefined` = 不给停止钮）。
@@ -400,6 +402,8 @@ function MessagePartsInner({
     // 与 `turnStepActivity` 同一个分支：只有尾 part 是 tool-call 才走「工具」那一档，
     // 其余（思考 / 空组）按思考算 —— 否则图标会和那行文案对不上
     const kind: 'tool' | 'reasoning' = tail.part.type === 'tool-call' ? 'tool' : 'reasoning'
+    // 抬头图标与组内那张卡同源：命令类是终端、文件类是文件（`toolHeadIcon`）
+    const toolName = tail.part.type === 'tool-call' ? tail.part.toolName : undefined
     /*
      * 「这一组现在能不能停」的唯一判据，与工具卡头部那颗钮同源（`isStoppableToolRunning`：
      * execute_command / web_fetch / 派活工具 `agent-*`，且已拿到完整入参、还没出结果）。
@@ -427,6 +431,7 @@ function MessagePartsInner({
         active: running,
         live,
         kind,
+        toolName,
         preview,
         stopToolCallId
       }
@@ -455,7 +460,7 @@ function MessagePartsInner({
     if (!run.length) return
     const current = run
     run = []
-    const { label, active, live, kind, preview, stopToolCallId } = groupHead(current)
+    const { label, active, live, kind, toolName, preview, stopToolCallId } = groupHead(current)
     nodes.push(
       <TurnStepGroup
         key={`${message.id}-steps-${current[0].partIndex}`}
@@ -464,6 +469,7 @@ function MessagePartsInner({
         active={active}
         live={live}
         kind={kind}
+        toolName={toolName}
         // 只停这一段里正在跑的那一步（判据在 `groupHead`），整轮继续
         onStop={stopToolCallId ? () => void stopCommand(stopToolCallId) : undefined}
       >

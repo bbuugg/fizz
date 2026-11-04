@@ -67,6 +67,8 @@ export const EN: Record<string, string> = {
   'MCP ({count})': 'MCP ({count})',
   '技能 ({count})': 'Skills ({count})',
   '插件': 'Plugins',
+  '还没有可用的插件。在「设置 → 插件」里启用后，它会出现在这里。':
+    'No plugins yet. Enable one in Settings → Plugins and it will show up here.',
   '运行环境': 'Runtime',
   '用量': 'Usage',
   '历史会话': 'Archived chats',
@@ -93,8 +95,6 @@ export const EN: Record<string, string> = {
   '新建主题': 'New theme',
   '正在保存…': 'Saving…',
   '新建': 'New',
-  '切换后界面立即生效；Agent 的工具说明与系统提示词会在下一轮对话按新语言生成。':
-    'Applies immediately. Agent tool descriptions and the system prompt switch to the new language on the next turn.',
 
   // ---------- 应用外壳 ----------
   '新建对话': 'New chat',
@@ -222,7 +222,7 @@ export const EN: Record<string, string> = {
 
   '开始新对话': 'Start a new chat',
   '交给 Agent 做点什么…（Enter 发送，Shift+Enter 换行）': 'Ask the agent to do something… (Enter to send, Shift+Enter for a new line)',
-  '有什么想问的？…（不绑定项目，会话存在服务端）': 'What would you like to ask?… (No project attached; the conversation is stored on the server)',
+  '有什么想问的？…（不指定项目，会话存在服务端）': 'What would you like to ask?… (No project attached; the conversation is stored on the server)',
   '附件上传中，等上传完成后再发': 'Uploading attachments — please wait until they finish',
 
   '新对话（初始页）': 'New chat (start page)',
@@ -524,8 +524,18 @@ export const EN: Record<string, string> = {
   '删掉 {name}？': 'Delete {name}?',
   '卸载（把它的文件从磁盘删掉）': 'Uninstall (delete its files from disk)',
   '卸载插件 {name}': 'Uninstall plugin {name}',
-  '值存在服务端，改完立刻生效（不必重启服务端）；密钥项加密保存，明文不回传浏览器。': 'Values are stored on the server and take effect immediately (no restart needed); secrets are encrypted and never sent back to the browser in plaintext.',
   '没有匹配「{keyword}」的插件。': 'No plugins match “{keyword}”.',
+  '安装依赖': 'Install dependencies',
+  '把插件声明的 npm 依赖装进这个作用域的插件目录（手工拷进来的插件点这里）':
+    'Install the npm dependencies declared by plugins into this scope’s plugin directory (use this for plugins copied in by hand)',
+  '这个作用域里没有插件声明 npm 依赖，什么都没做':
+    'No plugin in this scope declares npm dependencies; nothing to do',
+  '插件依赖已安装（{root}）': 'Plugin dependencies installed ({root})',
+  '依赖安装失败：{error}': 'Dependency installation failed: {error}',
+  '{name}@{range}（装在这个插件根的共享 node_modules 里）':
+    '{name}@{range} (installed into the plugin root’s shared node_modules)',
+  '这个界面由插件自带的前端 bundle 渲染（不是服务端吐的 UiBlock）':
+    'This surface is rendered by the plugin’s own frontend bundle (not server-produced UiBlocks)',
 
   '已保存子任务模型': 'Subagent model saved',
   '子任务已改为沿用父会话模型': 'Subagent now uses the parent conversation model',
@@ -678,6 +688,7 @@ export const EN: Record<string, string> = {
   '裁掉多出来的部分，不留边': 'Crop the overflow with no edges',
   '整幅都看得见，留出边': 'Show the whole image with edges',
 
+  '传输方式': 'Transport',
   'MCP 给 Agent 外接工具，支持 stdio / http / sse；每个会话在输入框上方工具条选择启用项。': 'MCP connects external tools to the agent; supports stdio / http / sse. Pick which ones to enable per conversation from the toolbar above the composer.',
   '看 {name} 提供了哪些工具': 'See which tools {name} provides',
   '编辑 MCP server {name}': 'Edit MCP server {name}',
@@ -1013,6 +1024,10 @@ export const EN: Record<string, string> = {
   '重新读取这一面': 'Reload this surface',
   '重新读取（插件的 render 会在服务端再跑一次）': 'Reload (the plugin render runs again on the server)',
   '读取中…': 'Loading…',
+  '插件界面加载失败': 'Failed to load the plugin UI',
+  '插件界面崩了': 'The plugin UI crashed',
+  '还没连上服务端': 'Not connected to the server yet',
+  '插件方法「{method}」调用失败': 'Plugin method “{method}” failed',
 
   '未给出原因': 'No reason given',
   '容器正在停止…': 'Stopping container…',
@@ -1357,11 +1372,11 @@ export const EN: Record<string, string> = {
     'The download runs in the background; closing settings will not stop it',
   '安装失败': 'Installation failed',
   '也可以用 playwright MCP': 'Or use playwright MCP',
-  '不想装这份运行时，可以在「MCP」页加一条 Playwright 官方 MCP（npx @playwright/mcp@latest）。会话里挂了带同名工具的 MCP 时，内置浏览器工具会自动让位，不需要手动关。注意两点：MCP 用自己的浏览器实例，右侧「浏览器」面板看不到它的画面；卸载这份运行时会让网页抓取与截图一起不可用。':
-    'If you would rather not install this runtime, add the official Playwright MCP (npx @playwright/mcp@latest) on the MCP page. When a session has an MCP that exposes the same tool names, the built-in browser tools step aside automatically — no need to turn them off. Two caveats: the MCP drives its own browser instance, so the browser panel shows nothing of it; and uninstalling this runtime also takes web fetching and screenshots offline.',
+  '不想装这份运行时，可以在「MCP」页加一条 Playwright 官方 MCP（npx @playwright/mcp@latest）。会话里挂了带同名工具的 MCP 时，内置浏览器工具会自动让位，不需要手动关。注意两点：MCP 用自己的浏览器实例，右侧「浏览器」面板看不到它的画面；没装这份运行时，网页截图工具不会挂出来，网页抓取也只剩不需要浏览器的 fetch 引擎。':
+    'If you would rather not install this runtime, add the official Playwright MCP (npx @playwright/mcp@latest) on the MCP page. When a session has an MCP that exposes the same tool names, the built-in browser tools step aside automatically — no need to turn them off. Two caveats: the MCP drives its own browser instance, so the browser panel shows nothing of it; and without this runtime the screenshot tool is not mounted at all and web fetching only offers the plain fetch engine.',
   '卸载内置浏览器？': 'Uninstall the built-in browser?',
-  '会删掉这份 headless shell（约 150MB）。卸载期间先关掉所有浏览器会话；之后浏览器工具、网页抓取（JS 渲染）与网页截图都会不可用，想再用需要重新下载。':
-    'This deletes the headless shell (about 150MB). All browser sessions are closed first; afterwards browser tools, JS-rendered web fetches and page screenshots stop working until it is downloaded again.',
+  '会删掉这份 headless shell（约 150MB）。卸载期间先关掉所有浏览器会话；之后浏览器工具与网页截图不再挂出来，网页抓取只剩不需要浏览器的 fetch 引擎，想再用需要重新下载。':
+    'This deletes the headless shell (about 150MB). All browser sessions are closed first; afterwards browser tools and page screenshots are no longer mounted and web fetching only offers the plain fetch engine. Download it again to get them back.',
   '选择 MCP（已选 {count} 个）': 'Select MCP ({count} selected)',
   '选择 MCP': 'Select MCP',
   '自动': 'Auto',
@@ -1477,7 +1492,7 @@ export const EN: Record<string, string> = {
   '展开/收起面板': 'Show/hide panel',
   '更多面板入口': 'More panel entries',
   '浏览器里打不开本机路径：{path}（这个动作需要在宿主机上执行）': 'Cannot open a local path in the browser: {path} (this action must run on the host machine)',
-  '{title} · 临时会话：不绑定项目的对话（目录在服务端数据目录）': '{title} · scratch conversation: not bound to a project (directory lives in the server data dir)',
+  '{title} · 临时会话：不指定项目的对话（目录在服务端数据目录）': '{title} · scratch conversation: not bound to a project (directory lives in the server data dir)',
   '多智能体协作：右侧对话是主智能体，画布上的 Agent 由它派活': 'Multi-agent: the chat on the right is the main agent; it assigns work to the agents on the canvas',
   '外部 Agent：{name}': 'External agent: {name}',
 

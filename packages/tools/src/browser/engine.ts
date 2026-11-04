@@ -126,12 +126,12 @@ const startingSessions = new Map<string, Promise<BrowserSession>>()
  * 已存在且存活则原样返回；失效先关掉重建；不存在则新建并 `start`
  * （channel 走 `resolveBrowserChannel`，与 `buildBrowserToolSet` 的 `ensureSession` 一致）。
  *
- * 谁触发：面板 WS 带 `autostart=1` 连上时（用户点开浏览器标签 ≙ 要用它）、面板发来的
- * 第一条控制消息、以及 Agent 的 `browser_*`。
+ * 谁触发：面板发来的 `ensure`（用户点了「启动浏览器」）或第一条控制消息、面板重连时带的
+ * `autostart=1`（`closed` 之后点「启动浏览器」那条路）、以及 Agent 的 `browser_*`。
  *
- * ⚠️ 自动启动那条只能由**正被看着的面板**带（渲染端只在会话标签是当前标签时才带）：
- * 标签内容一律常挂载，后台标签也挂着 `BrowserPane`，无条件自动拉起等于刷新一次页面就
- * 给每个开过浏览器标签的会话白起一个 Playwright。
+ * ⚠️ 自动启动那条**只能由用户显式动作带**：`BrowserPane` 不再「打开面板就拉起浏览器」，
+ * 连接一律不带 `autostart`，只有用户点那颗按钮才发 `ensure`（2026-11 用户要求）。
+ * 别再把「面板正被看着」当成「要用它」。
  */
 export async function ensureBrowserSession(
   sessionId: string,

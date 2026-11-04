@@ -64,7 +64,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@fizz/ui/dialog'
-import { Segmented } from '@fizz/agent-kit/features/api/Segmented'
+import { Segmented } from '@fizz/agent-kit/shared/components/Segmented'
 import MonacoEditor from '@fizz/agent-kit/features/files/MonacoEditor'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { openApiClientSocket } from '@fizz/agent-client/web-host'
@@ -723,7 +723,12 @@ export function WsPage({ requestId }: { requestId: string }) {
       {/* 日志区：主区域，占满剩余高度（overflow-hidden：被压扁时裁掉，不要溢到发送区上） */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <div className="flex shrink-0 items-center gap-3 px-3 py-1.5 text-xs">
-          <Segmented options={LOG_FILTERS} value={filter} onChange={setFilter} />
+          <Segmented
+            ariaLabel="日志筛选"
+            options={LOG_FILTERS}
+            value={filter}
+            onChange={setFilter}
+          />
           <span className="text-muted-foreground">{shown.length} 条</span>
           <span className="text-muted-foreground">
             <ArrowUpRight className="mr-0.5 inline size-3" />
@@ -795,7 +800,12 @@ export function WsPage({ requestId }: { requestId: string }) {
       >
         <div className="flex shrink-0 items-center gap-3 px-3 py-1.5 text-xs">
           <span className="shrink-0 font-medium text-muted-foreground">发送</span>
-          <Segmented options={MSG_ENCODINGS} value={encoding} onChange={setEncoding} />
+          <Segmented
+            ariaLabel="发送编码"
+            options={MSG_ENCODINGS}
+            value={encoding}
+            onChange={setEncoding}
+          />
           <span className="truncate text-muted-foreground">
             {encoding === 'text' ? '按文本帧发送' : '把内容当 base64 解成二进制帧发送'}
           </span>

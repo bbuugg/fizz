@@ -16,10 +16,21 @@ import {
   CircleIcon,
   ClockIcon,
   CopyIcon,
+  FilePenIcon,
+  FilePlusIcon,
+  FileSearchIcon,
+  FileTextIcon,
+  FileXIcon,
+  FolderOpenIcon,
+  FolderTreeIcon,
   Loader2Icon,
+  SearchIcon,
   Square,
+  SquareTerminalIcon,
+  TerminalIcon,
   WrenchIcon,
   XCircleIcon,
+  type LucideIcon,
 } from "lucide-react";
 import { Button } from "@fizz/ui/button";
 import type { ComponentProps, ReactNode } from "react";
@@ -298,6 +309,60 @@ function ToolHeadLabel({ titleText, detail }: { titleText: string; detail?: stri
   );
 }
 
+/**
+ * 工具卡头部图标：**命令类给终端、文件类给文件**，认不出的才退回扳手。
+ *
+ * 判据用 `type`（调用点一律传 `tool-<工具名>`）而不是标题：标题常常是模型写的 `intent`
+ * （「修一下登录流程」），认工具只能靠名字；而 `type` 每个调用点本来就在传，不用再加一条 prop。
+ *
+ * 工具名与 `shared/lib/parts.ts` 的 `TOOL_LABELS` 是同一套；这里只列**需要换图标**的那些，
+ * 认不出的一律扳手 —— 新工具漏配图标最多是沿用旧观感，不会变成空白。
+ *
+ * 为什么命令类要分开：一条命令的结果区是一整块终端面板（`LiveOutputBlock`），
+ * 与「读文件 / 写文件」那种文件卡片是两种东西。都挂扳手时，扫对话流只能靠读字分辨
+ * 这一步是改代码还是跑命令。
+ *
+ * 文件类是一套 `File*` 家族：读 / 写 / 改 / 删 一字之差靠字形分（同一份文件从读、改到删
+ * 在流里是连着的三张卡，形状一致才看得出是同一件事的推进）。搜内容用放大镜、找文件用
+ * 「文件 + 放大镜」、列目录用文件夹 —— 这三步常挨在一起，各给一颗才不至于一路扳手。
+ *
+ * 终端助手那四个（`run_in_terminal` / `read_terminal_output` / `send_keys` /
+ * `list_terminal_sessions`）用方形终端：它们敲在**用户眼前那条**终端里，与
+ * `execute_command`（服务端起一个子进程）失败面完全不同 —— 理由与 `TOOL_LABELS` 里
+ * 那段说明一致，卡片上不该混成同一个图标。
+ */
+const TOOL_HEAD_ICONS: Record<string, LucideIcon> = {
+  execute_command: TerminalIcon,
+  run_in_terminal: SquareTerminalIcon,
+  read_terminal_output: SquareTerminalIcon,
+  send_keys: SquareTerminalIcon,
+  list_terminal_sessions: SquareTerminalIcon,
+  // 文件类：名字取自 TOOL_LABELS，别按直觉另起（`read` / `Write` 之类是 ACP agent 自己的名）
+  read_file: FileTextIcon,
+  write_file: FilePlusIcon,
+  edit_file: FilePenIcon,
+  delete_file: FileXIcon,
+  search_files: SearchIcon,
+  find_files: FileSearchIcon,
+  list_files: FolderOpenIcon,
+  list_dirs: FolderTreeIcon,
+};
+
+/**
+ * 工具名 → 头部图标；认不出的一律扳手。
+ *
+ * 导出给过程分组的抬头用（`TurnStepGroup` 的 `kind + toolName`）：那里与这里必须是**同一颗**，
+ * 否则展开前后（组抬头 / 组内的卡）同一步会换图标。
+ */
+export function toolHeadIcon(toolName: string): LucideIcon {
+  return TOOL_HEAD_ICONS[toolName] ?? WrenchIcon;
+}
+
+/** `tool-<工具名>` → 头部图标；不是工具类型（`dynamic-tool` 之类）也退到扳手 */
+function toolTypeIcon(type: string): LucideIcon {
+  return toolHeadIcon(type.startsWith("tool-") ? type.slice("tool-".length) : type);
+}
+
 export const ToolHeader = ({
   className,
   title,
@@ -339,6 +404,8 @@ export const ToolHeader = ({
    * click —— 触屏上「点标题看完整命令」会连带失效。
    */
   const titleText = title ?? type.split("-").slice(1).join("-");
+  /** 头部那颗图标：命令类工具是终端，其余是扳手（见 `TOOL_HEAD_ICONS`） */
+  const HeadIcon = toolTypeIcon(type);
   /**
    * 标题能不能点开全文弹窗。
    *
@@ -362,7 +429,7 @@ export const ToolHeader = ({
       {...props}
     >
       <span className="inline-flex min-w-0 max-w-full items-center gap-2">
-        <WrenchIcon className="size-4 shrink-0" />
+        <HeadIcon className="size-4 shrink-0" />
         {/*
          * 标题**不截断**（宽度不够就折行），明细**单行截断** —— 两段的待遇与理由见
          * `ToolHeadLabel`。核心是：「这一步干什么」是扫对话流时唯一必须读懂的那句，

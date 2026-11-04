@@ -17,6 +17,7 @@ import { TriggersPanel } from '@fizz/agent-kit/features/tasks/TriggersPanel'
 import { LocalFileTabContent } from '@fizz/agent-kit/features/local-file/LocalFileTabContent'
 import { NoteTabContent } from '@fizz/agent-kit/features/notes/NoteTabContent'
 import { PluginTabContent } from '@fizz/agent-kit/features/plugins/PluginTabContent'
+import { SettingsTabContent } from '@fizz/agent-kit/features/settings/SettingsTabContent'
 import { NEW_API_REQUEST_ID, NEW_WS_REQUEST_ID } from '@fizz/agent-kit/features/api/api-client'
 import {
   apiRequestIdOfTabKey,
@@ -28,6 +29,7 @@ import {
   isNoteTabKey,
   isPluginTabKey,
   isScriptsTabKey,
+  isSettingsTabKey,
   isSftpTabKey,
   isSysmonTabKey,
   isTriggersTabKey,
@@ -197,6 +199,12 @@ export function PanelTabContent({ tabKey, active }: { tabKey: string; active: bo
   // （与脚本编辑页 / 侧栏同一份），这里不需要传任何东西。
   if (isScriptsTabKey(tabKey)) {
     return <ScriptsPanel />
+  }
+
+  // 设置面板：全局单例（`settings:list`）。它与对话共享同一个 AppProvider（这是把独立
+  // 设置窗口并回主区域的全部意义），分组请求记在登记表里，见 `openSettingsTab`。
+  if (isSettingsTabKey(tabKey)) {
+    return <SettingsTabContent />
   }
 
   // 插件界面标签：内容由**服务端**的 render() 产出（插件不写 React，见 PluginSurfaceBody）。

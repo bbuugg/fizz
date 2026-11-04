@@ -3,5 +3,6 @@
   "name": "系统提示词",
   "version": "1.0.0",
   "apiVersion": 1,
-  "entry": "index.ts"
+  "entry": "index.ts",
+  "description": "每轮对话追加一段自定义系统提示词，作为长期约定（回复语言、代码风格等）"
 }

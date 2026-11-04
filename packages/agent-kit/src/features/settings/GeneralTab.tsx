@@ -65,12 +65,12 @@ import {
 } from '@fizz/agent-kit/shared/lib/wake-lock'
 import { AppUpdateSection } from './AppUpdateSection'
 import {
-  ChoiceChips,
-  type ChoiceChipOption
-} from '@fizz/agent-kit/features/settings/ChoiceChips'
+  Segmented,
+  type SegmentedOption
+} from '@fizz/agent-kit/shared/components/Segmented'
 
 /** 屏幕常亮的档位：关 / 只在一轮 Agent 跑的时候 / 页面在前台就始终 */
-const WAKE_LOCK_OPTIONS: ReadonlyArray<ChoiceChipOption<WakeLockMode>> = [
+const WAKE_LOCK_OPTIONS: ReadonlyArray<SegmentedOption<WakeLockMode>> = [
   { value: 'off', label: '关闭', title: '不申请屏幕唤醒锁' },
   {
     value: 'running',
@@ -177,10 +177,7 @@ export function GeneralTab({ app }: { app: AgentApp }) {
           <Languages className="size-3.5" />
           {tr('界面语言')}
         </div>
-        <p className="text-xs leading-4 text-muted-foreground">
-          {tr('切换后界面立即生效；Agent 的工具说明与系统提示词会在下一轮对话按新语言生成。')}
-        </p>
-        <ChoiceChips
+        <Segmented
           ariaLabel={tr('界面语言')}
           value={app.language}
           onChange={(next) => void app.saveLanguage(next)}
@@ -313,7 +310,7 @@ export function GeneralTab({ app }: { app: AgentApp }) {
         </p>
         {wakeSupported ? (
           <>
-            <ChoiceChips
+            <Segmented
               ariaLabel={tr('屏幕常亮')}
               value={wakeMode}
               onChange={saveWakeLockMode}

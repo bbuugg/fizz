@@ -3,5 +3,6 @@
   "name": "RTK 命令重写",
   "version": "1.0.0",
   "apiVersion": 1,
-  "entry": "index.ts"
+  "entry": "index.ts",
+  "description": "让 Agent 执行的 shell 命令透明地走一遍 RTK，自动过滤冗长输出"
 }

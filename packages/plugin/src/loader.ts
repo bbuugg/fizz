@@ -30,11 +30,13 @@ import { ModelsService } from './services/models'
 import type {
   Plugin,
   PluginCandidate,
+  PluginClientManifest,
   PluginDescriptor,
   PluginManifest,
   PluginObject,
   PluginRoot,
   PluginSettings,
+  PluginStaticSurface,
   PluginUploadSourceInfo,
   StandardPluginSource
 } from './types'
@@ -53,22 +55,188 @@ const MANIFEST_FIELDS = new Set([
   'version',
   'apiVersion',
   'entry',
+  'icon',
   'description',
-  'author'
+  'author',
+  'client',
+  'dependencies',
+  'engines'
 ])
 const PLUGIN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/
+/** 前端 bundle 只认这两种扩展名（浏览器能直接吃） */
+const CLIENT_EXT = new Set(['.js', '.mjs'])
+/**
+ * 由宿主别名提供、插件不许自带的包（唯一真源，`HOST_SHARED_PACKAGES` 从它派生）。
+ * 两个处都要用：别名映射（加载期）+ dependencies 校验（发现期）。
+ */
+const HOST_ALIAS_PACKAGES = new Set(['zod', 'ai'])
+/** npm 包名（含 scope）；故意比 npm 官方校验松一点，但挡掉 URL / `file:` / 路径 */
+const PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/
+/**
+ * 依赖版本号只允许 semver 区间的字符：`^` `~` `>` `<` `=` `*` `x` `||` ` - ` `1.2.3`。
+ * 挡掉 `file:` / `link:` / `git+https:` / `npm:` —— 那几种能读本机任意路径、或绕过 registry，
+ * 等于给插件一个「从任意来源拉代码并执行」的后门（依赖代码是照常在进程内跑的）。
+ */
+const SEMVER_RANGE_RE = /^[\s\d.xX*^~<>|=+-]{1,64}$/
 
-/** 入口路径必须是目录内相对路径、是 .ts / .js、且不许跳出目录 */
-function normalizeEntryPath(raw: unknown): string | null {
+/** 目录内相对路径校验（入口 / 前端 bundle 共用） */
+function normalizeRelPath(raw: unknown, allowedExt: Set<string>): string | null {
   if (typeof raw !== 'string') return null
   const value = raw.trim().replace(/\\/g, '/')
   if (!value || value.startsWith('/') || value.includes('\0')) return null
   const parts = value.split('/')
   if (parts.some((part) => !part || part === '.' || part === '..')) return null
-  if (!ENTRY_EXT.has(extname(value).toLowerCase())) return null
+  if (!allowedExt.has(extname(value).toLowerCase())) return null
   if (value.toLowerCase().endsWith('.d.ts')) return null
   return parts.join('/')
+}
+
+/** 入口路径必须是目录内相对路径、是 .ts / .js、且不许跳出目录 */
+function normalizeEntryPath(raw: unknown): string | null {
+  return normalizeRelPath(raw, ENTRY_EXT)
+}
+
+/**
+ * 清单里允许的面种类：**只有 `view`**。
+ *
+ * 早先允许 `activityBar` / `sider`（一个插件占一颗图标 + 一份侧栏），结果图标栏被插件数量
+ * 撑满、每个插件还要用户自己记「哪颗图标是哪个插件」。现在入口统一是活动栏那颗「插件」：
+ * 侧栏是插件列表，点插件在 `PanelView` 里开标签页 —— 所以清单里只能声明标签页。
+ */
+const SURFACE_KINDS = new Set(['view'])
+const SURFACE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+
+/**
+ * 校验 `manifest.client`。
+ *
+ * 三条硬要求，都是为了「前端拿到的是**已经能跑的东西**」：
+ * - `entry` 必须是 `.js` / `.mjs`：宿主不做运行时转译（见 types.ts 的说明）；
+ * - `surfaces` 的 `kind` 只认宿主认识的那三种（`activityBar` / `sider` / `view`），
+ *   写错一个字的后果是「插件装了但界面一片空白」，不如直接在发现阶段报出来；
+ * - 声明了 `surfaces` 却没给 `entry` 的插件没有意义（谁都不会渲染它），一并拒。
+ */
+function parseClientManifest(raw: unknown): {
+  client: PluginClientManifest
+  clientEntry: string
+} | null {
+  if (raw === undefined) return null
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('client 必须是一个对象（{ "entry": "client.js", "surfaces": [] }）')
+  }
+  const record = raw as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    if (key !== 'entry' && key !== 'surfaces') {
+      throw new Error(`client 里有未知字段「${key}」`)
+    }
+  }
+  const clientEntry = normalizeRelPath(record.entry, CLIENT_EXT)
+  if (!clientEntry) throw new Error('client.entry 不合法：必须是目录内的 .js / .mjs 相对路径')
+  const rawSurfaces = record.surfaces
+  if (rawSurfaces !== undefined && !Array.isArray(rawSurfaces)) {
+    throw new Error('client.surfaces 必须是数组')
+  }
+  const list = (rawSurfaces as unknown[] | undefined) ?? []
+  if (list.length > 32) throw new Error('client.surfaces 最多 32 个')
+  const surfaces: PluginStaticSurface[] = []
+  const seen = new Set<string>()
+  for (const item of list) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error('client.surfaces 的每一项必须是对象')
+    }
+    const surface = item as Record<string, unknown>
+    for (const key of Object.keys(surface)) {
+      if (key === 'opens') {
+        throw new Error(
+          'client.surfaces 不再有 opens：插件不占图标栏，点插件默认打开 order 最小的那个面'
+        )
+      }
+      if (!['kind', 'id', 'title', 'icon', 'order'].includes(key)) {
+        throw new Error(`client.surfaces 里有未知字段「${key}」`)
+      }
+    }
+    const kind = typeof surface.kind === 'string' ? surface.kind.trim() : ''
+    if (!SURFACE_KINDS.has(kind)) {
+      throw new Error(
+        `client.surfaces 的 kind 只能是 view（收到「${kind}」）：插件不再占图标栏、也没有自己的侧栏，` +
+          '入口统一是活动栏那颗「插件」——点插件就在主区域开标签页'
+      )
+    }
+    const surfaceId = typeof surface.id === 'string' ? surface.id.trim() : ''
+    if (!SURFACE_ID_RE.test(surfaceId)) throw new Error('client.surfaces 的 id 不合法')
+    // 同一种面里 id 必须唯一：bundle 用 id 认领渲染函数，重名等于后一个永远渲染不出来
+    const dedupeKey = `${kind}:${surfaceId}`
+    if (seen.has(dedupeKey)) throw new Error(`client.surfaces 里有重复的 ${kind}/${surfaceId}`)
+    seen.add(dedupeKey)
+    const title = typeof surface.title === 'string' ? surface.title.trim() : ''
+    if (!title || title.length > 100) throw new Error(`client.surfaces「${surfaceId}」的 title 不合法`)
+    const icon = typeof surface.icon === 'string' ? surface.icon.trim() : ''
+    if (icon && icon.length > 100_000) throw new Error(`client.surfaces「${surfaceId}」的 icon 太大`)
+    let order: number | undefined
+    if (surface.order !== undefined) {
+      if (typeof surface.order !== 'number' || !Number.isFinite(surface.order)) {
+        throw new Error(`client.surfaces「${surfaceId}」的 order 必须是数字`)
+      }
+      order = Math.round(surface.order)
+    }
+    surfaces.push({
+      kind: kind as PluginStaticSurface['kind'],
+      id: surfaceId,
+      title,
+      ...(icon ? { icon } : {}),
+      ...(order === undefined ? {} : { order })
+    })
+  }
+  return { client: { entry: clientEntry, ...(surfaces.length ? { surfaces } : {}) }, clientEntry }
+}
+
+/**
+ * 校验 `manifest.dependencies`。
+ *
+ * 拒绝 `@fizz/*` 是**必须的**，不是洁癖：宿主的 `ctx` 就是 `@fizz/plugin` 的实例，
+ * 插件一旦自带另一份，`ctx instanceof Context` 为假、`ctx.set` 写进另一个世界，
+ * 表现是「插件加载了但什么都不生效」——没有任何报错，最难查的一类。
+ */
+function parseDependencies(raw: unknown): Record<string, string> | undefined {
+  if (raw === undefined) return undefined
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('dependencies 必须是 { "包名": "版本区间" } 对象')
+  }
+  const entries = Object.entries(raw as Record<string, unknown>)
+  if (entries.length > 64) throw new Error('dependencies 最多 64 项')
+  const out: Record<string, string> = {}
+  for (const [name, range] of entries) {
+    if (!PACKAGE_NAME_RE.test(name)) throw new Error(`dependencies 里的包名不合法：「${name}」`)
+    if (name.startsWith('@fizz/')) {
+      throw new Error(`dependencies 不能声明宿主的包「${name}」（它由宿主提供，自带一份会让 ctx 分裂）`)
+    }
+    // zod / ai 走宿主别名（见 HOST_SHARED_PACKAGES）：写进 dependencies 也不会生效，
+    // 静默忽略比报错更难查 —— 「为什么我锁的版本没起作用」会查一整天。
+    if (HOST_ALIAS_PACKAGES.has(name)) {
+      throw new Error(`dependencies 不能声明「${name}」：它由宿主提供（别名指向宿主那份），写了也不会生效`)
+    }
+    if (typeof range !== 'string' || !SEMVER_RANGE_RE.test(range.trim())) {
+      throw new Error(`dependencies「${name}」的版本区间不合法（只支持 semver 区间，不支持 file:/git/url）`)
+    }
+    out[name] = range.trim()
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+/** `engines.fizz`：作者声明「至少要这个版本的宿主」，不满足就整个不加载 */
+function parseEngines(raw: unknown): { fizz?: string } | undefined {
+  if (raw === undefined) return undefined
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('engines 必须是对象（{ "fizz": ">=1.2.0" }）')
+  }
+  const record = raw as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    if (key !== 'fizz') throw new Error(`engines 里有未知字段「${key}」`)
+  }
+  if (record.fizz === undefined) return undefined
+  const fizz = typeof record.fizz === 'string' ? record.fizz.trim() : ''
+  if (!fizz || !SEMVER_RANGE_RE.test(fizz)) throw new Error('engines.fizz 不合法（semver 区间，如 ">=1.2.0"）')
+  return { fizz }
 }
 
 /**
@@ -77,7 +245,11 @@ function normalizeEntryPath(raw: unknown): string | null {
  * 只要有一项不合格就抛错（调用方决定是跳过还是把原因报给安装者）——
  * **符合接口的目录才会被使用**，不做「缺字段也给默认值」的宽容解析。
  */
-export async function readPluginManifest(dir: string): Promise<{ manifest: PluginManifest; file: string }> {
+export async function readPluginManifest(dir: string): Promise<{
+  manifest: PluginManifest
+  file: string
+  clientFile?: string
+}> {
   const manifestPath = join(dir, PLUGIN_MANIFEST_FILE)
   let text: string
   try {
@@ -114,6 +286,16 @@ export async function readPluginManifest(dir: string): Promise<{ manifest: Plugi
   }
   const entry = normalizeEntryPath(record.entry)
   if (!entry) throw new Error('entry 不合法：必须是目录内的 .ts / .js 相对路径')
+  /*
+   * 插件图标：只收 `data:image/*` 的 data URI。
+   * 和 `ctx.ui.icon` 同一条理由 —— 清单是服务端原样发给前端的，一个 `javascript:` 或
+   * 远程 URL 就会变成「插件列表里那个 <img> 想加载什么就加载什么」。
+   */
+  const iconRaw = typeof record.icon === 'string' ? record.icon.trim() : ''
+  if (iconRaw && !iconRaw.startsWith('data:image/')) {
+    throw new Error('icon 必须是 data:image/* 的 data URI（如 data:image/svg+xml,...）')
+  }
+  if (iconRaw.length > 64_000) throw new Error('icon 太大：data URI 请控制在 64KB 以内')
   const description = typeof record.description === 'string' ? record.description.trim() : ''
   const author = typeof record.author === 'string' ? record.author.trim() : ''
   const dirAbs = resolve(dir)
@@ -123,6 +305,21 @@ export async function readPluginManifest(dir: string): Promise<{ manifest: Plugi
   }
   const info = await fs.stat(file).catch(() => null)
   if (!info?.isFile()) throw new Error(`entry 指向的文件不存在：${entry}`)
+
+  const clientParsed = parseClientManifest(record.client)
+  let clientFile: string | undefined
+  if (clientParsed) {
+    const abs = resolve(dirAbs, clientParsed.clientEntry)
+    if (abs !== dirAbs && !abs.startsWith(dirAbs + sep)) {
+      throw new Error('client.entry 跳出了插件目录')
+    }
+    const clientInfo = await fs.stat(abs).catch(() => null)
+    if (!clientInfo?.isFile()) throw new Error(`client.entry 指向的文件不存在：${clientParsed.clientEntry}`)
+    clientFile = abs
+  }
+  const dependencies = parseDependencies(record.dependencies)
+  const engines = parseEngines(record.engines)
+
   return {
     manifest: {
       id,
@@ -130,10 +327,15 @@ export async function readPluginManifest(dir: string): Promise<{ manifest: Plugi
       version,
       apiVersion: PLUGIN_API_VERSION,
       entry,
+      ...(iconRaw ? { icon: iconRaw } : {}),
       ...(description ? { description } : {}),
-      ...(author ? { author } : {})
+      ...(author ? { author } : {}),
+      ...(clientParsed ? { client: clientParsed.client } : {}),
+      ...(dependencies ? { dependencies } : {}),
+      ...(engines ? { engines } : {})
     },
-    file
+    file,
+    ...(clientFile ? { clientFile } : {})
   }
 }
 
@@ -196,7 +398,8 @@ function candidate<S extends string>(
   root: PluginRoot<S>,
   manifest: PluginManifest,
   file: string,
-  dir: string
+  dir: string,
+  clientFile?: string
 ): PluginCandidate<S> {
   return {
     id: manifest.id,
@@ -205,7 +408,8 @@ function candidate<S extends string>(
     file,
     dir,
     root: root.dir,
-    source: root.source
+    source: root.source,
+    ...(clientFile ? { clientFile } : {})
   }
 }
 
@@ -231,8 +435,8 @@ export async function scanPluginRoot<S extends string>(
     if (!entry.isDirectory()) continue
     const dir = join(root.dir, entry.name)
     try {
-      const { manifest, file } = await readPluginManifest(dir)
-      out.push(candidate(root, manifest, file, dir))
+      const { manifest, file, clientFile } = await readPluginManifest(dir)
+      out.push(candidate(root, manifest, file, dir, clientFile))
     } catch (err) {
       console.warn(`[plugin] 跳过 ${dir}：${err instanceof Error ? err.message : String(err)}`)
     }
@@ -321,8 +525,11 @@ export async function discoverPlugins(opts: {
  * 个硬限制。别名把这两个裸包名指到**宿主自己那份**（版本因此总与宿主一致，插件不必自带依赖）。
  *
  * 只映射这两个：它们是「写工具」的最小依赖面，再多了就等于把宿主的依赖树变成插件的公共 API。
+ *
+ * ⚠️ 别名是**强制**的：插件 `dependencies` 里写 `zod` / `ai` 会在发现阶段直接报错
+ * （见 `parseDependencies`），因为写进去也不会生效。
  */
-const HOST_SHARED_PACKAGES = ['zod', 'ai'] as const
+const HOST_SHARED_PACKAGES = [...HOST_ALIAS_PACKAGES]
 
 /** 解析宿主自己那份共享包；解析不到（裁剪过的发行版）就不给别名，插件照常报「找不到模块」 */
 function hostSharedAliases(): Record<string, string> {

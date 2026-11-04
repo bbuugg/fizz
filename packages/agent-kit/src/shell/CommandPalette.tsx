@@ -15,6 +15,7 @@
  * 面板高度固定，二级切换不改变外观，只有功能与列表内容变化。
  */
 import { ScriptPaletteList } from '@fizz/agent-kit/features/scripts/ScriptPaletteList'
+import { hostPaletteFields } from '@fizz/agent-kit/features/hosts/host-format'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { formatShortcut } from '@fizz/agent-kit/shared/lib/shortcuts'
@@ -391,27 +392,25 @@ export function CommandPalette({
             <CommandGroup heading={t("主机")}>
               {app.sshHosts.map((host) => {
                 const isLocal = host.kind === 'local'
-                // 副标题：SSH = user@host:port；本机终端 = shell 名（+ 有参数 / 自动命令就带上）
-                const subtitle = isLocal
-                  ? [
-                      host.shellName ?? '默认终端',
-                      ...(host.args?.length ? [`${host.args.length} 个参数`] : [])
-                    ].join(' · ')
-                  : `${host.username}@${host.host}:${host.port}`
+                /**
+                 * 标题 / 副标题 / 关键词统一由 `hostPaletteFields` 给（纯函数，有单测）。
+                 *
+                 * ⚠️ 不要在这里就地拼 `['ssh', host.name, host.host, host.username]`：
+                 * cmdk 会对 keywords 逐个 `.trim()`，数据里只要有一条缺 `username` 的记录
+                 * （例如别的版本写进去的 `kind: 'vnc'`，服务端原样透传）就整个面板白屏，
+                 * 「打开主机」从此进不去。
+                 */
+                const { label, subtitle, keywords } = hostPaletteFields(host)
                 return (
                   <CommandItem
                     key={host.id}
                     // value 参与 cmdk 的本地过滤：把能搜的字段都拼进来
-                    value={`${host.name} ${subtitle}`}
-                    keywords={
-                      isLocal
-                        ? ['terminal', '终端', '本机', host.name]
-                        : ['ssh', host.name, host.host, host.username]
-                    }
+                    value={`${label} ${subtitle}`}
+                    keywords={keywords}
                     onSelect={run(() => onOpenHost(host))}
                   >
                     {isLocal ? <SquareTerminal /> : <Server />}
-                    <span className="truncate">{host.name}</span>
+                    <span className="truncate">{label}</span>
                     <span className="ml-auto max-w-40 truncate font-mono text-xs text-muted-foreground">
                       {subtitle}
                     </span>

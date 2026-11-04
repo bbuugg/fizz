@@ -392,7 +392,7 @@ function browserOpenSshTerminal({ hostId, cols, rows }: SshTerminalOpenOptions):
  * （与后端引擎、Agent 工具是同一个会话）。token 走查询参数（浏览器 WebSocket 拿不到
  * 自定义请求头）。会话不存在时服务端会带原因 close，UI 据此显示「浏览器未启动」。
  *
- * `autostart=1` = 连上就把浏览器拉起来（面板正被看着时由调用方带上）。
+ * `autostart=1` = 连上就把浏览器拉起来（只有面板「启动浏览器」后的那次重连会带）。
  */
 function browserOpenBrowserSocket(
   conversationId: string,

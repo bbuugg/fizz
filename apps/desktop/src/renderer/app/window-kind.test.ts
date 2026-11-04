@@ -5,17 +5,11 @@ describe('resolveWindowKind', () => {
   it('defaults to main when there is no window param', () => {
     expect(resolveWindowKind('')).toEqual({ kind: 'main' })
   })
-  it('detects the settings window', () => {
-    expect(resolveWindowKind('?window=settings')).toEqual({ kind: 'settings' })
-  })
-  it('passes the initial settings tab through', () => {
-    expect(resolveWindowKind('?window=settings&tab=models')).toEqual({
-      kind: 'settings',
-      initialTab: 'models'
-    })
-  })
-  it('drops an unknown settings tab (query params are untrusted)', () => {
-    expect(resolveWindowKind('?window=settings&tab=../../etc')).toEqual({ kind: 'settings' })
+  // 设置在 2026-11 并回了主区域的标签页（`agent-kit` 的 `settings:list`）。
+  // 这条在防的回归：有人照着旧注释又加一条 `?window=settings` 分支，等于把独立设置窗口
+  // （第二个渲染进程 = 第二份 store 单例）请回来。
+  it('treats a stale ?window=settings as the main window', () => {
+    expect(resolveWindowKind('?window=settings&tab=models')).toEqual({ kind: 'main' })
   })
   it('detects a conversation float window and passes its seed id', () => {
     expect(resolveWindowKind('?window=conversation&conversationId=abc')).toEqual({

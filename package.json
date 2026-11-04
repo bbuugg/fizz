@@ -1,6 +1,6 @@
 {
   "name": "fizz",
-  "version": "0.0.17",
+  "version": "0.0.18",
   "description": "Fizz",
   "private": true,
   "type": "module",
@@ -15,6 +15,7 @@
     "version:set": "node scripts/version.mjs",
     "ui:add": "shadcn add -c packages/ui",
     "copy:monaco": "node scripts/copy-monaco.cjs",
+    "build:plugins": "node scripts/build-plugin-client.mjs",
     "dev:web": "npm run copy:monaco && vite -c apps/web/vite.config.ts",
     "dev:mobile": "npm run copy:monaco && npm run dev --workspace @fizz/mobile",
     "dev:desktop": "npm run copy:monaco && node scripts/dev.mjs --app apps/desktop",

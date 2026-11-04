@@ -307,9 +307,30 @@ export function isScriptsTabKey(key: string): boolean {
 }
 
 /**
+ * 设置面板唯一的标签 key（`settings:list`，**全局单例**）。
+ *
+ * 为什么设置也进主区域：桌面端原先把它开成独立 BrowserWindow
+ * （`apps/desktop/src/renderer/app/SettingsWindow.tsx`），而那是**另一个渲染进程 =
+ * 另一份模块级 store 单例**。于是「在设置里停用了插件，主窗口活动栏的图标还在」
+ * 这类问题只能靠焦点重拉 / 轮询去猜（见 `shared/lib/plugin-surfaces.ts` 的注释）；
+ * 改成标签后设置与对话共享同一个 `AppProvider`，改完主窗口立刻就是对的。
+ *
+ * 与日志 / 脚本 / 定时任务同一取舍：一份现场、一条标签，已开着时只聚焦。
+ */
+const SETTINGS_TAB_PREFIX = 'settings:'
+
+export function settingsTabKey(): string {
+  return `${SETTINGS_TAB_PREFIX}list`
+}
+
+export function isSettingsTabKey(key: string): boolean {
+  return key.startsWith(SETTINGS_TAB_PREFIX)
+}
+
+/**
  * 是不是工具标签（主机 / 本机终端 / 接口请求 / 脚本管理面板 / 插件界面 / SFTP 文件管理 /
- * 隧道 / 应用日志 / 文件管理 / 系统监控 / 定时任务 / 笔记 / 外部文件）—— 它们不参与
- * 「当前会话」的同步。
+ * 隧道 / 应用日志 / 文件管理 / 系统监控 / 定时任务 / 笔记 / 外部文件 / 设置面板）—— 它们
+ * 不参与「当前会话」的同步。
  *
  * 容器型项目的预览**不在此列**：它是会话 SidePanel 的一条标签（`SideTabKey` 的
  * `preview`），不是主区域的工具标签。
@@ -334,7 +355,8 @@ export function isToolTabKey(key: string): boolean {
     isSysmonTabKey(key) ||
     isTriggersTabKey(key) ||
     isNoteTabKey(key) ||
-    isLocalFileTabKey(key)
+    isLocalFileTabKey(key) ||
+    isSettingsTabKey(key)
   )
 }
 

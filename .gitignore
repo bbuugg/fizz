@@ -18,6 +18,10 @@ src/renderer/public/monaco-editor
 .workbuddy
 # 临时验证产物（resolve-model 单文件打包 / 导出的明文配置），用完即弃
 .tooltest
+# 插件在自己目录里落盘的运行时数据（redis 的连接表，含明文密码）
+**/.redis-connections.json
+# build:plugins 的中间目录（构建失败时会留下，别入库）
+plugins/*/.build
 # mobile 的 Capacitor 生成物（P5 起壳加载自己的 dist，www 那套已废弃；老目录留着不碍事）
 apps/mobile/www
 apps/mobile/android

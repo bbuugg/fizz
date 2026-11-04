@@ -21,7 +21,7 @@
  *
  * ## 页面上的三组切换都是 shadcn `Tabs`
  *
- * 原先这三处用的是 `features/api/Segmented`（ToggleGroup 拼的分段控件），现在统一走
+ * 原先这三处用的是分段控件（现在是 `shared/components/Segmented`），现在统一走
  * `shared/ui/tabs`，视觉与设置页 / 弹窗里的 Tab 一致：
  *
  * - **请求构造区**（请求头 / 参数 / 请求体）—— 最外层那棵 `Tabs`；

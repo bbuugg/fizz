@@ -21,9 +21,9 @@
  *   是**位置标记**（眼睛扫一列时不用读字就知道哪一组在动）；
  * - **进行中 + 展开** → 同样是三根竖条（`WorkBars`）：抬头这时是「正在工作…」一句话，
  *   左边不换形状，免得同一列在折叠 / 展开之间换两种动效；
- * - **本轮还在跑、但在等模型下一步** → 一颗类型图标（`kind`：工具 → 扳手、思考 → 脑，与
- *   工具卡 `ToolHeader` / 思考条 `ReasoningTrigger` 同一套）：这时抬头是「做什么」，那行字
- *   说不出「这一步是工具还是思考」，只有这颗图标能一眼分辨；
+ * - **本轮还在跑、但在等模型下一步** → 一颗类型图标（`kind`：该工具的图标（执行命令 → 终端，
+ *   认不出的扳手）/ 思考 → 脑，与工具卡 `ToolHeader` / 思考条 `ReasoningTrigger` 同一套）：
+ *   这时抬头是「做什么」，那行字说不出「这一步是工具还是思考」，只有这颗图标能一眼分辨；
  * - **本轮已结束**（抬头是「已工作 1 分 12 秒」）→ **什么都不放**：那是一句总结，
  *   不是「下一步是什么」，前面挂颗扳手 / 脑反而在暗示「还有一步工具要跑」（用户要求）。
  *
@@ -47,6 +47,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@fizz/ui/tooltip'
 import { ShimmerLabel } from '@fizz/agent-kit/shared/ai-elements/shimmer-label'
 import { WorkBars } from '@fizz/agent-kit/shared/ai-elements/work-bars'
 import { ReasoningPreview } from '@fizz/agent-kit/shared/ai-elements/reasoning'
+import { toolHeadIcon } from '@fizz/agent-kit/shared/ai-elements/tool'
 import { useConversationOptional } from '@fizz/agent-kit/shared/ai-elements/conversation'
 import {
   Collapsible,
@@ -63,6 +64,7 @@ export function TurnStepGroup({
   active = false,
   live = false,
   kind,
+  toolName,
   onStop,
   children
 }: {
@@ -70,14 +72,19 @@ export function TurnStepGroup({
   label: string
   /**
    * 这一段**最后一步是什么类型**，只决定名字左边那颗图标：
-   * `tool` → 扳手（与工具卡 `ToolHeader` 同一颗），`reasoning` → 脑（与思考条
-   * `ReasoningTrigger` 同一颗）。不传就不渲染图标。
+   * `tool` → 该工具的图标（`toolHeadIcon`：执行命令是终端，认不出的退回扳手），
+   * `reasoning` → 脑（与思考条 `ReasoningTrigger` 同一颗）。不传就不渲染图标。
    *
    * 为什么要有：未结束时左格写的是「最后做的那一件事」（`跑一下单测` / `思考中…`），
-   * 那是一行纯文字 —— 单条工具卡有扳手、单条思考有脑，唯独折进组里之后就什么都不剩，
+   * 那是一行纯文字 —— 单条工具卡有图标、单条思考有脑，唯独折进组里之后就什么都不剩，
    * 一列收起的抬头全长得一样。图标把这层「这一步是工具还是思考」补回来。
    */
   kind?: 'tool' | 'reasoning'
+  /**
+   * 尾 part 的工具名（`kind === 'tool'` 时一起给）。抬头那颗图标与组内那张卡的头**同源**
+   * （`toolHeadIcon`），展开 / 收起同一步不换字形；不给就退回扳手。
+   */
+  toolName?: string
   /**
    * 抬头右格的内容预览（思考最后一行 / 命令 / 路径）。`undefined` = 只显示名字。
    * 展开状态下同样不显示（内容已经在下面展开，见 `showPreview`）。
@@ -172,12 +179,14 @@ export function TurnStepGroup({
    * 那几秒会翻 false，图标就会灭了再亮。所以那两档之外**一律按 `live` 判**，不看 `active` ——
    * `live` 整段过程稳定为真，翻 false 只可能是一轮真结束了，而那正是该把图标收掉的时刻。
    */
-  const kindIcon =
-    kind === 'tool' ? (
-      <Wrench className="size-4 shrink-0" />
-    ) : kind === 'reasoning' ? (
-      <Brain className="size-4 shrink-0" />
-    ) : null
+  /*
+   * 工具那一档给**具体工具**的图标（执行命令 → 终端），不再一律扳手：抬头左格写的就是
+   * 「最后做的那一件事」，那一步是跑命令还是读文件本来就该一眼分得开，而组里那张卡的头部
+   * 已经是这么画的（同一颗 `toolHeadIcon`，展开前后不换字形）。
+   */
+  const KindIcon =
+    kind === 'tool' ? (toolName ? toolHeadIcon(toolName) : Wrench) : kind === 'reasoning' ? Brain : null
+  const kindIcon = KindIcon ? <KindIcon className="size-4 shrink-0" /> : null
 
   /*
    * 内容触发器（图标 + 名字 + 预览）：抽成变量是因为它**不含箭头**了 —— 停止钮要排在

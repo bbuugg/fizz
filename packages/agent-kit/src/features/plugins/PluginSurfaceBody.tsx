@@ -44,6 +44,7 @@ import { SidebarTopBar } from '@fizz/agent-kit/shared/components/SidebarTopBar'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { Button } from '@fizz/ui/button'
 import { PluginDialog } from '@fizz/agent-kit/features/plugins/PluginDialog'
+import { PluginClientSurface } from '@fizz/agent-kit/features/plugins/PluginClientSurface'
 
 type SurfaceParams = Record<string, string | number | boolean>
 
@@ -61,15 +62,7 @@ function showToastAll(toasts?: PluginToast[]): void {
   }
 }
 
-export function PluginSurfaceBody({
-  app,
-  pluginId,
-  kind,
-  id,
-  params,
-  className,
-  topbar
-}: {
+export interface PluginSurfaceBodyProps {
   app: AgentApp
   pluginId: string
   kind: 'sider' | 'view'
@@ -78,14 +71,58 @@ export function PluginSurfaceBody({
   params?: SurfaceParams
   className?: string
   /**
+   * 谁来渲染这一屏（来自界面清单）：
+   * - `'server'`（缺省）：下面这套「服务端出块、宿主按块画」；
+   * - `'client'`：插件自带 bundle，直接渲染它的 React 组件（`PluginClientSurface`）。
+   */
+  renderMode?: 'server' | 'client'
+  /** client 面的 bundle 版本指纹（变了就重新拉源码） */
+  clientRev?: string
+  /**
    * 顶栏：插件声明了 `headerActions` 时由调用方传进来。
    *
    * 传了就渲染 `SidebarTopBar`（左边面名、右边图标按钮）—— **它是这个组件现在唯一的
    * 使用者**（内置功能区侧栏的顶栏已全部删除，见 `SidebarTopBar` 文件头）；
    * **不传**就退回原来那行「重新读取」小按钮（其它插件行为不变）。
+   *
+   * client 面**不吃这个参数**：那块屏幕全归插件，它自己画头。
    */
   topbar?: { label: string; actions: PluginItemAction[] }
-}) {
+}
+
+/**
+ * 两条渲染路径的**分流点**。
+ *
+ * 注意这里是**没有 hook** 的一层：`renderMode` 从 server 切成 client 时（插件作者
+ * 后来才加上前端半），React 会把子树整体换掉，而不是在同一个组件实例里换 hook 数量。
+ * 直接在下面那个实现里 `if (renderMode === 'client') return …` 会踩 hooks 顺序错误。
+ */
+export function PluginSurfaceBody(props: PluginSurfaceBodyProps) {
+  if (props.renderMode === 'client') {
+    return (
+      <PluginClientSurface
+        app={props.app}
+        pluginId={props.pluginId}
+        kind={props.kind}
+        id={props.id}
+        {...(props.params ? { params: props.params } : {})}
+        {...(props.clientRev ? { clientRev: props.clientRev } : {})}
+        {...(props.className ? { className: props.className } : {})}
+      />
+    )
+  }
+  return <ServerPluginSurfaceBody {...props} />
+}
+
+function ServerPluginSurfaceBody({
+  app,
+  pluginId,
+  kind,
+  id,
+  params,
+  className,
+  topbar
+}: PluginSurfaceBodyProps) {
   const [content, setContent] = useState<PluginSurfaceContent | null>(null)
   /** 插件请求弹的对话框（动作结果里的 `openDialog`）；没有就是 null */
   const [dialog, setDialog] = useState<NonNullable<PluginSurfaceActionResult['openDialog']> | null>(

@@ -45,7 +45,7 @@ import {
   MIN_MAX_STEPS
 } from '@fizz/contracts'
 import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
-import { ChoiceChips } from '@fizz/agent-kit/features/settings/ChoiceChips'
+import { Segmented } from '@fizz/agent-kit/shared/components/Segmented'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 
 export function AiPreferencesTab({ app }: { app: AgentApp }) {
@@ -136,7 +136,7 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
         <p className="text-xs leading-4 text-muted-foreground">
           {tr('控制 Agent 能修改或执行哪些操作；查看与搜索始终允许。下一轮对话生效。')}
         </p>
-        <ChoiceChips
+        <Segmented
           ariaLabel={tr('工具权限')}
           value={app.permissionMode}
           onChange={app.setPermissionMode}

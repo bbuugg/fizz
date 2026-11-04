@@ -129,6 +129,13 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
      */
     hostGroups: s.hostGroups,
     /**
+     * 主机清单是否已成功拉过至少一遍（空 ≠ 没加载）。
+     *
+     * 主机侧栏靠它决定摆骨架还是摆「还没有主机或终端」—— 加载中 `sshHosts` /
+     * `hostGroups` 都是空数组，只看长度就是先空态后内容的一次闪屏。
+     */
+    hostsLoaded: s.hostsLoaded,
+    /**
      * SSH 隧道配置（本地转发 -L / 远程转发 -R / SOCKS5 动态代理 -D）。
      *
      * ⚠️ 监听端口绑在**跑 server 的那台机器**上（桌面端 = 你本机，VPS 部署 = VPS 自己），

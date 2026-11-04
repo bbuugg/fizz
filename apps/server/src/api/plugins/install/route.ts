@@ -38,6 +38,7 @@ import {
 } from '@fizz/plugin/loader'
 import type { PluginDescriptor } from '@fizz/plugin'
 import { discoverServerPlugins, withRuntimeConfig } from '@/lib/server/plugin-roots'
+import { syncPluginRootDeps } from '@/lib/server/plugin-deps'
 import { invalidatePluginModels, refreshPluginModels } from '@/lib/server/plugin-models'
 import { invalidateUploadProviders } from '@/lib/server/upload/registry'
 import { jsonError, parseJsonBody } from '@/app/api/_lib/auth'
@@ -160,6 +161,23 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     await rename(tempDir, finalDir)
+
+    /*
+     * 依赖必须**在体检之前**装好：插件顶层 `import` 了某个包而它没装时，`apply` 直接失败，
+     * 用户看到的是「这个插件加载不起来」—— 真实原因（依赖没装）被埋在最后一行。
+     * 装失败就把目录删掉：留一个缺依赖的插件，每轮扫盘都会报同一个错。
+     */
+    const depSync = await syncPluginRootDeps({
+      rootDir,
+      ...(workspace?.id ? { workspaceId: workspace.id } : {}),
+      ...(workspace?.path ? { workspacePath: workspace.path } : {})
+    })
+    if (!depSync.ok) {
+      await rm(finalDir, { recursive: true, force: true }).catch(() => undefined)
+      await rollback()
+      return jsonError(400, `插件依赖安装失败，已撤回：\n${depSync.output}`)
+    }
+    if (depSync.changed) invalidatePluginModule()
 
     const descriptor: PluginDescriptor | undefined = (
       await discoverServerPlugins({

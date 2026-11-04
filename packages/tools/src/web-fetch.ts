@@ -29,6 +29,14 @@
  * 进度，用户只知道「卡住了」；而且它会和「设置 → 浏览器」的安装任务抢同一次下载。
  * 运行时由设置页显式安装，没装就立刻返回一句能执行的话（改用 fetch 引擎 / 让用户去装），
  * 见 `BrowserRuntimeMissingError`。
+ *
+ * ## 没装浏览器 = 只有一个引擎
+ *
+ * 装没装**在装配期现读**（`browserRuntimeInfo().installed`）：没装时 schema 里**根本没有
+ * `engine` 这个入参**，description 也只说 fetch。留着那个选项（哪怕回一句「没装，请改用
+ * fetch」）等于给模型一个注定失败的分支 —— 它每轮都会先试一遍 browser 才死心，白烧步数、
+ * 还把落空的失败信息灌进上下文。装好后下一轮装配自动带上（与 `chat-turn` 的 `browser_*`
+ * 装配闸、工具条那颗开关同一判据）。
  */
 import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
@@ -322,30 +330,52 @@ export interface WebFetchStopHooks {
   onEnd?: (toolCallId: string) => void
 }
 
+/** web_fetch 的入参形状（schema 按运行时条件构建，见下；这里只用来收窄 execute 的类型） */
+interface WebFetchInput {
+  url: string
+  engine?: 'browser' | 'fetch'
+  timeoutMs?: number
+  maxChars?: number
+}
+
 export function buildWebFetchTool(root: string, stopHooks: WebFetchStopHooks = {}): ToolSet {
+  /**
+   * 这一轮暴露几个抓取引擎：**装配期现读**运行时。没装就**连 `engine` 这个入参都不给**
+   * （理由见文件头「没装浏览器 = 只有一个引擎」），description 也换成单引擎版本。
+   */
+  const browserEngine = browserRuntimeInfo().installed
+  const urlField = z.string().describe('要抓取的网页 URL，必须是 http(s)，如 https://example.com')
+  const timeoutField = z
+    .number()
+    .optional()
+    .describe('页面加载超时（毫秒），默认 30000，最大 60000')
+  const maxCharsField = z
+    .number()
+    .optional()
+    .describe(
+      `返回 Markdown 的最大字符数，默认 ${DEFAULT_MAX_CHARS}，范围 1000–100000。` +
+        '默认值已够判断页面内容；一般不要调大 —— 需要看某一段时用落盘文件的 offset/limit 更省。'
+    )
+
   return {
     web_fetch: tool({
-      description:
-        '抓取网页并整理成结构化 Markdown 返回给模型。默认用 Node 原生 fetch 取静态 HTML（更快更轻量）；设置 engine="browser" 则改用 Playwright 无头浏览器跑 JS 渲染（适合 SPA / 动态内容、搜索结果页）。适合：联网查资料、读文档 / 博客 / 文章、从网页提取链接继续深挖。页面过长时会只回开头结尾，并把全文落盘到工作区文件（结果里给出相对路径与行号）；其余部分用 read_file 的 offset/limit 接着读，也可以用 search_files 检索。只读、不写任何文件。browser 引擎需要内置浏览器运行时（headless shell），由用户在「设置 → 浏览器」里安装 —— 没装时这个引擎会直接告诉你改用 fetch，不会自行下载。',
-      inputSchema: z.object({
-        url: z.string().describe('要抓取的网页 URL，必须是 http(s)，如 https://example.com'),
-        engine: z
-          .enum(['browser', 'fetch'])
-          .optional()
-          .describe('抓取引擎：browser=用 Playwright 无头浏览器跑 JS 渲染；fetch=用 Node 原生 fetch 取静态 HTML（默认）。拿不到 JS 渲染内容时改用 browser。'),
-        timeoutMs: z
-          .number()
-          .optional()
-          .describe('页面加载超时（毫秒），默认 30000，最大 60000'),
-        maxChars: z
-          .number()
-          .optional()
-          .describe(
-            `返回 Markdown 的最大字符数，默认 ${DEFAULT_MAX_CHARS}，范围 1000–100000。` +
-              '默认值已够判断页面内容；一般不要调大 —— 需要看某一段时用落盘文件的 offset/limit 更省。'
-          )
-      }),
-      execute: async ({ url, engine, timeoutMs, maxChars }, options) => {
+      description: browserEngine
+        ? '抓取网页并整理成结构化 Markdown 返回给模型。默认用 Node 原生 fetch 取静态 HTML（更快更轻量）；设置 engine="browser" 则改用 Playwright 无头浏览器跑 JS 渲染（适合 SPA / 动态内容、搜索结果页）。适合：联网查资料、读文档 / 博客 / 文章、从网页提取链接继续深挖。页面过长时会只回开头结尾，并把全文落盘到工作区文件（结果里给出相对路径与行号）；其余部分用 read_file 的 offset/limit 接着读，也可以用 search_files 检索。只读、不写任何文件。browser 引擎需要内置浏览器运行时（headless shell），由用户在「设置 → 浏览器」里安装 —— 没装时这个引擎会直接告诉你改用 fetch，不会自行下载。'
+        : '抓取网页并整理成结构化 Markdown 返回给模型。用 Node 原生 fetch 取静态 HTML（这台机器没装内置浏览器，所以只有这一个引擎，不需要浏览器）。适合：联网查资料、读文档 / 博客 / 文章、从网页提取链接继续深挖。拿不到 JS 渲染后的内容（SPA / 纯前端渲染的页面）—— 抓到正文为空时不要反复重试同一个地址，换可达的静态页面或镜像。页面过长时会只回开头结尾，并把全文落盘到工作区文件（结果里给出相对路径与行号）；其余部分用 read_file 的 offset/limit 接着读，也可以用 search_files 检索。只读、不写任何文件。',
+      // 两个 schema 是**不同形状**（有没有 engine 取决运行时），所以 execute 里显式标注入参
+      inputSchema: browserEngine
+        ? z.object({
+            url: urlField,
+            engine: z
+              .enum(['browser', 'fetch'])
+              .optional()
+              .describe('抓取引擎：browser=用 Playwright 无头浏览器跑 JS 渲染；fetch=用 Node 原生 fetch 取静态 HTML（默认）。拿不到 JS 渲染内容时改用 browser。'),
+            timeoutMs: timeoutField,
+            maxChars: maxCharsField
+          })
+        : z.object({ url: urlField, timeoutMs: timeoutField, maxChars: maxCharsField }),
+      execute: async (raw, options) => {
+        const { url, engine, timeoutMs, maxChars } = raw as WebFetchInput
         /**
          * **每条抓取一个自己的 AbortController**，并与「整轮中止」的信号并联：
          * - 用户点卡片上的「停止」→ 只 abort 这一条（宿主通过 `stopHooks` 拿到入口）；

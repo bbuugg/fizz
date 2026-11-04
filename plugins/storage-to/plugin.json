@@ -3,5 +3,6 @@
   "name": "storage-to",
   "version": "1.0.0",
   "apiVersion": 1,
-  "entry": "index.ts"
+  "entry": "index.ts",
+  "description": "把工作区文件传到 storage.to 并拿到分享链接（工具插件）"
 }

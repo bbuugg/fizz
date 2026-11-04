@@ -26,7 +26,7 @@ import {
   type TerminalScrollback
 } from '@fizz/agent-kit/shared/lib/terminal-prefs'
 import { setTerminalShell, useTerminalShell } from '@fizz/agent-kit/shared/lib/terminal-shell'
-import { ChoiceChips } from '@fizz/agent-kit/features/settings/ChoiceChips'
+import { Segmented } from '@fizz/agent-kit/shared/components/Segmented'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 
 /** 「跟随系统默认」在 ToggleGroup 里的取值（ToggleGroup 只收字符串，null 用哨兵代替） */
@@ -152,7 +152,7 @@ export function TerminalTab({ app }: { app: AgentApp }) {
         <p className="text-xs leading-4 text-muted-foreground">
           {tr('一个终端标签能往上翻多少行，超出后最早的行会被丢掉。每个标签各占一份内存，行数调很大又同时开很多标签要留意。')}
         </p>
-        <ChoiceChips
+        <Segmented
           ariaLabel={tr('滚动缓冲')}
           value={String(scrollback)}
           // 选项只来自 TERMINAL_SCROLLBACK_OPTIONS，回填的值一定合法（prefs 里还有一道校验）
@@ -175,7 +175,7 @@ export function TerminalTab({ app }: { app: AgentApp }) {
         {shells === null ? (
           <p className="text-xs text-muted-foreground">{tr('正在检测可用终端…')}</p>
         ) : (
-          <ChoiceChips
+          <Segmented
             ariaLabel={tr('默认终端')}
             value={defaultShell ?? PLATFORM_DEFAULT}
             onChange={(id) => setTerminalShell(id === PLATFORM_DEFAULT ? null : id)}

@@ -35,6 +35,7 @@ import {
   noteTabKey,
   pluginTabKey,
   scriptsTabKey,
+  settingsTabKey,
   sftpTabKey,
   sysmonTabKey,
   triggersTabKey,
@@ -44,10 +45,11 @@ import {
 } from '@fizz/agent-kit/shared/lib/panel-tabs'
 
 /**
- * 工具标签的十一类：连远端主机 / 开本机终端 / 打开一个接口请求 / 打开**脚本管理面板**
+ * 工具标签的各种类别：连远端主机 / 开本机终端 / 打开一个接口请求 / 打开**脚本管理面板**
  * / 打开一个**插件界面** / 打开一台主机的 **SFTP 文件管理**
  * / 打开全局的 **SSH 隧道面板** / 打开全局的**应用日志面板** / 打开全局的**定时任务管理面板**
- * / 打开一篇**笔记** / 打开一个**本机 Markdown 文档**
+ * / 打开一篇**笔记** / 打开一个**本机 Markdown 文档** / 打开全局的**设置面板**
+ *（新增一类时，`isToolTabKey` 那条 OR 必须同步补上，理由见那里的注释）
  *
  * 「单个主机脚本」**不在**这里：脚本的新建 / 编辑已经是模态框（`ScriptEditDialog`），
  * 不再占一条标签（理由见该文件头）。
@@ -71,6 +73,8 @@ export type ToolTabKind =
   | 'files'
   /** 全局单例：服务端那台机器的**系统监控 + 任务管理器**（`sysmon:list`） */
   | 'sysmon'
+  /** 全局单例：**设置面板**（`settings:list`）—— 取代桌面端原来的独立设置窗口 */
+  | 'settings'
 
 export interface ToolTab {
   /** 与 `panel-store` 里的标签 key 一致（`host:<id>` / `local:<n>`） */
@@ -125,6 +129,13 @@ export interface ToolTab {
   /** 插件界面标签：面 id（插件内部唯一） */
   surfaceId?: string
   /**
+   * 插件界面标签：这个面是**哪一种**（默认 `view`）。
+   *
+   * 清单里现在只允许 `view`，但老插件可能还声明着 `sider`（入口统一到「插件」列表后，
+   * sider 面也开成标签页）—— 没有这个字段就得以错的 kind 去请求渲染，服务端找不到面。
+   */
+  surfaceKind?: 'sider' | 'view'
+  /**
    * 插件界面标签：**这一页是哪个参数开的**（如「哪个连接」）。
    *
    * 有了它，同一个面就能开出**多屏**（一个连接一页）—— 宿主把参数原样带回插件的
@@ -166,6 +177,25 @@ export interface ToolTab {
    * 同样只记在这里、不编进 key（Windows 路径自带 `:`，见 `panel-tabs.ts` 的 `file:<n>`）。
    */
   externalPath?: string
+  /**
+   * 设置面板：**这次打开要落到哪个分组**（`'models'` / `'acp'` …，取值见
+   * `features/settings/types` 的 `SettingsTabId`）。
+   *
+   * 用 `string` 而不是直接引 `SettingsTabId`：这张表在 `shared/lib`，不该反向依赖
+   * `features/settings`（类型倒是不会产生运行时依赖，但会让这份「通用标签登记表」
+   * 看上去像是知道设置页的存在）。消费方只有 `SettingsTabContent`，它自己转一次。
+   *
+   * 与 `tunnelHostId` 同一类「一次性指令」，但多一个 `settingsRequestSeq`：标签已经
+   * 开着时 `openTab` 只做激活（状态引用不变 → 不 emit），面板收不到任何信号 ——
+   * 每次带分组的调用都把序号 +1，由 `SettingsTabContent` 拿它当 React `key` 把外壳
+   * 重挂一次（与原先 `SettingsWindow` 用 `key={`${tab}#${seq}`}` 的做法同源）。
+   *
+   * 不带分组调用（普通入口 / 快捷键）时**不覆盖已有的值**：用户正停在「模型」，从
+   * 菜单点设置不该被弹回「通用」。
+   */
+  settingsTab?: string
+  /** 设置面板：分组请求的序号（每次 `openSettingsTab(tab)` 都 +1，见上） */
+  settingsRequestSeq?: number
 }
 
 const tabs = new Map<string, ToolTab>()
@@ -494,6 +524,38 @@ export function openScriptsTab(): string {
   return key
 }
 
+/**
+ * 打开**设置面板**（`settings:list`，**全局单例**）。
+ *
+ * 桌面端原先把它开成独立 BrowserWindow，那是**另一个渲染进程 = 另一份模块级 store
+ * 单例**；「在设置里停用插件、主窗口活动栏图标不走」这类问题都源于此（见
+ * `panel-tabs.ts` 的 `settingsTabKey` 注释）。改成标签后设置与对话共享同一个
+ * `AppProvider`，改完主窗口立刻就是对的，也顺带省掉了独立窗口那套「两份 store /
+ * 两条 WS / 靠 `storage` 事件与 `/api/prefs` 双通道同步」的维护成本。
+ *
+ * `tab` 是「落到哪个分组」的一次性指令（模型选择下拉那颗齿轮、ACP 页的指引链接）：
+ * 已开着时不是重开一条，而是原地切过去 —— 机制见 `ToolTab.settingsTab`。
+ */
+export function openSettingsTab(tab?: string): string {
+  const key = settingsTabKey()
+  const prev = tabs.get(key)
+  tabs.set(key, {
+    key,
+    kind: 'settings',
+    label: '设置',
+    title: '设置 · 模型 / 智能体 / 工具与技能 / 外观 / 快捷键',
+    // 不带分组时**不覆盖**：普通入口（菜单 / 快捷键）该停在用户上次看的那一页
+    settingsTab: tab ?? prev?.settingsTab,
+    // 带分组时才 +1 —— 这是「请切到这一页」的信号，同一页连点两次也得再触发
+    settingsRequestSeq: tab ? (prev?.settingsRequestSeq ?? 0) + 1 : prev?.settingsRequestSeq
+  })
+  // 已开着时 `openTab` 只激活、不 emit（状态引用没变），面板只能靠版本号知道
+  // 表被就地改了 —— 与下方 `retargetNoteTab` 同一套机制
+  if (prev) bumpToolTabsVersion()
+  openTab(key)
+  return key
+}
+
 // ---------- 笔记标签 ----------
 //
 // ## 为什么这里比别的标签多一套「版本订阅」
@@ -682,6 +744,8 @@ function filenameOf(path: string): string {
 export function openPluginTab(options: {
   pluginId: string
   surfaceId: string
+  /** 面种类（缺省 `view`；老插件的 `sider` 面也开成标签页） */
+  surfaceKind?: 'sider' | 'view'
   label: string
   title?: string
   /** 这一页的参数（如「哪个连接」）：**参数不同 = 不同的一屏**，各自一条标签 */
@@ -708,6 +772,9 @@ export function openPluginTab(options: {
     title: options.title?.trim() || options.label,
     pluginId: options.pluginId,
     surfaceId: options.surfaceId,
+    ...(options.surfaceKind && options.surfaceKind !== 'view'
+      ? { surfaceKind: options.surfaceKind }
+      : {}),
     ...(options.params ? { params: options.params } : {})
   })
   openTab(key)

@@ -14,21 +14,17 @@ import { AgentSidebar } from '@fizz/agent-kit/features/chat/AgentSidebar'
 import { HostsSidebar } from '@fizz/agent-kit/features/hosts/HostsSidebar'
 import { ApiPanel } from '@fizz/agent-kit/features/api/ApiPanel'
 import { NotesSidebar } from '@fizz/agent-kit/features/notes/NotesSidebar'
-import { PluginSidebar } from '@fizz/agent-kit/features/plugins/PluginSidebar'
-import { usePluginSurfaces } from '@fizz/agent-kit/shared/lib/plugin-surfaces'
+import { PluginsSidebar } from '@fizz/agent-kit/features/plugins/PluginsSidebar'
 import {
   AGENT_ACTIVITY_ID,
   API_CLIENT_ACTIVITY_ID,
   HOSTS_ACTIVITY_ID,
   NOTES_ACTIVITY_ID,
-  pluginActivityId
+  PLUGINS_ACTIVITY_ID
 } from '@fizz/agent-kit/shared/lib/activity-ids'
 import { useActiveActivityId, useActivityOrder } from '@fizz/agent-kit/shared/lib/activity-state'
 import { useSidebarCollapsed } from '@fizz/agent-kit/shared/lib/sidebar-collapsed'
-import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
-import { cn } from '@fizz/agent-kit/shared/lib/utils'
-import { useLanguage } from '@fizz/agent-kit/shared/lib/language'
-import { t } from '@fizz/i18n'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 
 /**
  * 活动侧边栏面板的 props 契约。
@@ -75,6 +71,14 @@ export const BUILTIN_ACTIVITIES: Activity[] = [
     label: '笔记',
     icon: NotebookPen,
     sidebar: NotesSidebar
+  },
+  {
+    // 所有插件共用这一颗：侧栏是插件列表，点插件在 PanelView 里开标签页。
+    // 插件自己不再占图标栏、也不再有自己的侧栏（见 activity-ids.ts 的说明）。
+    id: PLUGINS_ACTIVITY_ID,
+    label: '插件',
+    icon: Puzzle,
+    sidebar: PluginsSidebar
   }
 ]
 
@@ -111,37 +115,6 @@ export function orderActivities(activities: Activity[], order: string[] | null):
  * `sidebarVisible` 把「该功能区没有侧边栏」与「用户把它折叠了」合成一个口径 ——
  * 外壳只认这一个布尔值决定侧边栏容器宽度，不必在两处各判一次。
  */
-/**
- * 插件声明的图标 → 活动栏要的图标组件。
- *
- * 插件给的是 `data:image/*` 的 data URI（服务端只放行这个形状，理由见 `ctx.ui.icon`），
- * 而 `Activity.icon` 要的是一个组件 —— **绝不能**把那段字符串拼进 DOM，所以包一层 `<img>`。
- */
-function activityIconOf(icon?: string): ComponentType<{ className?: string }> {
-  if (!icon) return Puzzle
-  return function PluginActivityIcon({ className }: { className?: string }) {
-    return <img src={icon} alt="" aria-hidden className={cn('size-5 object-contain', className)} />
-  }
-}
-
-/**
- * 插件声明的图标栏项 → `Activity`。
- *
- * 所有插件**共用** `PluginSidebar` 这一份侧栏（它按当前活动 id 反解是哪个插件），
- * 所以这里不需要为插件生成各自的侧栏组件 —— 加一个插件也不会动到这张表。
- */
-export function pluginActivities(surfaces: ReturnType<typeof usePluginSurfaces>): Activity[] {
-  return surfaces
-    .filter((surface) => surface.kind === 'activityBar')
-    .map((surface) => ({
-      id: pluginActivityId(surface.pluginId),
-      // 活动栏只显示悬浮提示，标题可能很长 —— 截一下免得 tooltip 糊成一条
-      label: surface.title.slice(0, 8) || t('插件'),
-      icon: activityIconOf(surface.icon),
-      sidebar: PluginSidebar
-    }))
-}
-
 export function useActiveActivity(): {
   activities: Activity[]
   activity: Activity
@@ -149,23 +122,17 @@ export function useActiveActivity(): {
   sidebarVisible: boolean
 } {
   // 订阅语言：内置功能区标签用 t() 现算（模块级常量不能跟着切）
-  useLanguage()
+  const tr = useT()
   const activeId = useActiveActivityId()
   const order = useActivityOrder()
   const sidebarCollapsed = useSidebarCollapsed()
-  const { app } = useAppContext()
-  const surfaces = usePluginSurfaces(app, app.activeWorkspaceId ?? undefined)
   const activities = useMemo(
-    // 插件项排在内置之后：`orderActivities` 对没拖过的 id 给 Infinity（稳定排序），
-    // 于是用户拖出来的内置顺序照样生效、新增的插件项自然落在后面。
-    () => [
-      ...orderActivities(BUILTIN_ACTIVITIES, order).map((item) => ({
+    () =>
+      orderActivities(BUILTIN_ACTIVITIES, order).map((item) => ({
         ...item,
-        label: t(item.label)
+        label: tr(item.label)
       })),
-      ...pluginActivities(surfaces)
-    ],
-    [order, surfaces]
+    [order, tr]
   )
   const activity = resolveActivity(activities, activeId)
   return {

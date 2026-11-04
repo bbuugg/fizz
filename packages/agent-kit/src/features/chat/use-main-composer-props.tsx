@@ -258,7 +258,7 @@ export function useMainComposerProps(
     sending: !app.activeConversationId && app.creatingConversation,
     placeholder: activeWorkspace
       ? t("交给 Agent 做点什么…（Enter 发送，Shift+Enter 换行）")
-      : t("有什么想问的？…（不绑定项目，会话存在服务端）"),
+      : t("有什么想问的？…（不指定项目，会话存在服务端）"),
     // 输入框卡片内（`header`）从上到下三块：编辑条（正在改哪条历史）/ 编辑插话条
     // （正在改哪条未生效插话）/ 插入中列表 + 待发送队列，都与输入框浑然一体
     //（各自自带底部分隔线）

@@ -12,12 +12,23 @@
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { getToolTab } from '@fizz/agent-kit/shared/lib/tool-tabs'
 import { PluginSurfaceBody } from '@fizz/agent-kit/features/plugins/PluginSurfaceBody'
+import { usePluginSurfaces } from '@fizz/agent-kit/shared/lib/plugin-surfaces'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 
 export function PluginTabContent({ tabKey }: { tabKey: string }) {
   const t = useT()
   const { app } = useAppContext()
   const tool = getToolTab(tabKey)
+  /*
+   * 标签 key 里只有 pluginId / surfaceId，**没有**「谁来渲染」。
+   * 那份信息在界面清单上（`renderMode` / `clientRev`），所以这里要查一次：
+   * 忘了查的后果是 client 面被当成服务端面去取 blocks，永远停在
+   * 「插件没注册这个界面」——而插件作者明明写了。
+   */
+  const surfaces = usePluginSurfaces(app, app.activeWorkspaceId ?? undefined)
+
+  // 老插件的 sider 面也开成标签页（入口统一到「插件」列表），kind 得跟着标签走
+  const kind = tool?.surfaceKind ?? 'view'
 
   // 登记表里没有它 = 标签与数据不同步（理论上不该发生，见 PanelView 里的同款兜底）
   if (!tool?.pluginId || !tool.surfaceId) {
@@ -28,12 +39,18 @@ export function PluginTabContent({ tabKey }: { tabKey: string }) {
     )
   }
 
+  const surface = surfaces.find(
+    (item) => item.pluginId === tool.pluginId && item.kind === kind && item.id === tool.surfaceId
+  )
+
   return (
     <PluginSurfaceBody
       app={app}
       pluginId={tool.pluginId}
-      kind="view"
+      kind={kind}
       id={tool.surfaceId}
+      {...(surface?.renderMode ? { renderMode: surface.renderMode } : {})}
+      {...(surface?.clientRev ? { clientRev: surface.clientRev } : {})}
       // 参数：同一个面可以用它开出多屏（一个连接一页）
       {...(tool.params ? { params: tool.params } : {})}
       className="h-full"

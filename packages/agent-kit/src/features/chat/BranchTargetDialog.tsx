@@ -11,10 +11,16 @@
  *   （目录即标识、分支 `worktree/<标识>`），新工作区登记成 worktree 项目后再把新会话挂进去。
  *   标识必填（与服务端同一把正则校验），项目名选填。
  *
- * 提交约定：`onSubmit` **resolve = 成功**（关弹窗），**throw = 失败**（留在原地并显示 message）。
- * 具体原因通常也已写进全局错误条，这里再显示一份供用户就地改完重试。
+ * 提交约定：`onSubmit` **resolve = 成功**（关弹窗），**throw = 失败**（弹窗留在原地，改完可重试）。
+ * 失败原因**不在这里显示** —— store 已把它写进全局错误条，外壳 `useErrorToast` 会弹成 toast；
+ * 同一句话在弹窗里再写一份只是重复噪音。
+ *
+ * **本地校验（标识正则）同样走 toast**，弹窗里没有内联错误区 —— 与 `TriggerEditDialog` 一个口径：
+ * 一屏表单里挂一行红字，眼睛要先去扫「刚才那句红字说什么」，而 toast 就在视觉焦点旁边，
+ * 而且它不会把下方按钮推开（内联区出现 / 消失会让整块内容跳一下）。
  */
 import { useState, type ReactNode } from 'react'
+import { toast } from 'sonner'
 import { WORKTREE_IDENTIFIER_RE } from '@fizz/contracts/agent-api'
 import { Button } from '@fizz/ui/button'
 import {
@@ -56,12 +62,10 @@ export function BranchTargetDialog({
   const [mode, setMode] = useState<'workspace' | 'worktree'>('workspace')
   const [identifier, setIdentifier] = useState('')
   const [name, setName] = useState('')
-  const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
   const close = (): void => {
     onOpenChange(false)
-    setError(null)
     setBusy(false)
   }
 
@@ -71,19 +75,21 @@ export function BranchTargetDialog({
     if (mode === 'worktree') {
       const id = identifier.trim()
       if (!WORKTREE_IDENTIFIER_RE.test(id)) {
-        setError('标识只能包含字母、数字、-、_、.，且以字母或数字开头')
+        // 同一个 `id`：连点几下也只是一条在换字，不摞一屏
+        toast.error('标识只能包含字母、数字、-、_、.，且以字母或数字开头', {
+          id: 'branch-target-identifier'
+        })
         return
       }
       target = { worktreeIdentifier: id, worktreeName: name.trim() || undefined }
     }
     setBusy(true)
-    setError(null)
     try {
       await onSubmit(target)
       close()
-    } catch (err) {
-      // store 已把错误写进全局错误条；这里再显示一份，弹窗不关（用户改完重试）
-      setError(err instanceof Error ? err.message : String(err))
+    } catch {
+      // 失败原因 store 已写进全局错误条（外壳弹成 toast），这里不再回显 ——
+      // 同一句话出两遍是纯噪音。弹窗不关：用户可能要改标识 / 换个模式重试。
       setBusy(false)
     }
   }
@@ -156,8 +162,6 @@ export function BranchTargetDialog({
             </div>
           </div>
         </RadioGroup>
-
-        {error && <p className="text-xs text-destructive">{error}</p>}
 
         <DialogFooter>
           <Button variant="ghost" onClick={close} disabled={busy}>

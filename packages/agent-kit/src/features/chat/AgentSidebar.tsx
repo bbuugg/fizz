@@ -7,7 +7,7 @@
  * **一个**分区（`SectionShell`），自上而下：
  *
  * 1. 顶部两颗**动作**（`SidebarActions`，固定不滚，底部留一段 `pb-2` 与内容组分隔）：
- *    「新对话」= 不绑定项目直接开会话；「定时任务」= **开主区域的定时任务管理标签页**
+ *    「新对话」= 不指定项目直接开会话；「定时任务」= **开主区域的定时任务管理标签页**
  *    （`triggers:list`，CRUD 全在那页，见 `features/tasks/TriggersPanel`）；
  * 2. 两块**可折叠的内容组**（`SidebarGroup`）：任务（临时会话）→ 工作区（项目树）。
  *    「任务」按内容高度、最多占一半（`size="half"`，内容少时不留空白、条数多时组内滚），
@@ -133,6 +133,7 @@ import {
   SidebarAction,
   SidebarActions,
   SidebarGroup,
+  SidebarRowsSkeleton,
 } from "@fizz/agent-kit/shared/components/SidebarGroups";
 import { AGENT_PROJECTS_SECTION } from "@fizz/agent-kit/shared/lib/section-ids";
 // 侧栏骨架（外壳 + 顶部栏 + 分区容器）：与「主机 / 接口请求」共用同一份，
@@ -1665,7 +1666,7 @@ export function AgentSidebar({
           {/*
             顶部两个动作入口（`SidebarActions`，贴在清单最上方、与下面两块内容组分开）：
 
-            - 「新对话」= 打开**不绑定项目**的「创建新任务」页（**不建会话**，等第一句话发送时
+            - 「新对话」= 打开**不指定项目**的「创建新任务」页（**不建会话**，等第一句话发送时
               才建 —— 早期版本一点就落一条空会话，用户明确要求改掉）。它原先藏在「临时会话」
               组标签的 hover 加号里（要先把鼠标移上去才看得见），现在提到顶层 ——
               这是侧栏里最高频的「从零开始」；
@@ -1756,16 +1757,26 @@ export function AgentSidebar({
                 // 「工作区」推到侧栏底部。
                 size="half"
                 className="px-2 pb-1"
-                empty={t("还没有任务。")}
+                // 加载中不传空态：清单没落地时任务数就是 0，摆「还没有任务」是一次闪屏
+                // （与下面「工作区」组同一条理由，骨架在 children 里）
+                empty={
+                  app.conversationsLoaded || app.error
+                    ? t("还没有任务。")
+                    : undefined
+                }
               >
-                <div className="flex flex-col gap-0.5">
-                  {scratchConversations.map((conversation) =>
-                    renderConversationRow(
-                      conversation,
-                      conversation.workspaceId,
-                    ),
-                  )}
-                </div>
+                {!app.conversationsLoaded && !app.error ? (
+                  <SidebarRowsSkeleton rows={2} />
+                ) : (
+                  <div className="flex flex-col gap-0.5">
+                    {scratchConversations.map((conversation) =>
+                      renderConversationRow(
+                        conversation,
+                        conversation.workspaceId,
+                      ),
+                    )}
+                  </div>
+                )}
               </SidebarGroup>
 
               {/*

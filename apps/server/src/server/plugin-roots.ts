@@ -17,8 +17,23 @@ import type {
   PluginUiView,
   StandardPluginSource
 } from '@fizz/plugin'
+import { promises as fs } from 'node:fs'
 import { resolveBuiltinPluginsDir } from './builtin-dirs'
 import { domain } from './state'
+
+/**
+ * 前端 bundle 的版本指纹：`<mtimeMs>-<size>`（36 进制，短一点）。
+ *
+ * 用 stat 而不是文件内容：界面清单**每次刷新都调它**，插件的 bundle 动辄几百 KB，
+ * 每次读一遍纯属浪费；mtime + size 足以识别「插件作者改过 client.js」。
+ * 文件被人删了返回 `undefined`（前端就不会去加载它，也不会一直报错）。
+ */
+export async function clientBundleRev(clientFile?: string): Promise<string | undefined> {
+  if (!clientFile) return undefined
+  const info = await fs.stat(clientFile).catch(() => null)
+  if (!info?.isFile()) return undefined
+  return `${Math.floor(info.mtimeMs).toString(36)}-${info.size.toString(36)}`
+}
 
 /**
  * 插件的**运行时配置** = `plugins.yml` 里的 config **叠加**设置页里存的值（后者优先：

@@ -41,7 +41,8 @@ export function ConvertAcpDialog({
           messageId ?? undefined,
           target
         )
-        // 失败原因 store 已写进全局错误条；这里抛出让弹窗留在原地（见 BranchTargetDialog 约定）
+        // 失败原因 store 已写进全局错误条（弹窗不再重复显示）；这里抛出只为让弹窗留在原地
+        // （见 BranchTargetDialog 约定 —— 抛出的文案不会被展示）
         if (!ok) throw new Error('转换为内置 Agent 会话失败')
         toast.success('已转换为内置 Agent 会话')
       }}

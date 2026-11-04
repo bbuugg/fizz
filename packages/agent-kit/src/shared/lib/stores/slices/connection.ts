@@ -92,6 +92,8 @@ export const createConnectionSlice: StateCreator<AgentStore, [], [], ConnectionS
       workspaces: [],
       conversations: [],
       conversationsLoaded: false,
+      // 主机清单与它同一次刷新：重连后要重新等一遍，别拿上一个服务端的主机直接当已加载
+      hostsLoaded: false,
       skills: null,
       activeWorkspaceId: null,
       activeConversationId: null

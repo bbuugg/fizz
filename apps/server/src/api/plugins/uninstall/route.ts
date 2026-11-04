@@ -26,6 +26,7 @@ import { resolve, sep } from 'node:path'
 import { rm } from 'node:fs/promises'
 import { invalidatePluginModule } from '@fizz/plugin/loader'
 import { discoverServerPlugins } from '@/lib/server/plugin-roots'
+import { syncPluginRootDeps } from '@/lib/server/plugin-deps'
 import { invalidateUploadProviders } from '@/lib/server/upload/registry'
 import { invalidatePluginModels, refreshPluginModels } from '@/lib/server/plugin-models'
 import { domain } from '@/lib/server/state'
@@ -65,6 +66,19 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   await rm(targetPath, { recursive: true, force: true })
+
+  /*
+   * 依赖表是按根**合成**的（见 `@fizz/plugin/deps`）：删掉插件后要重算一次，
+   * 否则它的依赖会一直留在 `node_modules` 里 —— 用户下次看到「我明明卸了，怎么还有这个包」
+   * 只能去翻磁盘。失败**不阻断卸载**：目录已经删了，再回滚就变成
+   * 「插件还在但文件没了」的更糟状态，这里只记日志。
+   */
+  const depSync = await syncPluginRootDeps({
+    rootDir,
+    ...(workspace?.id ? { workspaceId: workspace.id } : {}),
+    ...(workspace?.path ? { workspacePath: workspace.path } : {})
+  })
+  if (!depSync.ok) console.warn('[server] 插件依赖清理失败：', depSync.output)
 
   // ---- 清残留（三样，见文件头）----
   invalidatePluginModule()

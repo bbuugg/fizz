@@ -2611,7 +2611,11 @@ export interface UploadProvidersResult {
   providers: UploadProviderView[];
 }
 
-// ---------- 插件界面（`ctx.ui` 注册的三个面：图标栏 / 侧栏 / 标签页）----------
+// ---------- 插件界面（`ctx.ui` / 清单注册的面）----------
+//
+// 界面上只有一种位置：**主视图区的标签页**。插件不占图标栏、也没有自己的侧栏 ——
+// 图标栏里一颗「插件」打开插件列表，点插件就在标签条里开它的标签页。
+// `activityBar` / `sider` 两种 kind 还留在联合类型里只为兼容老插件（渲染成标签页）。
 
 /**
  * 插件界面的内容单元。与 `@fizz/plugin` 的 `UiBlock` **同构，但只带数据** ——
@@ -2743,11 +2747,32 @@ export interface PluginSurfaceView {
   /** 面 id（插件内部唯一） */
   id: string;
   title: string;
-  /** `data:image/*` 的 data URI（服务端只放行这个形状） */
+  /** 这个**面**的图标：`data:image/*` 的 data URI（服务端只放行这个形状） */
   icon?: string;
+  /**
+   * **插件**的图标（`ctx.ui.icon(...)` 或清单 `icon`）—— 「插件」侧栏的列表行用它。
+   *
+   * 与 `icon` 分开：一个插件可能有多个面，面图标是给面用的（早先的图标栏那颗），
+   * 列表行要的是「这个插件长什么样」。两个字段都由服务端算好带下来，前端不必再猜。
+   */
+  pluginIcon?: string;
+  /**
+   * **插件**的说明（清单 `description`）—— 「插件」侧栏的列表行用它。
+   *
+   * 与面自己的 `title` 不是一回事：`title` 是「这一面叫什么」，说明是「这个插件干什么」。
+   * 清单里没写就是 undefined（不编默认文案，界面自己决定要不要留空）。
+   */
+  pluginDescription?: string;
+  /** **插件**的版本（清单 `version` 原文，semver）—— 列表行标一下，便于排查「装的是哪版」 */
+  pluginVersion?: string;
   /** 排序（小在前） */
   order: number;
-  /** 图标栏那一项点开谁（`sider:<id>` / `view:<id>`） */
+  /**
+   * 老插件的图标栏项点开谁（`sider:<id>` / `view:<id>`）。
+   *
+   * 图标栏里已经没有插件项了，前端只在「插件」列表里挑**默认面**时会参考它；
+   * 新插件（清单里的 `client.surfaces`）不再有这个概念，默认面 = `order` 最小的那个。
+   */
   opens?: string;
   /** 这个面有没有动作（按钮 / 列表项点了有反应才算） */
   hasAction: boolean;
@@ -2758,11 +2783,53 @@ export interface PluginSurfaceView {
    * 而不是写成一个块；宿主用 `SidebarTopBar` 的 `extra` 槽位渲染。
    */
   headerActions?: PluginItemAction[];
+  /**
+   * 谁来渲染这个面：
+   * - `"server"`（缺省）：服务端 `render()` 产出 blocks，宿主按块画（老路，插件不碰前端代码）；
+   * - `"client"`：插件自带前端 bundle，宿主加载它并在浏览器里直接渲染 React 组件。
+   *
+   * 缺省当 `"server"` 处理 —— 老插件与老前端都不必改。
+   */
+  renderMode?: "server" | "client";
+  /**
+   * 前端 bundle 的源码指纹（只有 `renderMode === "client"` 才有）。
+   *
+   * 用来失效缓存：插件改过 `client.js` 之后指纹变，前端据此重新拉取并执行。
+   * 不带它的话用户必须重启应用才能看到插件的前端改动 —— 服务端半是热重载的，
+   * 前端半不热重载会非常割裂。
+   */
+  clientRev?: string;
 }
 
 /** GET /api/plugins/surfaces 的响应 */
 export interface PluginSurfacesResult {
   surfaces: PluginSurfaceView[];
+}
+
+/**
+ * POST /api/plugins/rpc：调用插件注册的一个方法（`ctx.rpc.handle` 的另一头）。
+ *
+ * 为什么要有这条通道：插件的前端半拿不到任何后端能力（也不能自己开 HTTP 路由，
+ * desktop 走 IPC 桥、根本没有端口）。RPC 是它取数据的唯一入口，三端同一条。
+ */
+export interface PluginRpcRequest {
+  /** 插件 id（= 入口文件绝对路径） */
+  pluginId: string;
+  /** 方法名（插件里 `ctx.rpc.handle(name, fn)` 注册过） */
+  method: string;
+  /** 原样传给处理器的 JSON（体积上限由服务端限） */
+  payload?: unknown;
+  /** 当前项目根目录（项目级插件按它分流；全局调用时缺省） */
+  workspacePath?: string;
+}
+
+/** POST /api/plugins/rpc 的响应 */
+export interface PluginRpcResponse {
+  ok: boolean;
+  /** 处理器的返回值（必须可 JSON 序列化） */
+  data?: unknown;
+  /** 失败原因的人话（处理器抛错时是它抛的原话） */
+  error?: string;
 }
 
 /** GET /api/plugins/surfaces?pluginId=&surfaceId= 的响应（渲染一面的结果） */

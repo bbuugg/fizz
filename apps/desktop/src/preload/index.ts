@@ -10,7 +10,6 @@ import {
   WINDOW_IPC,
   type AppUpdateStatus,
   type DesktopAppInfo,
-  type DesktopSettingsTab,
   type DesktopThemeMode,
   type DesktopWindowBridge,
   type IdeInfo,
@@ -33,13 +32,6 @@ const windowBridge: DesktopWindowBridge = {
   loadCloseToTray: () => ipcRenderer.sendSync(WINDOW_IPC.loadCloseToTray) as boolean,
   setCloseToTray: (enabled: boolean) =>
     ipcRenderer.invoke(WINDOW_IPC.setCloseToTray, enabled) as Promise<void>,
-  openSettings: (tab?: DesktopSettingsTab) =>
-    ipcRenderer.invoke(WINDOW_IPC.openSettings, tab) as Promise<void>,
-  onSettingsTab: (cb: (tab: DesktopSettingsTab) => void) => {
-    const listener = (_e: unknown, tab: DesktopSettingsTab): void => cb(tab)
-    ipcRenderer.on(WINDOW_IPC.settingsTab, listener)
-    return () => ipcRenderer.off(WINDOW_IPC.settingsTab, listener)
-  },
   openConversationWindow: (initialConversationId?: string) =>
     ipcRenderer.invoke(WINDOW_IPC.openConversationWindow, initialConversationId) as Promise<void>,
   closeConversationWindow: () =>

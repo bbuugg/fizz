@@ -133,6 +133,14 @@ export interface ServerListsSlice {
    */
   hostGroups: HostGroup[]
   /**
+   * 主机清单（`sshHosts` + `hostGroups`）是否已成功拉过至少一遍。
+   *
+   * 与 `conversationsLoaded` 在同一次 `refresh()` 里置位（两者一起写入，不存在
+   * 「会话到了主机没到」的中间态）。侧栏靠它区分「真的没有主机」与「还没拉回来」——
+   * 后者的 `hosts` / `groups` 也是空数组，只看长度就会先闪一句「还没有主机或终端」。
+   */
+  hostsLoaded: boolean
+  /**
    * SSH 隧道配置（本地转发 -L / 远程转发 -R / SOCKS5 动态代理 -D）。
    *
    * ⚠️ 监听端口绑在**跑 server 的那台机器**上，不是浏览器那台（`ssh -L/-R/-D` 的标准语义：
@@ -606,6 +614,7 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
     workspaces: [],
     conversations: [],
     conversationsLoaded: false,
+    hostsLoaded: false,
     skills: null,
     subagentSettings: null,
     browserInstalled: false,
@@ -686,6 +695,8 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
           workspaces: nextWorkspaces,
           conversations: nextConversations,
           conversationsLoaded: true,
+          // 与主机清单同一次请求回来：置位后侧栏才允许把「空」读成空态
+          hostsLoaded: true,
           skills: nextSkills,
           subagentSettings: nextSubagents.subagents,
           browserInstalled: nextBrowserRuntime.runtime.installed,
@@ -703,7 +714,7 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
         // 「项目里没有会话，消息却显示出来了」（实测）。
         //
         // `current === null`（用户没选项目）**保留**：那是一个真实意图（下一条消息会建
-        // 临时工作区），替他落到某个项目上等于把「不绑定项目」这个选择吃掉。
+        // 临时工作区），替他落到某个项目上等于把「不指定项目」这个选择吃掉。
         const current = get().activeWorkspaceId
         if (current && !nextWorkspaces.some((w) => w.id === current && w.path)) {
           set({

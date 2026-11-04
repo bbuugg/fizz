@@ -9,22 +9,21 @@
  * 3. **各形态专属的那些 props 归谁** —— `extraGroups` / `animate` / `onDetailChange` 只有
  *    两级形态用得上，两栏形态压根不接收（省得宿主对着一个用不到的参数猜）。
  *
- * 宿主自己只管**外面那层壳**：弹窗多高、整页怎么滑进来、窗口怎么铺满。三处调用：
+ * 宿主自己只管**外面那层壳**。web / desktop 只有一处：主区域的**设置标签**
+ * （`features/settings/SettingsTabContent`）；`apps/mobile` 是另一套应用，用整页。
  *
  * | 宿主 | platform | form |
  * |---|---|---|
  * | `apps/mobile/src/app/SettingsPage` | `mobile` | `two-level`（恒，平板横屏也是） |
- * | `features/settings/SettingsDialog` | 宿主 `platform` | 窄屏 `two-level` / 宽屏 `two-column` |
- * | `apps/desktop/.../SettingsWindow` | `desktop` | `two-column`（整窗，没有窄屏形态） |
+ * | `features/settings/SettingsTabContent` | 宿主 `platform` | 窄屏 `two-level` / 宽屏 `two-column` |
  *
  * ## 为什么 form 由宿主传、而不是这里用 `useIsMobile()` 自己算
  *
- * 因为「多宽算窄」在三个宿主里不是同一件事：手机版**恒**是两级（它连宽屏也用这套，
- * 只是不播转场）；桌面独立窗口**恒**是两栏（主进程那边已经限了最小宽度，不会有手机
- * 形态）；只有 web 弹窗才真的看视口。塞一个 `useIsMobile()` 进来，等于把 `mobile`
- * 宿主的形态也交给视口决定 —— 手机版在平板横屏上会突然变成两栏。
+ * 因为「多宽算窄」不是所有宿主同一件事：`apps/mobile` **恒**是两级（它连宽屏也用这套，
+ * 只是不播转场）。塞一个 `useIsMobile()` 进来，等于把 mobile 宿主的形态也交给视口决定
+ * —— 平板横屏上会突然变成两栏。
  *
- * 用 `settingsNavForm()` 现算的话，宿主那边只有一个判断入口（见 `SettingsDialog`）。
+ * 标签宿主那边只有一个判断入口（`SettingsTabContent` 调 `settingsNavForm()`）。
  */
 import type {
   SettingsCommonProps,

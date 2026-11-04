@@ -70,8 +70,12 @@ export interface AppContextValue {
   openNewDialog: (kind: NewDialogKind, workspaceId: string) => void
   closeNewDialog: () => void
   /**
-   * 「打开设置并落到某个分组」的请求（模型选择下拉的两个设置入口用；null = 没有请求）。
-   * 弹窗开关本身在 AppShell，这里只传「想看哪个分组」——shell 收到后开弹窗并透传 initialTab。
+   * 「打开设置并落到某个分组」的请求 —— **只有 `apps/mobile` 会用到非 null 值**
+   * （它的设置是整页 `SettingsPage`，需要「请求了哪一页」来决定首屏落点）。
+   *
+   * web / desktop 里设置就是主区域的一条标签，分组请求直接写进标签登记表
+   * （`ToolTab.settingsTab`），所以 `settingsTab` 恒为 `null`、`clearSettingsTab`
+   * 是空操作。别在 web 侧又照着「读到 settingsTab 就开弹窗」写一遍。
    */
   settingsTab: 'models' | 'acp' | null
   openSettingsTab: (tab: 'models' | 'acp') => void

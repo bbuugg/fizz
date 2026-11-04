@@ -232,3 +232,78 @@ jobs:
           max_retries: 3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Chrome 扩展（MV3）：与桌面 / 安卓同一个 Release（tag），单独一个 job。
+  #
+  # 产物是一份**静态目录**（`apps/extension/dist`：manifest.json + index.html +
+  # background.js + assets），浏览器那边的装法是「加载已解压的扩展程序」，所以要压成 zip
+  # 才方便下载后解压。文件名带版本号：Release 里多个版本并存时 `extension.zip` 一律同名，
+  # 用户根本分不清是哪个 tag 的包（与 APK 那条同理）。
+  #
+  # ⚠️ 版本号只有一处算数：`apps/extension/package.json`，由 vite 插件
+  #    （`vite.config.ts` 的 `chromeManifest`）注入 dist/manifest.json。别再手写第二份。
+  #
+  # 只做「构建 + 打包 + 挂 Release」，**不**自动发 Chrome Web Store：
+  # 那需要 CWS 的 client id / secret / refresh token 三个 Secret，且首次上架必须人工提交审核。
+  extension:
+    name: Build Chrome extension
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # 内含 copy:monaco（扩展的 public/monaco-editor 是生成物，不入库）
+      - name: Build extension
+        run: npm run build:extension
+        env:
+          CI: true
+
+      # 装了才知道能不能用，先卡三样硬要求：清单、面板入口、背景脚本。
+      # 版本号比对防的是「tag 改了、package.json 忘了改」——那种包 manifest 里是旧版本，
+      # Chrome 商店外的自装用户升级时会被判成同一版本。
+      - name: Verify dist
+        run: |
+          version=$(node -p "require('./apps/extension/package.json').version")
+          for file in manifest.json index.html background.js; do
+            test -f "apps/extension/dist/$file" || { echo "::error::产物缺少 dist/$file"; exit 1; }
+          done
+          installed=$(node -p "require('./apps/extension/dist/manifest.json').version")
+          if [ "$installed" != "$version" ]; then
+            echo "::error::dist/manifest.json 的版本($installed)与 apps/extension/package.json($version) 不一致"
+            exit 1
+          fi
+
+      - name: Package zip
+        run: |
+          version=$(node -p "require('./apps/extension/package.json').version")
+          mkdir -p apps/extension/release
+          cd apps/extension/dist
+          zip -qr "../release/Fizz-${version}-chrome.zip" .
+
+      - name: Upload extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: fizz-extension
+          path: apps/extension/release/*.zip
+          if-no-files-found: error
+
+      # 与桌面 / 安卓并发创建同一个 Release，后到的一方靠重试改成「追加 assets」。
+      - name: Publish extension to Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: apps/extension/release/*.zip
+          draft: false
+          prerelease: false
+          max_retries: 3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

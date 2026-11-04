@@ -31,7 +31,7 @@ export function DesktopSettingsPanel({
 }: SettingsCommonProps & {
   /** 这台宿主是谁（菜单按它过滤，见 `sections.ts`） */
   platform: SettingsPlatform
-  /** 宽高由调用方给：弹窗限高 60dvh（`SettingsDialog`）、独立窗口铺满（`SettingsWindow`） */
+  /** 宽高由调用方给：标签页铺满整个主区域（`SettingsTabContent`） */
   className?: string
   /** 打开时落在哪个分组（模型选择下拉的设置入口用）；只在挂载时生效一次 */
   initialTab?: SettingsTabId

@@ -28,6 +28,10 @@ export type ProjectUiAction =
    * Agent 动用了浏览器（`browser_*` 工具，除 `browser_close`）：把该会话右侧的
    * 浏览器画面面板挂出来。带 conversationId 是为了让收方只在「正看的那个会话」
    * 里动作 —— 后台会话用浏览器不该把当前会话的面板抢出来。
+   *
+   * ⚠️ 这里只能按**工具名**判，而外部 playwright-mcp 与内置这套**完全同名**：光看名字
+   * 分不出是谁在开浏览器。所以收方要再复核「这个会话真开了内置浏览器」才挂面板
+   * （见 app-shell 的第三道闸）。
    */
   | { action: 'browser-active'; conversationId: string }
 
@@ -37,6 +41,10 @@ const PROJECT_ACTION_TOOLS = new Set(['open_project', 'create_project', 'create_
 /**
  * 「用了浏览器」的工具判定。排除 `browser_close`：那是收尾动作，没有画面要看，
  * 弹面板反而多余。用前缀判而不是白名单，新增 browser_* 工具时自动跟上。
+ *
+ * ⚠️ 前缀会**连带外部 MCP**：playwright-mcp 的工具同样叫 `browser_navigate` /
+ * `browser_click`，它并不驱动内置浏览器（面板会空着）。因此这条判定只是「可能是浏览器」，
+ * 真挂面板前收方还要确认这个会话开了内置浏览器。
  */
 function isBrowserTool(toolName: string): boolean {
   return toolName.startsWith('browser_') && toolName !== 'browser_close'

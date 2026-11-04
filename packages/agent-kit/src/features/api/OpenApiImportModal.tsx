@@ -236,7 +236,7 @@ export function OpenApiImportModal({
             而不是「单选按钮，已选中」。
 
             与 `ApiPage` 里那几处（请求头 / 参数 / 请求体、响应体 / 响应头）同一套组件、
-            同一个理由 —— 见 `features/api/Segmented` 文件头那段说明。
+            同一个理由 —— 见 `shared/components/Segmented` 文件头那段说明。
           */}
           <Tabs
             value={source}

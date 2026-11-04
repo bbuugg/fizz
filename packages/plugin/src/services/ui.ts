@@ -3,9 +3,12 @@
  *
  * 三件事：
  * 1. **设置项** `setting()` —— 设置 →「插件」里的可编辑表单；
- * 2. **界面**（`activityBar()` / `sider()` / `view()`）—— 左侧图标栏的一颗、图标栏右边
- *    那一列的侧栏、主视图区的一个**标签页**。内容由插件的 `render()` 在**服务端**算好，
- *    返回一串「块」（`UiBlock`），前端只负责把块画出来。
+ * 2. **界面** —— 主视图区的一个**标签页**（`view()`）。内容由插件的 `render()` 在**服务端**
+ *    算好，返回一串「块」（`UiBlock`），前端只负责把块画出来。
+ *
+ *    ⚠️ `activityBar()` / `sider()` 仍保留（老插件不会崩），但**界面上已经没有它们的位置**：
+ *    图标栏只有一颗「插件」，点开是插件列表，点插件就在标签条里开它的 `view`。老插件的
+ *    sider 面会作为标签页出现。新插件请只用 `view()`（或者直接写前端半，见 SKILL 3.7）。
  *
  * 只做「声明」与「产出数据」，**不做渲染**：插件不 import 任何 React 代码，纯 Node 侧也能
  * 声明 UI —— 与 `@fizz/agent-kit`「Node-only 包只能 import type」的约束相容，也不会出现「插件往
@@ -550,10 +553,11 @@ export class UiService extends Service {
   }
 
   /**
-   * 在**左侧图标栏**里加一颗。
+   * **已废弃**：以前在左侧图标栏里加一颗，现在图标栏只有统一的一颗「插件」。
    *
-   * `opens` 决定点它打开谁：`'sider:xx'` / `'view:xx'`；不给就找**同 id 的 sider**。
-   * 一颗图标本身不出内容 —— 它只是入口，内容永远是某个 sider 或 view。
+   * 声明仍然生效（`opens` 会被「插件」列表当作默认面参考），但**不会再出现在图标栏**。
+   * 新插件不要调用：插件图标写在 `plugin.json` 的 `icon`（或 `ctx.ui.icon()`）里，
+   * 内容面只声明 `view()`。
    */
   activityBar(item: UiActivityBarItem): Dispose {
     const id = typeof item?.id === 'string' ? item.id.trim() : ''
@@ -578,7 +582,12 @@ export class UiService extends Service {
     return this.put(`activityBar:${id}`, decl)
   }
 
-  /** 侧栏（图标栏右边那一列）里的一屏内容 */
+  /**
+   * **已废弃**：以前是图标栏右边那一列的内容，现在没有插件自己的侧栏了。
+   *
+   * 老插件声明的 sider 面会作为**标签页**出现在「插件」列表里（点插件默认打开它），
+   * 所以不会点了没反应；新插件请用 `view()`。
+   */
   sider(spec: UiSurfaceSpec): Dispose {
     return this.surface('sider', spec)
   }

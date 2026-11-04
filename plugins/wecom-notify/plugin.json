@@ -3,5 +3,6 @@
   "name": "企业微信通知",
   "version": "1.0.0",
   "apiVersion": 1,
-  "entry": "index.ts"
+  "entry": "index.ts",
+  "description": "通过企业微信群机器人 webhook 推送消息，给模型一个 notify 工具"
 }

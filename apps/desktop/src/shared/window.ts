@@ -26,15 +26,12 @@ export const WINDOW_IPC = {
   /** 关闭按钮行为偏好：收起到托盘（true，默认）/ 直接退出（同步读，见下） */
   loadCloseToTray: 'agent-window:loadCloseToTray',
   setCloseToTray: 'agent-window:setCloseToTray',
-  /** 把设置开在独立窗口里（主进程负责单例与聚焦），可带「先落到哪个分组」 */
-  openSettings: 'agent-window:openSettings',
-  /**
-   * 设置窗口**已经开着**时，请求它切到某个分组（main → 设置窗口）。
-   *
-   * 首开走查询参数（`?window=settings&tab=models`）；只有「已开着」才需要这条事件 ——
-   * 不能靠重新加载页面来切分组，那会把用户正在填的表单冲掉。
-   */
-  settingsTab: 'agent-window:settingsTab',
+  /*
+    ⚠️ 这里原先有 `openSettings` / `settingsTab` 两条通道（主进程开独立设置窗口、
+    并向它推送「切到某个分组」）。设置已经并回主区域的标签页
+    （`agent-kit` 的 `settings:list`），整个窗口生命周期的概念不存在了，
+    两条通道随之删除 —— 别再按「宿主有 openSettingsWindow 就开窗口」的思路加回来。
+  */
   /** 打开浮窗（单例；已开着就显隐 / 聚焦）。首参是首次创建时的初始会话种子 */
   openConversationWindow: 'agent-window:openConversationWindow',
   /**
@@ -121,18 +118,11 @@ export const WINDOW_IPC = {
  */
 export type DesktopThemeMode = 'light' | 'dark' | 'system'
 
-/**
- * 「打开设置时先落到哪个分组」（与 `@fizz/agent-kit` 的 `DesktopSettingsPanel` 的 `initialTab` 同构）。
- *
- * 与 `DesktopThemeMode` 同一个理由：preload 绝不能顺着类型把 `@fizz/agent-kit`（进而 React
- * 全家）拖进 preload 产物，所以这里再声明一份、由主进程与渲染端各自校验。
- */
-export type DesktopSettingsTab = 'models' | 'acp'
-
-/** 校验不可信输入（查询参数 / IPC 参数）：认不出来就当没带，绝不原样透传 */
-export function isDesktopSettingsTab(value: unknown): value is DesktopSettingsTab {
-  return value === 'models' || value === 'acp'
-}
+/*
+  `DesktopSettingsTab` / `isDesktopSettingsTab` 已删除：它们只服务「独立设置窗口 +
+  `?window=settings&tab=`」那条链路。设置进主区域后，分组请求在渲染端内部由
+  `openSettingsTab(tab)` 直接写进标签登记表，不过 IPC、也不进查询参数。
+*/
 
 /**
  * 远程访问的状态（与 `@fizz/agent-ui` 的 `RemoteAccessState` **同构**）。
@@ -244,14 +234,10 @@ export interface DesktopWindowBridge {
   loadCloseToTray(): boolean
   /** 改「关闭时收起到托盘」（主进程落盘，下次启动仍是这个值） */
   setCloseToTray(enabled: boolean): Promise<void>
-  /** 把设置开在独立窗口里（已开着就聚焦，不会重复开）；`tab` = 打开后先落到哪个分组 */
-  openSettings(tab?: DesktopSettingsTab): Promise<void>
-  /**
-   * 设置窗口**已经开着**时，主窗口请求切分组（订阅方是设置窗口自己）；返回退订函数。
-   *
-   * 首开不带这条 —— 那时分组走查询参数，见 `WINDOW_IPC.settingsTab` 的注释。
-   */
-  onSettingsTab(cb: (tab: DesktopSettingsTab) => void): () => void
+  /*
+    这里原先有 `openSettings` / `onSettingsTab` 两个窗口桥方法。设置改成主区域标签后
+    不需要任何跨窗口协作（改完就在同一份 store 里），故一并删除。
+  */
   /** 打开浮窗；initialConversationId 仅在该窗口**首次创建**时作为初始内容 */
   openConversationWindow(initialConversationId?: string): Promise<void>
   /** 关闭浮窗（若开着） */

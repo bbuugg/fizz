@@ -24,6 +24,7 @@
 import {
   HooksService,
   PromptService,
+  RpcService,
   ToolsService,
   UiService,
   UploadsService,
@@ -31,7 +32,7 @@ import {
   createAppContext
 } from '@fizz/plugin'
 import { loadPluginModule } from '@fizz/plugin/loader'
-import type { UiSurfaceDeclaration } from '@fizz/plugin'
+import type { PluginDescriptor, UiSurfaceDeclaration } from '@fizz/plugin'
 import type {
   PluginBlock,
   PluginBlockTone,
@@ -42,7 +43,7 @@ import type {
   PluginSurfaceView,
   PluginToast
 } from '@fizz/contracts/agent-api'
-import { discoverServerPlugins, surfaceKeyOf, withRuntimeConfig } from './plugin-roots'
+import { clientBundleRev, discoverServerPlugins, surfaceKeyOf, withRuntimeConfig } from './plugin-roots'
 import { domain } from './state'
 
 /** 一个面的坐标：哪个插件 + 哪一类 + 哪个 id（+ 可选参数：同一个面可以开多份） */
@@ -59,6 +60,11 @@ export interface SurfaceRef {
 
 /** `render` / `onAction` 的超时：插件吊死不能把请求挂住（界面会转圈） */
 const CALL_TIMEOUT_MS = Number(process.env.FIZZ_PLUGIN_UI_TIMEOUT_MS ?? 10_000)
+/**
+ * RPC 的超时比界面长得多：界面只是画一下，RPC 往往真在干活（查一次数据库、跑一次命令）。
+ * 10s 会把「慢但正常」的调用判死，用户看到的是「插件坏了」。
+ */
+const RPC_TIMEOUT_MS = Number(process.env.FIZZ_PLUGIN_RPC_TIMEOUT_MS ?? 60_000)
 /** 一屏最多多少个块 */
 const MAX_BLOCKS = 200
 /** 一个列表块最多多少项（超了截断，并在块上标出来） */
@@ -250,6 +256,17 @@ async function mountOnce(pluginId: string, workspaceId?: string) {
   if (!descriptor) {
     throw new Error(`找不到插件 ${pluginId}（可能已被删除 / 停用，或不在当前作用域里）`)
   }
+  const mounted = await mountDescriptor(descriptor, workspace?.path)
+  return { ...mounted, workspacePath: workspace?.path }
+}
+
+/**
+ * 按**已解析好的描述符**挂一次插件（RPC 与界面两条路共用）。
+ *
+ * 服务全给齐（tools / prompt / hooks / ui / uploads / models / rpc）：插件的 `inject`
+ * 声明了其中某个却被推迟的话，`apply` 就不会跑，注册表也就是空的。
+ */
+async function mountDescriptor(descriptor: PluginDescriptor, workspacePath?: string) {
   const [withConfig] = withRuntimeConfig([descriptor])
   const plugin = await loadPluginModule(descriptor.file)
 
@@ -261,13 +278,73 @@ async function mountOnce(pluginId: string, workspaceId?: string) {
   ctx.set('ui', ui)
   ctx.set('uploads', new UploadsService(ctx))
   ctx.set('models', new ModelsService(ctx))
+  const rpc = new RpcService(ctx)
+  ctx.set('rpc', rpc)
   const fork = ctx.plugin(plugin, withConfig.config)
   return {
     ctx,
     fork,
     ui,
+    rpc,
+    descriptor,
     name: descriptor.name,
-    workspacePath: workspace?.path
+    workspacePath
+  }
+}
+
+/**
+ * 调一次插件注册的 RPC 方法（`ctx.rpc.handle`）。
+ *
+ * 与界面同一套生命周期：**每次请求现挂一次**（见文件头的说明），调用完就拆。
+ * 拆分口径：方法不存在 → `notFound`（路由映射 404）；处理器抛错 → `error`（映射 400，
+ * 原话回给前端 —— 插件写的「请先配置 API key」要能被用户看见）。
+ */
+export async function invokePluginRpc(opts: {
+  pluginId: string
+  method: string
+  payload?: unknown
+  workspaceId?: string
+}): Promise<{ ok: true; data: unknown } | { ok: false; status: 404 | 400; error: string }> {
+  let mounted: Awaited<ReturnType<typeof mountDescriptor>> | null = null
+  try {
+    const workspace = opts.workspaceId ? domain.getWorkspace(opts.workspaceId) : undefined
+    const all = await discoverServerPlugins({
+      workspaceId: opts.workspaceId,
+      workspacePath: workspace?.path
+    })
+    const descriptor = all.find((p) => p.id === opts.pluginId)
+    if (!descriptor) {
+      return { ok: false, status: 404, error: `找不到插件 ${opts.pluginId}（可能已被删除 / 停用）` }
+    }
+    if (!descriptor.enabled) {
+      return { ok: false, status: 404, error: `插件「${descriptor.name}」已停用，先在设置里开启它` }
+    }
+    mounted = await mountDescriptor(descriptor, workspace?.path)
+    if (!mounted.rpc.methods().length) {
+      return {
+        ok: false,
+        status: 404,
+        error: `插件「${descriptor.name}」没有注册任何 RPC 方法（服务端半要写 ctx.rpc.handle(...)）`
+      }
+    }
+    const data = await withTimeout(
+      'rpc',
+      Promise.resolve(
+        mounted.rpc.invoke(opts.method, opts.payload, {
+          ...(workspace?.path ? { workspacePath: workspace.path } : {}),
+          origin: 'surface'
+        })
+      ),
+      RPC_TIMEOUT_MS
+    )
+    return { ok: true, data: data ?? null }
+  } catch (err) {
+    return { ok: false, status: 400, error: err instanceof Error ? err.message : String(err) }
+  } finally {
+    if (mounted) {
+      await mounted.fork.dispose().catch(() => undefined)
+      await mounted.ctx.dispose().catch(() => undefined)
+    }
   }
 }
 
@@ -421,13 +498,17 @@ function renderContextOf(
 }
 
 /** 带超时地跑一个插件回调（插件是自己写的代码，吊死要能兜住） */
-async function withTimeout<T>(label: string, run: Promise<T>): Promise<T> {
+async function withTimeout<T>(
+  label: string,
+  run: Promise<T>,
+  timeoutMs: number = CALL_TIMEOUT_MS
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     return await Promise.race([
       run,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label}超时（>${CALL_TIMEOUT_MS}ms）`)), CALL_TIMEOUT_MS)
+        timer = setTimeout(() => reject(new Error(`${label}超时（>${timeoutMs}ms）`)), timeoutMs)
       })
     ])
   } finally {
@@ -438,7 +519,7 @@ async function withTimeout<T>(label: string, run: Promise<T>): Promise<T> {
 /**
  * 列出当前可见插件注册的所有界面。
  *
- * 只列**已启用**的（停用的插件不该在图标栏里留一颗点不动的图标，与上传源同一取舍）。
+ * 只列**已启用**的（停用的插件不该出现在插件列表里，与上传源同一取舍）。
  * 单个插件加载失败只进 `errors`，不影响其它插件 —— 界面清单挂掉比它慢更糟。
  */
 export async function listPluginSurfaces(opts: {
@@ -463,6 +544,7 @@ export async function listPluginSurfaces(opts: {
     ctx.set('ui', ui)
     ctx.set('uploads', new UploadsService(ctx))
     ctx.set('models', new ModelsService(ctx))
+    ctx.set('rpc', new RpcService(ctx))
     try {
       const plugin = await loadPluginModule(item.file)
       const fork = ctx.plugin(plugin, item.config)
@@ -473,6 +555,24 @@ export async function listPluginSurfaces(opts: {
        */
       const declared = (plugin as { name?: unknown } | null)?.name
       const pluginName = typeof declared === 'string' && declared ? declared : item.name
+      /**
+       * 插件级图标：清单里写的优先（静态、不用跑插件就能得到），否则用插件在
+       * `apply()` 里 `ctx.ui.icon(...)` 声明的那一个。
+       *
+       * 它只给「插件」侧栏的列表行用（`PluginSurfaceView.pluginIcon`）；面自己的
+       * `icon` 是另一回事，别混。
+       */
+      const pluginIcon = item.manifest.icon ?? ui.iconValue
+      /**
+       * 插件级信息（图标 / 说明 / 版本）**在每个面上都塞同一份**：侧栏列表行按插件分组的
+       * 时候随便取一个面就够，不必再单独拉一次 `GET /api/plugins`（那条路只有设置页要，
+       * 而且带着 config / 路径这些侧栏用不到的东西）。
+       */
+      const pluginMeta = {
+        ...(pluginIcon ? { pluginIcon } : {}),
+        ...(item.manifest.description ? { pluginDescription: item.manifest.description } : {}),
+        ...(item.manifest.version ? { pluginVersion: item.manifest.version } : {})
+      }
       for (const decl of ui.surfaces()) {
         surfaces.push({
           key: surfaceKeyOf(item.id, decl),
@@ -482,12 +582,51 @@ export async function listPluginSurfaces(opts: {
           id: decl.id,
           title: decl.title,
           ...(decl.icon ? { icon: decl.icon } : {}),
+          ...pluginMeta,
           order: typeof decl.order === 'number' ? decl.order : 0,
           ...(decl.opens ? { opens: decl.opens } : {}),
           hasAction: typeof decl.onAction === 'function',
           // 顶栏图标按钮：与列表行尾按钮共用同一份清洗（白名单图标 + 标量 args）
           ...(cleanItemActions(decl.headerActions) ? { headerActions: cleanItemActions(decl.headerActions)! } : {})
         })
+      }
+      /**
+       * 前端半声明的面。清单只声明「我有哪些面」，bundle 只负责「怎么画」
+       * （理由见 `PluginStaticSurface` 的注释：界面清单是服务端驱动的，
+       *  两处注册会出现刷新前后顺序不同、加载失败时整段消失）。
+       */
+      const clientSurfaces = item.manifest.client?.surfaces ?? []
+      if (clientSurfaces.length) {
+        const clientRev = await clientBundleRev(item.clientFile)
+        if (!clientRev) {
+          errors.push(`${item.name}：plugin.json 声明了 client.surfaces，但 client.entry 文件不存在`)
+        } else {
+          for (const decl of clientSurfaces) {
+            const clash = ui.surfaceByKey(`${decl.kind}:${decl.id}`)
+            if (clash) {
+              // 同一个面只能有一个渲染者：服务端已经注册了，前端半再声明一遍就是配置错误
+              errors.push(
+                `${item.name}：${decl.kind}/${decl.id} 同时由服务端半和前端半声明，只保留服务端那份`
+              )
+              continue
+            }
+            surfaces.push({
+              key: surfaceKeyOf(item.id, decl),
+              pluginId: item.id,
+              pluginName,
+              kind: decl.kind,
+              id: decl.id,
+              title: decl.title,
+              ...(decl.icon ? { icon: decl.icon } : {}),
+              ...pluginMeta,
+              order: typeof decl.order === 'number' ? decl.order : 0,
+              // 前端半自己画，没有服务端 headerActions / onAction
+              hasAction: false,
+              renderMode: 'client',
+              clientRev
+            })
+          }
+        }
       }
       await fork.dispose()
     } catch (err) {
@@ -497,7 +636,8 @@ export async function listPluginSurfaces(opts: {
     }
   }
 
-  // 稳定顺序：图标栏按 order（小在前）→ 插件名 → 面 id；同名同序时保持声明顺序
+  // 稳定顺序：按 order（小在前）→ 插件名 → 面 id；同名同序时保持声明顺序。
+  // 「点插件默认打开哪一面」也靠它（插件列表取该插件里 order 最小的面）
   surfaces.sort(
     (a, b) =>
       a.order - b.order ||
@@ -516,7 +656,20 @@ export async function renderPluginSurface(opts: SurfaceRef & { workspaceId?: str
     mounted = await mountOnce(opts.pluginId, opts.workspaceId || undefined)
     const surface = mounted.ui.surfaceByKey(`${opts.kind}:${opts.id}`)
     if (!surface?.render) {
-      return { ...empty, error: `插件没注册这个界面（${opts.kind}:${opts.id}）` }
+      /*
+       * 前端半声明的面走的是「浏览器直接渲染」这条路，服务端**没有**它的 render。
+       * 走到这里说明前端拿的是旧清单（或本不该发这个请求）—— 回一句话指路，
+       * 比「插件没注册这个界面」这种像 bug 的文案有用得多。
+       */
+      const isClientSurface = mounted.descriptor.manifest.client?.surfaces?.some(
+        (decl) => decl.kind === opts.kind && decl.id === opts.id
+      )
+      return {
+        ...empty,
+        error: isClientSurface
+          ? `界面「${opts.id}」由插件的前端半渲染（renderMode: client），不该走服务端渲染`
+          : `插件没注册这个界面（${opts.kind}:${opts.id}）`
+      }
     }
     // 插件在 render 里 toast(...) 出来的提示：随这次响应一起带回
     const collected = toastCollector()

@@ -42,6 +42,7 @@
  * 就会先闪一句「还没有项目」。需要骨架屏的调用方自己判断，把它放进 `children`。
  */
 import { useState, type ComponentType, type ReactNode } from 'react'
+import { Skeleton } from '@fizz/ui/skeleton'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { SectionHeader } from '@fizz/agent-kit/shared/components/StackedSections'
 
@@ -182,5 +183,25 @@ export function SidebarGroup({
         </div>
       )}
     </>
+  )
+}
+
+/**
+ * 组内容的加载骨架：几行等高的假行（`h-7` 对齐一条侧栏行）。
+ *
+ * 与 `empty` 是**配套**的两半，见文件头那条「加载中不要传空态」：加载中 `count` 也是 0，
+ * 传了 `empty` 就会先闪一句「还没有…」；正确做法是加载中把 `empty` 留空、把这里放进
+ * `children`，等清单位落（`hostsLoaded` / `conversationsLoaded`）之后再交回真实列表 / 空态。
+ *
+ * 不自带水平内边距：调用方的组往往已经有 `px-2`（真实行自带同样的内边距），这里再加一层
+ * 会比真实行窄一档，骨架切列表时横向抖一下。
+ */
+export function SidebarRowsSkeleton({ rows = 3 }: { rows?: number }) {
+  return (
+    <div className="flex flex-col gap-0.5" aria-busy="true" aria-hidden="true">
+      {Array.from({ length: rows }, (_, i) => (
+        <Skeleton key={i} className="h-7 w-full rounded-md" />
+      ))}
+    </div>
   )
 }

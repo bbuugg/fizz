@@ -17,6 +17,7 @@ import {
   Puzzle,
   ScrollText,
   Server,
+  Settings,
   SquareTerminal,
 } from 'lucide-react'
 import { t } from '@fizz/i18n'
@@ -37,6 +38,7 @@ import {
   isNoteTabKey,
   isPluginTabKey,
   isScriptsTabKey,
+  isSettingsTabKey,
   isSftpTabKey,
   isSysmonTabKey,
   isTriggersTabKey,
@@ -181,6 +183,16 @@ export function useTabMeta(): (key: string) => TabMeta {
           label: tool?.label ?? t('脚本'),
           title: tool?.title ?? t('脚本'),
           icon: <FileCode2 className="size-3.5 shrink-0" />
+        }
+      }
+      if (isSettingsTabKey(key)) {
+        // 设置面板也是全局单例（`settings:list`）。名字固定 —— 它内部有分组菜单，
+        // 标签名再跟着当前分组变只会让人以为开了好几条设置
+        const tool = getToolTab(key)
+        return {
+          label: tool?.label ?? t('设置'),
+          title: tool?.title ?? t('设置'),
+          icon: <Settings className="size-3.5 shrink-0" />
         }
       }
       if (isNoteTabKey(key)) {
