@@ -325,8 +325,10 @@ export function ConversationTab({
   const listsLoading = !app.conversationsLoaded && !app.error
 
   /** ACP 会话：名字右侧要跟一个「外部 Agent 名称」徽标 */
-  const acpAgent =
-    conversation?.backend === 'acp' ? app.acpAgents.find((a) => a.id === conversation.configId) : undefined
+  const isAcpConversation = conversation?.backend === 'acp'
+  const acpAgent = isAcpConversation
+    ? app.acpAgents.find((a) => a.id === conversation.configId)
+    : undefined
 
   /**
    * 「选择终端」菜单里打勾的那一项：**上次用过并被记住的 shell**（`terminalShellId`）；
@@ -643,8 +645,11 @@ export function ConversationTab({
               ⚠️ 只在真实会话里给：草稿标签的 key 是 `draft:<工作区>`，面板会连到一个
               不存在的 `agent-browser:` 会话（只显示「浏览器未启动」）。发第一条消息后
               标签被复用成真实会话，按钮自然出现。
+
+              ⚠️ ACP 会话不给：运行的是外部 Agent，`browser_*` 那套工具它根本用不上，
+              这颗入口点开只会是个永远「未启动」的空面板。
             */}
-            {conversationId && (
+            {conversationId && !isAcpConversation && (
               <div className="hidden sm:flex">
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -780,7 +785,7 @@ export function ConversationTab({
                    菜单里的这一项也得跟着判，否则手机上会出现一颗点开没反应的开关。 */
                 canExpandPanel={tabKeys.length > 0}
                 showPreview={containerPreview}
-                showBrowser={!!conversationId}
+                showBrowser={!!conversationId && !isAcpConversation}
                 onToggleFiles={() => toggleSideTabOf(key, 'files')}
                 onToggleGit={() => toggleSideTabOf(key, 'git')}
                 onTogglePreview={() => toggleSideTabOf(key, 'preview')}
