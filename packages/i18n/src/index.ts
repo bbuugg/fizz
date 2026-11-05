@@ -14,7 +14,12 @@ import { DEFAULT_LANGUAGE, normalizeLanguage, type AppLanguage } from '@fizz/con
 import { EN } from './en'
 
 export type { AppLanguage } from '@fizz/contracts'
-export { DEFAULT_LANGUAGE, APP_LANGUAGES, normalizeLanguage } from '@fizz/contracts'
+export {
+  DEFAULT_LANGUAGE,
+  APP_LANGUAGES,
+  normalizeLanguage,
+  detectLanguageFromLocale
+} from '@fizz/contracts'
 
 let current: AppLanguage = DEFAULT_LANGUAGE
 const listeners = new Set<() => void>()

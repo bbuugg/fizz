@@ -15,7 +15,7 @@
  * | 宿主 | platform | form |
  * |---|---|---|
  * | `apps/mobile/src/app/SettingsPage` | `mobile` | `two-level`（恒，平板横屏也是） |
- * | `features/settings/SettingsTabContent` | 宿主 `platform` | 窄屏 `two-level` / 宽屏 `two-column` |
+ * | `features/settings/SettingsTabContent` | 宿主 `platform` | 容器窄 `two-level` / 容器宽 `two-column` |
  *
  * ## 为什么 form 由宿主传、而不是这里用 `useIsMobile()` 自己算
  *
@@ -23,7 +23,9 @@
  * 只是不播转场）。塞一个 `useIsMobile()` 进来，等于把 mobile 宿主的形态也交给视口决定
  * —— 平板横屏上会突然变成两栏。
  *
- * 标签宿主那边只有一个判断入口（`SettingsTabContent` 调 `settingsNavForm()`）。
+ * 标签宿主那边只有一个判断入口（`SettingsTabContent` 调 `settingsNavForm()`）。它量的是
+ * **标签自己的宽度**（ResizeObserver），不是视口：设置标签可能被拖窄，或与编辑器分栏，
+ * 此时窗口仍是宽的，但 `w-44` 竖排菜单会把右侧内容压得没法用 —— 这时就该退成两级。
  */
 import type {
   SettingsCommonProps,
@@ -45,11 +47,11 @@ export type SettingsShellDetail = MobileSettingsDetail
 /**
  * 「这台宿主 + 这个宽度」该用哪种导航形态。
  *
- * 只有 web 会因为视口改变形态；手机 / 桌面各自写死自己的那一种（理由见文件头）。
+ * 手机恒为两级（它没有两栏形态的宿主）；web / desktop 都看**可用宽度** —— 桌面端设置
+ * 已经是主区域里的标签，可以比窗口窄得多，不能因为 `platform === 'desktop'` 就永远两栏。
  */
 export function settingsNavForm(platform: SettingsPlatform, narrow: boolean): SettingsNavForm {
   if (platform === 'mobile') return 'two-level'
-  if (platform === 'desktop') return 'two-column'
   return narrow ? 'two-level' : 'two-column'
 }
 

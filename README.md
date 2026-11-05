@@ -171,6 +171,7 @@ docker compose exec fizz git config --global user.name  "你的名字"
 npm install
 npm run build:server
 npm run build:web
+npm run build:mobile:hosted
 npm run server      # 等价于 build:server && node apps/server/dist/index.js
 ```
 

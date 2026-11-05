@@ -10,6 +10,7 @@
  */
 import { useSyncExternalStore } from 'react'
 import {
+  detectLanguageFromLocale,
   getLanguage,
   setLanguage,
   subscribeLanguage,
@@ -25,10 +26,20 @@ export function readStoredLanguage(): AppLanguage | null {
   return value === 'en' || value === 'zh' ? value : null
 }
 
-/** 首帧前调用：把 localStorage 里的语言灌进 i18n 单例 */
+/**
+ * 首帧前调用：把 localStorage 里的语言灌进 i18n 单例。
+ *
+ * 本机还没选过语言时跟随浏览器 / 系统 locale —— 中文环境 zh，其它 en，与
+ * 服务端 `detectDefaultLanguage` 同一口径；服务端连上后仍会以落盘的值为准。
+ */
 export function bootstrapLanguage(): void {
   const stored = readStoredLanguage()
-  if (stored) setLanguage(stored)
+  if (stored) {
+    setLanguage(stored)
+    return
+  }
+  const locale = typeof navigator === 'undefined' ? undefined : navigator.languages?.[0] ?? navigator.language
+  setLanguage(detectLanguageFromLocale(locale))
 }
 
 /** 记住选择（服务端保存成功后调用；失败也先让本机界面切过去） */

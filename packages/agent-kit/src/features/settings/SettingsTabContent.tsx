@@ -1,5 +1,6 @@
 /**
- * 设置面板的**标签页宿主**：把 `SettingsShell`（两栏）整块塞进主区域的一条标签。
+ * 设置面板的**标签页宿主**：把 `SettingsShell` 整块塞进主区域的一条标签，
+ * 并按**标签容器宽度**在两栏 / 两级导航之间切换（窄面板里右侧表单不再被菜单挤扁）。
  *
  * 它是「设置」唯一的形态 —— 桌面端原先那个独立 BrowserWindow
  * （`apps/desktop/src/renderer/app/SettingsWindow.tsx`）已经退场，理由见
@@ -25,10 +26,9 @@
  * 的 key 只做激活、不 emit，所以这里订阅登记表版本号重新读；再用 `key` 把外壳重挂
  * 一次 —— 与原 `SettingsWindow` 的 `key={`${tab}#${seq}`}` 是同一个手法。
  */
-import { useEffect, useSyncExternalStore } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { getAgentHost } from '@fizz/agent-client/host'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
-import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
 import { settingsTabKey } from '@fizz/agent-kit/shared/lib/panel-tabs'
 import {
   getToolTab,
@@ -43,23 +43,46 @@ import {
 import { SettingsShell, settingsNavForm } from '@fizz/agent-kit/features/settings/SettingsShell'
 import type { SettingsTabId } from '@fizz/agent-kit/features/settings/types'
 
+/**
+ * 两栏形态的**最小容器宽度**（不是视口宽度）。
+ *
+ * 低于它时左侧 `w-44` 菜单 + 间距已经吃掉太多，右侧表单只剩两三百像素；
+ * 退成两级导航后，菜单与详情各自整宽，窄面板里也能正常填表。
+ */
+const TWO_COLUMN_MIN_WIDTH = 640
+
 export function SettingsTabContent() {
   const { app } = useAppContext()
   const shortcuts = useShortcuts()
-  const isMobile = useIsMobile()
   // 登记表的版本号：`openSettingsTab(tab)` 就地改了表，`panel-store` 却不 emit
   useSyncExternalStore(subscribeToolTabs, getToolTabsVersion, getToolTabsVersion)
 
   const request = getToolTab(settingsTabKey())
   const initialTab = request?.settingsTab as SettingsTabId | undefined
   const platform = getAgentHost().platform
-  const form = settingsNavForm(platform, isMobile)
+  /**
+   * 响应式判据是**标签容器**的实际宽度，不是 `window`：设置标签可能在主区域里被拖窄
+   * 或与别的面板分栏，窗口本身仍是宽的；按视口判会一直停两栏，右侧内容被挤成一条。
+   * ResizeObserver 首帧回调在绘制前送达，窄容器不会先闪一帧两栏。
+   */
+  const [narrow, setNarrow] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const el = rootRef.current
+    if (!el) return
+    const observer = new ResizeObserver(([entry]) => {
+      setNarrow(entry.contentRect.width < TWO_COLUMN_MIN_WIDTH)
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+  const form = settingsNavForm(platform, narrow)
 
   // 标签关掉时若还停在「正在录制快捷键」，全局分发会一直被拦着（快捷键全哑）
   useEffect(() => () => setShortcutRecording(false), [])
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div ref={rootRef} className="flex h-full min-h-0 flex-col">
       <SettingsShell
         // 换分组要把外壳重挂（`DesktopSettingsPanel` 的 `initialTab` 只吃首帧）；
         // 同分组连点两次靠 seq 区分，否则「模型齿轮」从别处再点一次不会有反应

@@ -21,3 +21,18 @@ export const APP_LANGUAGES: ReadonlyArray<{ value: AppLanguage; label: string }>
 export function normalizeLanguage(value: unknown): AppLanguage {
   return value === 'en' ? 'en' : DEFAULT_LANGUAGE
 }
+
+/**
+ * 按系统 / 浏览器 locale 推断首次运行的界面语言。
+ *
+ * AppImage 目录要求「中文环境之外默认英文」：只有 locale 以 `zh` 开头（`zh-CN` /
+ * `zh_TW` / `zh-Hans` …）才用中文，其余一律英文；空值回落 `DEFAULT_LANGUAGE`，
+ * 避免连系统 locale 都拿不到的环境出现空白界面。
+ *
+ * 纯函数：服务端用 `Intl` / `LANG`、渲染端用 `navigator.languages` 取值后再进来。
+ */
+export function detectLanguageFromLocale(locale: string | null | undefined): AppLanguage {
+  const tag = (locale ?? '').trim().toLowerCase().replace(/_/g, '-')
+  if (!tag) return DEFAULT_LANGUAGE
+  return tag.startsWith('zh') ? 'zh' : 'en'
+}

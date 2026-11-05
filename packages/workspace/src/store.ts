@@ -48,7 +48,7 @@ import {
   normalizeSystemMonitorSettings,
   DEFAULT_SYSTEM_MONITOR_SETTINGS,
   type SystemMonitorSettings,
-  normalizeLanguage,
+  detectLanguageFromLocale,
   type AppLanguage,
   normalizeContainerPublicSettings,
   type ContainerPublicSettings,
@@ -185,7 +185,9 @@ export interface CoreData {
   systemMonitorSettings: SystemMonitorSettings
   /**
    * 界面语言（全局一份）：前端据此选字典，服务端据此构建工具描述与系统提示词。
-   * 默认中文；老数据文件没有这个字段 → `normalizeLanguage` 补 `zh`。
+   * **首次运行跟随系统 locale**（中文环境 zh，其它 en，见 `detectDefaultLanguage`）；
+   * 一旦用户在设置页改过就落盘，后续以文件里的值为准。老数据文件里已写着的
+   * `zh` / `en` 原样保留（可能是显式选择，无从区分）。
    */
   language: AppLanguage
   /**
@@ -267,6 +269,19 @@ export interface CoreData {
   notesRoots: NotesRoot[]
 }
 
+/**
+ * 首次运行（数据文件里还没有 `language`）的默认语言。
+ *
+ * 优先读桌面 / Linux 会话的环境变量（AppImage 下 `LANG` / `LC_ALL` 就是系统语言），
+ * 没有再用 Node 的 ICU 默认 locale。中文环境之外一律英文 —— AppImage 目录要求
+ * 应用在非中文环境下默认显示英文界面。
+ */
+function detectDefaultLanguage(): AppLanguage {
+  const env = process.env.LC_ALL || process.env.LC_MESSAGES || process.env.LANG
+  const locale = env || Intl.DateTimeFormat().resolvedOptions().locale
+  return detectLanguageFromLocale(locale)
+}
+
 function emptyData(): CoreData {
   return {
     version: DATA_VERSION,
@@ -281,7 +296,7 @@ function emptyData(): CoreData {
     skillSettings: { disabled: [], extraDirs: [] },
     subagentSettings: { enabled: [] },
     systemMonitorSettings: { ...DEFAULT_SYSTEM_MONITOR_SETTINGS },
-    language: normalizeLanguage(undefined),
+    language: detectDefaultLanguage(),
     prefs: { ...DEFAULT_PREFS },
     containerPublicSettings: normalizeContainerPublicSettings(undefined),
     pluginSettings: {},
@@ -511,8 +526,12 @@ export class JsonStore {
         // 系统监控偏好：老数据没有这个字段 → 归一化成默认值（开），
         // 也就是「和加这个开关之前的行为完全一致」，升级后监控照常。
         systemMonitorSettings: normalizeSystemMonitorSettings(raw.systemMonitorSettings),
-        // 界面语言：新字段，旧数据文件没有 —— 默认中文
-        language: normalizeLanguage(raw.language),
+        // 界面语言：旧数据文件没有这个字段时按系统 locale 推断（见 detectDefaultLanguage），
+        // 已写着的合法值原样保留
+        language:
+          raw.language === 'en' || raw.language === 'zh'
+            ? raw.language
+            : detectDefaultLanguage(),
         // 客户端偏好：新字段，旧数据文件没有 —— 按 `DEFAULT_PREFS` 补齐（与升级前的前端
         // 行为一致）；已写着的值只有非法时才回落默认，合法值原样保留
         prefs: normalizePrefs(raw.prefs),
