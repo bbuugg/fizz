@@ -82,7 +82,7 @@ function LogRow({ entry, scopeLabel }: { entry: AppLogEntry; scopeLabel?: string
         </span>
       </div>
       {entry.detail && (
-        <pre className="mt-1 ml-12 rounded bg-muted/50 p-1.5 font-mono text-[11px] break-all whitespace-pre-wrap text-muted-foreground">
+        <pre className="mt-1 rounded bg-muted/50 p-1.5 font-mono text-[11px] break-all whitespace-pre-wrap text-muted-foreground">
           {entry.detail}
         </pre>
       )}

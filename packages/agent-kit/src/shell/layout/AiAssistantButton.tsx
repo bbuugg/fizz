@@ -27,8 +27,9 @@ export function AiAssistantButton({ className }: { className?: string }) {
         size="sm"
         variant="ghost"
         className={cn(
-          'size-7! shrink-0 p-0! text-muted-foreground hover:text-foreground',
-          open && 'text-foreground',
+          'size-7! shrink-0 p-0!',
+          // 图标颜色即开关状态：收起时灰、展开时主题色，一眼能看出面板是否在场
+          open ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground',
           className
         )}
         aria-expanded={open}

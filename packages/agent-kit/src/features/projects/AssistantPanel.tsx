@@ -290,7 +290,9 @@ export function AssistantPanel({
 
   return (
     <div className={className}>
-      {/* 顶栏：会话切换器（标题 + 历史会话 + 新建）+ 删除当前会话 + 收起 */}
+      {/* 顶栏：会话切换器（标题 + 历史会话 + 新建）+ 删除当前会话。
+          全局形态的收起键已去掉（顶栏右上角的 AI 助手开关就是它的收起入口）；
+          终端内嵌形态没有那颗全局开关，仍保留「收起助手面板」。 */}
       <div className="flex items-center gap-2 px-3 py-2">
         {embedded ? (
           <Terminal className="size-4 shrink-0 text-muted-foreground" />
@@ -353,15 +355,17 @@ export function AssistantPanel({
         >
           <Trash2 className="size-4 text-muted-foreground" />
         </Button>
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          title="收起助手面板"
-          aria-label="收起助手面板"
-          onClick={closePanel}
-        >
-          <PanelRightClose className="size-4 text-muted-foreground" />
-        </Button>
+        {embedded && (
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            title="收起助手面板"
+            aria-label="收起助手面板"
+            onClick={closePanel}
+          >
+            <PanelRightClose className="size-4 text-muted-foreground" />
+          </Button>
+        )}
       </div>
 
       <ConfirmDeleteDialog
