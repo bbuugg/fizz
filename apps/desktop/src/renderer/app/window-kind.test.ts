@@ -11,13 +11,15 @@ describe('resolveWindowKind', () => {
   it('treats a stale ?window=settings as the main window', () => {
     expect(resolveWindowKind('?window=settings&tab=models')).toEqual({ kind: 'main' })
   })
-  it('detects a conversation float window and passes its seed id', () => {
+  it('detects a conversation float window and passes its conversation id', () => {
     expect(resolveWindowKind('?window=conversation&conversationId=abc')).toEqual({
       kind: 'conversation',
-      initialConversationId: 'abc'
+      conversationId: 'abc'
     })
   })
-  it('renders the float window even without a seed id (draft / current)', () => {
+  // 浮窗是「一条会话一个窗口」，正常路径一定带 id；没有 id 时仍要渲染窗口本身，
+  // 由 `ConversationWindow` 给「没有指定会话」的空态 —— 别改成白屏或干脆不渲染。
+  it('still resolves a float window without an id (renders an empty state)', () => {
     expect(resolveWindowKind('?window=conversation')).toEqual({ kind: 'conversation' })
   })
 })

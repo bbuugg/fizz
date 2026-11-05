@@ -13,7 +13,7 @@
  * - `server-lists`：各域清单镜像 + 全量刷新 + 状态 WS 订阅 + 无状态 API 门面
  * - `conversation`：每会话一份的对话现场 + 对话运行时（核心）
  * - `assistant`：项目管理助手的现场（跨项目轻量对话,独立于会话体系）
- * - `transfer`：SFTP 上传 / 下载的现场（全局传输托盘；**不持久化**，理由见 slice 文件头）
+ * - `transfer`：SFTP 上传 / 下载的现场（状态栏传输徽标；**不持久化**，理由见 slice 文件头）
  *
  * ⚠️ slice 文件只允许 `import type { AgentStore }`（类型反向引用，编译期擦除）；
  * 运行时反向 import 会成环。

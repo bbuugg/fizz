@@ -1,7 +1,8 @@
 'use client'
 
 /**
- * 底部状态栏的「后台任务」入口：一个徽标 + 一张任务清单弹层。
+ * 「后台任务」入口：一个徽标 + 一张任务清单弹层。桌面 / Web 挂在底部状态栏，
+ * 手机壳（`apps/mobile`）挂在顶栏 —— 同一份组件、同一份轮询，只有弹层方向与宽度不同。
  *
  * ## 为什么这件事必须在状态栏
  *
@@ -13,6 +14,17 @@
  * 「更新 / 日志」是偶发操作；后台任务夹在 spacer 之后第一颗，不跟左侧读数抢位置。
  *
  * 徽标样式套 `STATUS_ITEM_CLASS`，与底栏其它条目（系统监控等）对齐。
+ *
+ * ## 手机上它也在，只是换了条栏
+ *
+ * 手机壳没有底部状态栏（`apps/mobile/src/styles.css` 把 `--status-bar-height` 压成 0），
+ * 而这颗徽标恰恰是「关掉弹窗、切走页面之后唯一还能告诉你活还在跑」的东西，不能跟着
+ * 那条栏一起消失 —— 它被挂到 `MobileAppBar` 右端（新建对话左边）。
+ *
+ * 于是多出两个入参：弹层**朝下**展开（`side="bottom"`，桌面那套是按「贴在屏幕底缘」
+ * 设的 `top`），宽度按视口收（`contentClassName`，桌面固定 `w-[23rem]` 在 360px 宽的手机
+ * 上会顶到屏幕边）。除这两个之外没有任何手机分支：徽标长什么样、多久轮询、清单里能做什么，
+ * 两端完全一致。
  *
  * ## 数据怎么来
  *
@@ -32,8 +44,8 @@
  *
  * ## 空闲时不占地方
  *
- * 一条任务都没有就回 `null`（与传输托盘同一个原则）：徽标是「有事才出现」的东西，
- * 常驻一个空壳只会挤占底栏。
+ * 一条任务都没有就回 `null`（与隔壁的 SFTP 传输徽标 `TransferBadge` 同一个原则）：徽标是
+ * 「有事才出现」的东西，常驻一个空壳只会挤占底栏。
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
@@ -203,7 +215,20 @@ function LogPane({ logs, loading }: { logs: BackgroundTaskLogLine[]; loading: bo
   )
 }
 
-export function BackgroundTasksBadge({ app }: { app: AgentApp }) {
+export function BackgroundTasksBadge({
+  app,
+  side = 'top',
+  contentClassName
+}: {
+  app: AgentApp
+  /**
+   * 弹层从触发器哪一侧展开。桌面底栏贴在屏幕底缘，朝上（默认）；手机那枚挂在顶栏，
+   * 必须朝下，否则弹层要顶出屏幕再被 collision 推回来，位置会跳。
+   */
+  side?: 'top' | 'bottom'
+  /** 弹层额外类名：桌面固定 23rem，手机窄屏传 `w-[calc(100vw-1rem)]` 收进视口 */
+  contentClassName?: string
+}) {
   const api = app.api
   const [tasks, setTasks] = useState<BackgroundTaskView[]>([])
   const [open, setOpen] = useState(false)
@@ -347,12 +372,13 @@ export function BackgroundTasksBadge({ app }: { app: AgentApp }) {
         </button>
       </PopoverTrigger>
 
-      {/* 右缘对齐触发器、向左展开：徽标在底栏右侧，对齐 end 才不出屏 */}
+      {/* 右缘对齐触发器、向左展开：徽标总在屏幕右端（底栏 actions 槽 / 手机顶栏右侧），
+          对齐 end 才不出屏。`side` / 宽度由调用方按所在那条栏给（见文件头「手机上」） */}
       <PopoverContent
-        side="top"
+        side={side}
         align="end"
         collisionPadding={8}
-        className="w-[23rem] p-0"
+        className={cn('w-[23rem] p-0', contentClassName)}
         /*
         打开时**不抢焦点**：这张清单是「看一眼」的信息位，抢焦点会把焦点从聊天输入框 /
         编辑器里拽走，用户点开瞄一眼再点回去，光标就没了。Esc 关闭不受影响

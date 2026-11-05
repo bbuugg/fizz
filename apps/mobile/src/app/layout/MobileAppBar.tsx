@@ -11,7 +11,7 @@
  *
  * - **左**：抽屉开关（唯一的侧栏入口，见 `mobile-sidebar.ts`）；
  * - **中**：当前标签的名字（解析与桌面标签条同一份 `useTabMeta`）；
- * - **右**：新建对话。
+ * - **右**：后台任务徽标（有事才出现，见下）、新建对话。
  *
  * ## 单标签：没有标签条，也没有标签列表
  *
@@ -29,6 +29,13 @@
  *
  * ⚠️ 别再在顶栏上挂「标签 / 多窗口」那类按钮：一旦有入口，用户就会以为后台还有别的
  * 标签在跑 —— 而单标签模式下它们真的不存在（`openTab` 已经把旧的收起了）。
+ * **后台任务徽标是例外**：它显示的是服务端真实在跑的任务（别的会话、别的客户端起的也算），
+ * 单标签模式下点开是一张清单，不是「标签列表」；一条任务都没有时它自己回 null，
+ * 不占宽度。
+ *
+ * 它本来挂在桌面那条底部状态栏里（`app-shell.tsx` 的 `actions` 槽），手机壳没有那条栏
+ * （`styles.css` 把 `--status-bar-height` 压成 0），所以搬到这里 —— 否则转到后台的克隆 /
+ * 安装跑起来之后，用户离开那个页面就再也看不见它了。
  *
  * ⚠️ 本工程是**手机壳**：从 `app-shell.tsx` 到这里都按手机形态写死，不再按窗口宽度
  * 分岔（共享组件内部的 `useIsMobile` 是它们自己的事，真机上同样落在手机分支）。
@@ -41,6 +48,8 @@ import {
 } from '@fizz/agent-kit/shared/lib/mobile-sidebar'
 import { activeTabKey, openTab, usePanelState } from '@fizz/agent-kit/shared/lib/panel-store'
 import { NEW_TAB_KEY } from '@fizz/agent-kit/shared/lib/panel-tabs'
+import { BackgroundTasksBadge } from '@fizz/agent-kit/shared/components/BackgroundTasksBadge'
+import { TransferBadge } from '@fizz/agent-kit/shared/components/TransferBadge'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { useTabMeta } from '@/app/layout/use-tab-meta'
 
@@ -100,6 +109,24 @@ export function MobileAppBar() {
       <div className="flex min-w-0 flex-1 items-center px-1" title={meta?.title}>
         <span className="truncate text-sm font-medium">{label}</span>
       </div>
+
+      {/*
+        后台任务徽标（与桌面状态栏同一份组件）：没任务时回 null，跑着时「转圈 + 后台 N」，
+        全结束是「清单 + 任务 N」。弹层朝下、按视口收 —— 桌面那套 `side="top"` +
+        `w-[23rem]` 是给屏幕底缘的，搬到顶栏不改会顶出屏幕。
+      */}
+      <BackgroundTasksBadge
+        app={app}
+        side="bottom"
+        contentClassName="w-[calc(100vw-1rem)]"
+      />
+
+      {/*
+        SFTP 传输徽标：与后台任务同一套形态（没传输时回 null）。手机壳没有底部状态栏
+        （`--status-bar-height` 压成 0），这颗徽标原本是右下角那张 `fixed` 浮层 ——
+        贴屏幕底缘、没有收起态，正好压在内容右下角。搬到顶栏后与桌面同一份组件。
+      */}
+      <TransferBadge side="bottom" contentClassName="w-[calc(100vw-1rem)]" />
 
       {/* 新建对话：与侧栏「项目行 → 新建会话」同一条路；手机版没有 AI 助手，右侧只留它 */}
       <Button

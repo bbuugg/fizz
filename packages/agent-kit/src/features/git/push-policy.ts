@@ -12,6 +12,7 @@
  * 所以判据收敛成这一个函数，面板只负责把结果翻译成 toast / 开弹窗。
  */
 import type { GitStatusResult } from '@fizz/git'
+import { t } from '@fizz/i18n'
 
 /**
  * 这一次「推送」该怎么走：
@@ -45,11 +46,11 @@ export function pushGate(
 export function pushBlockedMessage(gate: PushGate): string | null {
   switch (gate) {
     case 'unknown':
-      return '还没读到仓库状态（正在刷新）：稍等一下再推'
+      return t('还没读到仓库状态（正在刷新）：稍等一下再推')
     case 'not-repo':
-      return '这个工作区还不是 git 仓库：没有可推送的内容（先在面板里初始化）'
+      return t('这个工作区还不是 git 仓库：没有可推送的内容（先在面板里初始化）')
     case 'detached':
-      return '现在处于分离头指针：先切回一个分支再推送'
+      return t('现在处于分离头指针：先切回一个分支再推送')
     default:
       return null
   }

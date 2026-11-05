@@ -7,7 +7,7 @@ import { useT } from "@fizz/agent-kit/shared/lib/language";
 import { type TurnUsage } from "@fizz/contracts/types";
 
 /**
- * 一轮结束后的**用量统计**：一颗图标按钮，悬停出卡片（TPS / 各项 token / 耗时）。
+ * 一轮结束后的**用量统计**：一颗图标按钮，悬停出卡片（TPS / 各项 token / 缓存命中率 / 耗时）。
  *
  * 为什么从「一整行文字」改成「一颗图标 + 悬停卡片」（用户要求）：那一行（输入 / 输出 /
  * 合计 / 思考 / 缓存 / 耗时）比正文还宽，每条助手消息下面都挂一条，把消息列表压得很碎；
@@ -26,16 +26,37 @@ export function UsageRow({ usage }: { usage?: TurnUsage }) {
   const t = useT();
   if (!usage) return null;
 
-  /** 卡片里的一个「标签 + 数值」格；值为空（上游没报）就不渲染这一格 */
+  /** 卡片里的一个「标签 + 数值」格（`title` 用来挂原始数，如百分比的分子分母） */
+  const row = (label: string, value: ReactNode, title?: string): ReactNode => (
+    <div className="flex items-baseline justify-between gap-2" title={title}>
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium text-foreground tabular-nums">{value}</span>
+    </div>
+  );
+
+  /** token 数一行：千分位；值为空（上游没报）就不渲染这一格 */
   const stat = (label: string, value: number | undefined): ReactNode =>
-    value === undefined || value === null ? null : (
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-muted-foreground">{label}</span>
-        <span className="font-medium text-foreground tabular-nums">
-          {value.toLocaleString()}
-        </span>
-      </div>
-    );
+    value === undefined || value === null ? null : row(label, value.toLocaleString());
+
+  /*
+   * 缓存命中率 = `cachedInputTokens ÷ inputTokens`。
+   *
+   * `cachedInputTokens` 是 `inputTokens` 的**子集**（见 `contracts/src/types.ts` 的
+   * 「命中缓存的输入 tokens」，以及 `agent/src/context.ts` 里「别照抄 pi 四项相加」那段），
+   * 所以分母就是输入 tokens，不用把两者相加。
+   *
+   * 上游没报这个字段、或这一轮输入为 0（除不出来）时是 `undefined` —— 那一格不渲染，
+   * 而不是摆一个凭空的 0%。
+   */
+  const cachedTokens = usage.cachedInputTokens;
+  const hitRate =
+    cachedTokens === undefined || !usage.inputTokens ? undefined : cachedTokens / usage.inputTokens;
+
+  /** 一位小数：命中率常见 99.x%，取整会把「几乎全命中」和「全命中」抹成同一个数 */
+  const formatRate = (rate: number): string => {
+    const pct = Math.round(rate * 1000) / 10;
+    return `${Number.isInteger(pct) ? pct : pct.toFixed(1)}%`;
+  };
 
   return (
     <HoverCard openDelay={150} closeDelay={100}>
@@ -77,7 +98,21 @@ export function UsageRow({ usage }: { usage?: TurnUsage }) {
             {stat(t("输出"), usage.outputTokens)}
             {stat(t("合计"), usage.totalTokens)}
             {stat(t("思考"), usage.reasoningTokens)}
-            {stat(t("缓存命中"), usage.cachedInputTokens)}
+            {/*
+              * 缓存命中给**百分比**而不是 token 数（用户要求）：这一格要回答的是「这轮的
+              * 输入有多少是从缓存里读的」，绝对数看不出比例。原始 token 数挂在 `title`
+              * 上，想核对具体数字时悬停即可，不必回到日志里翻。
+              */}
+            {hitRate === undefined
+              ? null
+              : row(
+                  t("缓存命中率"),
+                  formatRate(hitRate),
+                  t("缓存命中 {cached} / 输入 {input}", {
+                    cached: (cachedTokens ?? 0).toLocaleString(),
+                    input: usage.inputTokens.toLocaleString()
+                  })
+                )}
           </div>
         </div>
       </HoverCardContent>

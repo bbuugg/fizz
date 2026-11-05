@@ -6,6 +6,7 @@
  * 主组件只负责把它算出来的结果塞进 AlertDialog。
  */
 import type { GitChange } from '@fizz/git'
+import { t } from '@fizz/i18n'
 
 /**
  * 一次「回退」到底意味着什么（决定发给服务端的 mode，以及确认框的文案）：
@@ -34,15 +35,15 @@ export function rollbackDeletes(kind: RollbackKind | undefined): boolean {
 /** 回退确认框里那句「会发生什么」—— 含糊地说「确定吗」用户根本不知道会失去什么 */
 export function rollbackWarning(kind: RollbackKind | undefined, path: string): string {
   if (kind === 'untracked') {
-    return `「${path}」还没有被 git 跟踪（新文件），回退会把它从磁盘上删除。此操作无法撤销。`
+    return t('「{path}」还没有被 git 跟踪（新文件），回退会把它从磁盘上删除。此操作无法撤销。', { path })
   }
   if (kind === 'added') {
-    return `「${path}」还没提交过、只存在于暂存区，回退会把它从索引和磁盘上一并删除。此操作无法撤销。`
+    return t('「{path}」还没提交过、只存在于暂存区，回退会把它从索引和磁盘上一并删除。此操作无法撤销。', { path })
   }
   if (kind === 'staged') {
-    return `「${path}」已暂存的那份改动、以及它之后在工作区里的改动都会丢掉，回到上次提交的状态。未提交的内容无法恢复。`
+    return t('「{path}」已暂存的那份改动、以及它之后在工作区里的改动都会丢掉，回到上次提交的状态。未提交的内容无法恢复。', { path })
   }
-  return `「${path}」未暂存的改动会丢掉（回到已暂存 / 上次提交的状态）。未提交的内容无法恢复。`
+  return t('「{path}」未暂存的改动会丢掉（回到已暂存 / 上次提交的状态）。未提交的内容无法恢复。', { path })
 }
 
 /** 这批文件里会被**删掉**的那几个（未跟踪 `?`；`all` 模式下「只存在于暂存区的新文件」`A` 也算） */
@@ -54,28 +55,28 @@ export function rollbackDeleteCount(changes: GitChange[], staged: boolean): numb
 export function dirRollbackWarning(target: { path: string; changes: GitChange[]; staged: boolean }): string {
   const deletes = rollbackDeleteCount(target.changes, target.staged)
   const base = target.staged
-    ? `「${target.path}」里这 ${target.changes.length} 个文件已暂存的那份改动、以及它之后在工作区里的改动都会丢掉，回到上次提交的状态。`
-    : `「${target.path}」里这 ${target.changes.length} 个文件未暂存的改动都会丢掉，回到已暂存 / 上次提交的状态。`
+    ? t('「{path}」里这 {count} 个文件已暂存的那份改动、以及它之后在工作区里的改动都会丢掉，回到上次提交的状态。', { path: target.path, count: target.changes.length })
+    : t('「{path}」里这 {count} 个文件未暂存的改动都会丢掉，回到已暂存 / 上次提交的状态。', { path: target.path, count: target.changes.length })
   const extra =
     deletes > 0
       ? deletes === target.changes.length
-        ? '它们全都没被 git 跟踪，会**直接从磁盘上删除**。'
-        : `其中 ${deletes} 个还没被 git 跟踪，会**直接从磁盘上删除**。`
+        ? t('它们全都没被 git 跟踪，会**直接从磁盘上删除**。')
+        : t('其中 {count} 个还没被 git 跟踪，会**直接从磁盘上删除**。', { count: deletes })
       : ''
-  return `${base}${extra}此操作无法撤销。`
+  return `${base}${extra}${t('此操作无法撤销。')}`
 }
 
 /** 确认框的标题 / 确认按钮 / 说明（文件与目录两种目标各写各的，别在 JSX 里堆三元） */
 export function rollbackDialogTitle(target: RollbackTarget | null): string {
   if (!target) return ''
-  if (target.scope === 'dir') return `回滚「${target.path}」里的改动？`
-  return rollbackDeletes(target.kind) ? '删除这个文件？' : '放弃这个文件的改动？'
+  if (target.scope === 'dir') return t('回滚「{path}」里的改动？', { path: target.path })
+  return rollbackDeletes(target.kind) ? t('删除这个文件？') : t('放弃这个文件的改动？')
 }
 
 export function rollbackDialogAction(target: RollbackTarget | null): string {
-  if (!target) return '回滚'
-  if (target.scope === 'dir') return '回滚这个目录'
-  return rollbackDeletes(target.kind) ? '删除文件' : '放弃改动'
+  if (!target) return t('回滚')
+  if (target.scope === 'dir') return t('回滚这个目录')
+  return rollbackDeletes(target.kind) ? t('删除文件') : t('放弃改动')
 }
 
 export function rollbackDialogDescription(target: RollbackTarget | null): string {

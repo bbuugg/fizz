@@ -65,6 +65,19 @@ import { Input } from '@fizz/ui/input'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { isNameTruncated, resetTruncatedName, revealTruncatedName } from '@fizz/agent-kit/shared/lib/hover-reveal'
 import { RowActionButton } from '@fizz/agent-kit/shared/components/RowAction'
+import type { TabStatus, TabStatusTone } from '@fizz/agent-kit/shared/lib/tab-decorations'
+
+/**
+ * 状态点的语义色。只在这里定一次 —— 标签条（主区域 / 侧栏）共用同一套视觉，
+ * 外部（`tab-decorations.ts`）只能选 `tone`，不能自带颜色，免得同一排标签里出现
+ * 三种「绿」。
+ */
+const STATUS_TONE: Record<TabStatusTone, string> = {
+  busy: 'bg-primary animate-pulse',
+  waiting: 'bg-amber-500',
+  ok: 'bg-emerald-500',
+  error: 'bg-destructive'
+}
 
 export interface PanelTabProps extends ComponentProps<'div'> {
   /** 是否是当前活动标签（底色更实） */
@@ -82,6 +95,12 @@ export interface PanelTabProps extends ComponentProps<'div'> {
   title: string
   /** 类型图标：一列标签里混着「对话 / 主机 / 终端」几种东西，光看名字分不出来 */
   icon: ReactNode
+  /**
+   * 图标右上角的状态点（终端活着 = 绿、已退出 = 红）。**绝对定位**盖在图标上，
+   * 不参与布局 —— 标签的 `min-w` / hover 让位 / 截断那套几何必须与没有它时完全一致
+   * （见文件头「宽度必须稳定」）。
+   */
+  status?: TabStatus
   /** 点标签：切过去 */
   onActivate: () => void
   /** 关闭这一颗；不传则不渲染关闭 × */
@@ -128,6 +147,7 @@ export function PanelTab({
   label,
   title,
   icon,
+  status,
   onActivate,
   onClose,
   actions,
@@ -264,8 +284,36 @@ export function PanelTab({
             图标尺寸在共享组件里**统一**成 `size-3.5`：调用方各传各的（主区域 `size-3.5`、
             侧栏 `size-4`），不归一的话同一条标签在两处的图标大小就对不上。`[&>svg]:size-3.5`
             比 svg 自己那个 `size-4` 多一个类型选择器（0,1,1 > 0,1,0），所以压得过调用方的尺寸。
+
+            ⚠️ `inline-flex items-center` 不是装饰，是**对齐用**的。图标在 `<span>` 里是
+            inline 级盒子，会按**基线**排进这一行的 line box（`text-sm` 的行高 20px，基线约在
+            14px 处）：svg 的基线是它的下边缘，于是被顶高约 3px；而 `TypingBubble` 这种
+            `inline-flex` 的基线取自内部第一个子项（那几个没有文字的圆点），于是被压低约 3px。
+            两者方向相反，一个「看着偏高」一个「明显偏下」—— 用户报的就是后者。把这一格改成
+            flex 容器，图标成了 flex 项，靠 `items-center` 居中，基线彻底不参与，谁传进来都
+            落在同一根中线上。
+
+            `relative` 只为下面那颗状态点定位：点是**绝对定位**的，图标本身仍是原来的
+            `size-3.5` 盒子 —— 标签宽度、hover 让位、截断测量都不受它影响。
           */}
-          <span className="shrink-0 [&>svg]:size-3.5">{icon}</span>
+          <span className="relative inline-flex shrink-0 items-center justify-center [&>svg]:size-3.5">
+            {icon}
+            {/*
+              6px（`size-1.5`）的小点，压在图标右上角，半颗盖在图标上。尺寸刻意不跟着图标
+              缩放：再小就在 1x 屏上糊成一粒灰，再大就把图标盖住了。
+            */}
+            {status && (
+              <span
+                className={cn(
+                  'absolute -right-0.5 -top-0.5 size-1.5 rounded-full',
+                  STATUS_TONE[status.tone]
+                )}
+                title={status.label}
+                aria-label={status.label}
+                role="img"
+              />
+            )}
+          </span>
           {/*
             名字要能滑，就得是溢出裁剪的**滚动容器**：`truncate` 的 `overflow:hidden`
             正好满足（见 hover-reveal 文件头第 1 条）。

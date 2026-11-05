@@ -23,6 +23,8 @@ export interface TriggersState {
   saveTrigger: (input: TaskTriggerInput) => Promise<boolean>
   deleteTrigger: (id: string) => Promise<void>
   toggleTrigger: (id: string, enabled: boolean) => Promise<void>
+  /** 手动跑一次（服务端异步派发，只等「已受理」） */
+  runTrigger: (id: string) => Promise<void>
 }
 
 function messageOf(err: unknown): string {
@@ -117,6 +119,16 @@ export function useTriggers(api: AgentApi | null): TriggersState {
     [api, run]
   )
 
+  const runTrigger = useCallback(
+    async (id: string): Promise<void> => {
+      // 服务端只回「已受理」：会话是异步起的，成功提示由调用方（面板）负责。
+      // 失败提示已在 `run()` 里 toast 过，这里抛出去只是让调用方**别再弹「已开始」**。
+      const ok = await run(() => api!.runTaskTrigger(id))
+      if (!ok) throw new Error('run rejected')
+    },
+    [api, run]
+  )
+
   return {
     api,
     list: triggers,
@@ -125,6 +137,7 @@ export function useTriggers(api: AgentApi | null): TriggersState {
     refresh,
     saveTrigger,
     deleteTrigger,
-    toggleTrigger
+    toggleTrigger,
+    runTrigger
   }
 }

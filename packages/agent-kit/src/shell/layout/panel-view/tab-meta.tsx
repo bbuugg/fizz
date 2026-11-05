@@ -8,6 +8,7 @@ import {
   FileText,
   FolderOpen,
   Globe,
+  MessageCircleQuestion,
   MessageSquare,
   MessageSquarePlus,
   Network,
@@ -18,6 +19,7 @@ import {
   ScrollText,
   Server,
   Settings,
+  ShieldQuestion,
   SquareTerminal,
 } from 'lucide-react'
 import { t } from '@fizz/i18n'
@@ -25,6 +27,18 @@ import { useLanguage } from '@fizz/agent-kit/shared/lib/language'
 import { conversationTitle } from '@fizz/agent-kit/shared/lib/conversation-title'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { usePluginSurfaces } from '@fizz/agent-kit/shared/lib/plugin-surfaces'
+import { TypingBubble } from '@fizz/agent-kit/features/chat/TypingBubble'
+import { getActivity, useActivities } from '@fizz/agent-kit/shared/lib/conversation-activity'
+import {
+  getTabDecoration,
+  getTabDecorationsVersion,
+  subscribeTabDecorations,
+} from '@fizz/agent-kit/shared/lib/tab-decorations'
+import {
+  getTerminalStatus,
+  getTerminalStatusVersion,
+  subscribeTerminalStatus,
+} from '@fizz/agent-kit/shared/lib/terminal/terminal-registry'
 import { NEW_API_REQUEST_ID, NEW_WS_REQUEST_ID } from '@fizz/agent-kit/features/api/api-client'
 import {
   apiRequestIdOfTabKey,
@@ -83,6 +97,22 @@ export function useTabMeta(): (key: string) => TabMeta {
   // `note:<n>`，名字只在表里），而登记表自己不发通知。不订阅这个版本号，标签条会一直
   // 停在旧文件名上，直到下一次由别的原因触发的重渲染 —— 用户看到的是「重命名没生效」。
   useSyncExternalStore(subscribeToolTabs, getToolTabsVersion, getToolTabsVersion)
+  /**
+   * 会话运行态：标签图标要跟着「在跑 / 等你点头」变（与侧栏 `AgentSidebar` 同一份数据源，
+   * 服务端广播的，与当前打开哪条会话无关）。
+   */
+  useActivities()
+  /**
+   * 终端存活：登记表（`terminal-registry`）是**拉取式**的（`isAlive()` 不会触发重渲染），
+   * 靠这条版本号订阅才能在进程退出那一刻把绿点换成红点。
+   */
+  useSyncExternalStore(subscribeTerminalStatus, getTerminalStatusVersion, getTerminalStatusVersion)
+  /** 外部装饰（插件 / 标签内容方写进来的图标与状态点，见 `tab-decorations.ts`） */
+  useSyncExternalStore(
+    subscribeTabDecorations,
+    getTabDecorationsVersion,
+    getTabDecorationsVersion
+  )
   const baseMeta = useCallback(
     (key: string): TabMeta => {
       if (key === NEW_TAB_KEY) {
@@ -273,11 +303,13 @@ export function useTabMeta(): (key: string) => TabMeta {
   )
 
   /**
-   * 别名盖在**数据源算出来的名字**之上。
+   * 覆盖层：在 `baseMeta` 之上叠三样东西（后者压前者）。
    *
-   * 上面那份 `baseMeta` 全部按「数据源现在叫什么」算（主机清单 / 接口清单 / 脚本名 /
-   * 会话标题），而用户就地改的名字只存在登记表的 `alias` 里（见 `renameToolTab`）——
-   * 放在这里盖一层，就不用给那十几个分支各加一次 `alias ??`。
+   * 1. **别名**（`label`）—— 用户就地改的名字只存在登记表的 `alias` 里（见 `renameToolTab`），
+   *    放在这里盖一层，就不用给那十几个分支各加一次 `alias ??`；
+   * 2. **内建运行态**（`icon` / `status`）—— 会话的「在跑 / 等你确认 / 等你回答」与终端的
+   *    「活着 / 已退出」。优先级与侧栏 `ConversationRowIcon` 一致：等人 > 在跑 > 类型图标；
+   * 3. **外部装饰**（`tab-decorations.ts`）—— 标签内容方 / 插件写进来的东西，优先级最高。
    *
    * ⚠️ 只盖 `label`，不动 `title`：悬停提示要继续说清「这是哪台主机 / 哪个请求」。
    */
@@ -285,8 +317,57 @@ export function useTabMeta(): (key: string) => TabMeta {
     (key: string): TabMeta => {
       const meta = baseMeta(key)
       const alias = getToolTab(key)?.alias
-      return alias ? { ...meta, label: alias } : meta
+
+      let icon = meta.icon
+      let status = meta.status
+
+      /*
+       * 会话运行态。`getActivity` 对非会话 key 恒返回冻结的空态（表里只会有会话 id），
+       * 所以不必先判断这是不是对话标签。
+       */
+      const activity = getActivity(key)
+      if (activity.waiting) {
+        // 区分两种「等你」：权限申请用盾牌、AI 提问用问号气泡（与侧栏同一套符号）
+        const Icon = activity.waiting.kind === 'confirm' ? ShieldQuestion : MessageCircleQuestion
+        icon = (
+          <Icon
+            className="size-3.5 shrink-0 text-amber-500"
+            aria-label={t(activity.waiting.kind === 'confirm' ? '等待确认' : '等待回答')}
+          />
+        )
+      } else if (activity.running) {
+        /*
+         * 打字气泡而不是转圈（与侧栏同一条理由：一屏十几个转圈太晃）。
+         * 尺寸用 `!` 压过组件自带的 `size-4`：标签条图标槽是 14px，`className` 是**拼在**
+         * 基础类后面的，同权重下谁生效取决于产物里两条规则的先后 —— 只有 `!` 是确定的。
+         */
+        icon = <TypingBubble className="size-3.5!" />
+      }
+
+      /**
+       * 终端：连接中黄点、就绪绿点、已退出红点（登记表只在主区域标签上写，侧栏终端不参与）。
+       *
+       * 「建好进程」≠「连上了」：SSH 握手 / 认证、web 端 WS 建连 + spawn 都要时间，这期间
+       * 挂绿点会让人以为已经能敲命令（用户报过）。阶段由 `TerminalPanel` 推，这里只做映射。
+       */
+      const terminal = getTerminalStatus(key)
+      if (terminal) {
+        status =
+          terminal.phase === 'exited'
+            ? { tone: 'error', label: t('终端已退出') }
+            : terminal.phase === 'connecting'
+              ? { tone: 'waiting', label: t('终端连接中') }
+              : { tone: 'ok', label: t('终端运行中') }
+      }
+
+      // 外部装饰压在最上面（不传就保留上面算出来的）
+      const decoration = getTabDecoration(key)
+      if (decoration?.icon !== undefined) icon = decoration.icon
+      if (decoration?.status) status = decoration.status
+
+      return { ...meta, label: alias ?? meta.label, icon, status }
     },
+    // 语言已由 `baseMeta` 的依赖带进来（`t()` 读的是模块级的当前语言）
     [baseMeta]
   )
 }

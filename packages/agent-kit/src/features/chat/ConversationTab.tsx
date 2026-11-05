@@ -39,6 +39,7 @@ import {
   MonitorPlay,
   PanelRightClose,
   PanelRightOpen,
+  PictureInPicture2,
   SquareTerminal
 } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@fizz/ui/tooltip'
@@ -77,6 +78,7 @@ import { useAgentAppView, useAttachRemoteRun } from '@fizz/agent-kit/shared/hook
 import { setTerminalShell } from '@fizz/agent-kit/shared/lib/terminal-shell'
 import { registerTabCloseGuard } from '@fizz/agent-kit/shared/lib/tab-close'
 import { useConfirm } from '@fizz/agent-kit/shared/components/ConfirmProvider'
+import { getAgentHostOrNull } from '@fizz/agent-client/host'
 import { openExternal } from '@fizz/agent-client/web-host'
 import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
 import {
@@ -217,6 +219,16 @@ export function ConversationTab({
   /** 协作布局这一行的实测宽度：最右侧对话面板的默认宽 / 拖拽上限按它算 */
   const [collabRef, collabWidth] = useContainerWidth()
   const isMobile = useIsMobile()
+  /**
+   * 「在浮窗中打开」的宿主能力：只有实现了多窗口的宿主（desktop）才有。
+   * web / 手机拿到 `undefined` → 这颗按钮**整颗不渲染**（不给一个点了没反应的入口）。
+   *
+   * 浮窗是「一条会话一个窗口」，所以只传**这一条**的 id：主进程负责「同一条就聚焦、
+   * 换一条就带新 id 重载」（见 `apps/desktop/src/main/index.ts`）。
+   */
+  const openFloatWindow = getAgentHostOrNull()?.openConversationWindow
+  /** 提到 const 是为了在 onClick 闭包里保住 `string` 收窄（解构参数在闭包里会还原成可空） */
+  const floatConversationId = conversationId
   const userCollabChatWidth = useCollabChatWidth()
   /** 右侧对话面板的命令式句柄：拖拽结束读回像素宽落盘、双击复位直接改尺寸都靠它 */
   const chatPanelRef = usePanelRef()
@@ -770,6 +782,31 @@ export function ConversationTab({
                   <TooltipContent side="bottom">
                     {sideTab !== null ? tr('收起面板') : tr('展开面板')}
                   </TooltipContent>
+                </Tooltip>
+              </div>
+            )}
+            {/*
+              「在浮窗中打开」：会话浮窗的**唯一入口**（标题栏那颗全局开关已删除 ——
+              浮窗是「一条会话一个窗口」，没有「哪条会话」的全局开关没有意义）。
+
+              只给真实会话（草稿标签 conversationId 是 null）和实现了多窗口的宿主
+              （desktop）；web / 手机 `openConversationWindow` 为 undefined → 不渲染。
+              浮窗已开着这条就只是聚焦，换一条会让主进程重载那个窗口。
+            */}
+            {openFloatWindow && floatConversationId && (
+              <div className="hidden sm:flex">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="h-7! w-8! p-0!"
+                      aria-label={tr('在浮窗中打开')}
+                      onClick={() => void openFloatWindow(floatConversationId)}
+                    >
+                      <PictureInPicture2 className="size-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">{tr('在浮窗中打开')}</TooltipContent>
                 </Tooltip>
               </div>
             )}

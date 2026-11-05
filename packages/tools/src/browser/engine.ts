@@ -10,8 +10,6 @@
  * 本模块刻意与 Electron / 具体宿主解耦（依赖经 `setBrowserProfilesRoot` /
  * `setBrowserChannelResolver` 注入），可被纯 Node 验证脚本直接跑。
  */
-import { rm } from 'node:fs/promises'
-import { join } from 'node:path'
 import {
   chromium,
   type Browser,
@@ -35,6 +33,12 @@ import {
 } from '@fizz/contracts'
 import { nextButtonsMask, toCdpCommand } from './input'
 import { launchAttempts, type LaunchAttempt } from './resolver'
+import {
+  browserProfileDirOf,
+  browserProfileDirs,
+  removeBrowserProfileDir,
+  setBrowserProfilesRoot
+} from './profiles'
 import { ensureChromiumReady } from '../playwright-browsers'
 import { pageErrorMessage } from '../headless'
 
@@ -85,15 +89,8 @@ function emitBrowserClosed(payload: { sessionId: string; reason: string }): void
 // 配置注入（与宿主解耦）
 // ---------------------------------------------------------------------------
 
-/**
- * 持久化 profile 的根目录。没注入时回退为**临时上下文**（会话一关登录态即失，不落盘）。
- */
-let profilesRoot: string | null = null
+/** 浏览器来源偏好（bundled / system / auto）；profile 根目录在 `./profiles` 里 */
 let channelResolver: () => BrowserChannel = () => 'auto'
-
-export function setBrowserProfilesRoot(dir: string): void {
-  profilesRoot = dir
-}
 
 export function setBrowserChannelResolver(fn: () => BrowserChannel): void {
   channelResolver = fn
@@ -263,7 +260,7 @@ export class BrowserSession {
       deviceScaleFactor: preset.dpr,
       ignoreHTTPSErrors: true
     }
-    const profileDir = profileDirOf(this.id)
+    const profileDir = browserProfileDirOf(this.id)
     if (profileDir) {
       this.context = await chromium.launchPersistentContext(profileDir, {
         headless: true,
@@ -578,11 +575,6 @@ function errText(err: unknown): string {
 // 会话池
 // ---------------------------------------------------------------------------
 
-function profileDirOf(sessionId: string): string | null {
-  if (!profilesRoot) return null
-  return join(profilesRoot, sessionId.replace(/[^a-zA-Z0-9._-]/g, '-'))
-}
-
 export class BrowserSessionManager {
   private sessions = new Map<string, BrowserSession>()
 
@@ -613,12 +605,16 @@ export class BrowserSessionManager {
     await session.close(reason)
   }
 
-  /** 关闭会话并**删除**它的持久化 profile（登录态一并清除）；只在该会话被删除时调用 */
-  async purge(id: string): Promise<void> {
-    await this.close(id, '会话已删除').catch(() => {})
-    const dir = profileDirOf(id)
-    if (!dir) return
-    await rm(dir, { recursive: true, force: true }).catch(() => {})
+  /**
+   * 关闭会话并**删除**它的持久化 profile（Cookie / 登录态 / 本地存储一并清除）。
+   *
+   * 两处调用：会话被删除（`api/conversations/[id]/route.ts`）与用户点「清除网站数据」
+   * （`api/conversations/[id]/browser-data/route.ts`）。**顺序不能反** —— 先 `close`
+   * 再删目录，否则 Windows 上文件被占着，`rm` 会只成功一半、留下坏 profile。
+   */
+  async purge(id: string, reason = '会话已删除'): Promise<void> {
+    await this.close(id, reason).catch(() => {})
+    await removeBrowserProfileDir(browserProfileDirOf(id))
   }
 
   /** 应用退出时调用：不留孤儿浏览器进程 */
@@ -626,6 +622,22 @@ export class BrowserSessionManager {
     const all = [...this.sessions.values()]
     this.sessions.clear()
     await Promise.all(all.map((s) => s.close('应用退出').catch(() => {})))
+  }
+}
+
+/**
+ * 清掉**所有会话**的网站数据（设置页里那颗兜底按钮）。
+ *
+ * 只关会话、不写「应用退出」：那个 reason 会让面板以为宿主要退出了（见
+ * `apps/server/src/server/browser-runtime.ts` 的卸载流程），面板会自己收起。
+ * 目录清单取自**磁盘**而不是会话池，残留的孤儿 profile 也一并清掉。
+ */
+export async function purgeAllBrowserProfiles(reason = '网站数据已清除'): Promise<void> {
+  for (const id of browserSessions.list()) {
+    await browserSessions.close(id, reason).catch(() => undefined)
+  }
+  for (const dir of browserProfileDirs()) {
+    await removeBrowserProfileDir(dir)
   }
 }
 

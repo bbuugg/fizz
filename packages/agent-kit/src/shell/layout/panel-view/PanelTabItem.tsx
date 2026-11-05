@@ -213,6 +213,7 @@ export function PanelTabItem({
           label={meta.label}
           title={meta.title}
           icon={meta.icon}
+          status={meta.status}
           onActivate={() => onActivate(tabKey)}
           onClose={() => onClose([tabKey])}
           renaming={renaming}

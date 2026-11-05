@@ -19,8 +19,9 @@
  *
  * ## 为什么在共享包里，而不是 `apps/desktop`
  *
- * 1. **挂载点在共享外壳**：它渲染在 `shell/app-shell.tsx` 里，和 `TransferTray` / `StatusBar`
- *    同一层「外壳常驻浮层」。而 desktop 的 renderer 只剩 `ClientRoot` 薄包装 + 窗口级 UI
+ * 1. **挂载点在共享外壳**：它渲染在 `shell/app-shell.tsx` 里，和 `StatusBar`（以及挂在它上面的
+ *    后台任务 / 传输徽标）同一层「外壳常驻 chrome」。而 desktop 的 renderer 只剩 `ClientRoot`
+ *    薄包装 + 窗口级 UI
  *    （`TitleBar` / `SettingsWindow`），外壳内部没有它的挂载点。
  * 2. **「只有 desktop 会弹」是靠宿主能力探测表达的，不是靠文件位置**：能力定义在
  *    `@fizz/agent-client/host` 的可选 `appUpdate` 上。desktop 的宿主实现了它（`renderer/host.ts`

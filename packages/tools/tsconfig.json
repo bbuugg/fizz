@@ -17,7 +17,9 @@
       "@fizz/i18n": ["../i18n/src/index.ts"],
       "@fizz/contracts/*": ["../contracts/src/*"],
       "@fizz/skills": ["../skills/src/index.ts"],
-      "@fizz/skills/*": ["../skills/src/*"]
+      "@fizz/skills/*": ["../skills/src/*"],
+      "@fizz/mcp": ["../mcp/src/index.ts"],
+      "@fizz/mcp/*": ["../mcp/src/*"]
     }
   },
   "include": ["src/**/*"]

@@ -29,17 +29,24 @@
  * 设置是常驻的那一颗。原先它挂在抽屉头右上角（与品牌两端对齐），后来按用户要求
  * 挪到左下角 —— 低频入口放在底部，不与品牌抢顶行。
  *
+ * **系统监控**（CPU / 内存 / 进程表）跟在设置右边同一行：它原本是桌面底部状态栏的一颗
+ * （`SysmonButton`），手机壳没有那条栏。诊断类入口低频、全局、与当前会话无关，
+ * 和设置同属「一周点一次」的东西，放一起最不占地方。跑着的后台任务另有常驻位 ——
+ * 顶栏那颗徽标（见 `MobileAppBar`），它是「随时要看」的，不能也塞进抽屉。
+ *
  * 抽屉头右上角现在是**搜索**（命令面板）：手机上没有 Ctrl+K 这类键盘入口，不给一颗
  * 常驻按钮的话命令面板在真机上基本打不开。
  */
 import { useMemo, useRef } from 'react'
-import { Search, Settings } from 'lucide-react'
+import { Gauge, Search, Settings } from 'lucide-react'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import {
   AgentSidebar,
   type AgentSidebarShellProps
 } from '@fizz/agent-kit/features/chat/AgentSidebar'
 import { SidebarScaffold } from '@fizz/agent-kit/shared/components/SidebarScaffold'
+import { setMobileSidebarOpen } from '@fizz/agent-kit/shared/lib/mobile-sidebar'
+import { openSysmonTab } from '@fizz/agent-kit/shared/lib/tool-tabs'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { AppBrand } from '@fizz/agent-kit/shared/components/AppBrand'
 import type { NewInWorkspaceKind } from '@fizz/agent-kit/shared/lib/new-in-workspace'
@@ -104,7 +111,7 @@ function MobileShell({
       footer={
         <div className="flex flex-col">
           {footer}
-          <div className="flex shrink-0 items-center px-2 py-1.5">
+          <div className="flex shrink-0 items-center gap-0.5 px-2 py-1.5">
             <button
               type="button"
               aria-label={tr('设置')}
@@ -113,6 +120,28 @@ function MobileShell({
               className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
             >
               <Settings className="size-5" />
+            </button>
+            {/*
+              系统监控（+ 任务管理器）：桌面在底部状态栏那颗 `SysmonButton`，手机壳没有
+              那条栏（`--status-bar-height: 0`）。它和设置一样是低频、全局、与当前会话无关的
+              入口，所以并排放在抽屉左下角这一行。
+
+              ⚠️ 点它要**先收抽屉**：面板是主区域的内容（单标签模式下等于替换当前视图），
+              抽屉还开着的话会把刚打开的面板整个盖住，看起来像「点了没反应」。
+              `PanelView` 早就接好了这条标签（`isSysmonTabKey` → `SysmonPanel`，窄屏会
+              隐藏几列进程表），缺的只是入口。
+            */}
+            <button
+              type="button"
+              aria-label={tr('系统监控')}
+              title={tr('系统监控')}
+              onClick={() => {
+                setMobileSidebarOpen(false)
+                openSysmonTab()
+              }}
+              className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
+            >
+              <Gauge className="size-5" />
             </button>
           </div>
         </div>

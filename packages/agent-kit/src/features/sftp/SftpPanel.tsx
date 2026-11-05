@@ -18,8 +18,9 @@
  *
  * ## 与 dogi 的两处刻意收敛
  *
- * 1. **不做全局传输进度托盘**（dogi 的 TransferTray）。这里除上传外都是一问一答的短操作，
- *    上传本身在页内用一条进度条就地展示即可 —— 为一个入口搭一整套跨页面状态不划算。
+ * 1. **页内不画传输进度条**：上传 / 下载一律交给模块级引擎（`file-transfer/engine.ts`），
+ *    进度、速度、取消都在**状态栏那颗 `TransferBadge`** 里（与「后台任务」同一个位置）。
+ *    面板关掉、切到别的标签，传输照样跑、照样看得见 —— 页内再画一条只会变成第二份真相。
  * 2. **复制 / 移动不可取消**：它们要么是一次瞬时 rename，要么是一段没有用户可感知进度的
  *    远端复制。只有上传带取消（大文件真的会卡在那里），走 `sftpAbort`。
  *
@@ -328,8 +329,8 @@ export function SftpPanel({ host }: { host: SshHostConfig }): React.JSX.Element 
   /**
    * 下载单个远端文件。
    *
-   * 分片拉取 + 落盘全交给 `runDownload`（进度 / 取消 / 失败都在右下角托盘里显示），
-   * 这里**不**再自己 toast 结果 —— 托盘就是那个入口，两个地方各报一次只会重复。
+   * 分片拉取 + 落盘全交给 `runDownload`（进度 / 取消 / 失败都在传输徽标里显示），
+   * 这里**不**再自己 toast 结果 —— 清单就是那个入口，两个地方各报一次只会重复。
    * `size` 直接取列表项里的 `SftpEntry.size`，不为它多发一次 stat。
    */
   const download = (entry: SftpEntry): void => {
@@ -376,7 +377,7 @@ export function SftpPanel({ host }: { host: SshHostConfig }): React.JSX.Element 
             continue
           }
           const flatName = `${entry.name}-${rel.replace(/\//g, '_')}`
-          // 失败 / 取消的原因都在托盘那一条里，这里只按终态统计个数
+          // 失败 / 取消的原因都在清单那一条里，这里只按终态统计个数
           const outcome = await runDownload({
             hostId: host.id,
             hostLabel: host.name,
@@ -434,14 +435,15 @@ export function SftpPanel({ host }: { host: SshHostConfig }): React.JSX.Element 
   /**
    * 上传本地文件到当前远端目录（逐文件串行）。
    *
-   * 分片、进度、失败原因全交给 `runUpload`，结果一律显示在右下角传输托盘里 —— 面板里
+   * 分片、进度、失败原因全交给 `runUpload`，结果一律显示在状态栏的传输徽标里 —— 面板里
    * **没有**页内进度条了，也不在这里 toast 成败（两个地方各报一次只会重复）。
    *
    * ⚠️ 逐文件**串行**（`for` + `await`，**不是** `Promise.all`）：同一台主机并发刷连接
    * 没有好处，而分片本身已经是串行的，并发只会互相抢带宽。
    *
-   * ⚠️ 取消现在是**按条**的（托盘里每行一个 ✕）：取消一个文件不会中断这一批剩下的文件。
-   * 页内那条「取消整批」的通道随进度条一起撤掉了，托盘里也没有「全部取消」这种按钮。
+   * ⚠️ 取消现在是**按条**的（`TransferBadge` 清单里每行一个 ✕）：取消一个文件不会中断
+   * 这一批剩下的文件。页内那条「取消整批」的通道随进度条一起撤掉了，徽标里也没有
+   * 「全部取消」这种按钮。
    */
   const uploadFiles = (files: File[]): void => {
     if (!files.length) return

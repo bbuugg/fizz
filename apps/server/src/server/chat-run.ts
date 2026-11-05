@@ -19,6 +19,7 @@
 import { randomUUID } from 'node:crypto'
 import type { AgentChatMessage, AiPermissionMode } from '@fizz/contracts/types'
 import type { ChatRunSummary, ChatStreamFrame } from '@fizz/contracts/agent-api'
+import { abortAcpTurn } from '@fizz/acp'
 import { chatRuns } from './state'
 
 /** 一条连接在这条 run 上的订阅位：run 只管把帧塞进来，怎么写到网络由调用方决定 */
@@ -243,6 +244,28 @@ export function findActiveByConversation(conversationId: string): ChatRun | unde
   if (!requestId) return undefined
   const run = runs.get(requestId)
   return run && run.finishedAt === undefined ? run : undefined
+}
+
+/**
+ * 会话归档 / 删除前停掉正在跑的轮次，并等它**真正收尾**再返回。
+ *
+ * 为什么归档 / 删除也要停：run 只活在内存里，归档后可逆、删除则把落盘数据一起删掉；
+ * 放着不管的话工具还在跑、命令进程还在占端口，收尾落盘又会因为「会话不存在」失败
+ * （只留一行日志）。这里走与 `/api/chat/abort` 同一套收尾口径：ACP 先杀进程，
+ * 再 abort signal 让已产生的半截正文落盘；超时兜底避免卡死的工具把请求吊住。
+ *
+ * @returns 停了一条返回 true；本来没在跑就是 no-op
+ */
+export async function stopConversationRun(
+  conversationId: string,
+  timeoutMs = 10_000
+): Promise<boolean> {
+  const run = findActiveByConversation(conversationId)
+  if (!run) return false
+  if (run.acpTarget) abortAcpTurn(run.acpTarget.agentId, run.acpTarget.conversationId)
+  abortRun(run)
+  await Promise.race([run.done, new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))])
+  return true
 }
 
 /**

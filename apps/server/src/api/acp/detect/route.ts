@@ -5,9 +5,24 @@
 import { spawn } from 'node:child_process'
 import type { DetectedAcpAgent } from '@fizz/contracts/agent-api'
 
+/**
+ * 已知 ACP agent 的候选清单：命令在 PATH 上命中才列出，用户点「添加」才落库。
+ *
+ * ⚠️ `args` 必须是**该 CLI 真实存在的 ACP 入口**。这里只判「命令装没装」，判不了
+ * 「参数对不对」，猜错的表现是用户点了添加、一发消息就报未知参数（或进程直接退出）。
+ * 现已核实的口径：
+ * - Gemini CLI：`gemini --acp`（早年的 `--experimental-acp` 已弃用）；
+ * - Copilot CLI：`copilot --acp`（public preview，缺省就是 stdio）；
+ * - opencode：子命令 `opencode acp`。
+ *
+ * **Codex 没有 `codex --acp` 这个开关**（曾经猜过、后已移除）：Codex CLI 本体不实现
+ * ACP，官方路径是 adapter —— `codex-acp`（`npm i -g @zed-industries/codex-acp` 后的
+ * 二进制名），它内部用 `codex -c model_provider=acp` 起 Codex（那是配置覆盖，不是 ACP
+ * 模式）。所以这块只探 `codex-acp`：装了 codex 但没装 adapter 的用户不会看到候选，
+ * 这是对的 —— 那种组合起不来 ACP。
+ */
 const ACP_CANDIDATES: Array<Omit<DetectedAcpAgent, 'path'>> = [
   { name: 'Codex CLI', command: 'codex-acp', args: [] },
-  { name: 'Codex', command: 'codex', args: ['--acp'] },
   { name: 'Gemini CLI', command: 'gemini', args: ['--acp'] },
   { name: 'Claude Agent', command: 'claude-agent-acp', args: [] },
   { name: 'Copilot', command: 'copilot', args: ['--acp'] },

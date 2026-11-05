@@ -80,6 +80,8 @@ export function registerTerminal(handle: TerminalHandle): void {
 
 export function unregisterTerminal(tabKey: string): void {
   terminals.delete(tabKey)
+  // 连接状态跟着句柄一起走：标签关掉 / 终端卸载之后，标签条上不该再挂一个点
+  clearTerminalStatus(tabKey)
   if (activeTabKey === tabKey) activeTabKey = null
 }
 
@@ -159,4 +161,91 @@ export function kindLabel(kind: TerminalHandle['kind']): string {
 /** 供 TerminalPanel 复用：把一个 `TerminalProcess` 包成写入口 */
 export function writeVia(process: TerminalProcess | null): (data: string) => void {
   return (data: string) => process?.write(data)
+}
+
+// ---------------------------------------------------------------------------
+// 连接状态（标签条上的黄 / 绿 / 红点）
+// ---------------------------------------------------------------------------
+
+/**
+ * 一条终端的**可订阅**连接状态。
+ *
+ * ## 为什么不能直接读 `isAlive()`
+ *
+ * 句柄上的 `isAlive()` 是**拉取式**的：它回答「此刻还活着吗」，但进程退出**不会通知任何人**。
+ * 标签条要的是「退出那一刻把绿点换成红点」，靠轮询只能得到一个永远不更新的界面。
+ * 所以这里单独存一份由 `TerminalPanel` 推上来的状态，并附一个自增版本号供
+ * `useSyncExternalStore` 订阅（机制与 `tool-tabs.ts` 的版本号完全一致）。
+ *
+ * ## 三个阶段，别退回两态
+ *
+ * `alive` 只说明「进程对象建出来了」，**不等于连上了**：SSH 还要握手 / 认证 / 起 shell，
+ * web 端的本机终端还要等 WS 建连 + 服务端 spawn，慢的时候好几秒。这期间标签条若直接
+ * 显示绿点，用户会以为已经能敲命令（用户报过「在连接中却是绿的」）。所以分三段：
+ *
+ * - `connecting` → 黄点：会话 effect 一开就跑，直到真正就绪；
+ * - `alive`      → 绿点：SSH 收到 `ready` 帧，或本机终端来了首帧输出（shell 起来了）；
+ * - `exited`     → 红点：shell 没了 / 建连失败 / 用户取消，等按 Enter 重连。
+ *
+ * 「就绪」那两个信号与 `TerminalPanel` 里收起连接进度卡片、补写脚本的条件**完全同一处**
+ * （同一次 `settleConnect`），不是另算一套口径。
+ *
+ * ## 只有主区域标签有
+ *
+ * 写入点是 `TerminalPanel` 里**有 `tabKey`** 的那条会话 effect（侧栏 / 容器工作台的终端
+ * 不传 `tabKey`，也就不写）—— 与 `registerTerminal` 同一条边界：只标「用户眼前那些标签」。
+ *
+ * 语义是**连接级**的，不是「命令跑没跑完」：xterm 侧看不出远端前台进程，靠输出活跃度猜
+ * 会误判（`tail -f`、构建日志都在刷），这里不做那个猜测（同 `liveTerminal` 的说明）。
+ */
+export type TerminalPhase = 'connecting' | 'alive' | 'exited'
+
+export interface TerminalStatus {
+  phase: TerminalPhase
+}
+
+const statuses = new Map<string, TerminalStatus>()
+let statusVersion = 0
+const statusListeners = new Set<() => void>()
+
+function statusChanged(): void {
+  statusVersion += 1
+  for (const listener of statusListeners) listener()
+}
+
+/**
+ * 写入连接状态（建连 / 就绪 / 退出时由 `TerminalPanel` 调）。
+ *
+ * 值没变就**不通知**：会话 effect 重建、重复上报都不该让整条标签条重渲染
+ * （`ready` 与首帧输出会各报一次 `alive`，重复是有意的）。
+ */
+export function setTerminalPhase(tabKey: string, phase: TerminalPhase): void {
+  const prev = statuses.get(tabKey)
+  if (prev && prev.phase === phase) return
+  statuses.set(tabKey, { phase })
+  statusChanged()
+}
+
+/** 摘掉状态（标签关闭 / 终端卸载）：没有条目 = 标签条不画点 */
+export function clearTerminalStatus(tabKey: string): void {
+  if (!statuses.delete(tabKey)) return
+  statusChanged()
+}
+
+/** 读一条终端的连接状态（没登记过 = `undefined`，标签条据此不画点） */
+export function getTerminalStatus(tabKey: string): TerminalStatus | undefined {
+  return statuses.get(tabKey)
+}
+
+/** 订阅连接状态变化（`useSyncExternalStore` 的 subscribe） */
+export function subscribeTerminalStatus(listener: () => void): () => void {
+  statusListeners.add(listener)
+  return () => {
+    statusListeners.delete(listener)
+  }
+}
+
+/** 状态版本（`useSyncExternalStore` 的 getSnapshot；没订阅时也得是稳定值） */
+export function getTerminalStatusVersion(): number {
+  return statusVersion
 }

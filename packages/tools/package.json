@@ -21,6 +21,7 @@
     "@fizz/contracts": "*",
     "@fizz/git": "*",
     "@fizz/i18n": "*",
+    "@fizz/mcp": "*",
     "@fizz/skills": "*",
     "@fizz/workspace": "*",
     "ai": "^7.0.99",

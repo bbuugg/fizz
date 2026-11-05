@@ -52,10 +52,11 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, readdirSync, statSync, type Dirent } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
+import { directorySize } from './dir-size'
 
 /** 单次下载的总超时：网络再差 10 分钟也该有结论了，挂死比失败更难排查 */
 const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000
@@ -327,30 +328,3 @@ export async function uninstallChromium(): Promise<void> {
   sizeCache.clear()
 }
 
-/** 递归统计目录占用（不跟随符号链接；读不了的文件跳过，不让统计失败拖垮接口） */
-function directorySize(dir: string): number {
-  let total = 0
-  const stack = [dir]
-  while (stack.length > 0) {
-    const current = stack.pop()!
-    let entries: Dirent[]
-    try {
-      entries = readdirSync(current, { withFileTypes: true })
-    } catch {
-      continue
-    }
-    for (const entry of entries) {
-      const full = join(current, String(entry.name))
-      if (entry.isDirectory()) {
-        stack.push(full)
-      } else if (entry.isFile()) {
-        try {
-          total += statSync(full).size
-        } catch {
-          /* 统计不到就少算，不影响「占了多少」的量级 */
-        }
-      }
-    }
-  }
-  return total
-}

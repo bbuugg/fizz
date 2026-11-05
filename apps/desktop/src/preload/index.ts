@@ -32,18 +32,8 @@ const windowBridge: DesktopWindowBridge = {
   loadCloseToTray: () => ipcRenderer.sendSync(WINDOW_IPC.loadCloseToTray) as boolean,
   setCloseToTray: (enabled: boolean) =>
     ipcRenderer.invoke(WINDOW_IPC.setCloseToTray, enabled) as Promise<void>,
-  openConversationWindow: (initialConversationId?: string) =>
-    ipcRenderer.invoke(WINDOW_IPC.openConversationWindow, initialConversationId) as Promise<void>,
-  closeConversationWindow: () =>
-    ipcRenderer.invoke(WINDOW_IPC.closeConversationWindow) as Promise<void>,
-  // sendSync：主窗口标题栏开关首帧就要正确（与 loadCloseToTray 同一套路）
-  isConversationWindowOpen: () =>
-    ipcRenderer.sendSync(WINDOW_IPC.isConversationWindowOpen) as boolean,
-  onConversationWindowChange: (cb: (open: boolean) => void) => {
-    const listener = (_e: unknown, open: boolean): void => cb(open)
-    ipcRenderer.on(WINDOW_IPC.conversationWindowChange, listener)
-    return () => ipcRenderer.off(WINDOW_IPC.conversationWindowChange, listener)
-  },
+  openConversationWindow: (conversationId: string) =>
+    ipcRenderer.invoke(WINDOW_IPC.openConversationWindow, conversationId) as Promise<void>,
   openInMainWindow: (conversationId?: string) =>
     ipcRenderer.invoke(WINDOW_IPC.openInMainWindow, conversationId) as Promise<void>,
   // sendSync：主窗口首帧就要把标签摆对，异步会先落旧会话再跳（与 loadAlwaysOnTop 同一套路）

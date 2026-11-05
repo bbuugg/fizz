@@ -36,7 +36,7 @@ export function planUploadChunks(size: number, chunkBytes: number): ChunkPlanIte
  * 速度采样（字节/秒）。
  *
  * `deltaMs <= 0` 原样返回：`performance.now()` 在同一毫秒里被连问两次是完全正常的，
- * 拿它做除数会得到 `Infinity` 或 `NaN`，那个数字会一路显示到托盘上。
+ * 拿它做除数会得到 `Infinity` 或 `NaN`，那个数字会一路显示到徽标清单上。
  *
  * 首次采样（`prev <= 0`）直接取瞬时值 —— 没有历史可平滑，硬套 EWMA 只会从 0 慢慢爬。
  * 之后用 EWMA（0.7 旧 / 0.3 新）：纯瞬时值在分片大小不齐时会来回跳，纯平均又反应太慢。

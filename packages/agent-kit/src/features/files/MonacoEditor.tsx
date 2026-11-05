@@ -14,6 +14,11 @@
  *
  * Monaco 资源不走 CDN：loader.config 指向本地静态目录 /monaco-editor/vs
  * （由 scripts/copy-monaco.cjs 在 dev / build 前复制到 public/monaco-editor）。
+ *
+ * 加载态：`@monaco-editor/react` 在 `editor.main` 落地前会把 `loading` 节点塞进一个
+ * 居中容器（`height/width:100%` + `justify-center items-center`），默认值是**裸的
+ * `"Loading..."` 文本** —— 既没样式、也不跟语言走。这里换成 shadcn 的 `Spinner` +
+ * 一句 `加载中…`（这条文案在 `i18n` 里有英文对照，别写死）。
  */
 import Editor, { loader } from '@monaco-editor/react'
 import { Braces, Check, Code, Copy, Download, Hash, Lock, WrapText } from 'lucide-react'
@@ -32,8 +37,10 @@ import {
   SelectTrigger,
   SelectValue
 } from '@fizz/ui/select'
+import { Spinner } from '@fizz/ui/spinner'
 import { scalePx } from '@fizz/agent-kit/shared/lib/ui-scale'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 import {
   buildMonacoTheme,
   readSyntaxColors,
@@ -300,6 +307,7 @@ const MonacoEditor = ({
   onDownload,
   showHeader = true
 }: MonacoEditorProps) => {
+  const tr = useT()
   const isDark = useIsDarkTheme()
   /** 配色主题的 revision：换主题 / 改代码色时重算 Monaco 主题 */
   const revision = useThemeRevision()
@@ -545,6 +553,17 @@ const MonacoEditor = ({
           language={currentLanguage}
           theme={isDark ? 'fizz-dark' : 'fizz-light'}
           value={value}
+          /*
+            默认值是一个裸的 `"Loading..."` 字符串（见文件头）。这里换成 shadcn `Spinner` +
+            一句已翻译的「加载中…」：外层那个居中容器由 `@monaco-editor/react` 给，
+            所以只需要排一行、不必自己撑高。
+          */
+          loading={
+            <span className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Spinner className="size-3.5" />
+              {tr('加载中…')}
+            </span>
+          }
           beforeMount={(monaco) => {
             // 先装 worker 壳替换再定义主题：替换只做一次，装晚了第一个 worker 就走 blob 被 CSP 拦
             installCspSafeWorkerShim()

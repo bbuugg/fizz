@@ -14,6 +14,11 @@
  * 以前是「面板正被看着就连上自动拉起」，两个毛病：① 打开面板那一刻就在冷启动，只想瞄
  * 一眼画面的人也得等；② 「有时候自动起来了、有时候显示未启动」完全取决于挂载那一刻的
  * 标签前后台状态，用户看不出规律。现在起没起只由那颗按钮决定，状态一目了然。
+ *
+ * **「清除网站数据」**（顶栏一颗 + 两种空态各一颗）：内置浏览器一个会话一份持久化
+ * profile，那份 profile 就是登录态本身（见 `@fizz/tools` 的 `browser/profiles.ts`）。
+ * 登错号 / 想换个账号时清这一份，会话与聊天记录不动 —— 别把它做成「清缓存」，
+ * 缓存在这里没法单独清，而用户要的从来都是「掉登录」。
  */
 'use client'
 
@@ -21,6 +26,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ArrowLeft,
   ArrowRight,
+  Cookie,
   Globe,
   Loader2,
   Monitor,
@@ -28,8 +34,12 @@ import {
   RotateCw,
   Smartphone
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@fizz/ui/button'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
+import { useConfirm } from '@fizz/agent-kit/shared/components/ConfirmProvider'
 import { openBrowserSocket } from '@fizz/agent-client/web-host'
 import type {
   BrowserClientMessage,
@@ -78,6 +88,29 @@ function StartButton({ onClick }: { onClick: () => void }) {
   )
 }
 
+/**
+ * 空态那颗「清除网站数据」：浏览器**没在跑**的时候也得能清。
+ *
+ * 这一颗存在的理由就是「顶栏那颗够不着」：空态不渲染顶栏，而「登错号了想重来」恰恰
+ * 多半发生在停着的状态。服务端那条 DELETE 不依赖 WS 连接（见
+ * `api/conversations/[id]/browser-data`），所以空态里点它同样有效。
+ */
+function ClearDataButton({ onClear, busy }: { onClear: () => void; busy: boolean }) {
+  const tr = useT()
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="mt-1 text-muted-foreground"
+      disabled={busy}
+      onClick={onClear}
+    >
+      {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Cookie className="size-3.5" />}
+      {tr('清除网站数据')}
+    </Button>
+  )
+}
+
 interface BrowserPaneProps {
   conversationId: string
   workspaceId?: string
@@ -111,6 +144,10 @@ export function BrowserPane({ conversationId }: BrowserPaneProps) {
    */
   const [starting, setStarting] = useState(false)
   const [address, setAddress] = useState('')
+  /** 正在清网站数据：按钮转圈 + 防连点（先关进程再删目录，几百毫秒） */
+  const [clearing, setClearing] = useState(false)
+  const confirm = useConfirm()
+  const tr = useT()
 
   useEffect(() => {
     const autostart = autostartRef.current
@@ -187,6 +224,46 @@ export function BrowserPane({ conversationId }: BrowserPaneProps) {
     autostartRef.current = true
     setGen((n) => n + 1)
   }, [])
+
+  /**
+   * 清除**这个会话**的网站数据（Cookie / 登录态 / localStorage / HTTP 缓存）。
+   *
+   * 为什么走 HTTP 而不是在 WS 上补一条控制消息：`closed` 之后服务端已经把连接关了，
+   * 而用户最需要清的时候往往正是「浏览器没启动」——那时顶栏根本没渲染，`send` 也是
+   * 静默丢弃。HTTP 一条命令与面板连接状态无关（见 `api/conversations/[id]/browser-data`）。
+   *
+   * 清完不用自己改面板状态：
+   * - 浏览器正在跑 → 服务端 `purge` 先关它，这条连接会收到 `closed`（reason「网站数据已清除」）
+   *   并随服务端 `ws.close()` 断开，面板自己切到未启动；
+   * - 本来就没跑 → 面板已经在空态，用户看到的是那颗成功的 toast。
+   *
+   * 这两条路都不需要本地硬置状态，也就不会造出「显示未启动、后台其实已起来」的假象。
+   */
+  const clearSiteData = useCallback(async () => {
+    const ok = await confirm({
+      title: tr('清除这个会话的网站数据？'),
+      description: tr(
+        '会关掉浏览器，并删除这个会话的 Cookie、登录状态、本地存储与缓存。会话与聊天记录不受影响；下次启动浏览器需要重新登录。'
+      ),
+      confirmLabel: tr('清除'),
+      destructive: true
+    })
+    if (!ok) return
+    const api = useAgentStore.getState().getApi()
+    if (!api) {
+      toast.error(tr('未连接服务端'))
+      return
+    }
+    setClearing(true)
+    try {
+      await api.clearConversationBrowserData(conversationId)
+      toast.success(tr('已清除这个会话的网站数据'))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setClearing(false)
+    }
+  }, [confirm, conversationId, tr])
 
   /**
    * 启动兜底：转了 20 秒还没画面 / 状态就退回空态（还能再点一次），别让人对着
@@ -299,6 +376,7 @@ export function BrowserPane({ conversationId }: BrowserPaneProps) {
           {closeReason ?? '点下面的按钮启动浏览器，或在地址栏输入网址'}
         </div>
         <StartButton onClick={startBrowser} />
+        <ClearDataButton onClear={clearSiteData} busy={clearing} />
       </div>
     )
   }
@@ -322,6 +400,7 @@ export function BrowserPane({ conversationId }: BrowserPaneProps) {
           点下面的按钮手动启动；也可以让 AI 调 browser_navigate 直接打开网址
         </div>
         <StartButton onClick={startBrowser} />
+        <ClearDataButton onClear={clearSiteData} busy={clearing} />
       </div>
     )
   }
@@ -372,6 +451,18 @@ export function BrowserPane({ conversationId }: BrowserPaneProps) {
             <Smartphone className="size-3.5" />
           </Button>
         </div>
+        {/* 清除这个会话的网站数据（Cookie / 登录态 / 本地存储）：登错号了从这里重来 */}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7"
+          disabled={clearing}
+          onClick={clearSiteData}
+          aria-label={tr('清除网站数据')}
+          title={tr('清除网站数据')}
+        >
+          {clearing ? <Loader2 className="size-4 animate-spin" /> : <Cookie className="size-4" />}
+        </Button>
       </div>
 
       {/* 画面区：捕获鼠标 / 滚轮 / 键盘，转发到真实页面 */}

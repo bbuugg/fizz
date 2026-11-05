@@ -16,33 +16,20 @@
  * 除此之外**刻意不再放别的功能入口**（侧边栏折叠 / 搜索 / Window / About 都已移除）：
  * 侧边栏折叠在各侧栏自己身上（AgentSidebar / HostsSidebar / ApiPanel 里那颗按钮），
  * 命令面板走快捷键 `CommandOrControl+Shift+P`，退出走系统窗口控制与菜单。
- * **例外**：右侧浮窗开关（会话浮窗）—— 与 AI 助手同属**窗口级 chrome**（不是某个视图的
- * 入口），按用户要求放在这里。
+ * **会话浮窗也不在这里**：浮窗是「一条会话一个窗口」，入口在会话详情区顶栏
+ * （`ConversationTab` 的「在浮窗中打开」，走 `host.openConversationWindow(conversationId)`），
+ * 标题栏不该再有一颗「开 / 关浮窗」的全局开关 —— 那颗开关没有「哪条会话」可言。
  *
  * 与根应用的差别：平台判定用 navigator（desktop 的 preload 只暴露传输桥 + 窗口桥，
  * 没有 window.api.app.platform）。
  */
 import { useEffect, useState, type ReactNode } from 'react'
-import { Copy, Minus, PictureInPicture2, Sparkles, Square, X } from 'lucide-react'
+import { Copy, Minus, Sparkles, Square, X } from 'lucide-react'
 import { AppBrand, setAssistantPanelOpen, useAssistantPanelOpen } from '@fizz/agent-kit'
-import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
-import type { DesktopWindowBridge } from '../shared/window'
-
-declare global {
-  interface Window {
-    fizzWindow: DesktopWindowBridge
-  }
-}
+// `window.fizzWindow` 的全局声明在 `shared/window.ts`（主窗口与浮窗共用一份，别在这里再声明）
 
 /** 渲染端没有 process.platform：从 UA 判（macOS 的 UA 一定带 Mac） */
 const IS_MAC = /mac/i.test(navigator.platform || navigator.userAgent)
-
-/** 浮窗开关状态：初值 sendSync，之后靠事件同步（窗口开 / 关都会广播） */
-function useConversationWindowOpen(): boolean {
-  const [open, setOpen] = useState(() => window.fizzWindow.isConversationWindowOpen())
-  useEffect(() => window.fizzWindow.onConversationWindowChange(setOpen), [])
-  return open
-}
 
 /*
   `SettingsTitleBar` 已删除：那是独立设置窗口的自绘标题栏（「设置」+ 关闭）。
@@ -53,16 +40,6 @@ export function TitleBar() {
   const [maximized, setMaximized] = useState(false)
   // 助手开关：模块级单例状态，与 app-shell 里那份是同一个（同一份 bundle，见 index.ts 导出说明）
   const assistantOpen = useAssistantPanelOpen()
-  const floatOpen = useConversationWindowOpen()
-  const toggleFloat = (): void => {
-    if (floatOpen) {
-      void window.fizzWindow.closeConversationWindow()
-      return
-    }
-    // 首开用主窗口当前会话作种子；没有当前会话就落草稿（由渲染端决定）
-    const active = useAgentStore.getState().activeConversationId
-    void window.fizzWindow.openConversationWindow(active ?? undefined)
-  }
 
   useEffect(() => {
     void window.fizzWindow.isMaximized().then(setMaximized)
@@ -90,18 +67,8 @@ export function TitleBar() {
         <AppBrand iconClassName="size-4.5" nameClassName="text-xs" />
       </div>
 
-      {/* 中间那段是空的拖拽区（浮窗的显隐在「设置 → 通用」里配，这里不放开关） */}
+      {/* 中间那段是空的拖拽区 */}
       <div className="flex min-w-0 flex-1 items-end" />
-
-      {/*
-        会话浮窗开关（右上角，AI 助手左侧）：窗口级 chrome。开着就关、关着就用当前会话开。
-        状态由主进程广播同步（isConversationWindowOpen 首帧 + conversationWindowChange）。
-      */}
-      <div className="app-no-drag flex items-stretch">
-        <TitleBarButton title={floatOpen ? '关闭浮窗' : '打开浮窗'} onClick={toggleFloat}>
-          <PictureInPicture2 className="size-3.5" />
-        </TitleBarButton>
-      </div>
 
       {/*
         AI 助手（右上角，靠窗口控制键左侧）：全局右侧停靠面板的入口。桌面上直接调

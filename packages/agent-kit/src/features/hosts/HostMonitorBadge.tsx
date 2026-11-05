@@ -34,6 +34,7 @@ import { Activity, ArrowDown, ArrowUp, Cpu, HardDrive, MemoryStick, Server, Time
 import type { HostMetrics } from '@fizz/contracts/agent-api'
 import type { AgentApi } from '@fizz/agent-client/api'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { STATUS_ITEM_CLASS } from '@fizz/agent-kit/shared/lib/status-bar'
 import { Popover, PopoverContent, PopoverTrigger } from '@fizz/ui/popover'
 import {
@@ -88,6 +89,7 @@ export function HostMonitorBadge({
   /** 主机名（悬停提示用；不传就只显示指标） */
   hostName?: string
 }) {
+  const t = useT()
   const [open, setOpen] = useState(false)
   const [metrics, setMetrics] = useState<HostMetrics | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -140,8 +142,8 @@ export function HostMonitorBadge({
 
   // 让陈旧标记随时间推进（只在本组件挂着时跑）
   useEffect(() => {
-    const t = setInterval(() => forceTick((n) => n + 1), 1000)
-    return () => clearInterval(t)
+    const timer = setInterval(() => forceTick((n) => n + 1), 1000)
+    return () => clearInterval(timer)
   }, [])
 
   if (!api) return null
@@ -162,7 +164,7 @@ export function HostMonitorBadge({
       return (
         <span className="inline-flex items-center gap-1">
           <Activity className="size-3" />
-          {error ? '监控不可用' : '读取中…'}
+          {error ? t('监控不可用') : t('读取中…')}
         </span>
       )
     }
@@ -170,14 +172,14 @@ export function HostMonitorBadge({
       <>
         <span
           className={cn('inline-flex items-center gap-1 tabular-nums', LOAD_TEXT_CLASS[loadLevel(snap.cpuPercent ?? 0)])}
-          title={`CPU 占用 ${pctText(snap.cpuPercent)}`}
+          title={t('CPU 占用 {value}', { value: pctText(snap.cpuPercent) })}
         >
           <Cpu className="size-3" />
           {pctText(snap.cpuPercent)}
         </span>
         <span
           className={cn('inline-flex items-center gap-1 tabular-nums', LOAD_TEXT_CLASS[loadLevel(snap.memPercent)])}
-          title={`内存占用 ${pct(snap.memPercent)}%`}
+          title={t('内存占用 {value}%', { value: pct(snap.memPercent) })}
         >
           <MemoryStick className="size-3" />
           {pct(snap.memPercent)}%
@@ -202,7 +204,7 @@ export function HostMonitorBadge({
       <PopoverTrigger asChild>
         <button
           type="button"
-          aria-label={hostName ? `${hostName} 性能监控` : '主机性能监控'}
+          aria-label={hostName ? t('{host} 性能监控', { host: hostName }) : t('主机性能监控')}
           className={cn(STATUS_ITEM_CLASS, 'gap-2.5', stale && 'opacity-60')}
         >
           {trigger()}
@@ -218,7 +220,7 @@ export function HostMonitorBadge({
       >
         {!snap ? (
           <div className="flex min-h-full items-center justify-center py-4 text-center text-xs text-muted-foreground">
-            {error ? `监控不可用：${error}` : '正在连接主机并读取指标…'}
+            {error ? t('监控不可用：{error}', { error }) : t('正在连接主机并读取指标…')}
           </div>
         ) : (
           <div className="space-y-3">
@@ -227,7 +229,7 @@ export function HostMonitorBadge({
               <Server className="size-4 shrink-0 text-muted-foreground" />
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm font-medium" title={snap.hostname || hostName}>
-                  {snap.hostname || hostName || 'SSH 主机'}
+                  {snap.hostname || hostName || t('SSH 主机')}
                 </div>
                 <div className="truncate text-[0.6875rem] text-muted-foreground">
                   {snap.distro || 'Linux'}
@@ -242,14 +244,14 @@ export function HostMonitorBadge({
                 )}
               >
                 <Activity className={cn('size-3', !stale && 'animate-pulse')} />
-                {stale ? '已陈旧' : '实时'}
+                {stale ? t('已陈旧') : t('实时')}
               </span>
             </div>
 
             {/* 采集间隔换挡 */}
             <div className="flex items-center gap-1 text-[0.625rem] text-muted-foreground">
               <Timer className="size-3" />
-              <span>采集间隔</span>
+              <span>{t('采集间隔')}</span>
               <span className="ml-auto inline-flex items-center gap-0.5">
                 {INTERVALS.map((ms) => (
                   <button
@@ -271,7 +273,7 @@ export function HostMonitorBadge({
 
             {error && stale && (
               <div className="rounded-md border border-dashed border-border px-2 py-1 text-[0.625rem] text-muted-foreground">
-                最近一次读取失败：{error}
+                {t('最近一次读取失败：{error}', { error })}
               </div>
             )}
 
@@ -280,14 +282,18 @@ export function HostMonitorBadge({
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-[0.625rem] text-muted-foreground">
                   <span>
-                    近约 {Math.round(((history.length - 1) * (metrics?.sampleIntervalMs ?? intervalMs)) / 1000)} 秒
+                    {t('近约 {seconds} 秒', {
+                      seconds: Math.round(
+                        ((history.length - 1) * (metrics?.sampleIntervalMs ?? intervalMs)) / 1000
+                      )
+                    })}
                   </span>
                   <span className="inline-flex items-center gap-2.5">
                     <span className="inline-flex items-center gap-1">
                       <i className="h-0.5 w-3 bg-foreground" /> CPU
                     </span>
                     <span className="inline-flex items-center gap-1">
-                      <i className="h-0 w-3 border-t border-dashed border-muted-foreground" /> 内存
+                      <i className="h-0 w-3 border-t border-dashed border-muted-foreground" /> {t('内存')}
                     </span>
                   </span>
                 </div>
@@ -310,18 +316,22 @@ export function HostMonitorBadge({
                 </span>
               }
             >
-              <Row label={snap.cpuBrand || 'CPU'} sub={`${snap.cores} 逻辑核`} value={`${snap.cores} 核`} />
-              <Row label="负载 (1 / 5 / 15 分)" value={`${snap.load1.toFixed(2)} / ${snap.load5.toFixed(2)} / ${snap.load15.toFixed(2)}`} />
-              <Row label="已运行" value={formatUptime(snap.uptime)} />
+              <Row
+                label={snap.cpuBrand || 'CPU'}
+                sub={t('{n} 逻辑核', { n: snap.cores })}
+                value={t('{n} 核', { n: snap.cores })}
+              />
+              <Row label={t('负载 (1 / 5 / 15 分)')} value={`${snap.load1.toFixed(2)} / ${snap.load5.toFixed(2)} / ${snap.load15.toFixed(2)}`} />
+              <Row label={t('已运行')} value={formatUptime(snap.uptime)} />
             </Section>
 
             {/* 内存 + swap */}
             <Section
               icon={<MemoryStick className="size-3" />}
-              title="内存"
+              title={t('内存')}
               right={<span className={LOAD_TEXT_CLASS[loadLevel(snap.memPercent)]}>{pct(snap.memPercent)}%</span>}
             >
-              <UsageBar label="物理内存" used={snap.memUsed} total={snap.memTotal} percent={snap.memPercent} />
+              <UsageBar label={t('物理内存')} used={snap.memUsed} total={snap.memTotal} percent={snap.memPercent} />
               {snap.swapTotal > 0 && (
                 <UsageBar label="Swap" used={snap.swapUsed} total={snap.swapTotal} percent={snap.swapPercent} />
               )}
@@ -329,7 +339,7 @@ export function HostMonitorBadge({
 
             {/* 磁盘 */}
             {snap.disk.length > 0 && (
-              <Section icon={<HardDrive className="size-3" />} title="磁盘">
+              <Section icon={<HardDrive className="size-3" />} title={t('磁盘')}>
                 <div className="space-y-1.5">
                   {snap.disk.map((d) => (
                     <UsageBar key={d.mount} label={d.mount} used={d.used} total={d.total} percent={d.percent} />
@@ -339,9 +349,9 @@ export function HostMonitorBadge({
             )}
 
             {/* 网络汇总 */}
-            <Section title="网络">
+            <Section title={t('网络')}>
               <Row
-                label="合计速率"
+                label={t('合计速率')}
                 value={
                   <span className="inline-flex items-center gap-1.5">
                     <span className="inline-flex items-center gap-0.5 text-muted-foreground">
@@ -355,7 +365,7 @@ export function HostMonitorBadge({
                   </span>
                 }
               />
-              <Row label="内存占用" value={`${formatBytes(snap.memUsed)} / ${formatBytes(snap.memTotal)}`} />
+              <Row label={t('内存占用')} value={`${formatBytes(snap.memUsed)} / ${formatBytes(snap.memTotal)}`} />
             </Section>
           </div>
         )}

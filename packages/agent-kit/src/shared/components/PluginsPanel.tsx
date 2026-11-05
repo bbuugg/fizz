@@ -20,9 +20,9 @@
  * 插件的**设置项**（`ctx.ui.setting`）在卡片上的「配置」按钮打开的**弹窗**里编辑：值存在服务端
  * （密钥项加密，且只回 `hasValue`），保存后立刻生效（挂载缓存指纹里含设置值）。
  *
- * 为什么设置是弹窗、列表是两列：插件多起来之后（尤其像 OSS 那样十项设置的），内联表单会把一列
- * 列表撑成一条条长表单 —— 既难扫读、也没法两列排布。列表只留「一眼看全」的信息（图标 / 名字 /
- * 路径 / 提供了什么能力），要编辑才开弹窗。
+ * 为什么设置是弹窗、列表是栅格：插件多起来之后（尤其像 OSS 那样十项设置的），内联表单会把一列
+ * 列表撑成一条条长表单 —— 既难扫读、也没法并排。列表只留「一眼看全」的信息（图标 / 名字 /
+ * 路径 / 提供了什么能力），要编辑才开弹窗。列数按**面板自己的宽度**算（容器查询），见列表那段注释。
  *
  * 数据按作用域**现拉**，不进全局 store：清单本就跟着「管哪个项目 / 全局」走。
  */
@@ -655,7 +655,8 @@ export function PluginsPanel({
   const configIcon = configPlugin ? data?.ui[configPlugin.id]?.icon : undefined
 
   return (
-    <div className={cn('space-y-3', className)}>
+    /* `@container`：下面插件列表的列数按**这个面板自己的宽度**算，不看视口（理由见列表那段） */
+    <div className={cn('@container space-y-3', className)}>
       {/* 窄屏（手机）**上下排**：说明文字占满一行、按钮组落到下一行右对齐。
           左右并排时那段说明只剩 ~90px 宽，每行挤两三个字，整段被拉成一长条 —— 就是「挤压变形」的观感。 */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
@@ -814,9 +815,19 @@ export function PluginsPanel({
         </div>
       )}
 
-      {/* 一行两个（`sm:grid-cols-2`）：卡片信息量小，两列能少一半滚动。窄屏（<640px）仍是一列 ——
-          两列在手机上每张卡只剩 ~180px，路径与插件名会被截得没法看。 */}
-      <div className="grid gap-2 sm:grid-cols-2">
+      {/*
+        **列数按容器自己的宽度算，不按视口**（`@container` + `auto-fill`）。
+
+        这块面板同时活在两个宽度差很多的地方：设置页（内容区很宽）与项目「更多 → 插件」
+        弹窗（`sm:max-w-2xl`，可用宽度只有 ~40rem）；再加上主区域面板本身可以拖宽拖窄。
+        用 `sm:grid-cols-2` 那种视口断点，窄面板 + 宽屏幕就会排出两列挤成「Fiz…」的卡片。
+
+        `minmax(min(100%,20rem),1fr)`：一格至少 20rem 才好放下「图标 + 名字/路径 + 开关」；
+        外层那个 `min(100%, …)` 是给比 20rem 还窄的容器（手机弹窗）兜底 —— 少了它，轨道
+        撑在 20rem 不动，容器一窄就横向溢出。`auto-fill` 按可用宽度自动决定一行几格，
+        不必再为「2 格 / 3 格」写死断点。
+      */}
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,20rem),1fr))] gap-2">
         {shown.map((plugin) => {
           const enabled = !disabled.includes(plugin.id)
           // plugins.yml 里写了 enabled:false 的插件：这里管不到它，标出来免得用户

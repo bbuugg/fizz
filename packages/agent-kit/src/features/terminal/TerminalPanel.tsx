@@ -73,6 +73,7 @@ import { TerminalFab } from '@fizz/agent-kit/features/terminal/TerminalFab'
 import {
   registerTerminal,
   setActiveTerminal,
+  setTerminalPhase,
   unregisterTerminal
 } from '@fizz/agent-kit/shared/lib/terminal/terminal-registry'
 import { stripAnsi } from '@fizz/agent-kit/shared/lib/terminal/terminal-mcp'
@@ -113,7 +114,7 @@ interface SftpDropState {
   /** 目标远端目录（可编辑；初值来自 `realpath` 或上次用过的） */
   dir: string
   /**
-   * ⚠️ 没有 `uploading`：确认之后确认条就收起来了，进度 / 取消都在右下角传输托盘里。
+   * ⚠️ 没有 `uploading`：确认之后确认条就收起来了，进度 / 取消都在状态栏的传输徽标里。
    * 这一条只负责「传到哪个目录」这一件事（`failed` 指**连接**失败，不是上传失败）。
    */
   phase: 'connecting' | 'connectFailed' | 'ready' | 'failed'
@@ -644,13 +645,15 @@ export function TerminalPanel({
     proc.kill()
     setConnectProgress(null)
     exitedRef.current = true
+    // 标签条换红点：`kill()` 走的是「我们主动关」，不会回 `onExit`，这里不写就永远停在黄点
+    if (tabKey) setTerminalPhase(tabKey, 'exited')
     clearInputTracking()
     const term = termRef.current
     if (term) {
       term.write('\r\n\x1b[33m● 已取消连接\x1b[0m\r\n' + '\x1b[90m  按 Enter 重连\x1b[0m\r\n')
       term.focus()
     }
-  }, [clearInputTracking])
+  }, [clearInputTracking, tabKey])
 
   /** 预测下拉框定位：优先显示在光标下方，空间不足则显示在光标上方 */
   const positionDropdown = useCallback((): void => {
@@ -995,6 +998,12 @@ export function TerminalPanel({
     clearInputTracking()
     // 重建会话 = 重新连接：连接进度浮层回到初始（新会话的进度会由 onProgress 重新推来）
     setConnectProgress(null)
+    /*
+     * 标签条上换黄点：从这里开始算「在连」，一直到 `settleConnect`（`ready` 帧 / 首帧输出）
+     * 才转绿。写在 try 之前 —— 连建连都还没开始的那一瞬，也不该挂着上一次的绿（重开一条
+     * 终端时那个绿点是**上一条**会话留下的，会让人以为已经好了）。
+     */
+    if (tabKey) setTerminalPhase(tabKey, 'connecting')
 
     const term = new Terminal({
       fontSize,
@@ -1186,6 +1195,12 @@ export function TerminalPanel({
             ...(containerShell ? { containerShell } : {})
           })
         processRef.current = proc
+        /*
+         * ⚠️ 这里**不**标绿（黄点已在 effect 开头写过）：`processRef` 有值只说明「进程对象
+         * 建出来了」，SSH 还要握手 / 认证 / 起 shell，web 端本机终端还要等 WS 建连 + spawn。
+         * 以前在这一行就 `setTerminalPhase(…, 'alive')`，用户在连接进度卡片还转着的时候
+         * 已经看见绿点了（用户报过）。什么时候换绿见下面的 `settleConnect`。
+         */
         /**
          * SSH 建连进度：只有 SSH 终端实现了 `onProgress`（本机 / 容器终端没有这条通道）。
          * 收到 `ready` 即代表连上，收起进度卡片；其余阶段刷新卡片。
@@ -1205,6 +1220,18 @@ export function TerminalPanel({
          */
         const rawDecoder = new TextDecoder(sshCharset)
         /**
+         * 连上了：收起连接进度卡片 + 标签条换绿点。
+         *
+         * 两个入口共用（**同一处判定，别分叉**）：SSH 的 `ready` 帧、以及首帧输出
+         * —— 本机 / 容器终端没有 `onProgress`，首帧输出是唯一能观测到的「shell 起来了」。
+         * 重复调用无害（`setTerminalPhase` 同值不通知）。
+         */
+        const settleConnect = (): void => {
+          connectSettled = true
+          setConnectProgress(null)
+          if (tabKey) setTerminalPhase(tabKey, 'alive')
+        }
+        /**
          * 运行脚本：终端就绪时把待写入的脚本输入（逐行回车）写进 PTY，写一次即清空。
          * SSH 由 `ready` 帧触发，本机终端由首帧输出触发（见下面的调用点）。
          */
@@ -1221,8 +1248,7 @@ export function TerminalPanel({
         const offProgress = proc.onProgress?.((progress) => {
           if (processRef.current !== proc) return
           if (progress.stage === 'ready') {
-            connectSettled = true
-            setConnectProgress(null)
+            settleConnect()
             flushScriptInput()
             return
           }
@@ -1243,11 +1269,8 @@ export function TerminalPanel({
           raw.offset += chunk.length
           raw.text += chunk
           if (raw.text.length > RAW_OUTPUT_KEEP * 2) raw.text = raw.text.slice(-RAW_OUTPUT_KEEP)
-          // 收到首帧输出 = 连接已就绪（`ready` 帧之外再兜一道）：收起连接进度卡片
-          if (!connectSettled) {
-            connectSettled = true
-            setConnectProgress(null)
-          }
+          // 收到首帧输出 = 连接已就绪（`ready` 帧之外再兜一道）：收起进度卡片、标签条换绿点
+          if (!connectSettled) settleConnect()
           // 本机终端没有 `onProgress`：首帧输出就是「shell 起来了」的信号，在这里补写脚本
           flushScriptInput()
           /*
@@ -1265,6 +1288,9 @@ export function TerminalPanel({
            */
           if (processRef.current !== proc) return
           exitedRef.current = true
+          // 标签条上换红点（同理只认当前这条会话的退出，旧进程晚一拍的 exit 已经在上面的
+          // 守卫里 return 了）
+          if (tabKey) setTerminalPhase(tabKey, 'exited')
           // 连接还没就绪就退出了（建连失败 / 认证失败）：进度卡片收起，错误行由下面写进终端
           setConnectProgress(null)
           // 预测还挂着的话收起来：shell 都没了，缓冲也不再有意义
@@ -1312,6 +1338,8 @@ export function TerminalPanel({
       // 这种「看起来像别处出的错」必须能看帧才查得动（安卓侧从 chrome://inspect 或 logcat 取）
       console.error('终端启动失败', err)
       setError(err instanceof Error ? err.message : String(err))
+      // 连进程都没起来：标签条上同样是「这条终端没了」，与 shell 退出同一个红点
+      if (tabKey) setTerminalPhase(tabKey, 'exited')
     }
 
     return () => {
@@ -1328,8 +1356,8 @@ export function TerminalPanel({
       zmodemRef.current = null
       dropDepthRef.current = 0
       // 拖拽上传：会话拆了（换主机 / 重开 / 关标签）就把确认条收掉。
-      // ⚠️ **正在传的那些不管**：传输已经交给引擎，进度 / 取消都在右下角托盘里 —— 关掉一个
-      // 终端标签不该顺手掐掉传到一半的文件（用户可以在托盘里自己决定）。
+      // ⚠️ **正在传的那些不管**：传输已经交给引擎，进度 / 取消都在传输徽标里 —— 关掉一个
+      // 终端标签不该顺手掐掉传到一半的文件（用户可以在清单里自己决定）。
       // `lastUploadDirRef` **不清**：重连之后用户多半还想传到同一个目录。
       setSftpDrop(null)
       processRef.current?.kill()
@@ -1413,7 +1441,7 @@ export function TerminalPanel({
     })()
   }
 
-  /** 关掉确认条（纯关闭，不影响已经在跑的上传 —— 那在托盘里） */
+  /** 关掉确认条（纯关闭，不影响已经在跑的上传 —— 那在清单里） */
   const dismissSftpDrop = (): void => {
     setSftpDrop(null)
     termRef.current?.focus()
@@ -1422,8 +1450,8 @@ export function TerminalPanel({
   /**
    * 确认目标目录并开始上传。
    *
-   * 确认之后**立刻收起确认条**：进度、速度、取消、失败原因全在右下角传输托盘里，这条
-   * 只负责「传到哪个目录」。留着它既挡住终端，又和托盘显示同一件事。
+   * 确认之后**立刻收起确认条**：进度、速度、取消、失败原因全在状态栏的传输徽标里，这条
+   * 只负责「传到哪个目录」。留着它既挡住终端，又和清单显示同一件事。
    *
    * ⚠️ **串行**逐文件传（`for` + `await`，**不是** `Promise.all`）：一次拖入几十个文件时
    * 并发会把连接与内存打满，而且同一文件内部分片本来就是串行的，并发只会互相抢带宽。
@@ -1454,9 +1482,9 @@ export function TerminalPanel({
       // canceled：用户自己点的取消，不是失败，也不进终场提示
     }
 
-    // 终端里留一行小结（滚上去也还看得见）；逐项的细节在托盘里
+    // 终端里留一行小结（滚上去也还看得见）；逐项的细节在清单里
     if (done) writeHint(`已上传 ${done} 项到 ${dir}`, '32')
-    if (failed) writeHint(`有 ${failed} 项上传失败（详见右下角传输托盘）`, '31')
+    if (failed) writeHint(`有 ${failed} 项上传失败（详见状态栏的传输徽标）`, '31')
   }
 
   return (
@@ -1633,8 +1661,8 @@ export function TerminalPanel({
           目标目录**必须让用户过一眼** —— 终端当前工作目录拿不到（shell 默认不发 OSC 7、
           解析提示符不可靠），默认只能给远端家目录。「传到哪」是用户最可能想改的一项，
           所以它不该是个悄无声息的后台动作。
-          ⚠️ 它只管「传到哪个目录」：确认之后立刻收起，进度 / 速度 / 取消全在右下角的
-          传输托盘里（`TransferTray`），这里不再画进度条。
+          ⚠️ 它只管「传到哪个目录」：确认之后立刻收起，进度 / 速度 / 取消全在状态栏那颗
+          传输徽标里（`TransferBadge`），这里不再画进度条。
         */}
         {sftpDrop && (
           <div className="absolute top-3 left-1/2 z-20 w-96 max-w-[calc(100%-1.5rem)] -translate-x-1/2 rounded-md border border-border bg-card/95 p-3 text-xs text-foreground shadow-lg backdrop-blur">

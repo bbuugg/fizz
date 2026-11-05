@@ -333,11 +333,9 @@ function PanelTabContent({ tabKey, active }: { tabKey: string; active: boolean }
 
   // 系统监控 / 任务管理器标签：全局单例（`sysmon:list`）。
   //
-  // 同样**在手机上没有入口**（状态栏那颗按钮只在桌面 / Web 的壳里，见
-  // `shell/app-shell.tsx`），这条分支是防呆：`isSysmonTabKey` 已经算进 `isToolTabKey`，
-  // 不接一手的话将来真开出这条标签会落到下面的终端兜底上。顺带一句：手机端这一页其实
-  // 能用（进程表在窄屏上会隐藏几列，见 `SysmonPanel` 的 `sm:` / `md:` 分支），只是没有
-  // 入口 —— 需要时可以从命令面板打开。
+  // 入口在抽屉左下角（`layout/Sidebar.tsx`，与设置同一行）：桌面那颗在底部状态栏
+  // （`SysmonButton`），手机壳没有那条栏。进程表在窄屏上会隐藏几列，见 `SysmonPanel`
+  // 的 `sm:` / `md:` 分支 —— 这一页本来就能用，只是以前没有入口。
   if (isSysmonTabKey(tabKey)) {
     return <SysmonPanel />
   }

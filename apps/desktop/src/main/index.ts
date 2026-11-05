@@ -62,6 +62,13 @@ const APP_NAME = 'Fizz'
 let mainWindow: BrowserWindow | null = null
 /** 会话浮窗（**单例**）；关闭即置空。开关语义见 openConversationWindow */
 let conversationWindow: BrowserWindow | null = null
+/**
+ * 浮窗当前载的是哪条会话（`?window=conversation&conversationId=`）。
+ *
+ * 只用来判「同一条就聚焦、换一条就重载」—— 窗口销毁时一并置空，别把上一条的 id
+ * 留给下一个窗口（会静默不重载，浮窗停在旧会话）。
+ */
+let conversationWindowConversationId: string | null = null
 /** 托盘常驻：关闭窗口后应用继续在后台跑（流式回复 / 正在跑的 Agent 都不受影响） */
 let tray: Tray | null = null
 /** 真正的退出流程（托盘菜单「退出」/ Cmd+Q / 安装器）：只有这时才放行 close */
@@ -469,23 +476,19 @@ function registerWindowIpc(): void {
   // ---------- 顶栏「打开」：文件管理器 / 已安装 IDE ----------
   // 设置已并回主区域的标签页（`agent-kit` 的 `settings:list`），主进程不再参与：
   // 原先是 `WINDOW_IPC.openSettings` 在这里 new 一个独立 BrowserWindow。
-  // 会话浮窗：**单例**，见 openConversationWindow；首参是首次创建时的初始会话种子
-  ipcMain.handle(WINDOW_IPC.openConversationWindow, (_e, initialConversationId?: string) => {
-    openConversationWindow(typeof initialConversationId === 'string' ? initialConversationId : undefined)
+  // 会话浮窗：**单例**且**一条会话一个窗口**，见 openConversationWindow（参数必填）
+  ipcMain.handle(WINDOW_IPC.openConversationWindow, (_e, conversationId?: unknown) => {
+    if (typeof conversationId !== 'string' || !conversationId) return
+    openConversationWindow(conversationId)
   })
-  ipcMain.handle(WINDOW_IPC.closeConversationWindow, () => closeConversationWindow())
   // 浮窗「在主窗口打开」：主进程只管拉窗口 + 递链接，会话怎么打开是渲染端的事
   ipcMain.handle(WINDOW_IPC.openInMainWindow, (_e, conversationId?: unknown) => {
     openInMainWindow(typeof conversationId === 'string' && conversationId ? conversationId : undefined)
   })
-  // 同步读：主窗口首帧摆标签要用（与 isConversationWindowOpen 同一套路）
+  // 同步读：主窗口首帧摆标签要用（异步会先落上一个会话再跳）
   ipcMain.on(WINDOW_IPC.takePendingDeepLink, (event) => {
     event.returnValue = pendingDeepLink
     pendingDeepLink = null
-  })
-  // 同步读：主窗口标题栏开关首帧就要正确（与 loadCloseToTray 同一套路）
-  ipcMain.on(WINDOW_IPC.isConversationWindowOpen, (event) => {
-    event.returnValue = conversationWindow !== null && !conversationWindow.isDestroyed()
   })
   // 置顶作用于**发起窗口**（浮窗自己），不是主窗口 —— 与 minimize / close 同一语义
   ipcMain.handle(WINDOW_IPC.setAlwaysOnTop, (event, enabled: boolean) => {
@@ -911,12 +914,6 @@ function loadRenderer(window: BrowserWindow, query?: Record<string, string>): vo
   else void window.loadFile(file)
 }
 
-/** 浮窗开 / 关状态推给主窗口标题栏（窗口可能正在销毁，先判活） */
-function emitConversationWindowChange(open: boolean): void {
-  if (!mainWindow || mainWindow.isDestroyed()) return
-  mainWindow.webContents.send(WINDOW_IPC.conversationWindowChange, open)
-}
-
 /**
  * 待交给主窗口渲染端的深链（浮窗点「在主窗口打开」时来的会话 id）。
  *
@@ -963,15 +960,30 @@ function openInMainWindow(conversationId?: string): void {
 }
 
 /**
- * 会话浮窗：**单例**。已开着就显隐 / 聚焦，不再开第二个。
+ * 会话浮窗：**单例**，且**一条会话一个窗口**。
+ *
+ * - 已开着且就是这一条：只恢复 / 聚焦 —— **不能重载**（重载会掐断正在跑的流、
+ *   丢掉输入框里没发出去的内容）；
+ * - 已开着的是**另一条**：带新 id 重新 `loadRenderer`。渲染端因此只认启动参数里的
+ *   那一条 `conversationId`，不存在「窗内切换会话」这层状态（2026-11 改版：入口在
+ *   会话详情区顶栏，见 `ConversationTab`）；
+ * - 没开着：建窗口并载入这一条。
+ *
+ * `conversationId` **必填**：没有「无会话的草稿浮窗」这回事了（调用方只在真实会话上
+ * 给入口），空 id 的一律由 IPC 那层挡掉。
+ *
  * 与设置窗口同一套 webPreferences / 标题栏处理；**不**挂 close 拦截（关就是关）。
- * initialConversationId 只在**首次创建**时作为初始内容（草稿 / 当前会话由渲染端决定）。
  */
-function openConversationWindow(initialConversationId?: string): void {
+function openConversationWindow(conversationId: string): void {
   if (conversationWindow && !conversationWindow.isDestroyed()) {
     if (conversationWindow.isMinimized()) conversationWindow.restore()
     conversationWindow.show()
     conversationWindow.focus()
+    // 同一条会话：只聚焦。换了一条：让它按新 id 重新载入（见函数头）
+    if (conversationWindowConversationId !== conversationId) {
+      conversationWindowConversationId = conversationId
+      loadRenderer(conversationWindow, { window: 'conversation', conversationId })
+    }
     return
   }
   const win = new BrowserWindow({
@@ -988,27 +1000,19 @@ function openConversationWindow(initialConversationId?: string): void {
     webPreferences: sharedWebPreferences()
   })
   conversationWindow = win
+  conversationWindowConversationId = conversationId
   win.on('ready-to-show', () => win.show())
-  win.on('show', () => emitConversationWindowChange(true))
-  win.on('hide', () => emitConversationWindowChange(false))
   win.on('closed', () => {
-    // 按**窗口身份**判：销毁与 closed 之间若已重开，别把新窗口记录抹掉
-    if (conversationWindow === win) conversationWindow = null
-    emitConversationWindowChange(false)
+    // 按**窗口身份**判：销毁与 closed 之间若已重开，别把新窗口的记录抹掉
+    if (conversationWindow === win) {
+      conversationWindow = null
+      conversationWindowConversationId = null
+    }
   })
   blockPageReload(win)
   routeExternalLinks(win)
   secureWebviews(win)
-  loadRenderer(win, {
-    window: 'conversation',
-    ...(initialConversationId ? { conversationId: initialConversationId } : {})
-  })
-  emitConversationWindowChange(true)
-}
-
-/** 关闭浮窗（若开着）。closed 事件会把记录置空并广播 false */
-function closeConversationWindow(): void {
-  if (conversationWindow && !conversationWindow.isDestroyed()) conversationWindow.close()
+  loadRenderer(win, { window: 'conversation', conversationId })
 }
 
 /**

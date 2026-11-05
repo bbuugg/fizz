@@ -23,6 +23,8 @@
  * - `model-tools.ts` —— 模型配置工具组（配置的列 / 增 / 改 / 删、从上游拉模型清单、
  *   配置下模型条目的增 / 改 / 删）。**只挂给全局 AI 助手**，与 project-tools 共用
  *   `guardMutation` 的审批口径；
+ * - `mcp-tools.ts` —— MCP 配置工具组（server 的列 / 增 / 改 / 删 + 连上列它的工具）。
+ *   同样**只挂给全局 AI 助手**：它只写配置，让 MCP 生效仍然是会话级勾选；
  * - `playwright-browsers.ts` —— 打包态（Electron）下把 playwright 指到随包分发的
  *   chromium（`extraResources` 拷进来的 headless shell），dev / server / cli 不受影响。
  */
@@ -36,5 +38,6 @@ export * from './ansi'
 export * from './git-read'
 export * from './project-tools'
 export * from './model-tools'
+export * from './mcp-tools'
 export * from './playwright-browsers'
 export * from './browser'

@@ -12,6 +12,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, Copy, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import type { GitCommit, GitCommitDiffResult } from '@fizz/git'
+import { t } from '@fizz/i18n'
 import { Button } from '@fizz/ui/button'
 import {
   ContextMenu,
@@ -24,6 +25,7 @@ import { FileDiffView } from '@fizz/agent-kit/features/git/FileDiffView'
 import { parseUnifiedDiff } from '@fizz/agent-kit/shared/lib/diff'
 import { splitDiffByFile } from '@fizz/agent-kit/shared/lib/git-commit-diff'
 import { statusTone } from '@fizz/agent-kit/features/git/ChangeRow'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 
 /** unified diff 里切分文件的边界行（`diff --git a/x b/x`） */
@@ -32,19 +34,22 @@ const FILE_HEADER = /^diff --git a\/(.*) b\/(.*)$/
 /** 复制提交哈希后的提示文案（导出来单测，不让文案散在 JSX 里） */
 export function copyHashToastLabel(kind: 'full' | 'short'): string {
   // 「完整」两个字要留着：拿到的是 40 位那个，而列表里显示的一直是短哈希
-  return kind === 'full' ? '已复制完整提交哈希' : '已复制短哈希'
+  return kind === 'full' ? t('已复制完整提交哈希') : t('已复制短哈希')
 }
 
 /** 复制并把结果告诉用户（剪贴板失败要报出来：静默失败的话用户以为复制过了） */
 function copyHash(text: string, kind: 'full' | 'short'): void {
   if (!text) {
-    toast.error('没有可复制的提交哈希')
+    toast.error(t('没有可复制的提交哈希'))
     return
   }
   // 走 promise 而不是 void 一把梭：clipboard 在非安全上下文 / 无焦点时会拒
   navigator.clipboard.writeText(text).then(
     () => toast.success(copyHashToastLabel(kind)),
-    (err: unknown) => toast.error(`复制失败：${err instanceof Error ? err.message : String(err)}`)
+    (err: unknown) =>
+      toast.error(
+        t('复制失败：{error}', { error: err instanceof Error ? err.message : String(err) })
+      )
   )
 }
 
@@ -56,11 +61,12 @@ function copyHash(text: string, kind: 'full' | 'short'): void {
  * 一个数组，行与行的文件归属全丢，而 commit 的 diff 几乎总是多文件的。
  */
 function CommitDetail({ detail }: { detail: GitCommitDiffResult }) {
+  const t = useT()
   // 空提交 / 纯 merge：git 不给 diff。明说「没有文件改动」，别渲染一个空区让人以为加载失败
   if (detail.files.length === 0) {
     return (
       <div className="px-2 py-1.5 text-xs text-muted-foreground">
-        这次提交没有文件改动（空提交，或合并提交默认不带 diff）。
+        {t('这次提交没有文件改动（空提交，或合并提交默认不带 diff）。')}
       </div>
     )
   }
@@ -79,7 +85,7 @@ function CommitDetail({ detail }: { detail: GitCommitDiffResult }) {
             </span>
             <span className="shrink-0 tabular-nums text-muted-foreground">
               {f.binary ? (
-                <span className="text-muted-foreground">二进制</span>
+                <span className="text-muted-foreground">{t('二进制')}</span>
               ) : (
                 <>
                   <span className="text-emerald-500">+{f.insertions}</span>{' '}
@@ -94,7 +100,7 @@ function CommitDetail({ detail }: { detail: GitCommitDiffResult }) {
         segments.map((seg) => <FileDiffView key={seg.path} path={seg.path} hunks={seg.hunks} />)
       ) : (
         <div className="px-2 py-1.5 text-xs text-muted-foreground">
-          这次提交没有可显示的文本改动（可能全是二进制文件或纯 mode 变更）。
+          {t('这次提交没有可显示的文本改动（可能全是二进制文件或纯 mode 变更）。')}
         </div>
       )}
     </div>
@@ -116,6 +122,7 @@ export function GitHistory({
   busy: boolean
   onCheckout: (hash: string) => void
 }) {
+  const t = useT()
   const [open, setOpen] = useState(false)
   const [openHash, setOpenHash] = useState<string | null>(null)
   const [detail, setDetail] = useState<GitCommitDiffResult | null>(null)
@@ -181,7 +188,7 @@ export function GitHistory({
           className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-sm font-medium text-muted-foreground hover:bg-foreground/5"
         >
           {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-          历史提交
+          {t('历史提交')}
           <span className="text-muted-foreground">{commits.length}</span>
         </button>
       </div>
@@ -206,7 +213,7 @@ export function GitHistory({
                         {/* 展开开关：整行只有它一个按钮，点行内其它地方不触发展开（避免误触） */}
                         <button
                           type="button"
-                          aria-label={expanded ? `收起 ${c.short} 的改动` : `查看 ${c.short} 改了什么`}
+                          aria-label={expanded ? t('收起 {short} 的改动', { short: c.short }) : t('查看 {short} 改了什么', { short: c.short })}
                           aria-expanded={expanded}
                           onClick={() => setOpenHash(expanded ? null : c.hash)}
                           className="flex min-w-0 flex-1 items-center gap-2 text-left"
@@ -227,11 +234,11 @@ export function GitHistory({
                         <Button
                           variant="ghost"
                           className="h-5! shrink-0 px-1.5! text-xs"
-                          title="检出这次提交（分离头指针）"
+                          title={t('检出这次提交（分离头指针）')}
                           disabled={busy}
                           onClick={() => onCheckout(c.hash)}
                         >
-                          检出
+                          {t('检出')}
                         </Button>
                       </div>
                     </ContextMenuTrigger>
@@ -243,25 +250,27 @@ export function GitHistory({
                       */}
                       <ContextMenuItem onSelect={() => copyHash(c.hash, 'full')}>
                         <Copy className="size-3.5" />
-                        复制完整哈希
+                        {t('复制完整哈希')}
                       </ContextMenuItem>
                       <ContextMenuItem onSelect={() => copyHash(c.short, 'short')}>
                         <Copy className="size-3.5" />
-                        复制短哈希（{c.short}）
+                        {t('复制短哈希（{short}）', { short: c.short })}
                       </ContextMenuItem>
                       <ContextMenuSeparator />
                       <ContextMenuItem disabled={busy} onSelect={() => onCheckout(c.hash)}>
-                        检出这次提交（分离头指针）
+                        {t('检出这次提交（分离头指针）')}
                       </ContextMenuItem>
                     </ContextMenuContent>
                   </ContextMenu>
                   {expanded &&
                     (loading ? (
                       <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground">
-                        <Loader2 className="size-3.5 animate-spin" /> 读取这次提交…
+                        <Loader2 className="size-3.5 animate-spin" /> {t('读取这次提交…')}
                       </div>
                     ) : error ? (
-                      <div className="px-3 py-1.5 text-xs text-destructive">读取失败：{error}</div>
+                      <div className="px-3 py-1.5 text-xs text-destructive">
+                        {t('读取失败：{error}', { error })}
+                      </div>
                     ) : detail ? (
                       <CommitDetail detail={detail} />
                     ) : null)}
@@ -269,7 +278,7 @@ export function GitHistory({
               )
             })
           ) : (
-            <div className="px-2 py-1 text-xs text-muted-foreground">还没有提交</div>
+            <div className="px-2 py-1 text-xs text-muted-foreground">{t('还没有提交')}</div>
           )}
         </div>
       )}

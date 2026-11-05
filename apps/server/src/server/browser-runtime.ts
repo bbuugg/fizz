@@ -16,11 +16,14 @@
  * 登记成任务后：关页面不影响、状态栏能看到进度、要停就显式取消。
  */
 import {
+  browserProfileUsage,
   browserRuntimeInfo,
   browserSessions,
   ensureChromiumReady,
+  purgeAllBrowserProfiles,
   uninstallChromium
 } from '@fizz/tools'
+import type { BrowserProfileUsage } from '@fizz/contracts'
 import type { BrowserRuntimeResult } from '@fizz/contracts/agent-api'
 import { listBackgroundTasks, startBackgroundTask } from './background-tasks'
 
@@ -96,4 +99,30 @@ export async function uninstallBrowserRuntime(): Promise<BrowserRuntimeResult> {
   }
   await uninstallChromium()
   return browserRuntimeSnapshot()
+}
+
+/**
+ * 网站数据占用（设置页「浏览器」里的那一行）。
+ *
+ * 统计的是**磁盘上的 profile 目录**而不是会话清单：历史版本删会话时没扫 profile，
+ * 那些残留只有按磁盘数才看得见（见 `browserProfileDirs` 的注释）。
+ *
+ * 这里会遍历目录算体积，**只给用户手动打开设置页 / 点完清除时调**，别塞进
+ * `browserRuntimeSnapshot` 让安装进度轮询（1.5s 一次）带着扫 —— 那会反复 walk
+ * 几十个 Chromium profile。
+ */
+export function browserDataSnapshot(): BrowserProfileUsage {
+  return browserProfileUsage()
+}
+
+/**
+ * 清除**所有会话**的网站数据（兜底动作，日常用的是会话级那条）。
+ *
+ * 必须先关会话再删目录（Windows 上正在写的 profile 删不干净），reason 也不用
+ * 「应用退出」—— 逐个关的写法与 `uninstallBrowserRuntime` 同一口径。
+ * 删不掉的目录留给下次，不让整次操作失败。
+ */
+export async function clearAllBrowserData(): Promise<BrowserProfileUsage> {
+  await purgeAllBrowserProfiles('网站数据已清除')
+  return browserDataSnapshot()
 }

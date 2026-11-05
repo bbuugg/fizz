@@ -70,6 +70,7 @@ import { WorkspacePicker } from '@fizz/agent-kit/features/chat/WorkspacePicker'
 import { BrowserPicker } from '@fizz/agent-kit/features/chat/BrowserPicker'
 import { McpPicker } from '@fizz/agent-kit/features/chat/McpPicker'
 import { ComposerToolbarPlaceholder } from '@fizz/agent-kit/features/chat/ComposerToolbar'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 import type { TriggersState } from '@fizz/agent-kit/shared/hooks/useTriggers'
 
 /**
@@ -138,6 +139,7 @@ export function TriggerEditDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
+  const t = useT()
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/* flex-col + overflow-hidden：把「滚动」收进中间那一段，header / footer 固定不动。
@@ -148,9 +150,11 @@ export function TriggerEditDialog({
           窄了模型 pill 只能截断、下方窄条也被挤成两行 —— 与聊天输入框的宽度感一致 */}
       <DialogContent className="flex max-h-[85vh] flex-col gap-4 overflow-hidden sm:max-w-2xl">
         <DialogHeader className="shrink-0">
-          <DialogTitle>{trigger ? '编辑定时任务' : '新建定时任务'}</DialogTitle>
+          <DialogTitle>{trigger ? t('编辑定时任务') : t('新建定时任务')}</DialogTitle>
           <DialogDescription>
-            配置「什么时候自动起一轮会话」：按 cron 表达式，或指定一个时刻。跑起来的会话在侧栏里可见、可回看。
+            {t(
+              '配置「什么时候自动起一轮会话」：按 cron 表达式，或指定一个时刻。跑起来的会话在侧栏里可见、可回看。'
+            )}
           </DialogDescription>
         </DialogHeader>
 
@@ -177,7 +181,7 @@ export function TriggerEditDialog({
         <DialogFooter className="shrink-0">
           <Button type="submit" form={FORM_ID} disabled={triggers.busy}>
             {triggers.busy && <Loader2 className="size-4 animate-spin" />}
-            {trigger ? '保存修改' : '创建定时任务'}
+            {trigger ? t('保存修改') : t('创建定时任务')}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -217,6 +221,7 @@ function TriggerForm({
   editing: TaskTrigger | null
   onDone: () => void
 }) {
+  const t = useT()
   /**
    * 绑定的工作区；`null` = 不绑（每次触发自动建临时工作区）。
    *
@@ -312,18 +317,20 @@ function TriggerForm({
     // （调度器不再回退到清单第一份，见 `scheduler` 的 `resolveHeadlessTarget`）
     // 校验失败统一 toast，弹窗里不再有内联错误区
     if (!modelTarget?.configId) {
-      toast.error('先选一个模型或外部 Agent：定时任务触发时没人值守，不会替你挑一份配置')
+      toast.error(
+        t('先选一个模型或外部 Agent：定时任务触发时没人值守，不会替你挑一份配置')
+      )
       return
     }
     const { backend, configId, modelId } = modelTarget
     // 内置模型必须挑到具体模型；外部 Agent 允许「跟随 agent 默认」（modelId 为空）
     if (backend === 'builtin' && !modelId) {
-      toast.error('先选一个模型：定时任务触发时没人值守，不会替你挑一份配置')
+      toast.error(t('先选一个模型：定时任务触发时没人值守，不会替你挑一份配置'))
       return
     }
     // 一次性触发没选时刻 = 也不能存：那会变成一条「永远等不到」的任务（服务端同样会拒）
     if (mode === 'at' && at === null) {
-      toast.error('选一个触发时刻：一次性任务必须知道「什么时候」跑')
+      toast.error(t('选一个触发时刻：一次性任务必须知道「什么时候」跑'))
       return
     }
     // 只存**当前还存在**的 server id（设置里删掉的那些不必写进模板）
@@ -332,7 +339,7 @@ function TriggerForm({
       ...(editing ? { id: editing.id } : {}),
       // 空 = 解绑（服务端按「不传即不绑」处理，更新时会真的清掉旧值）
       ...(workspaceId ? { workspaceId } : {}),
-      name: name.trim() || '定时任务',
+      name: name.trim() || t('定时任务'),
       ...(mode === 'cron' ? { cron: cron.trim() } : {}),
       ...(mode === 'at' && at !== null ? { at } : {}),
       template: {
@@ -368,12 +375,12 @@ function TriggerForm({
       }}
     >
       <div className="space-y-1.5">
-        <Label htmlFor="trigger-name">名称</Label>
+        <Label htmlFor="trigger-name">{t('名称')}</Label>
         <Input
           id="trigger-name"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="每天巡检依赖"
+          placeholder={t('每天巡检依赖')}
         />
       </div>
 
@@ -393,7 +400,7 @@ function TriggerForm({
            与聊天里「未指定工作区 / 选择工作区」那条**同一个东西、同一个位置**。
       */}
       <div className="space-y-1.5">
-        <Label htmlFor="trigger-prompt">需求</Label>
+        <Label htmlFor="trigger-prompt">{t('需求')}</Label>
         <div>
           {/* 与聊天工具条同一条判据：浏览器没装 → 那颗不出现；连 MCP 也没配 →
               整行不渲染（空行会把需求框往下推，看着像多了一段空白）。
@@ -438,7 +445,7 @@ function TriggerForm({
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               rows={3}
-              placeholder="例：检查依赖有没有新版本，有就升级并提交"
+              placeholder={t('例：检查依赖有没有新版本，有就升级并提交')}
               className="block max-h-40 min-h-[72px] w-full resize-none bg-transparent px-3 py-2.5 text-sm leading-relaxed outline-none [scrollbar-width:none] placeholder:text-muted-foreground field-sizing-content [&::-webkit-scrollbar]:hidden"
             />
             {/* 操作行：左权限、右模型。`min-w-0` 两边都给 —— 窄屏时模型 pill 自己截断，
@@ -455,8 +462,10 @@ function TriggerForm({
                   onChange={setModelTarget}
                   // 「配置 · 模型」：表单比聊天工具条宽，带上配置名少一次猜
                   showProvider
-                  emptyLabel="选择模型 / Agent"
-                  emptyTitle="触发时用什么跑：内置模型（配置 → 模型），或外部 Agent（ACP，可跟随它自己的默认模型）"
+                  emptyLabel={t('选择模型 / Agent')}
+                  emptyTitle={t(
+                    '触发时用什么跑：内置模型（配置 → 模型），或外部 Agent（ACP，可跟随它自己的默认模型）'
+                  )}
                   defaultContextWindow={defaultContextWindow}
                   onOpenSettings={onOpenSettings}
                 />
@@ -469,45 +478,54 @@ function TriggerForm({
               value={workspaceId}
               workspaces={workspaces}
               onChange={setWorkspaceId}
-              emptyLabel="每次运行自动创建"
-              title="工作区：Agent 只能读写这个目录里的东西。不选 = 每次触发在数据目录下新建一个临时工作区（不进项目列表）"
+              emptyLabel={t('每次运行自动创建')}
+              title={t(
+                '工作区：Agent 只能读写这个目录里的东西。不选 = 每次触发在数据目录下新建一个临时工作区（不进项目列表）'
+              )}
             />
           </div>
         </div>
         {selectedWorkspace?.dirMissing ? (
           <p className="flex items-start gap-1.5 text-xs leading-5 text-destructive">
             <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-            这个工作区的目录已不存在（{selectedWorkspace.path}），保存会被拒绝：请重新选择工作区，或改用「每次运行自动创建」。
+            {t('这个工作区的目录已不存在（{path}），保存会被拒绝：请重新选择工作区，或改用「每次运行自动创建」。', {
+              path: selectedWorkspace.path
+            })}
           </p>
         ) : null}
         <p className="text-xs leading-5 text-muted-foreground">
           {workspaceId
-            ? '每次触发都在这个工作区里跑一轮会话。'
-            : '不绑工作区：每次触发自动新建一个临时工作区（空目录、不进项目列表），从零干一遍。'}
+            ? t('每次触发都在这个工作区里跑一轮会话。')
+            : t('不绑工作区：每次触发自动新建一个临时工作区（空目录、不进项目列表），从零干一遍。')}
           {isAcpTarget
-            ? '权限 / 模型与新建会话时是同一套选项；浏览器 / MCP 只对内置模型生效 —— 外部 Agent 自带工具，不读这两个开关。'
-            : '权限 / 模型 / 浏览器 / MCP 与新建会话时是同一套选项；浏览器工具跑在服务端，无人值守也能用。'}
-          必须选一个目标（内置模型，或外部 Agent）—— 触发时没人值守，不会替你挑一个。外部 Agent
-          可以「跟随它自己的默认模型」。
+            ? t(
+                '权限 / 模型与新建会话时是同一套选项；浏览器 / MCP 只对内置模型生效 —— 外部 Agent 自带工具，不读这两个开关。'
+              )
+            : t(
+                '权限 / 模型 / 浏览器 / MCP 与新建会话时是同一套选项；浏览器工具跑在服务端，无人值守也能用。'
+              )}
+          {t(
+            '必须选一个目标（内置模型，或外部 Agent）—— 触发时没人值守，不会替你挑一个。外部 Agent 可以「跟随它自己的默认模型」。'
+          )}
         </p>
       </div>
 
       <div className="space-y-1.5">
-        <Label>触发方式</Label>
+        <Label>{t('触发方式')}</Label>
         <Select value={mode} onValueChange={(v) => setMode(v as Mode)}>
           <SelectTrigger>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="cron">按时间表（cron）</SelectItem>
-            <SelectItem value="at">一次性（指定时刻）</SelectItem>
+            <SelectItem value="cron">{t('按时间表（cron）')}</SelectItem>
+            <SelectItem value="at">{t('一次性（指定时刻）')}</SelectItem>
           </SelectContent>
         </Select>
       </div>
 
       {mode === 'cron' && (
         <div className="space-y-1.5">
-          <Label htmlFor="trigger-cron">cron 表达式</Label>
+          <Label htmlFor="trigger-cron">{t('cron 表达式')}</Label>
           <Input
             id="trigger-cron"
             value={cron}
@@ -526,19 +544,19 @@ function TriggerForm({
                 className="h-6 text-xs"
                 onClick={() => setCron(preset.expr)}
               >
-                {preset.label}
+                {t(preset.label)}
               </Button>
             ))}
           </div>
           <p className="text-xs text-muted-foreground">
-            分 时 日 月 周（周日为 0），由服务端内置 cron 调度
+            {t('分 时 日 月 周（周日为 0），由服务端内置 cron 调度')}
           </p>
         </div>
       )}
 
       {mode === 'at' && (
         <div className="space-y-1.5">
-          <Label htmlFor="trigger-at">触发时刻</Label>
+          <Label htmlFor="trigger-at">{t('触发时刻')}</Label>
           {/* 日期 + 24 小时时间（`@fizz/ui/date-time-picker`）：不用原生 `datetime-local` ——
               它的面板由浏览器画、跟不了主题，各平台还长得完全不一样 */}
           <DateTimePicker
@@ -547,7 +565,7 @@ function TriggerForm({
             value={at !== null ? new Date(at) : null}
             onChange={(next) => setAt(next ? next.getTime() : null)}
           />
-          <p className="text-xs text-muted-foreground">到点触发一次，之后自动停用</p>
+          <p className="text-xs text-muted-foreground">{t('到点触发一次，之后自动停用')}</p>
         </div>
       )}
 
@@ -559,8 +577,9 @@ function TriggerForm({
         <p className="flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-amber-700 dark:text-amber-500">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
           <span>
-            「确认模式」要先有人点「允许」才放行写操作，而定任务跑的时候旁边通常没人 ——
-            写文件 / 执行命令会被拒绝。无人值守请选「完全访问」；只想看不想改就选「只读模式」。
+            {t(
+              '「确认模式」要先有人点「允许」才放行写操作，而定任务跑的时候旁边通常没人 —— 写文件 / 执行命令会被拒绝。无人值守请选「完全访问」；只想看不想改就选「只读模式」。'
+            )}
           </span>
         </p>
       )}
@@ -574,15 +593,18 @@ function TriggerForm({
         <p className="flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-amber-700 dark:text-amber-500">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
           <span>
-            外部 Agent 的权限请求只有「完全访问」才会自动放行；当前档位下这些请求会一直等不到
-            人答复，超时后被拒绝 —— 需要它真的动手时请选「完全访问」。
+            {t(
+              '外部 Agent 的权限请求只有「完全访问」才会自动放行；当前档位下这些请求会一直等不到人答复，超时后被拒绝 —— 需要它真的动手时请选「完全访问」。'
+            )}
           </span>
         </p>
       )}
 
       <p className="flex items-start gap-1.5 text-xs leading-5 text-muted-foreground">
         <CalendarClock className="mt-0.5 size-3.5 shrink-0" />
-        触发的会话与手动新建的会话完全一样（侧栏可回看、可继续对话），区别只是「谁按的开始」。
+        {t(
+          '触发的会话与手动新建的会话完全一样（侧栏可回看、可继续对话），区别只是「谁按的开始」。'
+        )}
       </p>
     </form>
   )

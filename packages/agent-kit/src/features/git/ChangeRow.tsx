@@ -7,6 +7,7 @@
  */
 import type { ReactNode } from 'react'
 import { Loader2, Minus, Plus, RotateCcw } from 'lucide-react'
+import { t } from '@fizz/i18n'
 import { Button } from '@fizz/ui/button'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { changeTreeIndent } from '@fizz/agent-kit/shared/lib/git-change-tree'
@@ -83,7 +84,7 @@ export function ChangeRow({
         不随目录层级和横向滚动移动（类似 antd 表格的固定列）。
       */}
       <div className="flex items-center gap-1.5 rounded py-1 pr-1.5 hover:bg-foreground/5">
-        <div className="min-w-0 flex-1 overflow-x-auto">
+        <div className="min-w-0 flex-1 overflow-x-auto no-scrollbar">
           <button
             type="button"
             onClick={onToggle}
@@ -92,7 +93,7 @@ export function ChangeRow({
           >
             <span
               className={cn('w-3 shrink-0 text-center font-mono text-xs font-semibold', statusTone(letter))}
-              title={STATUS_LABEL[letter] ?? letter}
+              title={STATUS_LABEL[letter] ? t(STATUS_LABEL[letter]) : letter}
             >
               {letter}
             </span>

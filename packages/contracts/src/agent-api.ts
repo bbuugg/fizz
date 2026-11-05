@@ -311,6 +311,17 @@ export const API_ROUTES = {
    */
   conversationArchive: "/api/conversations/:id/archive",
   /**
+   * 清除**这一个会话**的网站数据：DELETE /api/conversations/:id/browser-data。
+   *
+   * 内置浏览器给每个会话一份持久化 profile（Cookie / 登录态 / localStorage / HTTP 缓存），
+   * 这份就是「这个会话的浏览器」。删除 = 关掉它的浏览器进程 + 删目录，**会话与历史消息
+   * 不受影响**，下次启动浏览器需要重新登录。返回 204（没有响应体）。
+   *
+   * 与 `browserData`（全局：所有会话）不是同一条路：用户想清的是「我这个会话登错号了」，
+   * 全局那条只给设置页的兜底动作。
+   */
+  conversationBrowserData: "/api/conversations/:id/browser-data",
+  /**
    * 把会话标记成「已看过」：POST /api/conversations/:id/seen（无 body）。
    *
    * 只有一个来源会用到：定时任务触发的会话（`AgentConversation.unseen`），用户点开即清。
@@ -482,6 +493,17 @@ export const API_ROUTES = {
    * 下载约 150MB，必须登记成后台任务：关掉设置页不会中断，进度与日志从任务详情里取。
    */
   browserRuntimeInstall: "/api/browser/runtime/install",
+  /**
+   * 内置浏览器的**网站数据**（每个会话一份 profile：Cookie / 登录态 / localStorage / 缓存）：
+   * - `GET`    → `BrowserProfileUsage`（几个目录、共占多少）
+   * - `DELETE` → 清掉**所有会话**的网站数据（先关掉所有浏览器会话，再删目录），
+   *              回清完之后的 `BrowserProfileUsage`
+   *
+   * 为什么不是「清缓存 / 清 Cookie」两颗按钮：内置浏览器没有全局池子，一个会话一份
+   * 持久化 profile，而 profile 就是登录态本身 —— 拆开清只会让人以为「清了缓存但还登着」。
+   * 日常场景（这个会话登错号了）走 `conversationBrowserData`，这条只做兜底。
+   */
+  browserData: "/api/browser/data",
   /**
    * 这台机器上可用的终端（shell）清单：GET /api/terminal/shells → `ShellDetectResult`
    *

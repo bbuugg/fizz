@@ -165,19 +165,31 @@ function resolveHeadlessTarget(trigger: TaskTrigger): HeadlessTarget {
   return { backend: 'builtin', configId, modelId }
 }
 
-async function processFire(triggerId: string): Promise<TriggerFireResult> {
+/** `processFire` 的派发来源：面板上点「立即运行」时要绕过「已停用 / 一次性已跑过」两道闸 */
+interface ProcessFireOptions {
+  /**
+   * 手动运行：跳过「已停用」与「一次性已经触发过」两道闸，
+   * **其余校验（模型 / external agent / 工作区 / 权限）一条不少**。
+   */
+  manual?: boolean
+}
+
+async function processFire(
+  triggerId: string,
+  options: ProcessFireOptions = {}
+): Promise<TriggerFireResult> {
   // 无头任务也可能绑插件注册的模型：解析前刷新一次
   await refreshPluginModels()
   const trigger = triggerDomain.getTrigger(triggerId)
   if (!trigger) return { skipped: '定时任务已删除' }
-  if (!trigger.enabled) return { skipped: '定时任务已停用' }
+  if (!trigger.enabled && !options.manual) return { skipped: '定时任务已停用' }
   // 一次性任务的第二道闸（第一道在 armAtTriggers 的武装条件上）。
   //
   // 旧版把 markTriggered 放在 `await run.done` 之后，于是「进程在会话跑一半时被杀掉」
   // 这条路径上：lastTriggeredAt 永远没落 → 重启后又触发一次 → **重复触发**。
   // 标记前移到「会话建出来」那一刻堵住这个窗口；重启后按 lastTriggeredAt 武装的
   // armAtTriggers 是另一道闸，两道都留。
-  if (trigger.at !== undefined && trigger.lastTriggeredAt !== undefined) {
+  if (!options.manual && trigger.at !== undefined && trigger.lastTriggeredAt !== undefined) {
     return { skipped: '一次性任务已经触发过' }
   }
 
@@ -336,6 +348,25 @@ export function fireTrigger(triggerId: string): void {
   dispatch(state, () =>
     processFire(triggerId).catch((err: unknown) => {
       console.error(`[triggers] 定时任务 ${triggerId} 执行失败：`, err instanceof Error ? err.message : err)
+    })
+  )
+}
+
+/**
+ * 手动「立即运行」：与 `fireTrigger` 同一条派发队列（同样不等待会话跑完），
+ * 区别只有 `manual: true` —— 跳过「已停用 / 一次性已跑过」两道闸，其余校验照旧。
+ *
+ * 停用的任务手动跑一次是**合理需求**（先试跑再启用）；一次性任务跑过之后再跑一次
+ * 也由用户自己点的，不算「重复触发」。
+ */
+export function fireTriggerNow(triggerId: string): void {
+  const state = s()
+  dispatch(state, () =>
+    processFire(triggerId, { manual: true }).catch((err: unknown) => {
+      console.error(
+        `[triggers] 定时任务 ${triggerId} 手动执行失败：`,
+        err instanceof Error ? err.message : err
+      )
     })
   )
 }

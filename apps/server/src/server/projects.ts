@@ -18,6 +18,8 @@ import type {
   WorktreeInput
 } from '@fizz/contracts/agent-api'
 import { WORKTREE_IDENTIFIER_RE } from '@fizz/contracts/agent-api'
+import { agentBrowserSessionId } from '@fizz/contracts'
+import { browserSessions } from '@fizz/tools'
 import { addWorktree, cloneRepo, ensureWorktreesIgnored, hasCommits, isCloneCanceled, refExists, removeWorktree, repoNameFromUrl, resolveRepoRoot, type GitLogLevel } from '@fizz/git'
 import { resolveDataDir } from '@fizz/workspace'
 import { domain } from './state'
@@ -321,10 +323,25 @@ export async function removeProject(id: string, input?: RemoveProjectInput): Pro
   // 容器了（面板按会话过滤），所以先发停止信号。与会话删除同一条口径：只发信号、
   // 不等收场，杀不掉的进程由任务体自己收尾。
   const doomedWorkspaces = new Set(subtree.map((ws) => ws.id))
-  for (const conversation of domain.listConversations()) {
-    if (doomedWorkspaces.has(conversation.workspaceId)) stopSessionRunning(conversation.id)
-  }
+  const doomedConversations = domain
+    .listConversations()
+    .filter((conversation) => doomedWorkspaces.has(conversation.workspaceId))
+  for (const conversation of doomedConversations) stopSessionRunning(conversation.id)
   domain.deleteWorkspace(id)
+  /*
+   * 这些会话的浏览器 profile 一并删掉（口径同 `api/conversations/[id]/route.ts` 的 DELETE）。
+   *
+   * 删项目是**唯一能一次带走很多会话**的入口，漏在这里就一次攒下一整棵子树的孤儿
+   * profile —— 每个都还带着 Cookie / 登录态。`purge` 自己吞异常，这里再 `allSettled`
+   * 一层：单个 profile 删不掉（Windows 文件占用）不该让项目删除失败。
+   *
+   * 并行是安全的：每个会话一份独立目录，互不重叠。
+   */
+  await Promise.allSettled(
+    doomedConversations.map((conversation) =>
+      browserSessions.purge(agentBrowserSessionId(conversation.id), '会话已删除')
+    )
+  )
   return domain.listWorkspaces()
 }
 

@@ -189,7 +189,7 @@ window.__FIZZ_PLUGIN__('redis', (host) => {
             }
         }
         return (React.createElement("div", { className: "flex h-full min-h-0 flex-col" },
-            React.createElement("div", { className: "flex h-8 shrink-0 items-center justify-between gap-1 border-b px-2" },
+            React.createElement("div", { className: "flex h-8 shrink-0 items-center justify-between gap-1 px-2" },
                 React.createElement("span", { className: "truncate text-xs font-medium text-muted-foreground" }, "\u8FDE\u63A5"),
                 React.createElement("div", { className: "flex shrink-0 items-center gap-0.5" },
                     React.createElement(Button, { variant: "ghost", size: "icon-sm", title: "\u5237\u65B0", onClick: () => void load(), "aria-label": "\u5237\u65B0" },

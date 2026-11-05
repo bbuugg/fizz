@@ -18,7 +18,13 @@
  *
  * - **富文本**：`@milkdown/crepe` 的所见即所得。它**只往外报**（`markdownUpdated`），
  *   不往回灌 —— 受控回灌会把光标打回开头，是这类编辑器最经典的坑。
- * - **源码**：一个 `<textarea>`，直接改 markdown 原文。
+ * - **源码**：Monaco（复用 `features/files/MonacoEditor`，语言 `markdown`），直接改原文。
+ *   为什么不再是一个 `<textarea>`：写 markdown 原文时最常用的三件事（查找替换、多光标、
+ *   语法高亮）它一个都没有。而 Monaco 本来就在产物里（文件面板 / 接口调试都在用），
+ *   loader 与静态资源是白拿的，不额外付包体 —— 自己再包一个 `@monaco-editor/react`
+ *   实例才是多一份要维护的 loader / 主题 / CSP worker 壳。
+ *   ⚠️ 它比 textarea 多一手 keydown 处理，所以 `Ctrl/Cmd+S` 那条监听改到了 **capture 阶段**。
+ *   两条正文仍然只有 `source` 这一份状态，切换 = 卸载重挂，下面的「滞后」一节照旧适用。
  *
  * 两边共用同一份 `source` state（markdown 原文），切换模式 = **卸载 / 重挂**编辑器，
  * 重挂时用当前 `source` 当初始值。这样不用去碰「把新文档灌进已有编辑器」那套 API
@@ -89,6 +95,9 @@ import '@milkdown/crepe/theme/common/style.css'
  */
 import { installBlockDragDropFallback } from '@fizz/agent-kit/shared/components/block-drag-drop'
 import '@fizz/agent-kit/shared/components/markdown-editor.css'
+// 源码模式的编辑器：与文件面板**同一份** Monaco（loader / 主题 / 等宽字体 / CSP worker 壳
+// 都在那边了）。`shared → features` 方向在本包内已有先例（`shared/lib/plugin-surfaces.ts`）。
+import MonacoEditor from '@fizz/agent-kit/features/files/MonacoEditor'
 import { Code2, Loader2, Pencil, RotateCw, Save } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@fizz/ui/button'
@@ -96,7 +105,6 @@ import { useConfirm } from '@fizz/agent-kit/shared/components/ConfirmProvider'
 import { registerTabCloseGuard } from '@fizz/agent-kit/shared/lib/tab-close'
 import { markTabClean, markTabDirty } from '@fizz/agent-kit/shared/lib/dirty-tabs'
 import { errorMessage } from '@fizz/agent-kit/shared/lib/stores/shared'
-import { cn } from '@fizz/agent-kit/shared/lib/utils'
 
 /**
  * 把「执行某个已注册命令」包成 keymap 需要的 `Command`。
@@ -489,8 +497,16 @@ export function MarkdownEditor({
       event.preventDefault()
       void submit()
     }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    /*
+      第三个参数 `true` = **capture 阶段**，这是换 Monaco 之后必须的：
+      源码模式下按键先进入 Monaco 的文本区处理器（它自己会 `preventDefault` 一部分键、
+      也可能在将来某个版本给 `Ctrl+S` 绑上默认动作且 `stopPropagation`），冒泡阶段的
+      窗口监听就再也收不到 —— 表现为「源码模式里按 Ctrl+S 什么都不发生」，不报错。
+      窗口的 capture 监听是整条事件链上的**第一个**处理器，不看任何后代的脸色。
+      富文本模式同样受益（ProseMirror 也是先吃 keydown）。
+    */
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [active, submit])
 
   const editSource = useCallback((next: string): void => {
@@ -543,16 +559,21 @@ export function MarkdownEditor({
       ) : mode === 'rich' ? (
         <CrepeSurface key="rich" value={source} onChange={editSource} liveRef={liveRef} />
       ) : (
-        <textarea
-          key="source"
-          value={source}
-          spellCheck={false}
-          onChange={(event) => editSource(event.target.value)}
-          className={cn(
-            'min-h-0 flex-1 resize-none bg-transparent p-4 font-mono text-sm',
-            'outline-none placeholder:text-muted-foreground'
-          )}
-        />
+        /*
+          外层 `min-h-0 flex-1 overflow-hidden` 是高度链的一环，**不能省**：
+          MonacoEditor 根节点是 `h-full`，父级不给确定高度它会塌成 0（表现为整片空白）。
+          `wordWrap="on"` 固定打开：那套开关的入口在文件面板的标签条上，这里没有，
+          而 markdown 原文（长句、表格、中文段落）几乎必然要换行看。
+        */
+        <div key="source" className="min-h-0 flex-1 overflow-hidden">
+          <MonacoEditor
+            value={source}
+            onChange={editSource}
+            language="markdown"
+            showHeader={false}
+            wordWrap="on"
+          />
+        </div>
       )}
     </div>
   )

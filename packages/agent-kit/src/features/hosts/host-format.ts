@@ -1,4 +1,5 @@
 import type { HostConfig, SshHostConfig } from '@fizz/contracts/types'
+import { t } from '@fizz/i18n'
 
 /**
  * 一台主机的标准摘要 `user@host:port`。
@@ -42,9 +43,9 @@ function textOnly(values: Array<string | undefined>): string[] {
  */
 export function hostPaletteFields(host: HostConfig): HostPaletteFields {
   if (host.kind === 'local') {
-    const shell = host.shellName?.trim() || '默认终端'
+    const shell = host.shellName?.trim() || t('默认终端')
     // 有参数就带上个数：同一个 shell 配两条不同参数的终端，光看 shell 名分不出来
-    const subtitle = [shell, ...(host.args?.length ? [`${host.args.length} 个参数`] : [])].join(' · ')
+    const subtitle = [shell, ...(host.args?.length ? [t('{n} 个参数', { n: host.args.length })] : [])].join(' · ')
     return {
       label: host.name?.trim() || shell,
       subtitle,
@@ -54,8 +55,8 @@ export function hostPaletteFields(host: HostConfig): HostPaletteFields {
   // 其余一律按 SSH 主机渲染（`kind` 缺失 = 老数据，语义就是 ssh）
   const summary = hostSummary(host)
   return {
-    label: host.name?.trim() || summary || '未命名主机',
-    subtitle: summary || '地址未填写',
+    label: host.name?.trim() || summary || t('未命名主机'),
+    subtitle: summary || t('地址未填写'),
     keywords: textOnly(['ssh', '主机', host.name, host.host, host.username])
   }
 }

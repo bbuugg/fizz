@@ -1,6 +1,7 @@
 "use client";
 
 import { type ReactNode } from 'react'
+import type { TabStatus } from '@fizz/agent-kit/shared/lib/tab-decorations'
 
 /** 一个标签在标签条上的展示信息 */
 export interface TabMeta {
@@ -10,6 +11,13 @@ export interface TabMeta {
   title: string
   /** 类型图标：一列标签里混着「对话 / 主机 / 终端」三种东西，光看名字分不出来 */
   icon: ReactNode
+  /**
+   * 图标右上角的状态点（绿 = 活着 / 红 = 已退出 / 琥珀 = 等人 / 主色 = 在跑）。
+   *
+   * 由 `useTabMeta` 合成两份来源：内建（会话运行态、终端进程存活）+ 外部登记表
+   * （`tab-decorations.ts`，优先级更高）。没有就不画。
+   */
+  status?: TabStatus
 }
 
 /** `useGroupActions` 的返回值：组外壳（标签条）与标签内容层共用这一份 */

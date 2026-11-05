@@ -50,7 +50,6 @@ import {
 import { openTab } from "@fizz/agent-kit/shared/lib/panel-store";
 import { NEW_TAB_KEY } from "@fizz/agent-kit/shared/lib/panel-tabs";
 import type { NewInWorkspaceKind } from "@fizz/agent-kit/shared/lib/new-in-workspace";
-import { TransferTray } from "@fizz/agent-kit/shared/components/TransferTray";
 import { CommandPalette } from "@/app/CommandPalette";
 import { ScriptRunHost } from "@fizz/agent-kit/features/scripts/RunScriptDialog";
 import { ImportConversationDialog } from "@fizz/agent-kit/features/projects/ImportConversationDialog";
@@ -606,13 +605,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 {children}
               </main>
             </div>
-
-            {/*
-          全局传输托盘：`fixed` 定位、贴在屏幕底缘，**与工作行的布局无关**，所以放在这里
-          只是「外壳的常驻浮层」这个语义位置（真要放进工作行反而会被 flex 当成
-          一个占位的列）。一条传输都没有时它自己回 null。
-        */}
-            <TransferTray />
 
             {/* 设置：本工程恒为**独立整页**（`SettingsPage`，为什么不用弹窗见它的文件头）。
             入口是抽屉左下角那一颗（手机版没有底部导航）。 */}

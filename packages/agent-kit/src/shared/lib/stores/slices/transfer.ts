@@ -1,5 +1,5 @@
 /**
- * 传输 slice：SFTP 上传 / 下载任务的现场（全局传输托盘的唯一数据源）。
+ * 传输 slice：SFTP 上传 / 下载任务的现场（全局传输清单的唯一数据源）。
  *
  * **为什么放全局 store 而不是组件里**：传输必须活得比发起它的组件长 —— SFTP 面板关掉、
  * 切到别的标签、甚至整个面板被回收，传输都要继续跑并继续被看见。所以状态在这里，
@@ -21,7 +21,7 @@ export interface TransferTask {
   id: string
   kind: 'upload' | 'download'
   hostId: string
-  /** 主机显示名：托盘里要能区分「这是传到哪台机器」 */
+  /** 主机显示名：清单里要能区分「这是传到哪台机器」 */
   hostLabel: string
   /** 展示名（上传 = 本地文件名；下载 = 远端文件名） */
   name: string
@@ -41,14 +41,14 @@ export interface TransferTask {
 }
 
 export interface TransferSlice {
-  /** 全部传输任务，按加入顺序（托盘直接按这个顺序渲染） */
+  /** 全部传输任务，按加入顺序（清单直接按这个顺序渲染） */
   transfers: TransferTask[]
   addTransfer: (task: TransferTask) => void
   /**
    * 浅合并一字段（进度 / 速度用）。
    *
    * ⚠️ **只动这一条**：`map` 出来的是新数组，但没被 patch 的条目保持同一个对象引用，
-   * 于是托盘里其他行不会跟着重渲染。
+   * 于是清单里其他行不会跟着重渲染。
    */
   patchTransfer: (id: string, patch: Partial<TransferTask>) => void
   /** 收场：写终态 + `endedAt`。已结束的任务不再被 `patchTransfer` 改动（见下） */
@@ -74,7 +74,7 @@ export const createTransferSlice: StateCreator<AgentStore, [], [], TransferSlice
       transfers: state.transfers.map((t) =>
         /**
          * ⚠️ 已结束的任务**不再接受 patch**。取消与「最后一片恰好成功」会赛跑：abort 先
-         * settle 成 `canceled`，随后那片请求的应答才回来写 `done` —— 不挡住的话，托盘上
+         * settle 成 `canceled`，随后那片请求的应答才回来写 `done` —— 不挡住的话，清单上
          * 会出现「已取消」的行自己跳成 100%。用户点了取消就该停在取消。
          */
         t.id === id && t.status === 'active' ? { ...t, ...patch } : t

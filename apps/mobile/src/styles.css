@@ -53,16 +53,16 @@
  * 2) `--app-titlebar-height: 2.75rem` —— 手机顶栏是 `MobileAppBar` 的 `h-11`
  *    （= 2.75rem，与 `h-11` 同一套 rem，跟着根字号一起变，不会错位）；
  * 3) `--status-bar-height: 0` —— 手机**不渲染**底部状态栏（见 `app-shell.tsx`），
- *    `fixed` 的传输托盘不再为它空出 36px；
+ *    `fixed` 的抽屉不再为它空出 36px；
  * 4) `--app-tabbar-height` 保持公共默认的 `0` —— 手机版**没有底部导航**
- *    （设置入口在抽屉头右上角，见 `layout/Sidebar.tsx`），`fixed` 的传输托盘
- *    直接贴屏幕底缘。
+ *    （设置入口在抽屉头右上角，见 `layout/Sidebar.tsx`）。
  *
  * 本工程的外壳按手机形态**写死**（`app-shell.tsx` 不跟随窗口宽度），所以这几项
  * 直接写在 `:root` 上，不套 `@media` —— 窗口拖多宽都是这套 chrome。
  *
  * ⚠️ 形态差异只改这几处（默认值定义在 `ui-tokens/src/tokens.css`），
- * `ActivitySidebar` / `TransferTray` 这些共享组件一行都不用动。
+ * `ActivitySidebar` 这类共享组件一行都不用动 —— 后台任务 / SFTP 传输两颗徽标同理，
+ * 它们不吃 token，只是被挂到顶栏（`MobileAppBar`）而不是桌面那条底栏。
  */
 :root {
   --sidebar-mobile-inset: 0px;

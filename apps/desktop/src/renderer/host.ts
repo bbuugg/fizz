@@ -871,6 +871,12 @@ export const desktopHost: AgentHost = {
   openInMainWindow: (conversationId) => window.fizzWindow.openInMainWindow(conversationId),
   takePendingDeepLink: () => window.fizzWindow.takePendingDeepLink(),
   onDeepLink: (cb) => window.fizzWindow.onDeepLink(cb),
+  /**
+   * 会话详情区「在浮窗中打开」：主进程管那个单例窗口（同一条就聚焦，换一条就带
+   * 新 id 重载渲染端，见 `main/index.ts` 的 `openConversationWindow`）。
+   */
+  openConversationWindow: (conversationId) =>
+    window.fizzWindow.openConversationWindow(conversationId),
   /** 脏标签计数推给主进程缓存 —— 退出拦截时主进程读它，不做往返询问（见 window.ts 的注释） */
   setDirtyTabCount: (count) => window.fizzWindow.setDirtyTabCount(count),
   /**

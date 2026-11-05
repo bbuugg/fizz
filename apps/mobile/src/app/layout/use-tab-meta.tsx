@@ -166,8 +166,8 @@ export function useTabMeta(): (key: string) => TabMeta {
         }
       }
       if (isSysmonTabKey(key)) {
-        // 系统监控 / 任务管理器也是全局单例（`sysmon:list`）。手机端没有入口，这里备着
-        // 是为了标签名不至于退化成空串（理由同上面 files 那条）。
+        // 系统监控 / 任务管理器也是全局单例（`sysmon:list`）。手机上的入口在抽屉左下角
+        // （`layout/Sidebar.tsx`，与设置同一行）。
         const tool = getToolTab(key)
         return {
           label: tool?.label ?? '系统监控',

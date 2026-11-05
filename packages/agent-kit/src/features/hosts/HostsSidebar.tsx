@@ -137,6 +137,7 @@ import {
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { ConfirmDeleteDialog } from '@fizz/agent-kit/shared/components/ConfirmDeleteDialog'
 import { SidebarScaffold } from '@fizz/agent-kit/shared/components/SidebarScaffold'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { SectionContent, SectionShell } from '@fizz/agent-kit/shared/components/StackedSections'
 // 顶部动作区 + 内容组：与 AI Agent 侧栏共用同一份（版式、高度策略都在那边）
 import {
@@ -238,6 +239,7 @@ export function HostsSidebar({
   mobileOpen: boolean
   onMobileOpenChange: (open: boolean) => void
 }) {
+  const t = useT()
 
   /** 表单弹窗：`editing` 为 null = 新增；弹窗开着时非 null（用一个独立布尔区分「关着」） */
   const [formOpen, setFormOpen] = useState(false)
@@ -446,15 +448,18 @@ export function HostsSidebar({
     if (!target) return
     const alsoHosts = deleteGroupHosts
     const fallbackName =
-      (target.parentId && groups.find((g) => g.id === target.parentId)?.name) ?? '未分组'
+      (target.parentId && groups.find((g) => g.id === target.parentId)?.name) ?? t('未分组')
     setPendingGroupDelete(null)
     setDeleteGroupHosts(false)
     const ok = await app.deleteHostGroup(target.id, alsoHosts)
     if (ok) {
       toast.success(
         alsoHosts
-          ? `已删除分组「${target.name}」：组内及子分组的主机 / 终端已一并删除`
-          : `已删除分组「${target.name}」：组内及子分组的主机 / 终端已移到「${fallbackName}」`
+          ? t('已删除分组「{name}」：组内及子分组的主机 / 终端已一并删除', { name: target.name })
+          : t('已删除分组「{name}」：组内及子分组的主机 / 终端已移到「{fallback}」', {
+              name: target.name,
+              fallback: fallbackName
+            })
       )
     }
   }
@@ -472,7 +477,11 @@ export function HostsSidebar({
     })
     if (ok) {
       if (parentId) expandAncestors(parentId)
-      toast.success(`已移动「${target.name}」${parentId ? '到所选分组下' : '到顶级分组'}`)
+      toast.success(
+        parentId
+          ? t('已移动「{name}」到所选分组下', { name: target.name })
+          : t('已移动「{name}」到顶级分组', { name: target.name })
+      )
     }
   }
 
@@ -609,9 +618,9 @@ export function HostsSidebar({
             把标签打开 —— 与「隧道」并列，因为两者都是「主机之外的那一类东西」。
           */}
           <SidebarActions>
-            <SidebarAction icon={Plus} label="新建主机" onClick={() => openForm(null)} />
-            <SidebarAction icon={Network} label="隧道" onClick={openTunnelPanel} />
-            <SidebarAction icon={FileCode2} label="脚本" onClick={() => openScriptsTab()} />
+            <SidebarAction icon={Plus} label={t('新建主机')} onClick={() => openForm(null)} />
+            <SidebarAction icon={Network} label={t('隧道')} onClick={openTunnelPanel} />
+            <SidebarAction icon={FileCode2} label={t('脚本')} onClick={() => openScriptsTab()} />
           </SidebarActions>
 
           <SectionContent>
@@ -624,7 +633,7 @@ export function HostsSidebar({
             */}
             <div className="flex min-h-0 flex-1 flex-col overflow-auto no-scrollbar px-2">
               <SidebarGroup
-                title="主机与终端"
+                title={t('主机与终端')}
                 count={hosts.length}
                 alignIndent
                 size="fill"
@@ -637,9 +646,9 @@ export function HostsSidebar({
                 // 与分组行那颗「+」的唯一差别是**不藏起来**：那颗是行内快捷方式（行本身
                 // 可点、右键菜单是主入口），这颗是「新建分组」现在唯一的入口。
                 extra={
-                  <IconTip label="新建分组">
+                  <IconTip label={t('新建分组')}>
                     <RowActionButton
-                      aria-label="新建分组"
+                      aria-label={t('新建分组')}
                       className="shrink-0"
                       onClick={() => setGroupEdit({ name: '' })}
                     >
@@ -654,7 +663,7 @@ export function HostsSidebar({
                   hosts.length === 0 &&
                   groups.length === 0 &&
                   (app.hostsLoaded || app.error)
-                    ? '还没有主机或终端。'
+                    ? t('还没有主机或终端。')
                     : undefined
                 }
               >
@@ -691,12 +700,17 @@ export function HostsSidebar({
       {/* 删除条目：二次确认（SSH 说清连带影响 —— 用了它当跳板的主机会被摘掉跳板） */}
       <ConfirmDeleteDialog
         open={deleteTarget !== null}
-        title={deleteTarget?.kind === 'local' ? '删除本机终端？' : '删除 SSH 主机？'}
+        title={deleteTarget?.kind === 'local' ? t('删除本机终端？') : t('删除 SSH 主机？')}
         description={
           deleteTarget
             ? deleteTarget.kind === 'local'
-              ? `「${deleteTarget.name}」会从列表里移除。已经打开的终端标签不受影响。`
-              : `「${deleteTarget.name}」（${hostSummary(deleteTarget)}）会从列表里移除。以它为跳板机的主机会变成直连，删掉就得重新添加。已经打开的终端标签不受影响，但关掉之后就再也连不上了。`
+              ? t('「{name}」会从列表里移除。已经打开的终端标签不受影响。', {
+                  name: deleteTarget.name
+                })
+              : t('「{name}」（{summary}）会从列表里移除。以它为跳板机的主机会变成直连，删掉就得重新添加。已经打开的终端标签不受影响，但关掉之后就再也连不上了。', {
+                  name: deleteTarget.name,
+                  summary: hostSummary(deleteTarget)
+                })
             : ''
         }
         onCancel={() => setDeleteTarget(null)}
@@ -711,16 +725,16 @@ export function HostsSidebar({
       <Dialog open={groupEdit !== null} onOpenChange={(open) => !open && setGroupEdit(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>{groupEdit?.id ? '重命名分组' : '新建分组'}</DialogTitle>
+            <DialogTitle>{groupEdit?.id ? t('重命名分组') : t('新建分组')}</DialogTitle>
             <DialogDescription>
-              分组对 SSH 主机与本机终端是**共用**的，可以建多级；条目归属靠拖拽调整。
+              {t('分组对 SSH 主机与本机终端是**共用**的，可以建多级；条目归属靠拖拽调整。')}
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-3">
             <Input
               autoFocus
               value={groupEdit?.name ?? ''}
-              placeholder="分组名称"
+              placeholder={t('分组名称')}
               onChange={(e) =>
                 setGroupEdit((s) => (s ? { ...s, name: e.target.value } : s))
               }
@@ -736,10 +750,10 @@ export function HostsSidebar({
                 }
               >
                 <SelectTrigger className="w-full">
-                  <SelectValue placeholder="顶级分组" />
+                  <SelectValue placeholder={t('顶级分组')} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={TOP_GROUP}>顶级分组</SelectItem>
+                  <SelectItem value={TOP_GROUP}>{t('顶级分组')}</SelectItem>
                   {flatGroupOptions.map((o) => (
                     <SelectItem key={o.id} value={o.id}>
                       <span style={{ paddingLeft: treeIndent(o.depth, 12, 0) }}>{o.name}</span>
@@ -751,10 +765,10 @@ export function HostsSidebar({
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setGroupEdit(null)}>
-              取消
+              {t('取消')}
             </Button>
             <Button disabled={!groupEdit?.name.trim()} onClick={() => void submitGroupEdit()}>
-              保存
+              {t('保存')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -772,12 +786,14 @@ export function HostsSidebar({
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>删除分组「{pendingGroupDelete?.name}」？</DialogTitle>
+            <DialogTitle>
+              {t('删除分组「{name}」？', { name: pendingGroupDelete?.name ?? '' })}
+            </DialogTitle>
             <DialogDescription>
-              它的子分组会一并删除。
+              {t('它的子分组会一并删除。')}
               {pendingSubtreeHostCount > 0
-                ? `组内及子分组共有 ${pendingSubtreeHostCount} 个主机 / 终端。`
-                : '组内没有主机 / 终端。'}
+                ? t('组内及子分组共有 {count} 个主机 / 终端。', { count: pendingSubtreeHostCount })
+                : t('组内没有主机 / 终端。')}
             </DialogDescription>
           </DialogHeader>
           {pendingSubtreeHostCount > 0 && (
@@ -786,7 +802,7 @@ export function HostsSidebar({
                 checked={deleteGroupHosts}
                 onCheckedChange={(v) => setDeleteGroupHosts(v === true)}
               />
-              同时删除组内（含子分组）的主机 / 终端
+              {t('同时删除组内（含子分组）的主机 / 终端')}
             </label>
           )}
           <DialogFooter>
@@ -797,10 +813,10 @@ export function HostsSidebar({
                 setDeleteGroupHosts(false)
               }}
             >
-              取消
+              {t('取消')}
             </Button>
             <Button variant="destructive" onClick={() => void confirmGroupDelete()}>
-              {deleteGroupHosts ? '删除分组与组内条目' : '仅删除分组'}
+              {deleteGroupHosts ? t('删除分组与组内条目') : t('仅删除分组')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -810,17 +826,19 @@ export function HostsSidebar({
       <Dialog open={moveTarget !== null} onOpenChange={(open) => !open && setMoveTarget(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>移动分组「{moveTarget?.name}」</DialogTitle>
+            <DialogTitle>
+              {t('移动分组「{name}」', { name: moveTarget?.name ?? '' })}
+            </DialogTitle>
             <DialogDescription>
-              整棵子树会一起移动；下拉里已经排掉它自己和它的子分组。
+              {t('整棵子树会一起移动；下拉里已经排掉它自己和它的子分组。')}
             </DialogDescription>
           </DialogHeader>
           <Select value={moveParent} onValueChange={setMoveParent}>
             <SelectTrigger className="w-full">
-              <SelectValue placeholder="顶级分组" />
+              <SelectValue placeholder={t('顶级分组')} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={TOP_GROUP}>顶级分组</SelectItem>
+              <SelectItem value={TOP_GROUP}>{t('顶级分组')}</SelectItem>
               {flatGroupOptions.map((o) => (
                 <SelectItem key={o.id} value={o.id}>
                   <span style={{ paddingLeft: treeIndent(o.depth, 12, 0) }}>{o.name}</span>
@@ -830,9 +848,9 @@ export function HostsSidebar({
           </Select>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setMoveTarget(null)}>
-              取消
+              {t('取消')}
             </Button>
-            <Button onClick={() => void confirmMoveGroup()}>移动</Button>
+            <Button onClick={() => void confirmMoveGroup()}>{t('移动')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -876,6 +894,7 @@ function GroupRow({
   onDropHost: DropHost
   onDropGroup: DropGroup
 }): ReactElement {
+  const t = useT()
   const group = node.group
   const isEmpty = node.items.length === 0 && node.children.length === 0
 
@@ -928,7 +947,7 @@ function GroupRow({
           */}
           <button
             type="button"
-            aria-label={expanded ? '收起分组' : '展开分组'}
+            aria-label={expanded ? t('收起分组') : t('展开分组')}
             onClick={(e) => {
               e.stopPropagation()
               onToggle()
@@ -958,7 +977,7 @@ function GroupRow({
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                aria-label={`在「${group.name}」中添加`}
+                aria-label={t('在「{name}」中添加', { name: group.name })}
                 onClick={(e) => e.stopPropagation()}
                 className={cn(
                   ROW_ACTION_CLASS,
@@ -971,11 +990,11 @@ function GroupRow({
             <DropdownMenuContent align="start" className="w-48">
               <DropdownMenuItem onSelect={onAddHost}>
                 <Plus className="size-3.5" />
-                在此分组添加主机 / 终端
+                {t('在此分组添加主机 / 终端')}
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={onNewSub}>
                 <FolderPlus className="size-3.5" />
-                新建子分组
+                {t('新建子分组')}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -984,25 +1003,25 @@ function GroupRow({
       <ContextMenuContent className="w-48">
         <ContextMenuItem onSelect={onAddHost}>
           <Plus className="size-3.5" />
-          在此分组添加主机 / 终端
+          {t('在此分组添加主机 / 终端')}
         </ContextMenuItem>
         <ContextMenuItem onSelect={onNewSub}>
           <FolderPlus className="size-3.5" />
-          新建子分组
+          {t('新建子分组')}
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={onMove}>
           <FolderInput className="size-3.5" />
-          移动到…
+          {t('移动到…')}
         </ContextMenuItem>
         <ContextMenuItem onSelect={onRename}>
           <Pencil className="size-3.5" />
-          重命名
+          {t('重命名')}
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem variant="destructive" onSelect={onDelete}>
           <Trash2 className="size-3.5" />
-          删除分组
+          {t('删除分组')}
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
@@ -1040,13 +1059,17 @@ function HostRow({
   onDropHost: DropHost
   onDropGroup: DropGroup
 }): ReactElement {
+  const t = useT()
   const isLocal = host.kind === 'local'
   // 行里不再显示连接信息（见文件头），悬停提示就是核对地址的地方。
   // 本机终端顺带把**工作目录**也带上：同一个 shell 配两条不同目录的终端很常见，
   // 光看 shell 名分不出来。
+  const detail = isLocal
+    ? [host.shellName ?? t('默认终端'), host.cwd].filter(Boolean).join(' · ')
+    : hostSummary(host)
   const title = isLocal
-    ? `打开 ${host.name} · ${[host.shellName ?? '默认终端', host.cwd].filter(Boolean).join(' · ')}`
-    : `打开 ${host.name} · ${hostSummary(host)} · 再点会新开一个标签`
+    ? t('打开 {name} · {detail}', { name: host.name, detail })
+    : t('打开 {name} · {detail} · 再点会新开一个标签', { name: host.name, detail })
 
   const [{ isDragging }, dragRef] = useDrag<DragItem, void, { isDragging: boolean }>(
     () => ({
@@ -1126,10 +1149,10 @@ function HostRow({
               'group-hover:pointer-events-auto group-hover:opacity-100 max-md:pointer-events-auto max-md:opacity-100'
             )}
           >
-            <IconTip label={`编辑 ${host.name}`}>
+            <IconTip label={t('编辑 {name}', { name: host.name })}>
               <button
                 type="button"
-                aria-label={`编辑 ${host.name}`}
+                aria-label={t('编辑 {name}', { name: host.name })}
                 onClick={(e) => {
                   e.stopPropagation()
                   onEdit()
@@ -1139,10 +1162,10 @@ function HostRow({
                 <Pencil className="size-3.5" />
               </button>
             </IconTip>
-            <IconTip label={`删除 ${host.name}`}>
+            <IconTip label={t('删除 {name}', { name: host.name })}>
               <button
                 type="button"
-                aria-label={`删除 ${host.name}`}
+                aria-label={t('删除 {name}', { name: host.name })}
                 onClick={(e) => {
                   e.stopPropagation()
                   onDelete()
@@ -1160,12 +1183,12 @@ function HostRow({
           {isLocal ? (
             <>
               <SquareTerminal className="size-3.5" />
-              打开终端
+              {t('打开终端')}
             </>
           ) : (
             <>
               <Server className="size-3.5" />
-              连接
+              {t('连接')}
             </>
           )}
         </ContextMenuItem>
@@ -1173,7 +1196,7 @@ function HostRow({
         {!isLocal && (
           <ContextMenuItem onSelect={() => onSftp(host)}>
             <FolderOpen className="size-3.5" />
-            SFTP 文件管理
+            {t('SFTP 文件管理')}
           </ContextMenuItem>
         )}
         {/* 隧道：同样只有 SSH 主机能承载（本机终端没有可复用的 SSH 连接）。
@@ -1181,24 +1204,24 @@ function HostRow({
         {!isLocal && (
           <ContextMenuItem onSelect={() => onTunnels(host)}>
             <Network className="size-3.5" />
-            隧道…
+            {t('隧道…')}
           </ContextMenuItem>
         )}
         <ContextMenuItem onSelect={onEdit}>
           <Pencil className="size-3.5" />
-          编辑
+          {t('编辑')}
         </ContextMenuItem>
         {/* 移出分组：只在真的在某个分组里时才给（未分组的条目点了等于什么都没发生） */}
         {hasGroup && (
           <ContextMenuItem onSelect={onMoveOut}>
             <FolderInput className="size-3.5" />
-            移出分组
+            {t('移出分组')}
           </ContextMenuItem>
         )}
         <ContextMenuSeparator />
         <ContextMenuItem variant="destructive" onSelect={onDelete}>
           <Trash2 className="size-3.5" />
-          删除
+          {t('删除')}
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>

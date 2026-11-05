@@ -63,6 +63,24 @@ export function normalizeBrowserSettings(value: unknown): BrowserSettings {
 }
 
 /**
+ * 「网站数据」占用（设置页「浏览器」一节）。
+ *
+ * 内置浏览器**没有全局一份 cookie 池**：每个会话一份持久化 profile（
+ * `chromium.launchPersistentContext`，目录 `<dataDir>/browser-profiles/<sessionId>`），
+ * Cookie / 登录态 / localStorage / IndexedDB / HTTP 缓存全在各自那份里。所以这里的
+ * 「清除」只能是**整份 profile 地删**，而统计也只能按目录累加。
+ *
+ * `count` 是磁盘上实际存在的 profile 目录数，**可能大于会话数**：历史版本删会话时没扫
+ * profile（现已在删除路径上补了 purge，仍按磁盘数才能看见更早的残留，见
+ * `packages/tools/src/browser/profiles.ts` 的 `browserProfileDirs`）。`sizeBytes` 为 0
+ * 表示没有数据。
+ */
+export interface BrowserProfileUsage {
+  count: number
+  sizeBytes: number
+}
+
+/**
  * 自带浏览器运行时的安装状态（设置页「浏览器」一节）。
  *
  * `installed` 是**唯一的「装没装」判据**：输入框上方那颗开关显不显示、`web_fetch` 与

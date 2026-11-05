@@ -46,6 +46,7 @@ import {
 } from '@fizz/ui/dialog'
 import { Tabs, TabsList, TabsTrigger } from '@fizz/ui/tabs'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import type { HostConfig, HostKind, SshAuthType, SshCharset, SshHostConfig } from '@fizz/contracts/types'
 import { hostSummary } from '@fizz/agent-kit/features/hosts/host-format'
@@ -94,6 +95,7 @@ export function HostDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const { terminalShells } = useAppContext()
+  const t = useT()
 
   /** 条目类型：本地终端 / SSH 主机（Tab 切换）；新增时的默认见 `DEFAULT_NEW_KIND` */
   const [kind, setKind] = useState<HostKind>(DEFAULT_NEW_KIND)
@@ -241,16 +243,10 @@ export function HostDialog({
       <DialogContent className="flex max-h-[75vh] flex-col gap-3 overflow-hidden sm:max-w-md">
         <DialogHeader className="shrink-0">
           <DialogTitle>
-            {editing ? '编辑' : '添加'}
-            {kind === 'local' ? '本地终端' : 'SSH 主机'}
-          </DialogTitle>
-          <DialogDescription>
             {kind === 'local'
-              ? '保存一条本机终端配置：点它就能按固定的 shell / 参数打开终端。'
-              : editing
-                ? '凭据留空 = 保留原来的；只改端口 / 字符集这类设置不会动密码。'
-                : '填主机的地址与登录凭据。密码 / 私钥会加密存在服务端，不会再传回界面。'}
-          </DialogDescription>
+              ? (editing ? t('编辑本地终端') : t('添加本地终端'))
+              : (editing ? t('编辑 SSH 主机') : t('添加 SSH 主机'))}
+          </DialogTitle>
         </DialogHeader>
 
         {/*
@@ -269,7 +265,7 @@ export function HostDialog({
               className="w-full shrink-0"
             >
               <TabsList className="w-full">
-                <TabsTrigger value="local">本地终端</TabsTrigger>
+                <TabsTrigger value="local">{t('本地终端')}</TabsTrigger>
                 <TabsTrigger value="ssh">SSH</TabsTrigger>
               </TabsList>
             </Tabs>
@@ -288,7 +284,7 @@ export function HostDialog({
             {kind === 'local' ? (
               <>
                 <Input
-                  placeholder="名称，如「项目终端」「Git Bash」"
+                  placeholder={t('名称，如「项目终端」「Git Bash」')}
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                 />
@@ -303,7 +299,7 @@ export function HostDialog({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value={NO_SHELL}>跟随平台默认</SelectItem>
+                      <SelectItem value={NO_SHELL}>{t('跟随平台默认')}</SelectItem>
                       {terminalShells?.shells.map((shell) => (
                         <SelectItem key={shell.id} value={shell.id}>
                           {shell.name}
@@ -312,17 +308,17 @@ export function HostDialog({
                     </SelectContent>
                   </Select>
                   {terminalShells && terminalShells.shells.length === 0 && (
-                    <p className="text-xs text-muted-foreground">这台机器上没检测到可选的终端。</p>
+                    <p className="text-xs text-muted-foreground">{t('这台机器上没检测到可选的终端。')}</p>
                   )}
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="local-cwd">工作目录</Label>
+                  <Label htmlFor="local-cwd">{t('工作目录')}</Label>
                   <Input
                     id="local-cwd"
                     spellCheck={false}
                     className="font-mono text-xs"
-                    placeholder={'留空 = 主目录，如 D:\\code\\demo'}
+                    placeholder={t('留空 = 主目录，如 D:\\code\\demo')}
                     value={cwd}
                     onChange={(e) => setCwd(e.target.value)}
                   />
@@ -331,37 +327,37 @@ export function HostDialog({
                     不写清的话用户会以为「我在项目里点它，就该在这个项目目录」。
                   */}
                   <p className="text-xs text-muted-foreground">
-                    这条终端固定从这个目录打开，与当前打开的项目无关；留空 = 主目录。
+                    {t('这条终端固定从这个目录打开，与当前打开的项目无关；留空 = 主目录。')}
                   </p>
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="local-args">启动参数</Label>
+                  <Label htmlFor="local-args">{t('启动参数')}</Label>
                   <Textarea
                     id="local-args"
                     rows={2}
                     spellCheck={false}
                     className="font-mono text-xs"
-                    placeholder={'每行一个参数，如\n--login'}
+                    placeholder={`${t('每行一个参数，如')}\n--login`}
                     value={argsText}
                     onChange={(e) => setArgsText(e.target.value)}
                   />
                   <p className="text-xs text-muted-foreground">
-                    追加在 shell 自带参数之后；不做引号解析，所以一行就是一个参数。
+                    {t('追加在 shell 自带参数之后；不做引号解析，所以一行就是一个参数。')}
                   </p>
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="local-auto">启动后自动执行</Label>
+                  <Label htmlFor="local-auto">{t('启动后自动执行')}</Label>
                   <Input
                     id="local-auto"
                     spellCheck={false}
                     className="font-mono text-xs"
-                    placeholder="如 npm run dev（留空 = 不执行）"
+                    placeholder={t('如 npm run dev（留空 = 不执行）')}
                     value={autoCommand}
                     onChange={(e) => setAutoCommand(e.target.value)}
                   />
-                  <p className="text-xs text-muted-foreground">终端起来后自动敲这一条命令。</p>
+                  <p className="text-xs text-muted-foreground">{t('终端起来后自动敲这一条命令。')}</p>
                 </div>
               </>
             ) : (
@@ -373,12 +369,12 @@ export function HostDialog({
               */
               <div className="flex flex-col gap-3">
                 <Input
-                  placeholder="名称（可留空）"
+                  placeholder={t('名称（可留空）')}
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                 />
                 <Input
-                  placeholder="主机地址，如 10.0.0.8"
+                  placeholder={t('主机地址，如 10.0.0.8')}
                   value={host}
                   onChange={(e) => setHost(e.target.value)}
                 />
@@ -387,12 +383,12 @@ export function HostDialog({
                 <div className="grid grid-cols-[minmax(5.5rem,1fr)_2fr] gap-3">
                   <Input
                     inputMode="numeric"
-                    placeholder={`端口 ${DEFAULT_PORT}`}
+                    placeholder={t('端口 {port}', { port: DEFAULT_PORT })}
                     value={port}
                     onChange={(e) => setPort(e.target.value)}
                   />
                   <Input
-                    placeholder="用户名，如 root"
+                    placeholder={t('用户名，如 root')}
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
                   />
@@ -401,8 +397,8 @@ export function HostDialog({
                 {/* 认证方式 Tab：两种写法字段完全不同，一眼看清当前是哪种 */}
                 <Tabs value={authType} onValueChange={(value) => setAuthType(value as SshAuthType)} className="w-full">
                   <TabsList className="w-full">
-                    <TabsTrigger value="password">密码</TabsTrigger>
-                    <TabsTrigger value="privateKey">私钥</TabsTrigger>
+                    <TabsTrigger value="password">{t('密码')}</TabsTrigger>
+                    <TabsTrigger value="privateKey">{t('私钥')}</TabsTrigger>
                   </TabsList>
                 </Tabs>
 
@@ -410,7 +406,7 @@ export function HostDialog({
                   <Input
                     type="password"
                     autoComplete="new-password"
-                    placeholder={sshEditing?.hasPassword ? '密码（留空 = 不修改）' : '密码'}
+                    placeholder={sshEditing?.hasPassword ? t('密码（留空 = 不修改）') : t('密码')}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                   />
@@ -421,14 +417,14 @@ export function HostDialog({
                       rows={3}
                       spellCheck={false}
                       className="font-mono text-xs"
-                      placeholder="私钥内容，如 -----BEGIN OPENSSH PRIVATE KEY-----"
+                      placeholder={t('私钥内容，如 -----BEGIN OPENSSH PRIVATE KEY-----')}
                       value={privateKey}
                       onChange={(e) => setPrivateKey(e.target.value)}
                     />
                     <Input
                       type="password"
                       autoComplete="new-password"
-                      placeholder="私钥口令（没有就留空）"
+                      placeholder={t('私钥口令（没有就留空）')}
                       value={passphrase}
                       onChange={(e) => setPassphrase(e.target.value)}
                     />
@@ -439,7 +435,7 @@ export function HostDialog({
                     值在「空串 = 不设跳板」与哨兵值之间转一次 —— Radix 不允许 SelectItem 用空串。
                     独占整行：选项文案是「名称（user@host:port）」，半行会被截得看不出是哪台 */}
                 <div className="flex flex-col gap-1.5">
-                  <Label>跳板机</Label>
+                  <Label>{t('跳板机')}</Label>
                   <Select
                     value={jumpHostId || NO_JUMP}
                     onValueChange={(value) => setJumpHostId(value === NO_JUMP ? '' : value)}
@@ -448,10 +444,10 @@ export function HostDialog({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value={NO_JUMP}>不使用跳板</SelectItem>
+                      <SelectItem value={NO_JUMP}>{t('不使用跳板')}</SelectItem>
                       {jumpOptions.map((h) => (
                         <SelectItem key={h.id} value={h.id}>
-                          {h.name}（{hostSummary(h)}）
+                          {t('{name}（{summary}）', { name: h.name, summary: hostSummary(h) })}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -462,7 +458,7 @@ export function HostDialog({
                 <div className="grid grid-cols-2 gap-3">
                   {/* 字符集：中文 Windows 服务器（代码页 936）上的老程序输出 GBK，显示乱码时切过来 */}
                   <div className="flex flex-col gap-1.5">
-                    <Label>字符集</Label>
+                    <Label>{t('字符集')}</Label>
                     <Tabs
                       value={charset}
                       onValueChange={(value) => setCharset(value as SshCharset)}
@@ -476,7 +472,7 @@ export function HostDialog({
                   </div>
 
                   <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="ssh-keepalive">保活（秒）</Label>
+                    <Label htmlFor="ssh-keepalive">{t('保活（秒）')}</Label>
                     <Input
                       id="ssh-keepalive"
                       inputMode="numeric"
@@ -486,7 +482,7 @@ export function HostDialog({
                     />
                     {/* 提示压成一行：半列宽里再写长句会折成三四行，把这一行撑得比旁边高 */}
                     <p className="text-xs text-muted-foreground">
-                      留空 = {DEFAULT_KEEPALIVE}；0 = 关。
+                      {t('留空 = {n}；0 = 关。', { n: DEFAULT_KEEPALIVE })}
                     </p>
                   </div>
                 </div>
@@ -497,10 +493,10 @@ export function HostDialog({
 
         <DialogFooter className="shrink-0">
           <Button type="button" size="sm" variant="ghost" onClick={() => onOpenChange(false)}>
-            取消
+            {t('取消')}
           </Button>
           <Button type="button" size="sm" disabled={!canSave} onClick={() => void save()}>
-            {editing ? '保存' : '添加'}
+            {editing ? t('保存') : t('添加')}
           </Button>
         </DialogFooter>
       </DialogContent>

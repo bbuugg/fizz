@@ -18,7 +18,16 @@
  * （它们是宿主环境与提醒的事，不是 AI 的行为）。
  */
 import { toast } from 'sonner'
-import { Check, ShieldCheck } from 'lucide-react'
+import {
+  Check,
+  Footprints,
+  Layers,
+  RotateCcw,
+  ShieldCheck,
+  Signpost,
+  Timer,
+  Users
+} from 'lucide-react'
 import { NumberField } from '@fizz/ui/number-field'
 import { Switch } from '@fizz/ui/switch'
 import {
@@ -146,7 +155,10 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
       </section>
 
       <section className="space-y-2">
-        <div className="text-sm font-medium">{tr('工具调用并发')}</div>
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          <Layers className="size-3.5" />
+          {tr('工具调用并发')}
+        </div>
         <p className="text-xs leading-4 text-muted-foreground">
           {tr('同一批工具调用最多并行几个；多出的排队。1 = 串行，默认')}{' '}
           {DEFAULT_TOOL_CALL_CONCURRENCY}{tr('，上限 10。')}
@@ -167,7 +179,10 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
       </section>
 
       <section className="space-y-2">
-        <div className="text-sm font-medium">{tr('工具调用最大步数')}</div>
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          <Footprints className="size-3.5" />
+          {tr('工具调用最大步数')}
+        </div>
         <p className="text-xs leading-4 text-muted-foreground">
           {tr('一轮对话里最多连续调用工具多少次（1 步 = 一次模型请求 + 一轮工具执行）。达到上限后即使还有没跑完的工具调用也会停下这一轮。默认')}{' '}
           {DEFAULT_MAX_STEPS}{tr('，上限')} {MAX_MAX_STEPS}
@@ -191,7 +206,10 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
       </section>
 
       <section className="space-y-2">
-        <div className="text-sm font-medium">{tr('工具意图')}</div>
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          <Signpost className="size-3.5" />
+          {tr('工具意图')}
+        </div>
         <p className="text-xs leading-4 text-muted-foreground">
           {tr(
             '让模型为每次工具调用写一句「这一步要干什么」，显示成工具卡的标题（「修复类型错误」而不是「编辑文件」）。' +
@@ -211,7 +229,10 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
       </section>
 
       <section className="space-y-2">
-        <div className="text-sm font-medium">{tr('子任务（subagent）')}</div>
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          <Users className="size-3.5" />
+          {tr('子任务（subagent）')}
+        </div>
         <p className="text-xs leading-4 text-muted-foreground">
           {tr('把只读、产出长的任务交给子 Agent，减少主对话上下文占用。子任务')}<b>{tr('不能修改文件或执行命令')}</b>{tr('。')}
           {tr('每项可以单独设步数上限（搜索 / 读文件各算一步），留空用默认值。')}
@@ -313,7 +334,10 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
       </section>
 
       <section className="space-y-2">
-        <div className="text-sm font-medium">{tr('命令审批超时')}</div>
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          <Timer className="size-3.5" />
+          {tr('命令审批超时')}
+        </div>
         <p className="text-xs leading-4 text-muted-foreground">
           {tr('等待审批的最长时间，超时按拒绝处理。0 = 一直等待。')}
         </p>
@@ -333,7 +357,10 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
       </section>
 
       <section className="space-y-2">
-        <div className="text-sm font-medium">{tr('模型请求重试')}</div>
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          <RotateCcw className="size-3.5" />
+          {tr('模型请求重试')}
+        </div>
         <p className="text-xs leading-4 text-muted-foreground">
           {tr('请求失败后的自动重试次数。已跑完工具步骤的轮次会从断点继续，不会重跑已完成的工具。0 = 不限，默认 2。')}
         </p>

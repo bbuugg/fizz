@@ -132,6 +132,7 @@ import { subscribeServerEvent } from '@fizz/agent-kit/shared/lib/state-ws'
 import { useActivities } from '@fizz/agent-kit/shared/lib/conversation-activity'
 import { findShortcutByEvent, isShortcutRecording, useShortcuts } from '@fizz/agent-kit/shared/lib/shortcuts'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 
 /** 外部触发点之间的最小间隔（ms）：一轮跑完 + 窗口重新聚焦可能连着来，1s 内的重复触发直接丢 */
@@ -218,6 +219,7 @@ export function GitPanel({
    *  同时回报当前分支（切分支 / 检出后，让会话名下的分支显示跟着变）。 */
   onChanges?: (info: { count: number; truncated: boolean; branch: string | null } | null) => void
 }) {
+  const t = useT()
   const [status, setStatus] = useState<GitStatusResult | null>(null)
   const [branches, setBranches] = useState<GitBranchesResult | null>(null)
   const [commits, setCommits] = useState<GitCommit[]>([])
@@ -320,7 +322,7 @@ export function GitPanel({
           ? {
               count: next.changes.length,
               truncated: next.truncated,
-              branch: next.branch ?? (next.detached ? 'HEAD（分离）' : null)
+              branch: next.branch ?? (next.detached ? t('HEAD（分离）') : null)
             }
           : null
       )
@@ -648,7 +650,7 @@ export function GitPanel({
     }, undefined, 'commit')
   }
 
-  const branchLabel = status?.branch ?? (status?.detached ? '分离头指针' : '（无分支）')
+  const branchLabel = status?.branch ?? (status?.detached ? t('分离头指针') : t('（无分支）'))
   /** 贮藏栈（最近一次在前）；不是仓库 / 还没加载完时是空数组 */
   const stashes = status?.stashes ?? []
   const canCommit = !!message.trim() && stagedChanges.length > 0 && !busy
@@ -876,7 +878,7 @@ export function GitPanel({
           style={{ paddingLeft: indent }}
           className="flex items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground"
         >
-          <Loader2 className="size-3.5 animate-spin" /> 读取 diff…
+          <Loader2 className="size-3.5 animate-spin" /> {t('读取 diff…')}
         </div>
       )
     }
@@ -884,7 +886,7 @@ export function GitPanel({
     return (
       <div style={{ paddingLeft: indent }}>
         <FileDiffView
-          path={staged ? `${path}（已暂存）` : path}
+          path={staged ? t('{path}（已暂存）', { path }) : path}
           hunks={diff}
           deleted={false}
         />
@@ -929,7 +931,7 @@ export function GitPanel({
     if (!dirs.length) return null
     const prefix = staged ? 's:' : 'w:'
     const allCollapsed = dirs.every((dir) => collapsedDirs[`${prefix}${dir}`])
-    const label = allCollapsed ? '展开这一组里的所有目录' : '折叠这一组里的所有目录'
+    const label = allCollapsed ? t('展开这一组里的所有目录') : t('折叠这一组里的所有目录')
     return (
       <IconTip label={label}>
         <Button
@@ -983,10 +985,10 @@ export function GitPanel({
   function dirActions(dir: ChangeTreeDir, staged: boolean): ReactNode {
     const key = `${staged ? 's' : 'w'}:${dir.path}`
     const busyKind = rowBusy?.key === key ? rowBusy.kind : null
-    const stageLabel = staged ? '取消暂存这个目录' : '暂存这个目录'
+    const stageLabel = staged ? t('取消暂存这个目录') : t('暂存这个目录')
     const rollbackLabel = staged
-      ? '放弃这个目录的全部改动（含已暂存的），回到上次提交'
-      : '丢弃这个目录里未暂存的改动'
+      ? t('放弃这个目录的全部改动（含已暂存的），回到上次提交')
+      : t('丢弃这个目录里未暂存的改动')
     return (
       <>
         <IconTip label={stageLabel}>
@@ -1037,8 +1039,8 @@ export function GitPanel({
         onToggleStage={() => void toggleStage(change.path, true)}
         onRollback={() => openRollback(change, true)}
         staged
-        stageLabel="取消暂存"
-        rollbackLabel="放弃这个文件的全部改动（含已暂存的），回到上次提交"
+        stageLabel={t('取消暂存')}
+        rollbackLabel={t('放弃这个文件的全部改动（含已暂存的），回到上次提交')}
         busy={rowBusy?.key === `s:${change.path}` ? rowBusy.kind : null}
         depth={treeView ? depth : 0}
         shortLabel={treeView ? shortLabel(change) : undefined}
@@ -1060,8 +1062,8 @@ export function GitPanel({
         onToggleStage={() => void toggleStage(change.path, false)}
         onRollback={() => openRollback(change, false)}
         staged={false}
-        stageLabel="暂存这个文件"
-        rollbackLabel={change.index === '?' ? '删除这个未跟踪文件' : '丢弃这个文件未暂存的改动'}
+        stageLabel={t('暂存这个文件')}
+        rollbackLabel={change.index === '?' ? t('删除这个未跟踪文件') : t('丢弃这个文件未暂存的改动')}
         busy={rowBusy?.key === `w:${change.path}` ? rowBusy.kind : null}
         depth={treeView ? depth : 0}
         shortLabel={treeView ? shortLabel(change) : undefined}
@@ -1093,7 +1095,7 @@ export function GitPanel({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="max-h-80 w-64 overflow-y-auto">
-          <DropdownMenuLabel className="text-xs text-muted-foreground">切换分支</DropdownMenuLabel>
+          <DropdownMenuLabel className="text-xs text-muted-foreground">{t('切换分支')}</DropdownMenuLabel>
           {branches?.branches.length ? (
             branches.branches.map((name) => (
               <DropdownMenuItem
@@ -1105,11 +1107,11 @@ export function GitPanel({
               >
                 <span className="min-w-0 flex-1 truncate">{name}</span>
                 {name === status.branch && <Check className="size-3.5 shrink-0" />}
-                <IconTip label={name === status.branch ? '不能删除当前所在的分支' : `删除本地分支 ${name}…`}>
+                <IconTip label={name === status.branch ? t('不能删除当前所在的分支') : t('删除本地分支 {name}…', { name })}>
                   <Button
                     variant="ghost"
                     className="size-6! shrink-0 rounded p-0! text-muted-foreground/50 hover:text-destructive"
-                    aria-label={`删除本地分支 ${name}`}
+                    aria-label={t('删除本地分支 {name}', { name })}
                     disabled={name === status.branch || busy}
                     onClick={(e) => {
                       // ⚠️ radix 菜单项的「选中」就是它自己的 onClick（见 MenuItemImpl），
@@ -1126,13 +1128,13 @@ export function GitPanel({
               </DropdownMenuItem>
             ))
           ) : (
-            <DropdownMenuItem disabled>还没有任何分支（先提交一次）</DropdownMenuItem>
+            <DropdownMenuItem disabled>{t('还没有任何分支（先提交一次）')}</DropdownMenuItem>
           )}
           {branches?.remotes.length ? (
             <>
               <DropdownMenuSeparator />
               <DropdownMenuLabel className="text-xs text-muted-foreground">
-                远端分支（检出为本地分支并跟踪）
+                {t('远端分支（检出为本地分支并跟踪）')}
               </DropdownMenuLabel>
               {branches.remotes.map((name) => (
                 <DropdownMenuItem
@@ -1141,11 +1143,11 @@ export function GitPanel({
                   onSelect={() => void run(() => app.gitAction(workspaceId, { action: 'checkout', ref: name }))}
                 >
                   <span className="min-w-0 flex-1 truncate">{name}</span>
-                  <IconTip label={`删除远端分支 ${name}…`}>
+                  <IconTip label={t('删除远端分支 {name}…', { name })}>
                     <Button
                       variant="ghost"
                       className="size-6! ml-1 shrink-0 rounded p-0! text-muted-foreground/50 hover:text-destructive"
-                      aria-label={`删除远端分支 ${name}`}
+                      aria-label={t('删除远端分支 {name}', { name })}
                       disabled={busy}
                       onClick={(e) => {
                         // 同行内嵌按钮：不拦 stopPropagation 会连带触发外层的「检出」
@@ -1179,12 +1181,12 @@ export function GitPanel({
       <div className="flex shrink-0 items-center gap-1.5 px-3 py-2">
         <GitBranchIcon
           className="size-4 shrink-0 text-muted-foreground"
-          aria-label={status?.root ? `仓库：${status.root}` : undefined}
+          aria-label={status?.root ? t('仓库：{root}', { root: status.root }) : undefined}
         />
         {branchDropdown()}
         {status?.isRepo && status.detached && (
           <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-600">
-            分离头指针
+            {t('分离头指针')}
           </span>
         )}
         {status?.isRepo && status.ahead > 0 && (
@@ -1199,11 +1201,11 @@ export function GitPanel({
           </span>
         )}
         <span className="ml-auto flex items-center gap-1">
-          <IconTip label="刷新">
+          <IconTip label={t('刷新')}>
             <Button
               variant="ghost"
               className="size-7! p-0!"
-              aria-label="刷新"
+              aria-label={t('刷新')}
               disabled={busy || refreshing}
               // 手动刷新才修剪远端分支（要联网；自动刷新别带，否则每次操作都要等远端）
               onClick={() => void refresh(true)}
@@ -1212,11 +1214,11 @@ export function GitPanel({
             </Button>
           </IconTip>
           {/* 树状 / 平铺：只改下面两组变更列表的排布，选择记在 localStorage */}
-          <IconTip label={treeView ? '改为平铺列表' : '按目录树显示'}>
+          <IconTip label={treeView ? t('改为平铺列表') : t('按目录树显示')}>
             <Button
               variant="ghost"
               className="size-7! p-0!"
-              aria-label={treeView ? '改为平铺列表' : '按目录树显示'}
+              aria-label={treeView ? t('改为平铺列表') : t('按目录树显示')}
               onClick={() => setGitTreeView(!treeView)}
             >
               {treeView ? <ListTree className="size-4" /> : <List className="size-4" />}
@@ -1225,12 +1227,12 @@ export function GitPanel({
           {/* 更多操作：拉取 / 推送 / 新建分支 / 管理远端都收进这里，只在工作区是仓库时才有得操作 */}
           {status?.isRepo && (
             <DropdownMenu>
-              <IconTip label="更多操作">
+              <IconTip label={t('更多操作')}>
                 <DropdownMenuTrigger asChild>
                   <Button
                     variant="ghost"
                     className="size-7! p-0!"
-                    aria-label="更多操作"
+                    aria-label={t('更多操作')}
                     disabled={busy}
                   >
                     <MoreHorizontal className="size-4" />
@@ -1242,12 +1244,12 @@ export function GitPanel({
                 <DropdownMenuItem
                   title={
                     status.remotes.length === 0
-                      ? '还没有远端：先填一个远端地址'
+                      ? t('还没有远端：先填一个远端地址')
                       : status.detached
-                        ? '分离头指针状态下不能拉取'
+                        ? t('分离头指针状态下不能拉取')
                         : status.upstream
-                          ? `从 ${status.upstream} 拉取`
-                          : '当前分支没有上游：先推送一次设好上游'
+                          ? t('从 {upstream} 拉取', { upstream: status.upstream })
+                          : t('当前分支没有上游：先推送一次设好上游')
                   }
                   disabled={busy || status.detached}
                   onSelect={() => {
@@ -1256,32 +1258,32 @@ export function GitPanel({
                       return
                     }
                     if (status.detached || !status.upstream) return
-                    void run(() => app.gitAction(workspaceId, { action: 'pull' }), '已拉取', 'pull')
+                    void run(() => app.gitAction(workspaceId, { action: 'pull' }), t('已拉取'), 'pull')
                   }}
                 >
                   <ArrowDown className="size-3.5" />
-                  拉取{status.behind > 0 ? ` ${status.behind}` : ''}
+                  {status.behind > 0 ? t('拉取 {count}', { count: status.behind }) : t('拉取')}
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   title={
                     status.remotes.length === 0
-                      ? '还没有远端：先填一个远端地址'
+                      ? t('还没有远端：先填一个远端地址')
                       : status.detached
-                        ? '分离头指针状态下不能推送'
-                        : '推送到远端（不做强推）'
+                        ? t('分离头指针状态下不能推送')
+                        : t('推送到远端（不做强推）')
                   }
                   disabled={busy || status.detached}
                   onSelect={() => void push()}
                 >
                   <Upload className="size-3.5" />
-                  推送{status.ahead > 0 ? ` ${status.ahead}` : ''}
+                  {status.ahead > 0 ? t('推送 {count}', { count: status.ahead }) : t('推送')}
                 </DropdownMenuItem>
                 {/* 有不止一个远端时才给「推送到…」：只有一个的时候跟上面那条是同一个结果 */}
                 {status.remotes.length > 1 && (
                   <DropdownMenuSub>
                     <DropdownMenuSubTrigger disabled={busy || status.detached}>
                       <Network className="size-3.5" />
-                      推送到…
+                      {t('推送到…')}
                     </DropdownMenuSubTrigger>
                     <DropdownMenuSubContent>
                       {status.remotes.map((r) => (
@@ -1300,16 +1302,16 @@ export function GitPanel({
                 <DropdownMenuSeparator />
                 {/* 贮藏：一个把当前改动收起来、把工作区弄干净的入口；列表在变更列表下方 */}
                 <DropdownMenuItem
-                  title="贮藏当前改动（git stash）：工作区清空，改动收进贮藏栈，之后可以再弹出来"
+                  title={t('贮藏当前改动（git stash）：工作区清空，改动收进贮藏栈，之后可以再弹出来')}
                   disabled={busy}
                   onSelect={() => openStashDialog()}
                 >
                   <Archive className="size-3.5" />
-                  贮藏当前更改…
+                  {t('贮藏当前更改…')}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
-                  title="新建分支：从当前 HEAD 或任意分支切一条新分支出来"
+                  title={t('新建分支：从当前 HEAD 或任意分支切一条新分支出来')}
                   onSelect={() => {
                     setNewBranchName('')
                     setNewBranchFrom(NEW_BRANCH_HEAD)
@@ -1317,20 +1319,20 @@ export function GitPanel({
                   }}
                 >
                   <GitBranchPlus className="size-3.5" />
-                  新建分支…
+                  {t('新建分支…')}
                 </DropdownMenuItem>
                 {/* 「管理远端」（增 / 改地址 / 删）收在这里：以前「没有远端」时状态条上有个
                     琥珀色入口，现在那个入口没了，这里就是唯一的地方 */}
                 <DropdownMenuItem
                   title={
                     status.remotes.length === 0
-                      ? '还没有配置远端：在这里添加'
-                      : `已配置 ${status.remotes.length} 个远端：查看 / 改地址 / 删除`
+                      ? t('还没有配置远端：在这里添加')
+                      : t('已配置 {count} 个远端：查看 / 改地址 / 删除', { count: status.remotes.length })
                   }
                   onSelect={() => openRemoteDialog()}
                 >
                   <Network className="size-3.5" />
-                  管理远端…
+                  {t('管理远端…')}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -1340,34 +1342,35 @@ export function GitPanel({
 
       {loading ? (
         <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" /> 读取仓库状态…
+          <Loader2 className="size-4 animate-spin" /> {t('读取仓库状态…')}
         </div>
       ) : loadError ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-sm text-muted-foreground">
           <span>{loadError}</span>
           <Button variant="outline" className="h-7!" onClick={() => void refresh(true)}>
-            重试
+            {t('重试')}
           </Button>
         </div>
       ) : !status?.isRepo ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
           <GitBranchIcon className="size-6 text-muted-foreground/50" />
-          <p className="text-sm text-foreground">这个工作区还不是 git 仓库。</p>
+          <p className="text-sm text-foreground">{t('这个工作区还不是 git 仓库。')}</p>
           <SpinnerButton
             className="h-7! gap-1.5 text-xs"
             disabled={busy}
             loading={busyAction === 'init'}
             spinnerClassName="size-3.5"
-            title="在这个工作区目录里执行 git init（初始分支沿用你 git 配置里的 init.defaultBranch）"
+            title={t('在这个工作区目录里执行 git init（初始分支沿用你 git 配置里的 init.defaultBranch）')}
             onClick={() =>
-              void run(() => app.gitAction(workspaceId, { action: 'init' }), '已初始化 git 仓库', 'init')
+              void run(() => app.gitAction(workspaceId, { action: 'init' }), t('已初始化 git 仓库'), 'init')
             }
           >
             {busyAction !== 'init' && <Plus className="size-3.5" />}
-            初始化 git 仓库
+            {t('初始化 git 仓库')}
           </SpinnerButton>
           <p className="max-w-[280px] text-xs text-muted-foreground">
-            初始化后所有文件都是未跟踪状态；建议先补一个 <code>.gitignore</code> 再提交。
+            {t('初始化后所有文件都是未跟踪状态；建议先补一个')} <code>.gitignore</code>{' '}
+            {t('再提交。')}
           </p>
         </div>
       ) : (
@@ -1388,7 +1391,7 @@ export function GitPanel({
                   void commit()
                 }
               }}
-              placeholder="提交信息（Ctrl / ⌘ + Enter 提交）"
+              placeholder={t('提交信息（Ctrl / ⌘ + Enter 提交）')}
               className="h-7! min-w-0 flex-1 text-sm"
             />
             <SpinnerButton
@@ -1396,10 +1399,10 @@ export function GitPanel({
               disabled={!canCommit}
               loading={busyAction === 'commit'}
               spinnerClassName="size-3.5"
-              title={stagedChanges.length === 0 ? '先在「已暂存的更改」里暂存改动' : '提交已暂存的改动'}
+              title={stagedChanges.length === 0 ? t('先在「已暂存的更改」里暂存改动') : t('提交已暂存的改动')}
               onClick={() => void commit()}
             >
-              提交
+              {t('提交')}
             </SpinnerButton>
           </div>
 
@@ -1407,13 +1410,15 @@ export function GitPanel({
           {/* 只留左右 / 底部内边距：顶部不留 —— 否则 sticky 标题滚动时会被这条 padding 顶出一段空隙，看着像浮着 */}
           <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2 space-y-2">
             {changes.length === 0 ? (
-              <div className="px-3 py-2 text-xs text-muted-foreground">没有未提交的改动</div>
+              <div className="px-3 py-2 text-xs text-muted-foreground">{t('没有未提交的改动')}</div>
             ) : (
               <>
                 {status.truncated && (
                   <div className="mx-1.5 mb-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-600">
-                    改动太多，只列出前 {changes.length} 项（多半是没配 <code>.gitignore</code> 的依赖 /
-                    产物目录）。为避免漏提交，批量暂存已停用，建议先把这些目录加进 <code>.gitignore</code>。
+                    {t('改动太多，只列出前 {count} 项（多半是没配', { count: changes.length })}{' '}
+                    <code>.gitignore</code>{' '}
+                    {t('的依赖 / 产物目录）。为避免漏提交，批量暂存已停用，建议先把这些目录加进')}{' '}
+                    <code>.gitignore</code>{t('。')}
                   </div>
                 )}
                 {stagedChanges.length > 0 && (
@@ -1424,7 +1429,7 @@ export function GitPanel({
                       <button
                         type="button"
                         onClick={() => setStagedOpen((v) => !v)}
-                        title={stagedOpen ? '收起这一组' : '展开这一组'}
+                        title={stagedOpen ? t('收起这一组') : t('展开这一组')}
                         className="flex min-w-0 flex-1 items-center gap-1.5 text-left hover:text-foreground"
                       >
                         {stagedOpen ? (
@@ -1432,7 +1437,7 @@ export function GitPanel({
                         ) : (
                           <ChevronRight className="size-3.5 shrink-0" />
                         )}
-                        <span className="shrink-0">已暂存的更改</span>
+                        <span className="shrink-0">{t('已暂存的更改')}</span>
                         <span className="shrink-0 text-muted-foreground">
                           {stagedChanges.length}
                         </span>
@@ -1443,18 +1448,18 @@ export function GitPanel({
                         className="h-5! gap-1 px-1.5! text-xs"
                         spinnerClassName="size-3"
                         loading={busyAction === 'unstage-all'}
-                        title={status.truncated ? '改动过多、列表已截断，批量操作已停用' : '全部取消暂存'}
+                        title={status.truncated ? t('改动过多、列表已截断，批量操作已停用') : t('全部取消暂存')}
                         disabled={busy || status.truncated}
                         onClick={() => void run(
                           () => app.gitAction(workspaceId, {
                             action: 'unstage',
                             paths: stagedChanges.map((c) => c.path)
                           }),
-                          '已全部取消暂存',
+                          t('已全部取消暂存'),
                           'unstage-all'
                         )}
                       >
-                        {busyAction !== 'unstage-all' && <Minus className="size-3" />} 全部
+                        {busyAction !== 'unstage-all' && <Minus className="size-3" />} {t('全部')}
                       </SpinnerButton>
                     </div>
                     {stagedOpen && (
@@ -1483,7 +1488,7 @@ export function GitPanel({
                       <button
                         type="button"
                         onClick={() => setUnstagedOpen((v) => !v)}
-                        title={unstagedOpen ? '收起这一组' : '展开这一组'}
+                        title={unstagedOpen ? t('收起这一组') : t('展开这一组')}
                         className="flex min-w-0 flex-1 items-center gap-1.5 text-left hover:text-foreground"
                       >
                         {unstagedOpen ? (
@@ -1491,7 +1496,7 @@ export function GitPanel({
                         ) : (
                           <ChevronRight className="size-3.5 shrink-0" />
                         )}
-                        <span className="shrink-0">更改</span>
+                        <span className="shrink-0">{t('更改')}</span>
                         <span className="shrink-0 text-muted-foreground">
                           {unstagedChanges.length}
                         </span>
@@ -1501,29 +1506,29 @@ export function GitPanel({
                       <Button
                         variant="ghost"
                         className="h-5! gap-1 px-1.5! text-sm text-muted-foreground hover:text-destructive"
-                        title="回滚「更改」里列出的这些文件（未暂存 + 未跟踪）"
+                        title={t('回滚「更改」里列出的这些文件（未暂存 + 未跟踪）')}
                         disabled={busy}
                         onClick={() => setBulkRollback('unstaged')}
                       >
-                        <RotateCcw className="size-4" /> 回滚
+                        <RotateCcw className="size-4" /> {t('回滚')}
                       </Button>
                       <SpinnerButton
                         variant="ghost"
                         className="h-5! gap-1 px-1.5! text-sm"
                         spinnerClassName="size-4"
                         loading={busyAction === 'stage-all'}
-                        title={status.truncated ? '改动过多、列表已截断，批量操作已停用' : '全部暂存'}
+                        title={status.truncated ? t('改动过多、列表已截断，批量操作已停用') : t('全部暂存')}
                         disabled={busy || status.truncated}
                         onClick={() => void run(
                           () => app.gitAction(workspaceId, {
                             action: 'stage',
                             paths: unstagedChanges.map((c) => c.path)
                           }),
-                          '已全部暂存',
+                          t('已全部暂存'),
                           'stage-all'
                         )}
                       >
-                        {busyAction !== 'stage-all' && <Plus className="size-4" />} 全部
+                        {busyAction !== 'stage-all' && <Plus className="size-4" />} {t('全部')}
                       </SpinnerButton>
                     </div>
                     {unstagedOpen && (
@@ -1570,15 +1575,15 @@ export function GitPanel({
                   ) : (
                     <ChevronRight className="size-3.5 shrink-0" />
                   )}
-                  贮藏
+                  {t('贮藏')}
                   <span className="text-muted-foreground">{stashes.length}</span>
                 </button>
                 {/* 贮藏入口：只留图标（与「更多」菜单里那一条同一个 Archive 图标），文案挪到 tooltip */}
-                <IconTip label="贮藏当前更改（git stash）：工作区清空，改动收进贮藏栈">
+                <IconTip label={t('贮藏当前更改（git stash）：工作区清空，改动收进贮藏栈')}>
                   <Button
                     variant="ghost"
                     className="size-6! shrink-0 p-0! text-muted-foreground hover:text-foreground"
-                    aria-label="贮藏当前更改"
+                    aria-label={t('贮藏当前更改')}
                     disabled={busy}
                     onClick={() => openStashDialog()}
                   >
@@ -1601,27 +1606,27 @@ export function GitPanel({
                         <Button
                           variant="ghost"
                           className="h-5! shrink-0 gap-1 px-1.5! text-xs"
-                          title="弹出（git stash pop）：应用这次贮藏，并从栈里删掉"
+                          title={t('弹出（git stash pop）：应用这次贮藏，并从栈里删掉')}
                           disabled={busy}
                           onClick={() => void applyStash(s, true)}
                         >
                           <ArchiveRestore className="size-3" />
-                          弹出
+                          {t('弹出')}
                         </Button>
                         <Button
                           variant="ghost"
                           className="h-5! shrink-0 px-1.5! text-xs"
-                          title="应用（git stash apply）：应用这次贮藏，但留在栈里"
+                          title={t('应用（git stash apply）：应用这次贮藏，但留在栈里')}
                           disabled={busy}
                           onClick={() => void applyStash(s, false)}
                         >
-                          应用
+                          {t('应用')}
                         </Button>
-                        <IconTip label="删除这次贮藏（git stash drop）…">
+                        <IconTip label={t('删除这次贮藏（git stash drop）…')}>
                           <Button
                             variant="ghost"
                             className="size-5! shrink-0 p-0! text-muted-foreground hover:text-destructive"
-                            aria-label={`删除贮藏 ${s.ref}`}
+                            aria-label={t('删除贮藏 {ref}', { ref: s.ref })}
                             disabled={busy}
                             onClick={() => setDropStash(s)}
                           >
@@ -1631,7 +1636,7 @@ export function GitPanel({
                       </div>
                     ))
                   ) : (
-                    <div className="px-2 py-1 text-xs text-muted-foreground">还没有贮藏</div>
+                    <div className="px-2 py-1 text-xs text-muted-foreground">{t('还没有贮藏')}</div>
                   )}
                 </div>
               )}
@@ -1644,9 +1649,9 @@ export function GitPanel({
       <Dialog open={stashOpen} onOpenChange={setStashOpen}>
         <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
-            <DialogTitle>贮藏当前更改</DialogTitle>
+            <DialogTitle>{t('贮藏当前更改')}</DialogTitle>
             <DialogDescription>
-              工作区（和暂存区）里的改动会被收进贮藏栈，工作区回到干净状态；之后可以在变更列表下方的「贮藏」里再弹出来。
+              {t('工作区（和暂存区）里的改动会被收进贮藏栈，工作区回到干净状态；之后可以在变更列表下方的「贮藏」里再弹出来。')}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -1659,7 +1664,7 @@ export function GitPanel({
                   void stashChanges()
                 }
               }}
-              placeholder="说明（可空，如：调一半的登录页）"
+              placeholder={t('说明（可空，如：调一半的登录页）')}
               autoFocus
             />
             <label className="flex items-start gap-2 text-xs text-muted-foreground">
@@ -1669,13 +1674,13 @@ export function GitPanel({
                 onCheckedChange={(checked) => setStashUntracked(checked === true)}
               />
               <span>
-                连未跟踪文件一起收（<code>git stash -u</code>）—— 不勾的话新文件会留在工作区
+                {t('连未跟踪文件一起收（')}<code>git stash -u</code>{t('）—— 不勾的话新文件会留在工作区')}
               </span>
             </label>
           </div>
           <DialogFooter>
             <Button data-dialog-dismiss="" variant="ghost" className="h-8!" onClick={() => setStashOpen(false)}>
-              取消
+              {t('取消')}
             </Button>
             <SpinnerButton
               className="h-8!"
@@ -1683,7 +1688,7 @@ export function GitPanel({
               loading={busyAction === 'stash'}
               onClick={() => void stashChanges()}
             >
-              贮藏
+              {t('贮藏')}
             </SpinnerButton>
           </DialogFooter>
         </DialogContent>
@@ -1698,17 +1703,16 @@ export function GitPanel({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除这次贮藏？</AlertDialogTitle>
+            <AlertDialogTitle>{t('删除这次贮藏？')}</AlertDialogTitle>
             <AlertDialogDescription>
-              <code className="font-mono">{dropStash?.ref}</code>（{dropStash?.message}）会从贮藏栈里删掉。
-              里面的改动没有别处保存，删完之后只剩 reflog（默认保留约 90 天）里还能找到 ——
-              想留着就先「应用」或「弹出」。
+              <code className="font-mono">{dropStash?.ref}</code>
+              {t('（{message}）会从贮藏栈里删掉。里面的改动没有别处保存，删完之后只剩 reflog（默认保留约 90 天）里还能找到 —— 想留着就先「应用」或「弹出」。', { message: dropStash?.message ?? '' })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t('取消')}</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={() => void dropStashEntry()}>
-              删除
+              {t('删除')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -1723,9 +1727,9 @@ export function GitPanel({
       <Dialog open={newBranchOpen} onOpenChange={setNewBranchOpen}>
         <DialogContent className="sm:max-w-[380px]">
           <DialogHeader>
-            <DialogTitle>新建分支</DialogTitle>
+            <DialogTitle>{t('新建分支')}</DialogTitle>
             <DialogDescription>
-              从下面的起点切出一条新分支并切过去（当前未提交的改动会跟着带到新分支）。
+              {t('从下面的起点切出一条新分支并切过去（当前未提交的改动会跟着带到新分支）。')}
             </DialogDescription>
           </DialogHeader>
 
@@ -1739,20 +1743,20 @@ export function GitPanel({
                   void createBranch()
                 }
               }}
-              placeholder="分支名，如 feature/login"
+              placeholder={t('分支名，如 feature/login')}
               autoFocus
             />
             <Select value={newBranchFrom} onValueChange={setNewBranchFrom}>
-              <SelectTrigger className="w-full" title="从哪切出来">
+              <SelectTrigger className="w-full" title={t('从哪切出来')}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent position="popper" className="max-h-72">
                 <SelectItem value={NEW_BRANCH_HEAD}>
-                  {`当前 HEAD${branchLabel ? `（${branchLabel}）` : ''}`}
+                  {branchLabel ? t('当前 HEAD（{branch}）', { branch: branchLabel }) : t('当前 HEAD')}
                 </SelectItem>
                 {branches?.branches.length ? (
                   <SelectGroup>
-                    <SelectLabel>本地分支</SelectLabel>
+                    <SelectLabel>{t('本地分支')}</SelectLabel>
                     {branches.branches.map((name) => (
                       <SelectItem key={`local:${name}`} value={name}>
                         {name}
@@ -1762,7 +1766,7 @@ export function GitPanel({
                 ) : null}
                 {branches?.remotes.length ? (
                   <SelectGroup>
-                    <SelectLabel>远端分支（会带上游跟踪）</SelectLabel>
+                    <SelectLabel>{t('远端分支（会带上游跟踪）')}</SelectLabel>
                     {branches.remotes.map((name) => (
                       <SelectItem key={`remote:${name}`} value={name}>
                         {name}
@@ -1776,7 +1780,7 @@ export function GitPanel({
 
           <DialogFooter>
             <Button data-dialog-dismiss="" variant="ghost" className="h-8!" onClick={() => setNewBranchOpen(false)}>
-              取消
+              {t('取消')}
             </Button>
             <SpinnerButton
               className="h-8!"
@@ -1784,7 +1788,7 @@ export function GitPanel({
               loading={busyAction === 'create-branch'}
               onClick={() => void createBranch()}
             >
-              创建并切换
+              {t('创建并切换')}
             </SpinnerButton>
           </DialogFooter>
         </DialogContent>
@@ -1809,7 +1813,7 @@ export function GitPanel({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t('取消')}</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={() => void confirmRollback()}>
               {rollbackDialogAction(rollbackTarget)}
             </AlertDialogAction>
@@ -1830,23 +1834,23 @@ export function GitPanel({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              回滚「更改」里列出的文件？
+              {t('回滚「更改」里列出的文件？')}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              这 {bulkPaths.length} 个文件会回到上次提交，已暂存的那份也会一起丢掉
+              {t('这 {count} 个文件会回到上次提交，已暂存的那份也会一起丢掉', { count: bulkPaths.length })}
               {bulkDeletes > 0
-                ? `；其中 ${bulkDeletes} 个未跟踪 / 只存在于暂存区的新文件会被从磁盘上删除`
+                ? t('；其中 {count} 个未跟踪 / 只存在于暂存区的新文件会被从磁盘上删除', { count: bulkDeletes })
                 : ''}
-              。未提交的内容无法恢复。
+              {t('。未提交的内容无法恢复。')}
               <span className="mt-1 block">
-                只影响工作区内、列表里列出的这些文件 —— 仓库里别处的改动不会被碰。
+                {t('只影响工作区内、列表里列出的这些文件 —— 仓库里别处的改动不会被碰。')}
               </span>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t('取消')}</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={() => void rollbackListed()}>
-              回滚 {bulkPaths.length} 个文件
+              {t('回滚 {count} 个文件', { count: bulkPaths.length })}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -1870,20 +1874,19 @@ export function GitPanel({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {deleteTarget?.kind === 'remote' ? '删除远端分支？' : '删除本地分支？'}
+              {deleteTarget?.kind === 'remote' ? t('删除远端分支？') : t('删除本地分支？')}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {deleteTarget?.kind === 'remote' ? (
                 <>
-                  远端的{' '}
-                  <code className="font-mono">{deleteLabel}</code> 会被删掉（= <code>git push {deleteTarget.remote} --delete {deleteTarget.branch}</code>
-                  ）。这一步会推到远端，别人再 fetch 就会看到它消失，无法撤销。
-                  本地如果还有同名分支，不受影响。
+                  {t('远端的 {branch} 会被删掉（=', { branch: deleteLabel })}{' '}
+                  <code className="font-mono">{`git push ${deleteTarget.remote} --delete ${deleteTarget.branch}`}</code>
+                  {t('）。这一步会推到远端，别人再 fetch 就会看到它消失，无法撤销。本地如果还有同名分支，不受影响。')}
                 </>
               ) : (
                 <>
-                  本地分支 <code className="font-mono">{deleteLabel}</code> 的引用会被删除。已经并进其它分支的提交不会丢；
-                  删完之后也只有 reflog（默认保留约 90 天）里还能找回它。
+                  {t('本地分支')} <code className="font-mono">{deleteLabel}</code>{' '}
+                  {t('的引用会被删除。已经并进其它分支的提交不会丢；删完之后也只有 reflog（默认保留约 90 天）里还能找回它。')}
                 </>
               )}
               {/* 强制删除只对本地分支有意义：远端分支删除本身就是强删（远端 ref 被推空） */}
@@ -1895,16 +1898,16 @@ export function GitPanel({
                     onCheckedChange={(checked) => setDeleteForce(checked === true)}
                   />
                   <span>
-                    强制删除：这个分支还没有合并也删（未合并的提交删完只剩 reflog 能找回）
+                    {t('强制删除：这个分支还没有合并也删（未合并的提交删完只剩 reflog 能找回）')}
                   </span>
                 </label>
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t('取消')}</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={() => void deleteBranch()}>
-              删除
+              {t('删除')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -1918,11 +1921,11 @@ export function GitPanel({
       <Dialog open={remoteOpen} onOpenChange={setRemoteOpen}>
         <DialogContent className="sm:max-w-[520px]">
           <DialogHeader>
-            <DialogTitle>管理远端</DialogTitle>
+            <DialogTitle>{t('管理远端')}</DialogTitle>
             <DialogDescription>
               {remoteDraft.editing
-                ? `修改远端「${remoteDraft.name}」的地址。`
-                : '添加一个远端（https 与 git@host:path 两种写法都支持），配好就能推送了。'}
+                ? t('修改远端「{name}」的地址。', { name: remoteDraft.name })
+                : t('添加一个远端（https 与 git@host:path 两种写法都支持），配好就能推送了。')}
             </DialogDescription>
           </DialogHeader>
 
@@ -1933,7 +1936,7 @@ export function GitPanel({
               onChange={(e) => setRemoteDraft((d) => ({ ...d, name: e.target.value }))}
               disabled={remoteDraft.editing}
               placeholder="origin"
-              title="远端名（一般就是 origin）"
+              title={t('远端名（一般就是 origin）')}
               className="w-28 shrink-0"
             />
             <Input
@@ -1954,7 +1957,7 @@ export function GitPanel({
               loading={busyAction === 'save-remote'}
               onClick={() => void saveRemote()}
             >
-              {remoteDraft.editing ? '保存' : '添加'}
+              {remoteDraft.editing ? t('保存') : t('添加')}
             </SpinnerButton>
             {remoteDraft.editing && (
               <Button
@@ -1962,7 +1965,7 @@ export function GitPanel({
                 className="h-9! shrink-0"
                 onClick={() => setRemoteDraft({ name: '', url: '', editing: false })}
               >
-                取消
+                {t('取消')}
               </Button>
             )}
           </div>
@@ -1983,22 +1986,22 @@ export function GitPanel({
                     <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground" title={r.url}>
                       {r.url}
                     </span>
-                    <IconTip label={`改「${r.name}」的地址`}>
+                    <IconTip label={t('改「{name}」的地址', { name: r.name })}>
                       <Button
                         variant="ghost"
                         className={cn('size-6! shrink-0 p-0!', editing && 'text-primary')}
-                        aria-label={`修改远端 ${r.name} 的地址`}
+                        aria-label={t('修改远端 {name} 的地址', { name: r.name })}
                         disabled={busy}
                         onClick={() => editRemote(r.name, r.url)}
                       >
                         <Pencil className="size-3.5" />
                       </Button>
                     </IconTip>
-                    <IconTip label={`删除远端 ${r.name}…`}>
+                    <IconTip label={t('删除远端 {name}…', { name: r.name })}>
                       <Button
                         variant="ghost"
                         className="size-6! shrink-0 p-0! text-muted-foreground hover:text-destructive"
-                        aria-label={`删除远端 ${r.name}`}
+                        aria-label={t('删除远端 {name}', { name: r.name })}
                         disabled={busy}
                         onClick={() => setDeletingRemote(r.name)}
                       >
@@ -2010,14 +2013,14 @@ export function GitPanel({
               })
             ) : (
               <p className="px-2 py-3 text-xs text-muted-foreground">
-                还没有配置远端 —— 上面填一个地址点「添加」即可。
+                {t('还没有配置远端 —— 上面填一个地址点「添加」即可。')}
               </p>
             )}
           </div>
 
           <DialogFooter>
             <Button data-dialog-dismiss="" variant="ghost" className="h-8!" onClick={() => setRemoteOpen(false)}>
-              关闭
+              {t('关闭')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2032,18 +2035,17 @@ export function GitPanel({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除远端「{deletingRemote}」？</AlertDialogTitle>
+            <AlertDialogTitle>{t('删除远端「{name}」？', { name: deletingRemote ?? '' })}</AlertDialogTitle>
             <AlertDialogDescription>
-              只会删掉「这个远端配在哪」，本地分支与提交不受影响，远端仓库本身也不会变。
-              但它的远端跟踪分支（
+              {t('只会删掉「这个远端配在哪」，本地分支与提交不受影响，远端仓库本身也不会变。但它的远端跟踪分支（')}
               <code className="font-mono">{`${deletingRemote}/*`}</code>
-              ）和当前分支对它的上游设置会一起消失，之后要推送得重新配置。
+              {t('）和当前分支对它的上游设置会一起消失，之后要推送得重新配置。')}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t('取消')}</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={() => void removeRemote(deletingRemote!)}>
-              删除
+              {t('删除')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

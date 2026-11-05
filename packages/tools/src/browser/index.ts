@@ -8,15 +8,23 @@ export {
   createBrowserSessionHandlers,
   ensureBrowserSession,
   normalizeUrl,
+  purgeAllBrowserProfiles,
   resolveBrowserChannel,
   setBrowserChannelResolver,
-  setBrowserProfilesRoot,
   subscribeBrowser,
   type BrowserEvent,
   type BrowserSession,
   type BrowserSessionHandlers,
   type BrowserSessionManager
 } from './engine'
+export {
+  browserProfileDirOf,
+  browserProfileDirs,
+  browserProfilesRoot,
+  browserProfileUsage,
+  removeBrowserProfileDir,
+  setBrowserProfilesRoot
+} from './profiles'
 export { buildBrowserToolSet, BROWSER_PROMPT_SECTION, type BrowserToolOptions } from './tools'
 export { launchAttempts } from './resolver'
 export { buttonBit, nextButtonsMask, toCdpCommand, type CdpCommand } from './input'

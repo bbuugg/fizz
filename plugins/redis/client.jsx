@@ -280,7 +280,7 @@ window.__FIZZ_PLUGIN__('redis', (host) => {
           自带头部：client 面不该指望宿主画顶栏（它连标题行都跳过了）。
           高度与宿主侧栏那排按钮对齐（h-8），免得上下一换面就跳一下。
         */}
-        <div className="flex h-8 shrink-0 items-center justify-between gap-1 border-b px-2">
+        <div className="flex h-8 shrink-0 items-center justify-between gap-1 px-2">
           <span className="truncate text-xs font-medium text-muted-foreground">连接</span>
           <div className="flex shrink-0 items-center gap-0.5">
             <Button

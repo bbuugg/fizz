@@ -40,7 +40,8 @@ applyThemeClass(resolveTheme(desktopHost.loadTheme()))
 /**
  * 一个渲染端服务**两种**窗口（主进程用查询参数区分，见 main/index.ts 的 loadRenderer）：
  * - 默认：主界面（自绘标题栏 + ClientRoot）；
- * - `?window=conversation[&conversationId=…]`：会话浮窗（单窗口，可在窗内切换）。
+ * - `?window=conversation&conversationId=…`：会话浮窗（**一条会话一个窗口**，窗内不切换；
+ *   换一条会话 = 主进程带新 id 重载这个窗口，见 `main/index.ts` 的 `openConversationWindow`）。
  * 判定收在 `resolveWindowKind`（纯函数、带单测）。
  *
  * 设置**不是**一种窗口：它是主区域的一条标签（`settings:list`），与对话共享同一个
@@ -64,13 +65,13 @@ bootstrapColorTheme()
  * 浮窗的 store 必须在 **render 之前** 种好：
  * `AppProvider` 挂着 `useAgentApp()`，它的「自动恢复上次会话」effect 在
  * activeConversationId 为空时会自己开一条会话 —— 它的**首次闭包**里 activeConversationId
- * 就是这里种下的值（种子）/ `blankIntent`（草稿），于是不会再抢。
- * 见 spec Global Constraints「Seed the store before render」。
+ * 就是这里种下的值，于是不会再抢。
+ *
+ * 没有 id 就**什么都不种**（不再开草稿）：浮窗是「一条会话一个窗口」，没有 id 只可能是
+ * 主进程漏传，界面上给「没有指定会话」的空态，不该顺手建一条草稿会话出来。
  */
-if (windowKind.kind === 'conversation') {
-  const store = useAgentStore.getState()
-  if (windowKind.initialConversationId) void store.openConversation(windowKind.initialConversationId)
-  else void store.openConversation(null) // 草稿：置 blankIntent，挡住自动恢复
+if (windowKind.kind === 'conversation' && windowKind.conversationId) {
+  void useAgentStore.getState().openConversation(windowKind.conversationId)
 }
 
 /**
@@ -85,7 +86,7 @@ if (windowKind.kind === 'main') openDeepLink(desktopHost.takePendingDeepLink?.()
 createRoot(container).render(
   <StrictMode>
     {windowKind.kind === 'conversation' ? (
-      <ConversationWindow initialConversationId={windowKind.initialConversationId} />
+      <ConversationWindow conversationId={windowKind.conversationId} />
     ) : (
       /*
         主窗口根**不画底色**（`bg-transparent`）。

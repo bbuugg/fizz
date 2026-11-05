@@ -14,6 +14,7 @@
  */
 import type { ReactNode } from 'react'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { t } from '@fizz/i18n'
 import { Progress } from '@fizz/ui/progress'
 
 /**
@@ -65,13 +66,13 @@ export function formatRate(bytesPerSec: number): string {
 
 export function formatUptime(sec: number): string {
   if (!Number.isFinite(sec) || sec <= 0) return '—'
-  if (sec < 60) return `${Math.floor(sec)} 秒`
+  if (sec < 60) return t('{n} 秒', { n: Math.floor(sec) })
   const m = Math.floor(sec / 60)
   const h = Math.floor(m / 60)
   const d = Math.floor(h / 24)
-  if (d > 0) return `${d} 天 ${h % 24} 时`
-  if (h > 0) return `${h} 时 ${m % 60} 分`
-  return `${m} 分`
+  if (d > 0) return t('{d} 天 {h} 时', { d, h: h % 24 })
+  if (h > 0) return t('{h} 时 {m} 分', { h, m: m % 60 })
+  return t('{m} 分', { m })
 }
 
 export const pct = (n: number): number => Math.round(n)

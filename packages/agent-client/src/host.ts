@@ -371,6 +371,14 @@ export interface AgentHost {
   takePendingDeepLink?(): string | null
   onDeepLink?(cb: (conversationId: string) => void): () => void
   /**
+   * 把**这一条**会话开到浮窗里（会话详情区顶栏那颗「在浮窗中打开」）。
+   *
+   * 浮窗是「一条会话一个窗口」：宿主（desktop 主进程）负责窗口本体，已开着且
+   * 还是同一条就只聚焦，是**另一条**就带着新 id 重载渲染端 —— 所以这里只传 id，
+   * 不传「要不要新开」。不实现 = 没有多窗口（web / 手机），入口不出现。
+   */
+  openConversationWindow?(conversationId: string): Promise<void>
+  /**
    * 报告当前「改了还没保存」的标签数量。主进程缓存它，**退出时**据它决定要不要拦。
    *
    * 不实现 = 宿主没有退出拦截这回事（web 关页面本来也没什么可拦的语义）。

@@ -64,6 +64,17 @@ function lastUserText(history: AgentChatMessage[]): string {
 export interface AcpToolCallMemory {
   input: Record<string, unknown>;
   kind?: string;
+  /**
+   * agent 给的**程序化工具名**（`tool_call` / `tool_call_update` 的 `name`）。
+   *
+   * 必须记下来：`session/request_permission` 里的 `toolCall` 是「增量更新」，
+   * 只带变化字段 —— CodeBuddy 这类 agent 在权限请求里只给 `toolCallId`，
+   * 名字 / 标题 / 参数全在**前面那条** tool_call 里。不在权限请求时回查，审批卡上
+   * 就只剩「工具调用」四个字（用户报过「看不到申请的是什么工具、什么参数」）。
+   */
+  name?: string;
+  /** agent 给的展示标题（同上，权限请求里常常不带） */
+  title?: string;
   content?: AcpToolCallContent[];
 }
 export type AcpInputMemory = Map<string, AcpToolCallMemory>;
@@ -133,6 +144,10 @@ const acpToolName = (name: unknown): string =>
 const acpTitle = (title: unknown): string | undefined =>
   typeof title === "string" && title ? title : undefined;
 
+/** 程序化工具名（`name`）：与 `acpToolName` 的区别是**不给占位名** —— 没有就返回空 */
+const acpName = (name: unknown): string | undefined =>
+  typeof name === "string" && name ? name : undefined;
+
 /**
  * 把这次 update 带的入参并进记忆里（后到的覆盖先到的）。
  *
@@ -201,10 +216,14 @@ export function toAcpStreamEvent(
         update.rawInput,
         update.title,
       );
+      const name = acpName(update.name);
+      const title = acpTitle(update.title);
       if (memory && toolCallId) {
         memory.set(toolCallId, {
           input,
           ...(kind ? { kind } : {}),
+          ...(name ? { name } : {}),
+          ...(title ? { title } : {}),
           ...(content ? { content } : {}),
         });
       }
@@ -240,15 +259,24 @@ export function toAcpStreamEvent(
       );
       const kind = typeof update.kind === "string" ? update.kind : undefined;
       const content = normalizeAcpContent(update.content);
+      const name = acpName(update.name);
+      const title = acpTitle(update.title);
       const inputChanged =
         beforeInputJson === null || beforeInputJson !== JSON.stringify(merged);
       const contentChanged =
         (!!content && beforeContentJson !== JSON.stringify(content)) ||
         (!!kind && before?.kind !== kind);
-      if (memory && (inputChanged || contentChanged)) {
+      // 名字 / 标题只补记忆（权限请求要回查），不再单独推事件：
+      // 它们不是「卡片内容变了」，多发一帧只会让前端白白合并一次。
+      const identityChanged =
+        (!!name && before?.name !== name) ||
+        (!!title && before?.title !== title);
+      if (memory && (inputChanged || contentChanged || identityChanged)) {
         memory.set(toolCallId, {
           input: merged,
           ...(kind || before?.kind ? { kind: kind ?? before?.kind } : {}),
+          ...(name || before?.name ? { name: name ?? before?.name } : {}),
+          ...(title || before?.title ? { title: title ?? before?.title } : {}),
           ...(content || before?.content
             ? { content: content ?? before?.content }
             : {}),
@@ -351,6 +379,14 @@ interface AcpSessionEntry {
   /** 当前轮次的审批上下文（requestPermission 时要用） */
   turn: {
     requestId: string;
+    /**
+     * 本轮已见的 tool-call 明细（名字 / 标题 / 入参 / 种类）。
+     *
+     * `session/request_permission` 的 `toolCall` 是**增量**：CodeBuddy 这类 agent 只发
+     * `toolCallId`，真正的工具名和参数在上一条 `tool_call` 里。审批卡要靠这里回查，
+     * 否则只剩「工具调用」+ 空白，用户看不到自己在授权什么。
+     */
+    toolCalls: AcpInputMemory;
     /** 审批超时（毫秒）；0 = 不超时。缺省走 DEFAULT_CONFIRM_TIMEOUT_MS */
     confirmTimeoutMs?: number;
     requestPermission?: (
@@ -1562,9 +1598,23 @@ function sessionIdOf(entry: AcpSessionEntry): string | null {
 /**
  * ACP 的权限请求 → 原样转给用户挑。
  *
- * **不做任何映射**：agent 在 `session/request_permission` 里给什么选项
+ * **选项不做任何映射**：agent 在 `session/request_permission` 里给什么选项
  * （optionId / name / kind 四种标准值），界面就渲染什么；用户点了哪个，
  * 哪个 optionId 原样回给 agent。问不问、怎么问，策略完全在 agent 侧。
+ *
+ * 正文同样只认协议里的展示字段：
+ * - `title`（`ToolCall.title` / `ToolCallUpdate.title`）—— 规范定义的
+ *   「Human-readable title describing what the tool is doing」，就是给用户看的；
+ * - `name` → 工具名（规范里的「programmatic name」，没有才退回 `kind`）。
+ *
+ * **不读 `rawInput` 拼 JSON**：规范里它是「原始入参」，没有任何面向用户的形态约定，
+ * 各家 agent 的键名与嵌套完全不同（`{command, description}` / `{cmd}` / `{argv[]}`），
+ * 猜字段只会猜错；展示文案的责任在 agent 的 `title` 上。
+ *
+ * ⚠️ 唯一必须自己补的是**增量合并**：`requestPermission.toolCall` 是 `ToolCallUpdate`，
+ * 协议明说「除 `toolCallId` 外全部可选，只带变化的字段」。CodeBuddy 就只给
+ * `toolCallId`，名字 / 标题全在前面那条 `tool_call` 里 —— 不回查 `turn.toolCalls`
+ * 的话卡片上只剩「工具调用」四个字。
  */
 async function handlePermission(
   entry: AcpSessionEntry,
@@ -1598,18 +1648,20 @@ async function handlePermission(
     return selected(pickReject());
   }
 
-  // title 是 agent 给的自然语言描述（常是整段命令）→ 只放进 command 展示，
-  // 不当工具名（toolName 取 kind，让界面上显示「执行命令」这类中文名）
-  const toolCall = params.toolCall as {
-    toolCallId?: string;
-    title?: string;
-    kind?: string;
-  };
-  const title = toolCall.title ?? "";
+  // 这里是增量更新：缺的字段回查本轮 tool_call 的记忆（CodeBuddy 只给 toolCallId）
+  const toolCall = params.toolCall;
+  const toolCallId = toolCall.toolCallId ?? "";
+  const known = toolCallId ? turn.toolCalls.get(toolCallId) : undefined;
+  // 协议：本次没带的字段视为「没变化」，取回查到的上一份
+  const title = acpTitle(toolCall.title) ?? known?.title ?? "";
+  const kind = (typeof toolCall.kind === "string" && toolCall.kind) || known?.kind;
+  // 工具名优先用 agent 的程序化名（`ToolCall.name`），没有才退回 `kind`
+  const name = acpName(toolCall.name) ?? known?.name;
   // 选项原样透传：界面渲染的就是 agent 给的这组（名字 / 性质都不动）
   const confirm: Omit<AgentConfirmRequest, "id" | "requestId"> = {
-    toolCallId: toolCall.toolCallId ?? "",
-    toolName: acpToolName(toolCall.kind),
+    toolCallId,
+    toolName: acpToolName(name ?? kind),
+    // 正文就是规范里的展示标题；缺失时留空串，前端据此不渲染空 `<pre>`
     command: title,
     workspaceId: entry.agentId,
     workspaceName: undefined,
@@ -1811,8 +1863,15 @@ export async function runAcpAgent(
      */
     const turnStartedAt = Date.now();
     const elapsedMs = (): number => Math.max(0, Date.now() - turnStartedAt);
+    /**
+     * 本轮内按 toolCallId 攒入参：agent 可能先发一半、后面 update 里再补全（见 mergeAcpInput）。
+     * 挂在 turn 上而不是只做局部变量：`session/request_permission` 只带 toolCallId，
+     * 审批卡要按它回查名字 / 参数（见 handlePermission）。
+     */
+    const inputMemory: AcpInputMemory = new Map();
     current.turn = {
       requestId: opts.requestId,
+      toolCalls: inputMemory,
       ...(opts.confirmTimeoutMs !== undefined
         ? { confirmTimeoutMs: opts.confirmTimeoutMs }
         : {}),
@@ -1910,8 +1969,6 @@ export async function runAcpAgent(
        * 少了它，下面那句 `await ... nextUpdate()` 会永远挂着 —— 界面一直「思考中」。
        */
       void source.prompt(text).catch(() => undefined);
-      // 本轮内按 toolCallId 攒入参：agent 可能先发一半、后面 update 里再补全（见 mergeAcpInput）
-      const inputMemory: AcpInputMemory = new Map();
       for (;;) {
         if (opts.signal?.aborted) break;
         const message = await Promise.race([source.nextUpdate(), abortGate]);

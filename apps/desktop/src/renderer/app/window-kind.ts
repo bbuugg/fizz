@@ -8,14 +8,18 @@
  */
 export type WindowKind =
   | { kind: 'main' }
-  | { kind: 'conversation'; initialConversationId?: string }
+  | { kind: 'conversation'; conversationId?: string }
 
 export function resolveWindowKind(search: string): WindowKind {
   const params = new URLSearchParams(search)
   if (params.get('window') === 'conversation') {
     const id = params.get('conversationId')
-    // id 只是「首次打开显示哪条会话」的种子；没有它也照样渲染浮窗（落草稿 / 当前项目）
-    return id ? { kind: 'conversation', initialConversationId: id } : { kind: 'conversation' }
+    /**
+     * 正常路径**一定**带 id（入口在会话详情区，「在浮窗中打开」把 id 递进来；换会话时
+     * 主进程也会带新 id 重载）。没有 id 的形态照旧渲染窗口，交给 `ConversationWindow`
+     * 给一句「没有指定会话」的空态 —— 那里只是兜底，别在这里抛错把窗口开成白屏。
+     */
+    return id ? { kind: 'conversation', conversationId: id } : { kind: 'conversation' }
   }
   return { kind: 'main' }
 }

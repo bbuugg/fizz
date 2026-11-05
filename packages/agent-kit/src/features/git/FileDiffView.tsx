@@ -9,6 +9,7 @@
  * 不放进工具返回值、不送回模型：那样会把整文件灌进模型上下文。
  */
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 import type { DiffHunk } from '@fizz/agent-kit/shared/lib/diff'
 
 /** `DiffHunk` 的定义搬到了 `lib/diff`（解析器和视图共用）；这里转出，保持老引用可用 */
@@ -37,6 +38,7 @@ export function FileDiffView({
   /** delete_file：入参没有内容，无法对比，只提示删了哪个文件 */
   deleted?: boolean
 }) {
+  const t = useT()
   const { adds, dels } = diffStat(hunks)
 
   let oldNo = 1
@@ -55,10 +57,12 @@ export function FileDiffView({
       </div>
 
       {deleted ? (
-        <div className="px-2 py-1.5 text-muted-foreground">文件已删除（工具入参没有内容，无原文可对比）</div>
+        <div className="px-2 py-1.5 text-muted-foreground">
+          {t('文件已删除（工具入参没有内容，无原文可对比）')}
+        </div>
       ) : hunks.length === 0 ? (
         <div className="px-2 py-1.5 text-muted-foreground">
-          没有可展示的文本差异（二进制文件，或只有权限 / 模式变化）
+          {t('没有可展示的文本差异（二进制文件，或只有权限 / 模式变化）')}
         </div>
       ) : (
         // 整块 diff 正文进内容白名单（styles.css）：挂在滚动容器上，跨行拖选才连得起来。

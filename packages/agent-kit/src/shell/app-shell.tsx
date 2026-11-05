@@ -62,7 +62,7 @@ import { AppUpdateBadge } from "@fizz/agent-kit/shell/layout/AppUpdateBadge";
 import { AppUpdateNotifier } from "@fizz/agent-kit/shell/AppUpdateNotifier";
 import { SystemMonitorBadge } from "@fizz/agent-kit/shared/components/SystemMonitorBadge";
 import { BackgroundTasksBadge } from "@fizz/agent-kit/shared/components/BackgroundTasksBadge";
-import { TransferTray } from "@fizz/agent-kit/shared/components/TransferTray";
+import { TransferBadge } from "@fizz/agent-kit/shared/components/TransferBadge";
 import { CommandPalette } from "@fizz/agent-kit/shell/CommandPalette";
 import { ScriptRunHost } from "@fizz/agent-kit/features/scripts/RunScriptDialog";
 import { ImportConversationDialog } from "@fizz/agent-kit/features/projects/ImportConversationDialog";
@@ -738,13 +738,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
 
             {/*
-          全局传输托盘：`fixed` 定位、贴在状态栏上沿，**与工作行的布局无关**，所以放在这里
-          只是「跟状态栏同属外壳的常驻层」这个语义位置（真要放进工作行反而会被 flex 当成
-          一个占位的列）。一条传输都没有时它自己回 null。
-        */}
-            <TransferTray />
-
-            {/*
           应用内更新提示（desktop 打包版专属）：只在「有新版本待下载 / 已下载待重启」时
           弹一条常驻 toast，别的档位自己 dismiss。web 宿主没有 appUpdate，整块空转。
         */}
@@ -767,17 +760,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               }
               right={<StatusBarNodes app={app} />}
               /*
-            右端 `actions` 槽：**后台任务**入口 + **更新指示条**（有事才出现的信息位）+
-            **应用日志**入口（最右那颗，右下角一眼可及）。AI 助手已上移到顶栏右上角
-            （见 AiAssistantButton）。
-            更新指示条点它只打开设置（不直接下载，理由见 AppUpdateBadge 文件头）。
-            后台任务放最左（紧贴 spacer）：它比「有新版本」更常用，且点开是一张清单，
-            靠右那颗留给一眼可及的日志入口。
-          */
+                右端 `actions` 槽：**后台任务** + **SFTP 传输**两个清单入口 + **更新指示条**
+                （有事才出现的信息位）+ **应用日志**入口（最右那颗，右下角一眼可及）。
+                AI 助手已上移到顶栏右上角（见 AiAssistantButton）。
+                更新指示条点它只打开设置（不直接下载，理由见 AppUpdateBadge 文件头）。
+                两颗清单徽标放最左（紧贴 spacer）：它们比「有新版本」更常用，点开都是一张
+                清单；靠右那颗留给一眼可及的日志入口。
+              */
               actions={
                 <>
                   {/* 耗时活儿「转到后台」之后唯一的常驻可见处（无任务时自己隐掉） */}
                   <BackgroundTasksBadge app={app} />
+                  {/* SFTP 上传 / 下载：原来是右下角一张常驻浮层，改成同款徽标（无传输时自己隐掉） */}
+                  <TransferBadge />
                   <AppUpdateBadge onOpenSettings={openSettings} />
                   <SysmonButton />
                   <FilesButton />

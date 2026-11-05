@@ -74,6 +74,10 @@ function ConfirmHeadline({ confirm }: { confirm: AgentConfirmRequest }) {
 
 /** 审批项的命令块（等宽、可滚动，长命令不撑破卡片） */
 function ConfirmCommand({ command }: { command: string }) {
+  // 空正文不渲染：`<pre>` 没内容也占一行 padding，卡片上会多出一条空条。
+  // 正文是 ACP 的 `ToolCall.title`（服务端按增量回查补齐），agent 连 title 都没给时
+  // 才会是空串 —— 那种情况下抬头已经把工具名说清楚了。
+  if (!command.trim()) return null
   return (
     <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-background/70 px-2 py-1.5 font-mono text-xs">
       {command}

@@ -29,6 +29,7 @@
  * 主体**左列分组清单 / 右列详情**，窄屏（`lg` 以下）退化成上下两块、清单在上。
  */
 import { useEffect, useMemo, useState } from 'react'
+import { toast } from 'sonner'
 import {
   CalendarClock,
   Clock,
@@ -37,17 +38,21 @@ import {
   Loader2,
   MessageSquare,
   Pencil,
+  Play,
   Plus,
   RefreshCw,
   Timer,
   TriangleAlert
 } from 'lucide-react'
 import type { TaskTrigger } from '@fizz/contracts/types'
+import { t as translate } from '@fizz/i18n'
 import { Button } from '@fizz/ui/button'
 import { Switch } from '@fizz/ui/switch'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { InlineDeleteButton } from '@fizz/agent-kit/shared/components/InlineDeleteButton'
+import { RowActionButton } from '@fizz/agent-kit/shared/components/RowAction'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { permissionOption } from '@fizz/agent-kit/shared/lib/permission'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { conversationTitle } from '@fizz/agent-kit/shared/lib/conversation-title'
@@ -89,9 +94,10 @@ function shortTime(ts: number): string {
 
 /** 触发方式的一句话描述 */
 function scheduleText(trigger: TaskTrigger): string {
-  if (trigger.cron) return `cron：${trigger.cron}`
-  if (trigger.at !== undefined) return `一次性：${new Date(trigger.at).toLocaleString()}`
-  return '未设置时间表'
+  if (trigger.cron) return translate('cron：{cron}', { cron: trigger.cron })
+  if (trigger.at !== undefined)
+    return translate('一次性：{at}', { at: new Date(trigger.at).toLocaleString() })
+  return translate('未设置时间表')
 }
 
 /**
@@ -108,41 +114,42 @@ function modelTextOf(
   acpAgents: { id: string; name: string; models?: { value: string; name: string }[] }[]
 ): string {
   const { configId, modelId } = template
-  if (!configId) return '未选择'
+  if (!configId) return translate('未选择')
   if (template.backend === 'acp') {
     const agent = acpAgents.find((a) => a.id === configId)
-    if (!agent) return '未选择（外部 Agent 已删除）'
-    if (!modelId) return `${agent.name} · 跟随 agent 默认`
+    if (!agent) return translate('未选择（外部 Agent 已删除）')
+    if (!modelId) return translate('{name} · 跟随 agent 默认', { name: agent.name })
     const model = (agent.models ?? []).find((m) => m.value === modelId)
     return `${agent.name} · ${model?.name ?? modelId}`
   }
-  if (!modelId) return '未选择'
+  if (!modelId) return translate('未选择')
   const config = models.find((m) => m.id === configId)
-  return config ? `${config.name} · ${modelId}` : '未选择（配置已删除）'
+  return config ? `${config.name} · ${modelId}` : translate('未选择（配置已删除）')
 }
 
 /** 相对时间（本地时钟驱动，秒级刷新） */
 function relativeTime(from: number, now: number): string {
   const seconds = Math.max(0, Math.floor((now - from) / 1000))
-  if (seconds < 60) return `${seconds} 秒前`
+  if (seconds < 60) return translate('{n} 秒前', { n: seconds })
   const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes} 分钟前`
+  if (minutes < 60) return translate('{n} 分钟前', { n: minutes })
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} 小时前`
-  return `${Math.floor(hours / 24)} 天前`
+  if (hours < 24) return translate('{n} 小时前', { n: hours })
+  return translate('{n} 天前', { n: Math.floor(hours / 24) })
 }
 
 /** 「上次触发」那半句：没触发过 / 已停用各有各的说法 */
 function lastText(trigger: TaskTrigger, now: number): string {
   if (trigger.lastTriggeredAt !== undefined)
-    return `上次触发：${relativeTime(trigger.lastTriggeredAt, now)}`
-  return trigger.enabled ? '还没触发过' : '已停用'
+    return translate('上次触发：{time}', { time: relativeTime(trigger.lastTriggeredAt, now) })
+  return trigger.enabled ? translate('还没触发过') : translate('已停用')
 }
 
 export function TriggersPanel() {
   // `openConversation` 是**宿主包装过**的那个（选中 + 切视图 + 把面板标签也落到位），
   // 不是 store 里那个裸的 —— 光调 store 在「目标已经是当前会话」时会早退，看着像点了没反应
   const { app, triggers, openConversation, openSettingsTab } = useAppContext()
+  const t = useT()
   /** 本地时钟：相对时间秒级刷新用（服务端推送只管数据，不管「时间在走」） */
   const [now, setNow] = useState(() => Date.now())
   /** 右列选中的那条（`null` = 没选，右列显示一句引导） */
@@ -264,8 +271,8 @@ export function TriggersPanel() {
    * 绑了但项目已被删 = 兜底名（触发时会自动退化成临时工作区，见调度器）。
    */
   const workspaceNameOf = (id?: string): string => {
-    if (!id) return AUTO_GROUP_NAME
-    return app.workspaces.find((w) => w.id === id)?.name ?? ORPHAN_NAME
+    if (!id) return t(AUTO_GROUP_NAME)
+    return app.workspaces.find((w) => w.id === id)?.name ?? t(ORPHAN_NAME)
   }
 
   const openCreate = () => {
@@ -282,6 +289,16 @@ export function TriggersPanel() {
     }
   }
 
+  /** 「立即运行」：服务端只回「已受理」，会话异步起，所以成功提示在面板这一层给 */
+  const runNow = async (trigger: TaskTrigger) => {
+    try {
+      await triggers.runTrigger(trigger.id)
+      toast.success(t('已开始运行「{name}」', { name: trigger.name }))
+    } catch {
+      // 失败提示已由 hook 里的 `run()` 统一 toast
+    }
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/*
@@ -291,9 +308,12 @@ export function TriggersPanel() {
       */}
       <div className="flex shrink-0 flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:px-5">
         <div className="min-w-0">
-          <h1 className="text-base font-semibold">定时任务</h1>
+          <h1 className="text-base font-semibold">{t('定时任务')}</h1>
           <p className="text-xs text-muted-foreground">
-            到点自动起一轮会话 · 共 {total} 条 · {enabledCount} 条启用中
+            {t('到点自动起一轮会话 · 共 {total} 条 · {enabledCount} 条启用中', {
+              total,
+              enabledCount
+            })}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -304,12 +324,12 @@ export function TriggersPanel() {
             onClick={() => void refresh()}
           >
             <RefreshCw className={cn('size-4', refreshing && 'animate-spin')} />
-            刷新
+            {t('刷新')}
           </Button>
           {/* 不再要求「先有项目」：不绑工作区也能建（每次触发自动建临时工作区） */}
           <Button size="sm" onClick={openCreate}>
             <Plus className="size-4" />
-            新建定时任务
+            {t('新建定时任务')}
           </Button>
         </div>
       </div>
@@ -320,13 +340,13 @@ export function TriggersPanel() {
           {triggers.loading && total === 0 ? (
             <div className="flex h-full items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" />
-              正在加载定时任务…
+              {t('正在加载定时任务…')}
             </div>
           ) : total === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 px-6 py-10 text-center">
               <CalendarClock className="size-8 text-muted-foreground/50" />
               <div className="space-y-1">
-                <p className="text-sm font-medium">还没有定时任务</p>
+                <p className="text-sm font-medium">{t('还没有定时任务')}</p>
               </div>
             </div>
           ) : (
@@ -347,7 +367,13 @@ export function TriggersPanel() {
                     ) : (
                       <Folder className="size-3.5 shrink-0" />
                     )}
-                    <span className="min-w-0 flex-1 truncate">{group.name}</span>
+                    <span className="min-w-0 flex-1 truncate">
+                      {group.id === AUTO_GROUP
+                        ? t(AUTO_GROUP_NAME)
+                        : group.name === ORPHAN_NAME
+                          ? t(ORPHAN_NAME)
+                          : group.name}
+                    </span>
                     <span className="shrink-0 tabular-nums">
                       {byWorkspace.get(group.id)?.length ?? 0}
                     </span>
@@ -359,41 +385,56 @@ export function TriggersPanel() {
                       now - trigger.lastTriggeredAt < RECENT_MS
                     const active = selected?.id === trigger.id
                     return (
-                      <button
+                      <div
                         key={trigger.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedId(trigger.id)
-                          // 换了选中 = 放弃上一次的删除确认（与「点别处就反悔」同一口径）
-                          setArmedId(null)
-                        }}
                         // 选中态用左侧色条 + 底色：清单里同时有停用（压暗）与选中两种状态，
                         // 只用底色的话停用的那条选中了也看不出来
                         className={cn(
-                          'flex w-full items-start gap-2 rounded-md border-l-2 px-2 py-1.5 text-left text-sm transition-colors',
+                          'flex w-full items-start gap-1 rounded-md border-l-2 px-2 py-1.5 text-sm transition-colors',
                           active
                             ? 'border-l-primary bg-primary-soft'
                             : 'border-l-transparent hover:bg-foreground/5',
                           !trigger.enabled && 'opacity-55'
                         )}
-                        title={`${trigger.name} — ${scheduleText(trigger)} · ${lastText(trigger, now)}`}
                       >
-                        <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                        <span className="min-w-0 flex-1">
-                          <span className="flex items-center gap-1.5">
-                            {recent && (
-                              <span
-                                className="size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"
-                                aria-label="刚触发过"
-                              />
-                            )}
-                            <span className="min-w-0 flex-1 truncate">{trigger.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedId(trigger.id)
+                            // 换了选中 = 放弃上一次的删除确认（与「点别处就反悔」同一口径）
+                            setArmedId(null)
+                          }}
+                          className="flex min-w-0 flex-1 items-start gap-2 text-left"
+                          title={`${trigger.name} — ${scheduleText(trigger)} · ${lastText(trigger, now)}`}
+                        >
+                          <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-center gap-1.5">
+                              {recent && (
+                                <span
+                                  className="size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"
+                                  aria-label={t('刚触发过')}
+                                />
+                              )}
+                              <span className="min-w-0 flex-1 truncate">{trigger.name}</span>
+                            </span>
+                            <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                              {scheduleText(trigger)} · {lastText(trigger, now)}
+                            </span>
                           </span>
-                          <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                            {scheduleText(trigger)} · {lastText(trigger, now)}
-                          </span>
-                        </span>
-                      </button>
+                        </button>
+                        {/* 行尾「立即运行」：与「编辑 / 删除」同一套小图标钮。**放在行按钮外面**
+                            （嵌套按钮不合法），所以点它不会连带选中 / 打开这一行 */}
+                        <IconTip label={t('立即运行')}>
+                          <RowActionButton
+                            className="mt-0.5 shrink-0"
+                            aria-label={t('立即运行定时任务')}
+                            onClick={() => void runNow(trigger)}
+                          >
+                            <Play className="size-3.5" />
+                          </RowActionButton>
+                        </IconTip>
+                      </div>
                     )
                   })}
                 </div>
@@ -406,7 +447,7 @@ export function TriggersPanel() {
         <div className="min-h-0 flex-1 overflow-auto rounded-lg border">
           {!selected ? (
             <div className="flex h-full items-center justify-center px-6 py-10 text-center text-sm text-muted-foreground">
-              选中左边一条定时任务查看详情。
+              {t('选中左边一条定时任务查看详情。')}
             </div>
           ) : (
             <div className="flex flex-col gap-4 p-4">
@@ -421,7 +462,9 @@ export function TriggersPanel() {
                     )}
                     <span className="truncate">{workspaceNameOf(selected.workspaceId)}</span>
                     {selectedWorkspaceMissing ? (
-                      <span className="shrink-0 text-destructive">（目录不存在，触发会被跳过）</span>
+                      <span className="shrink-0 text-destructive">
+                        {t('（目录不存在，触发会被跳过）')}
+                      </span>
                     ) : null}
                   </p>
                 </div>
@@ -439,23 +482,25 @@ export function TriggersPanel() {
                     两个档位都不命中，轨道背景整个丢失、只剩一个和面板同色的圆点，
                     看起来就是「按钮不见了，只有悬停时才冒出一个 tooltip」。
                   */}
-                  <IconTip label={selected.enabled ? '停用' : '启用'}>
+                  <IconTip label={selected.enabled ? t('停用') : t('启用')}>
                     <span className="inline-flex items-center">
                       <Switch
                         checked={selected.enabled}
                         onCheckedChange={(checked) =>
                           void triggers.toggleTrigger(selected.id, checked)
                         }
-                        aria-label={selected.enabled ? '停用定时任务' : '启用定时任务'}
+                        aria-label={
+                          selected.enabled ? t('停用定时任务') : t('启用定时任务')
+                        }
                       />
                     </span>
                   </IconTip>
-                  <IconTip label="编辑">
+                  <IconTip label={t('编辑')}>
                     <Button
                       variant="ghost"
                       size="sm"
                       className="size-8 p-0"
-                      aria-label="编辑定时任务"
+                      aria-label={t('编辑定时任务')}
                       onClick={() => {
                         setEditing(selected)
                         setEditOpen(true)
@@ -487,9 +532,9 @@ export function TriggersPanel() {
               </div>
 
               <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-                <dt className="text-muted-foreground">触发方式</dt>
+                <dt className="text-muted-foreground">{t('触发方式')}</dt>
                 <dd className="min-w-0 break-all">{scheduleText(selected)}</dd>
-                <dt className="text-muted-foreground">状态</dt>
+                <dt className="text-muted-foreground">{t('状态')}</dt>
                 <dd>
                   <span
                     className={cn(
@@ -503,14 +548,14 @@ export function TriggersPanel() {
                         selected.enabled ? 'bg-emerald-500' : 'bg-muted-foreground'
                       )}
                     />
-                    {selected.enabled ? '启用中' : '已停用'}
+                    {selected.enabled ? t('启用中') : t('已停用')}
                   </span>
                 </dd>
-                <dt className="text-muted-foreground">上次触发</dt>
+                <dt className="text-muted-foreground">{t('上次触发')}</dt>
                 <dd>{lastText(selected, now)}</dd>
-                <dt className="text-muted-foreground">创建时间</dt>
+                <dt className="text-muted-foreground">{t('创建时间')}</dt>
                 <dd>{new Date(selected.createdAt).toLocaleString()}</dd>
-                <dt className="text-muted-foreground">权限</dt>
+                <dt className="text-muted-foreground">{t('权限')}</dt>
                 <dd
                   className={cn(
                     'min-w-0',
@@ -520,10 +565,10 @@ export function TriggersPanel() {
                 >
                   {permissionOption(selected.template.permissionMode ?? 'full').label}
                   {(selected.template.permissionMode ?? 'full') === 'confirm' && (
-                    <span className="ml-1.5 text-xs">（无人值守时会拒绝写操作）</span>
+                    <span className="ml-1.5 text-xs">{t('（无人值守时会拒绝写操作）')}</span>
                   )}
                 </dd>
-                <dt className="text-muted-foreground">模型 / Agent</dt>
+                <dt className="text-muted-foreground">{t('模型 / Agent')}</dt>
                 <dd className="min-w-0 truncate">
                   {modelTextOf(selected.template, app.models, app.acpAgents)}
                 </dd>
@@ -532,19 +577,19 @@ export function TriggersPanel() {
                     「浏览器：关闭 / MCP：不挂」这种用户从没设过的假事实 */}
                 {selected.template.backend === 'acp' ? (
                   <>
-                    <dt className="text-muted-foreground">浏览器 / MCP</dt>
-                    <dd className="min-w-0">不适用（外部 Agent 自带工具）</dd>
+                    <dt className="text-muted-foreground">{t('浏览器 / MCP')}</dt>
+                    <dd className="min-w-0">{t('不适用（外部 Agent 自带工具）')}</dd>
                   </>
                 ) : (
                   <>
-                    <dt className="text-muted-foreground">浏览器</dt>
+                    <dt className="text-muted-foreground">{t('浏览器')}</dt>
                     <dd className="min-w-0">
                       {selected.template.browserSettings
                         ? selected.template.browserSettings.enabled
-                          ? '开启'
-                          : '关闭'
+                          ? t('开启')
+                          : t('关闭')
                         : // 存量任务没有这个字段 = 触发时按**全局默认**走（不是「关闭」）
-                          '跟随全局默认'}
+                          t('跟随全局默认')}
                     </dd>
                     <dt className="text-muted-foreground">MCP</dt>
                     <dd className="min-w-0">
@@ -555,20 +600,20 @@ export function TriggersPanel() {
                                 app.mcpServers.find((server) => server.id === id)?.name ?? id
                             )
                             .join('、')
-                        : '不挂'}
+                        : t('不挂')}
                     </dd>
                   </>
                 )}
               </dl>
 
               <div className="space-y-1.5">
-                <h3 className="text-sm font-medium">需求</h3>
+                <h3 className="text-sm font-medium">{t('需求')}</h3>
                 {selected.template.prompt ? (
                   <pre className="max-h-72 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs whitespace-pre-wrap">
                     {selected.template.prompt}
                   </pre>
                 ) : (
-                  <p className="text-xs text-muted-foreground">（没有填需求）</p>
+                  <p className="text-xs text-muted-foreground">{t('（没有填需求）')}</p>
                 )}
               </div>
 
@@ -580,18 +625,18 @@ export function TriggersPanel() {
               */}
               <div className="space-y-1.5">
                 <h3 className="flex items-center gap-2 text-sm font-medium">
-                  运行记录
+                  {t('运行记录')}
                   {runs.length > 0 && (
                     <span className="text-xs font-normal tabular-nums text-muted-foreground">
-                      {runs.length} 次
+                      {t('{n} 次', { n: runs.length })}
                     </span>
                   )}
                 </h3>
                 {runs.length === 0 ? (
                   <p className="text-xs text-muted-foreground">
                     {selected.enabled
-                      ? '还没跑过：到点会在侧栏里出现一个会话。'
-                      : '还没跑过（现在是停用状态）。'}
+                      ? t('还没跑过：到点会在侧栏里出现一个会话。')
+                      : t('还没跑过（现在是停用状态）。')}
                   </p>
                 ) : (
                   <div className="overflow-hidden rounded-md border divide-y divide-border">
@@ -602,7 +647,9 @@ export function TriggersPanel() {
                         onClick={() =>
                           openConversation(conversation.id, conversation.workspaceId)
                         }
-                        title={`打开这个会话：${conversationTitle(conversation.title)}`}
+                        title={t('打开这个会话：{title}', {
+                          title: conversationTitle(conversation.title)
+                        })}
                         className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-foreground/5"
                       >
                         <MessageSquare className="size-3.5 shrink-0 text-muted-foreground" />
@@ -610,7 +657,7 @@ export function TriggersPanel() {
                         {/* 还没点开过：与侧栏会话行同一个标记 */}
                         {conversation.unseen && (
                           <span
-                            aria-label="未查看"
+                            aria-label={t('未查看')}
                             className="size-1.5 shrink-0 rounded-full bg-destructive"
                           />
                         )}
@@ -625,17 +672,17 @@ export function TriggersPanel() {
                 )}
                 {missingRuns > 0 && (
                   <p className="text-xs text-muted-foreground">
-                    另有 {missingRuns} 条会话已被删除，不再列出。
+                    {t('另有 {n} 条会话已被删除，不再列出。', { n: missingRuns })}
                   </p>
                 )}
               </div>
 
               <p className="flex items-start gap-1.5 rounded-md border border-dashed px-3 py-2 text-xs leading-5 text-muted-foreground">
                 <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-                跑出来的会话与手动新建的会话完全一样，在侧栏里能看到。
+                {t('跑出来的会话与手动新建的会话完全一样，在侧栏里能看到。')}
                 {selected.workspaceId
-                  ? '每次触发都落在上面那个工作区里。'
-                  : '每次触发都会新建一个临时工作区（空目录、不进项目列表）。'}
+                  ? t('每次触发都落在上面那个工作区里。')
+                  : t('每次触发都会新建一个临时工作区（空目录、不进项目列表）。')}
               </p>
             </div>
           )}

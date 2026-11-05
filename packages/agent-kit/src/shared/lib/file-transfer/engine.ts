@@ -2,7 +2,7 @@
  * 传输引擎：分片上传 / 下载的编排（模块级，**不绑组件生命周期**）。
  *
  * 为什么在模块级而不是组件里：传输要活得比发起它的组件长 —— SFTP 面板关掉、切标签、
- * 面板被回收，传输都得继续跑并继续被托盘看见。所以现场在 store（`transfer` slice）、
+ * 面板被回收，传输都得继续跑并继续被传输徽标看见。所以现场在 store（`transfer` slice）、
  * 编排在这里，两边都不随组件挂载卸载。
  *
  * 进度 / 速度 / 取消三件事的分工：
@@ -24,7 +24,7 @@ import { nextSpeed, planUploadChunks } from '@fizz/agent-kit/shared/lib/file-tra
 export interface RunUploadInput {
   file: File
   hostId: string
-  /** 主机显示名（托盘里要能区分「传到哪台机器」） */
+  /** 主机显示名（清单里要能区分「传到哪台机器」） */
   hostLabel: string
   /** 远端目标目录 */
   dir: string
@@ -122,7 +122,7 @@ export type UploadOutcome = 'done' | 'failed' | 'canceled'
 /**
  * 上传一个文件到 `dir/name`（分片串行）。
  *
- * 不抛：一切结果都落成托盘里那条任务的终态（`done` / `failed` / `canceled`），**并回给
+ * 不抛：一切结果都落成清单里那条任务的终态（`done` / `failed` / `canceled`），**并回给
  * 调用方** —— 调用方（SftpPanel / TerminalPanel）逐文件 `await` 它，只为了知道「这一个
  * 传完了，接着下一个」，以及最后能报一句「几项成功 / 几项失败」。不该为每个调用点包一层
  * try/catch。
@@ -170,13 +170,32 @@ export async function runUpload(input: RunUploadInput): Promise<UploadOutcome> {
      * 直到用户打开才发现。这是本改造唯一会静默出错的地方。
      */
     for (const part of plan) {
+      /**
+       * 用户点了取消：**下一片都不再发**。
+       *
+       * ⚠️ 不能只指望 `signal` 把在途请求打断 —— desktop 的 IPC 桥不转发 `AbortSignal`
+       * （见 `cancelTransfer`），那边 `abort()` 只是把 signal 置位、请求照旧跑到底。
+       * 少了这一句，取消要等到「服务端主动回 canceled」才有机会生效；而服务端若不知道
+       * （见下面的 `transferId`），就一路传到 100% 变成「已完成」—— 用户看到的就是
+       * 「点了取消没反应」。
+       */
+      if (controller.signal.aborted) throw new TransferCanceled()
+
       const bytes = new Uint8Array(await file.slice(part.start, part.end).arrayBuffer())
+      /**
+       * ⚠️ `transferId` **每一片都必须带**：服务端按它登记这一片的取消函数
+       * （`sftp.ts` 的 `writeFile` → `transfers` map），`POST /api/sftp/abort` 靠它
+       * 销毁在途写流并删掉半份文件。漏了它服务端只能用一个临时 key
+       * （`ul-${Date.now()}-${name}`，每片都不同），`sftpAbort` 永远命中不了 ——
+       * 取消就只剩「客户端不发下一片」，远端还留着一个内容完整但只有前几片的坏文件。
+       */
       const result = await api.sftpUploadChunk(
         {
           hostId,
           dir,
           name: file.name,
           index: part.index,
+          transferId: id,
           dataBase64: bytesToBase64(bytes)
         },
         { signal: controller.signal }
@@ -189,6 +208,12 @@ export async function runUpload(input: RunUploadInput): Promise<UploadOutcome> {
       lastAt = now
       useAgentStore.getState().patchTransfer(id, { done: part.end, speed })
     }
+
+    /**
+     * 最后一次检查：取消可能正好落在「最后一片刚成功」那一瞬。不挡的话这条会报 `done`，
+     * 而用户明明点了取消 —— 清单里「已取消」自己跳成「已完成」就是从这里来的。
+     */
+    if (controller.signal.aborted) throw new TransferCanceled()
 
     useAgentStore.getState().settleTransfer(id, 'done')
     return 'done'
@@ -223,7 +248,7 @@ export async function runDownload(input: RunDownloadInput): Promise<DownloadOutc
 
   /**
    * ⚠️ **先开 sink（= 先让用户选落点）再记任务**：用户在保存框里点取消时，`createSink`
-   * 回 `null`，这里**一个分片请求都不发、托盘里也不留任何记录**。反过来先 `addTransfer`
+   * 回 `null`，这里**一个分片请求都不发、清单里也不留任何记录**。反过来先 `addTransfer`
    * 的话，用户会看到一条永远停在 0% 的「已取消」，还得自己清掉。
    */
   const sink = await (input.sink ? input.sink() : createSink(name))
@@ -251,6 +276,8 @@ export async function runDownload(input: RunDownloadInput): Promise<DownloadOutc
     // 空文件：一个请求都不发（`eof` 判定在 size === 0 上没有意义），直接把落点收尾
     if (size <= 0) {
       await sink.close()
+      // 空文件也一样：`close()` 期间点了取消就按取消收场（与下面的成功路径同一条规矩）
+      if (controller.signal.aborted) throw new TransferCanceled()
       useAgentStore.getState().settleTransfer(id, 'done', { localPath: sink.localPath ?? undefined })
       return 'done'
     }
@@ -261,6 +288,9 @@ export async function runDownload(input: RunDownloadInput): Promise<DownloadOutc
 
     // 串行，理由同 runUpload（下载侧是顺序追加到 sink，乱序同样会写坏）
     while (offset < size) {
+      // 取消检查同 runUpload：desktop 那条 IPC 桥不转发 signal，只能自己查
+      if (controller.signal.aborted) throw new TransferCanceled()
+
       const length = Math.min(SFTP_CHUNK_BYTES, size - offset)
       const res = await api.sftpDownloadChunk(
         { hostId, path, offset, length },
@@ -269,9 +299,15 @@ export async function runDownload(input: RunDownloadInput): Promise<DownloadOutc
       const bytes = base64ToBytes(res.dataBase64)
 
       /**
+       * 取消可能刚好在这一片在途时发生（desktop 的 abort 拦不住它）—— 返回之后再看一眼：
+       * 用户已经不要这次下载了，这批字节就不该再往落点里写（FSA 支 abort 之后再 write 还会抛）。
+       */
+      if (controller.signal.aborted) throw new TransferCanceled()
+
+      /**
        * ⚠️ 防御分支：**0 字节且 `eof === false`** 是异常（正常只会出现在 `offset` 恰好
        * 落在文件末尾且 `eof === true` 时）。放过去的话 `offset` 一动不动 = 死循环，
-       * 表现是托盘里那条进度永远卡住、网络请求一直发 —— 比报错难查得多。
+       * 表现是清单里那条进度永远卡住、网络请求一直发 —— 比报错难查得多。
        */
       if (bytes.length === 0 && !res.eof) {
         throw new Error(`远端在偏移 ${offset} 处提前结束（服务端回了 0 字节却没标记 eof）`)
@@ -290,6 +326,8 @@ export async function runDownload(input: RunDownloadInput): Promise<DownloadOutc
     }
 
     await sink.close()
+    // 同上传：最后一片刚落地时点了取消，不该报 done（用户点的取消要算数）
+    if (controller.signal.aborted) throw new TransferCanceled()
     useAgentStore.getState().settleTransfer(id, 'done', { localPath: sink.localPath ?? undefined })
 
     /**
@@ -310,7 +348,7 @@ export async function runDownload(input: RunDownloadInput): Promise<DownloadOutc
     } catch {
       // 忽略：收尾失败不该掩盖下面的原始错误
     }
-    if (controller.signal.aborted) {
+    if (controller.signal.aborted || err instanceof TransferCanceled) {
       useAgentStore.getState().settleTransfer(id, 'canceled')
       return 'canceled'
     }
@@ -324,19 +362,35 @@ export async function runDownload(input: RunDownloadInput): Promise<DownloadOutc
 /**
  * 取消一笔传输。
  *
- * 分两件事，缺一不可：
- * 1. **打断在途请求**（`controller.abort()`）。注意 desktop 的 IPC 桥**不转发
- *    `AbortSignal`**（只有 SSE 那条路有，见 `agent-host/src/transport-ipc.ts`），
- *    所以这一下在桌面端只让循环不再发下一片，当前那片会传完 —— 所以还要有第 2 步。
- * 2. **上传额外通知服务端**：销毁写流 + **删掉远端那个只写了一半的文件**。分片协议下
- *    它是真实存在、内容完整的一堆前缀字节，不删就是一个「看起来成功」的坏文件。
- *    下载**不需要**：它是「客户端拉」，不拉了就是取消，服务端那边没有在途状态要收拾。
+ * 这里只做三件事：置位 `signal`、把这一条标成「已取消」、通知服务端收尾 —— 真正「停」
+ * 是**引擎循环自己查 `signal.aborted`** 做到的（`runUpload` / `runDownload` 每片开头）。
+ *
+ * ⚠️ 为什么不靠 `abort()` 打断在途请求：desktop 的 IPC 桥**不转发 `AbortSignal`**
+ * （只有 SSE 那条路有，见 `agent-host/src/transport-ipc.ts`）。在桌面端 `abort()` 对
+ * 已经发出去的那一片是空转 —— 曾经因此出现「点了取消，进度一路涨到 100% 变成已完成」：
+ * 循环不查 signal、服务端也收不到取消（分片没带 `transferId`，见 `runUpload` 里的说明）。
+ *
+ * ⚠️ 上传**必须**再调一次 `sftpAbort`：销毁在途写流 + 删掉远端那个只写了一半的文件。
+ * 分片协议下它是真实存在、内容完整的一堆前缀字节，不删就是一个「看起来成功」的坏文件。
+ * 下载不需要：它是「客户端拉」，不拉了就是取消，服务端那边没有在途状态要收拾。
  */
 export function cancelTransfer(id: string): void {
   const entry = active.get(id)
-  entry?.controller.abort()
-  if (!entry?.abort) return
-  const api = getApi()
+  /**
+   * 引擎已经收场（`finally` 里删了）—— 点取消本来就该什么都不发生。
+   * 不去乐观改一条「已经没有引擎在管」的记录：那种行一旦被标成取消，就再也没人会纠正它。
+   */
+  if (!entry) return
+
+  entry.controller.abort()
+  /**
+   * **立刻**标成取消：不等当前这一片返回（桌面端一片可能跑上几秒），点了要马上有反应。
+   * 不会和引擎的 `done` 打架 —— 两条成功路径在 `settleTransfer(done)` 之前都查了
+   * `signal.aborted`，`patchTransfer` 也只动 `active` 的行。
+   */
+  useAgentStore.getState().settleTransfer(id, 'canceled')
+
+  if (!entry.abort) return
   // 刻意不 await、也不报错：取消是正常操作，服务端那条路本身幂等（见 api.ts 的 sftpAbort）
-  void api?.sftpAbort(entry.abort)
+  void getApi()?.sftpAbort(entry.abort)
 }

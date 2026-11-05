@@ -197,7 +197,20 @@ export function AppearanceTab() {
         />
       </section>
 
-      <section className="space-y-2">
+      {/*
+        `@container`：主题卡的列数按**这块内容自己的宽度**算，不看视口。
+
+        设置页的内容区宽度由「主区域面板宽度 - 左侧菜单」决定，面板可以拖宽拖窄；手机那套
+        两级设置又是另一种宽度。用 `sm:grid-cols-2` 的话，窄面板 + 宽屏幕会排出两列挤扁的
+        预览卡，宽面板又永远只有两列。
+
+        下面那条 `grid-cols-[repeat(auto-fill,minmax(min(100%,16rem),1fr))]`：
+        - `16rem` = 一格的最小宽度，再窄预览图就退化成几块色条，认不出是哪套主题；
+        - 外层 `min(100%, …)` 给比 16rem 还窄的容器（手机）兜底 —— 少了它，轨道撑在
+          16rem 不动，容器一窄就横向溢出；
+        - `auto-fill` 让浏览器按可用宽度自己决定一行几格，不必为「2 格 / 3 格」写死断点。
+      */}
+      <section className="@container space-y-2">
         <div className="flex items-center gap-1.5 text-sm font-medium">
           <Palette className="size-3.5" />
           {tr('配色主题')}
@@ -213,7 +226,7 @@ export function AppearanceTab() {
             if (next) setTheme(next)
           }}
           aria-label={tr('配色主题')}
-          className="grid w-full gap-2 sm:grid-cols-2"
+          className="grid w-full grid-cols-[repeat(auto-fill,minmax(min(100%,16rem),1fr))] gap-2"
         >
           {COLOR_THEMES.map((option) => {
             const active = theme === option.id

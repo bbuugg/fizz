@@ -111,14 +111,14 @@
    */
   --sidebar-scrim: color-mix(in oklab, var(--foreground) 30%, transparent);
   /*
-   * 外壳常驻 chrome 的高度 —— 给 `fixed` 覆盖层（手机抽屉、传输托盘）算让位用。
+   * 外壳常驻 chrome 的高度 —— 给 `fixed` 覆盖层（手机抽屉）算让位用。
    *
    * 为什么必须是 token：`fixed` 元素是相对视口定位的，拿不到外壳容器上的任何 padding /
    * flex 占位，只能自己把几条常驻边的高度算进去。而各端的高度不同 —— 桌面 / web 是
    * `WebTitleBar` + `StatusBar` 两条 `h-9`；安卓壳换成了 `MobileAppBar`（`h-11`），
    * 且既不渲染状态栏也没有底部导航条（见 `apps/mobile` 的 `app-shell.tsx` /
    * `styles.css`）。
-   * 各端覆盖这几个值，共享组件（`ActivitySidebar` / `TransferTray`）一行都不用动 ——
+   * 各端覆盖这几个值，共享组件（`ActivitySidebar`）一行都不用动 ——
    * 与 `--sidebar-mobile-inset` 同一条分工。
    *
    * `--app-tabbar-height` 只有带底部导航的外壳才会给非零值（目前没有这样的外壳），

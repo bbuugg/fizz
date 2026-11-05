@@ -110,3 +110,25 @@ export { MessageOutline } from '@fizz/agent-kit/features/chat/MessageOutline'
 export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@fizz/ui/tooltip'
 
 export { bootstrapLanguage, useLanguage, useT, persistLanguage } from './shared/lib/language'
+
+/**
+ * 标签装饰：给主区域标签条上的**任意一颗标签**换图标、加状态点（右上角小圆点）。
+ *
+ * 标签图标本来由 `useTabMeta` 按 key 前缀硬编码，外部改不了；这个登记表是那条旁路
+ * （插件面板自己的忙碌态、某个标签的特殊图标都走它）。会话「在跑 / 等你点头」与终端
+ * 「活着 / 已退出」是**内建**的，不用外部写。
+ *
+ * ⚠️ 写入方要在标签关闭 / 卸载时 `clearTabDecoration(key)`：这张表不随面板布局回收。
+ */
+export {
+  clearTabDecoration,
+  getTabDecoration,
+  getTabDecorationsVersion,
+  setTabDecoration,
+  subscribeTabDecorations
+} from '@fizz/agent-kit/shared/lib/tab-decorations'
+export type {
+  TabDecoration,
+  TabStatus,
+  TabStatusTone
+} from '@fizz/agent-kit/shared/lib/tab-decorations'

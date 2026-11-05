@@ -10,7 +10,7 @@
  * - 对话是 SSE：`event: <start|event|end>` + `data: <ChatStreamFrame>`。
  */
 import { API_ROUTES, FILES_API } from "@fizz/contracts/agent-api";
-import type { AppLanguage, BrowserSettings, PrefsPatch, PrefsResult } from "@fizz/contracts";
+import type { AppLanguage, BrowserProfileUsage, BrowserSettings, PrefsPatch, PrefsResult } from "@fizz/contracts";
 import type {
   AppLogFrame,
   AppLogResult,
@@ -1380,6 +1380,20 @@ export function createApi(
       request<ConversationSummary[]>(`${API_ROUTES.conversations}/${id}`, {
         method: "DELETE",
       }),
+    /**
+     * 清除**这一个会话**的网站数据（Cookie / 登录态 / localStorage / HTTP 缓存）。
+     *
+     * 内置浏览器一个会话一份持久化 profile，删掉 = 关掉浏览器进程 + 删目录，
+     * **会话与历史消息不动**，下次启动要重新登录。
+     *
+     * 服务端回 204（没有可展示的新状态）；正在看这个会话的面板会收到 `closed`
+     * 事件（reason「网站数据已清除」），自己切回「未启动」。
+     */
+    clearConversationBrowserData: (id: string) =>
+      request<void>(
+        API_ROUTES.conversationBrowserData.replace(":id", id),
+        { method: "DELETE" },
+      ),
     /** 重命名会话（web / 桌面端侧边栏改标题） */
     renameConversation: (id: string, title: string) =>
       request<ConversationSummary[]>(
@@ -1997,6 +2011,25 @@ export function createApi(
         method: "DELETE",
       }),
 
+    /**
+     * 网站数据占用：几个会话的 profile、共占多少字节。
+     *
+     * 注意这是**按磁盘目录统计**的，可能大于会话数（历史残留）。会遍历几十个
+     * Chromium profile，**只在设置页打开 / 清完之后调**，不要塞进任何轮询。
+     */
+    getBrowserData: () => request<BrowserProfileUsage>(API_ROUTES.browserData),
+
+    /**
+     * 清除**所有会话**的网站数据（先关掉所有浏览器会话再删目录），回清完之后的占用。
+     *
+     * 日常场景不要用它 —— 用户想清的是「我这个会话登错号了」，
+     * 那边是 `clearConversationBrowserData`。这条只在设置页当兜底。
+     */
+    clearAllBrowserData: () =>
+      request<BrowserProfileUsage>(API_ROUTES.browserData, {
+        method: "DELETE",
+      }),
+
     // ---------- 插件（磁盘上的 .ts / .js，服务端发现；不加载模块） ----------
     //
     // 两个面刻意分开（服务端 `?scope=global` 与 `?workspaceId=` 是同一份路由）：
@@ -2305,6 +2338,12 @@ export function createApi(
         method: "PATCH",
         body: JSON.stringify({ enabled }),
       }),
+    /** 手动跑一次（已停用 / 一次性已跑过的也能跑）；服务端异步派发，只回「已开始」 */
+    runTaskTrigger: (id: string) =>
+      request<{ ok: true }>(
+        `${API_ROUTES.taskTriggerDetail.replace(":id", id)}/run`,
+        { method: "POST" },
+      ),
     deleteTaskTrigger: (id: string) =>
       request<{ ok: boolean }>(
         API_ROUTES.taskTriggerDetail.replace(":id", id),

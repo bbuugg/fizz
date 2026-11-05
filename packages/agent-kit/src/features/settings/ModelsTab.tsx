@@ -15,8 +15,10 @@
  *   （`AiModelEntry.settings`）：同一个网关下不同模型的能力与上限可以不同。
  *   行尾只显示非默认项（如「输出 8k · 无图」），点 ✎ 在同一弹窗里改。
  * - 「从上游拉取」是独立弹窗：候选 id 可能很长，内嵌会把编辑弹窗撑出横向滚动条（实测）。
- *   勾选若干 → 一次性并进配置；**已在清单里的行显示为已勾选且不可取消** ——
- *   移除请回列表行点 ×，免得两个入口互相打架。
+ *   勾选若干 → 一次性并进配置；**已在清单里的行默认勾上、也可以取消**（取消 = 保存时
+ *   移出）—— 对着上游清单顺手清一遍，比回列表逐行点 × 快得多（用户报过「已选中的取消
+ *   不了」）。只认**这次清单里出现过的**行，上游没返回的模型一律保留，免得上游分页 /
+ *   少返回时把配置删空。
  *
  * ## 与旧版的关键差异
  * 旧版把「模型 id + 窗口」放在**配置弹窗**里编辑，导致两处都能改模型（且窗口只能手敲数字）。
@@ -217,6 +219,13 @@ export function ModelsTab({ app }: { app: AgentApp }) {
   const [pickingId, setPickingId] = useState<string | null>(null)
   /** 本次勾选（草稿）：确认后才并进配置，取消就丢掉 */
   const [picked, setPicked] = useState<string[]>([])
+  /**
+   * 本次被**取消勾选的已有模型**（保存时移出配置）。
+   *
+   * 与 `picked` 分开记，是为了让「全选 / 清空选择」只作用于新增：一个数组同时表达
+   * 「加」和「减」的话，「清空选择」会把整份配置一键清空，误触代价太大。
+   */
+  const [unpicked, setUnpicked] = useState<string[]>([])
   const [fetched, setFetched] = useState<string[] | null>(null)
   const [fetching, setFetching] = useState(false)
   const [fetchError, setFetchError] = useState('')
@@ -244,6 +253,7 @@ export function ModelsTab({ app }: { app: AgentApp }) {
     setFetchError('')
     setFilter('')
     setPicked([])
+    setUnpicked([])
   }
 
   const openAdd = (): void => {
@@ -429,13 +439,19 @@ export function ModelsTab({ app }: { app: AgentApp }) {
     resetUpstream()
   }
 
-  /** 确认添加：把勾选项并进配置（已在清单里的不重复加），窗口与模型设置原样保留 */
+  /**
+   * 按本次勾选**同步**这份配置的模型清单：新增的追加、取消勾选的已有模型移出。
+   *
+   * 保留下来的原有条目**原样带着**（窗口 / 进阶设置都在条目里，重建会丢），
+   * 新增的只有 `{ id }`（其余走默认）。
+   */
   const confirmPick = async (): Promise<void> => {
     const config = pickingConfig
-    if (!config || !picked.length) return
+    if (!config || (!picked.length && !unpicked.length)) return
     const known = new Set(config.models.map((m) => m.id))
+    const kept = config.models.filter((m) => !unpicked.includes(m.id))
     const added = picked.filter((id) => !known.has(id)).map((id) => ({ id }))
-    const ok = await saveModels(config, [...config.models, ...added])
+    const ok = await saveModels(config, [...kept, ...added])
     if (ok) closePicker()
   }
 
@@ -926,9 +942,10 @@ export function ModelsTab({ app }: { app: AgentApp }) {
               <div className="min-h-0 flex-1 space-y-0.5 overflow-x-hidden overflow-y-auto pr-1">
                 {visible.map((id) => {
                   const already = (pickingConfig?.models ?? []).some((model) => model.id === id)
-                  const checked = already || picked.includes(id)
+                  // 已有项默认勾上，取消勾选只是记进 `unpicked`（保存时才真的移出）
+                  const checked = already ? !unpicked.includes(id) : picked.includes(id)
+                  const removing = already && !checked
                   return (
-                    /* 已在配置里的行：勾上但不可点（要移除回列表行上点 ×，免得两个入口打架） */
                     <div
                       key={id}
                       className={cn(
@@ -940,19 +957,17 @@ export function ModelsTab({ app }: { app: AgentApp }) {
                         type="button"
                         role="checkbox"
                         aria-checked={checked}
-                        aria-disabled={already}
-                        title={already ? tr('{id}（已在列表中）', { id }) : id}
+                        title={already ? tr('{id}（已在列表中，取消勾选 = 保存后移出）', { id }) : id}
                         onClick={() =>
                           already
-                            ? undefined
+                            ? setUnpicked((prev) =>
+                                prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id]
+                              )
                             : setPicked((prev) =>
                                 prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id]
                               )
                         }
-                        className={cn(
-                          'flex min-w-0 flex-1 items-center gap-2 text-left',
-                          already && 'cursor-default'
-                        )}
+                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
                       >
                         <span
                           className={cn(
@@ -965,13 +980,16 @@ export function ModelsTab({ app }: { app: AgentApp }) {
                         <span
                           className={cn(
                             'min-w-0 truncate font-mono',
-                            checked ? 'text-foreground' : 'text-muted-foreground'
+                            checked ? 'text-foreground' : 'text-muted-foreground',
+                            removing && 'line-through'
                           )}
                         >
                           {id}
                         </span>
                         {already && (
-                          <span className="shrink-0 text-[0.6875rem] text-muted-foreground">{tr('已在列表')}</span>
+                          <span className="shrink-0 text-[0.6875rem] text-muted-foreground">
+                            {removing ? tr('保存后移出') : tr('已在列表')}
+                          </span>
                         )}
                       </button>
                       {!already && picked.includes(id) && (
@@ -1001,7 +1019,11 @@ export function ModelsTab({ app }: { app: AgentApp }) {
                   size="sm"
                   variant="ghost"
                   className="h-7 px-2 text-xs"
-                  onClick={() => setPicked((prev) => [...new Set([...prev, ...visibleNew])])}
+                  onClick={() => {
+                    // 全选 = 看得见的全勾上（刚被取消的已有项一并恢复，但不动筛选外那些）
+                    setUnpicked((prev) => prev.filter((id) => !visible.includes(id)))
+                    setPicked((prev) => [...new Set([...prev, ...visibleNew])])
+                  }}
                 >
                   {keyword ? tr('全选筛选结果') : tr('全选')}
                 </Button>
@@ -1043,13 +1065,16 @@ export function ModelsTab({ app }: { app: AgentApp }) {
             <Button
               type="button"
               size="sm"
-              disabled={!picked.length || busy}
+              disabled={(!picked.length && !unpicked.length) || busy}
               onClick={() => {
                 setBusy(true)
                 void confirmPick().finally(() => setBusy(false))
               }}
             >
-              {tr('确认添加')}{picked.length ? `（${picked.length}）` : ''}
+              {/* 有移除时不再是「添加」，写清 ±x 让用户按下去之前就知道会改动什么 */}
+              {unpicked.length
+                ? `${tr('保存')}（+${picked.length} / −${unpicked.length}）`
+                : `${tr('确认添加')}${picked.length ? `（${picked.length}）` : ''}`}
             </Button>
           </DialogFooter>
         </DialogContent>

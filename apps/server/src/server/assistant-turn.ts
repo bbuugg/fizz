@@ -11,9 +11,10 @@
  *
  * ## 工具集按 `scope` 二选一（两组互斥）
  *
- * - `project`（缺省）：`buildProjectTools` + `buildModelTools`（经 `setup` 覆盖装配 ——
- *   不建文件工具，因为跨项目场景下文件工具的 root 语义不清晰）。模型配置工具也只在这
- *   一支里：它改的是全局设置（网关 / key / 模型清单），不属于任何单个工作区；
+ * - `project`（缺省）：`buildProjectTools` + `buildModelTools` + `buildMcpTools`（经
+ *   `setup` 覆盖装配 —— 不建文件工具，因为跨项目场景下文件工具的 root 语义不清晰）。
+ *   模型 / MCP 配置工具也只在这一支里：它们改的是全局设置（网关 / key / 模型清单、
+ *   MCP server 清单），不属于任何单个工作区；
  * - `terminal`：只挂客户端带上来的终端工具。
  *
  * 审批走共用的 `createConfirmGate`；run 挂进共享的 run 注册表（`chat-run.ts`），
@@ -25,7 +26,8 @@ import type { AssistantSendInput } from '@fizz/contracts/agent-api'
 import { resolveContextWindow } from '@fizz/contracts/types'
 import type { AgentChatMessage, AgentStreamEvent, AiPermissionMode, TurnUsage } from '@fizz/contracts/types'
 import { defaultContextWindowFromEnv, runAgent, type RunAgentResult } from '@fizz/agent'
-import { buildModelTools, buildProjectTools } from '@fizz/tools'
+import { buildMcpTools, buildModelTools, buildProjectTools } from '@fizz/tools'
+import { probeMcpServerTools } from '@fizz/mcp'
 import { domain, markDirty } from './state'
 import { probeModelsFromUpstream } from './model-probe'
 import { refreshPluginModels } from './plugin-models'
@@ -58,7 +60,7 @@ export function buildAssistantInstructions(): string {
   const workspaces = domain.listWorkspaces()
   const now = new Date().toLocaleString('zh-CN', { hour12: false })
   const lines = [
-    '你是 Fizz 的项目管理助手,负责帮用户管理 Fizz 里的项目(工作区):查看清单、登记已有目录、新建目录、从 Git 克隆、打开项目、给项目建会话、创建 / 删除 worktree、删除项目、查看 / 创建 / 修改 / 删除 / 启停定时任务、给项目写插件,以及管理全局的模型配置(列 / 增 / 改 / 删网关与模型)。',
+    '你是 Fizz 的项目管理助手,负责帮用户管理 Fizz 里的项目(工作区):查看清单、登记已有目录、新建目录、从 Git 克隆、打开项目、给项目建会话、创建 / 删除 worktree、删除项目、查看 / 创建 / 修改 / 删除 / 启停定时任务、给项目写插件,以及管理全局的模型配置(列 / 增 / 改 / 删网关与模型)与 MCP 配置(列 / 增 / 改 / 删外部工具服务)。',
     `默认项目根目录:${getDefaultProjectsRoot()}。建议用户把项目放这里(根内创建免审批);用户明确要放别处时照做(根外创建会弹审批卡)。`,
     `当前时间:${now}(需要算 at 这一类一次性触发时刻时以它为准)。`,
     workspaces.length
@@ -78,6 +80,9 @@ export function buildAssistantInstructions(): string {
     '- 模型配置(每份 = 一个网关:服务商类型 + Base URL + API key)也能管:list_model_configs 看现状(拿 id);fetch_upstream_models 从上游拉可选模型 id;create_model_config / update_model_config / delete_model_config 管配置本身;add_model_entries / update_model_entry / remove_model_entry 管配置下的模型条目(增 / 改 / 删);',
     '- 拉模型优先给 fetch_upstream_models 传 id(复用已存配置的地址与密钥);只有本地网关(ollama / vllm)或用户在对话里刚给出 key 时才裸探;apiKey 只在用户明确提供时写进配置,不要编造、也不要在回复里回显;',
     '- 改模型配置等于改 agent 自己用的大脑:把 toolCall 关掉、把模型删光、把配置删掉都会让会话发不出去;动手前先一句话讲清影响,删配置 / 删模型 / 换 key 前先用 list_model_configs 确认目标是哪一个;所有改动下一轮对话生效(这一轮仍用原模型);',
+    '- MCP(外部工具服务)配置也能管:list_mcp_servers 看现状(拿 id)、list_mcp_server_tools 连上它列一遍工具(用来验证配置对不对,连不上会把原因带回来)、create_mcp_server / update_mcp_server / delete_mcp_server 管配置本身(stdio 填命令 / 参数 / 环境变量,http·sse 填地址 / 请求头);',
+    '- **MCP 配好不等于生效**:它是**按会话启用**的 —— 配完要让用户去会话输入框上方的扳手(MCP)里勾选,那个会话下一轮才会连接;你这一轮不会因此多出那些工具。别向用户承诺「已经能用了」,要明确说「已保存,去会话里勾选一下」;',
+    '- MCP 的 stdio 命令是在**跑 Agent 的机器**上执行的,配错就是起不来:先问清用户要接哪个 server(本地命令还是远端地址),别自己编 npx 包名;环境变量 / 请求头里的 token 只在用户明确给出时写,回复里不要回显(工具结果也只给键名);',
     '- 定时任务的创建 / 修改 / 删除 / 启停与写插件都会弹审批卡,且产出或改动的是「以后会自动执行」的东西 —— 动手前先用一句话向用户讲清你要做什么;改 / 删定时任务前先 list 出来确认是哪一条;',
     '- 根目录外的创建、删除、worktree 变更都会弹审批卡等用户点头;',
     '- remove_project 缺省只移除登记、不删磁盘文件;deleteFiles=true 只对 worktree 项目生效;删之前必须向用户复述一次要删什么;',
@@ -323,6 +328,31 @@ export async function startAssistantTurn(input: AssistantSendInput): Promise<Sta
         })
       : {}
 
+  /**
+   * MCP 配置工具（server 的列 / 增 / 改 / 删 + 连上列工具）：
+   * 与模型配置同一批 —— 只挂 `project` 作用域，因为写的是**全局设置**。
+   *
+   * ⚠️ 它**不负责**在当前这轮里用上 MCP 工具：MCP 是按会话启用的
+   * （`AgentConversation.mcpServerIds`），这一轮的工具集在 `runAgent` 之前就装配完了。
+   * 工具回话里已经写明「去会话工具条勾选」，别在这里做「顺手把新 server 塞进本轮」的
+   * 尝试 —— 助手没有会话概念，塞进哪个会话都说不清。
+   */
+  const mcpTools =
+    scope === 'project'
+      ? buildMcpTools({
+          mcp: {
+            list: () => domain.listMcpServers(),
+            save: (input) => domain.saveMcpServer(input),
+            remove: (id) => domain.deleteMcpServer(id),
+            // 与「设置 → MCP」那颗扳手按钮同源：连上、列完、立刻断开
+            probe: (server) => probeMcpServerTools(server)
+          },
+          permissionMode,
+          getPermissionMode: () => run.permissionMode,
+          requestConfirm: gate.requestConfirm
+        })
+      : {}
+
   const onEvent = (event: AgentStreamEvent): void => {
     if (event.type === 'finish' && event.usage) turnUsage = event.usage
     foldEventIntoParts(assistantParts, event)
@@ -348,7 +378,7 @@ export async function startAssistantTurn(input: AssistantSendInput): Promise<Sta
           ? buildTerminalAssistantInstructions() + terminalHint
           : buildAssistantInstructions(),
       // 工具集**按作用域二选一**,不再合并 —— 两组能力互斥(见 scope 的说明)
-      tools: scope === 'terminal' ? clientTools : { ...projectTools, ...modelTools }
+      tools: scope === 'terminal' ? clientTools : { ...projectTools, ...modelTools, ...mcpTools }
     },
     contextWindow: resolveContextWindow(
       modelConfig.models,

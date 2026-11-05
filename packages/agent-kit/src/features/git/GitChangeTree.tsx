@@ -37,7 +37,7 @@ function renderNodes(
           跟着往右跑，不再固定。
         */}
         <div className="flex items-center gap-1.5 rounded py-1 pr-1.5 hover:bg-foreground/5">
-          <div className="min-w-0 flex-1 overflow-x-auto">
+          <div className="min-w-0 flex-1 overflow-x-auto no-scrollbar">
             <button
               type="button"
               aria-expanded={!isCollapsed}
