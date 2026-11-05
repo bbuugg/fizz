@@ -26,9 +26,11 @@
  * ## 布局
  *
  * 照 `LogsPanel` 的口径：顶部工具条固定（标题 + 统计 + 刷新 + 新建），下面才滚。
- * 主体**左列分组清单 / 右列详情**，窄屏（`lg` 以下）退化成上下两块、清单在上。
+ * 主体**左列分组清单 / 右列详情**；宽度不够时退化成上下两块、清单在上。
+ * 判据是**标签容器**的宽度（ResizeObserver），不是视口 —— 这一页会被拖进主区域的
+ * 分栏 / 浮窗里，窗口仍宽但容器可能只有几百像素。
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import {
   CalendarClock,
@@ -60,6 +62,14 @@ import { TriggerEditDialog } from '@fizz/agent-kit/features/tasks/TriggerEditDia
 
 /** 「刚触发过」的判定窗口：窗口内的行亮绿点（与侧栏看板同一口径） */
 const RECENT_MS = 60_000
+
+/**
+ * 左右分栏所需的最小**容器**宽度。
+ *
+ * 再窄还硬分两栏的话，左边的清单（最多 28rem）会把详情压成一条，cron / prompt 根本
+ * 读不了；低于这个宽度就上下叠放，清单在上、详情在下。
+ */
+const SIDE_BY_SIDE_MIN_WIDTH = 860
 
 /** 「已删除的项目」的兜底名：任务绑了工作区、而那个工作区后来被删了 */
 const ORPHAN_NAME = '（已删除的项目）'
@@ -163,6 +173,18 @@ export function TriggersPanel() {
   const [refreshing, setRefreshing] = useState(false)
   /** 删除按钮的「二次确认」态挂在哪个 id 上（null = 没有） */
   const [armedId, setArmedId] = useState<string | null>(null)
+  /** 容器够宽才左右分栏（判据见 `SIDE_BY_SIDE_MIN_WIDTH`；首帧回调在绘制前送达） */
+  const [sideBySide, setSideBySide] = useState(false)
+  const bodyRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const el = bodyRef.current
+    if (!el) return
+    const observer = new ResizeObserver(([entry]) => {
+      setSideBySide(entry.contentRect.width >= SIDE_BY_SIDE_MIN_WIDTH)
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000)
@@ -302,11 +324,16 @@ export function TriggersPanel() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/*
-        顶部工具条：窄屏竖排、宽屏横排（`sm:` 断点切换）。
+        顶部工具条：容器窄时竖排、够宽时横排（与主体同一条判据，不看视口）。
         不能一直是 `justify-between`：右边带字按钮是 `shrink-0`，标题块是 `min-w-0`，
-        窄屏下标题会被压到 0 宽（`LogsPanel` 同款处理）。
+        窄容器下标题会被压到 0 宽（`LogsPanel` 同款处理）。
       */}
-      <div className="flex shrink-0 flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:px-5">
+      <div
+        className={cn(
+          'flex shrink-0 gap-2 px-4 py-3 sm:px-5',
+          sideBySide ? 'flex-row items-center justify-between gap-4' : 'flex-col'
+        )}
+      >
         <div className="min-w-0">
           <h1 className="text-base font-semibold">{t('定时任务')}</h1>
           <p className="text-xs text-muted-foreground">
@@ -334,9 +361,21 @@ export function TriggersPanel() {
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden px-4 pb-4 sm:px-5 lg:flex-row">
+      <div
+        ref={bodyRef}
+        className={cn(
+          'flex min-h-0 flex-1 gap-4 overflow-hidden px-4 pb-4 sm:px-5',
+          sideBySide ? 'flex-row' : 'flex-col'
+        )}
+      >
         {/* 左列：按归属（工作区 / 自动创建）分组的清单 */}
-        <div className="min-h-0 flex-1 overflow-auto rounded-lg border lg:max-w-md">
+        <div
+          className={cn(
+            'min-h-0 flex-1 overflow-auto rounded-lg border',
+            // 只有左右分栏时才限宽；上下叠放时让它占满容器
+            sideBySide && 'max-w-md'
+          )}
+        >
           {triggers.loading && total === 0 ? (
             <div className="flex h-full items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" />
