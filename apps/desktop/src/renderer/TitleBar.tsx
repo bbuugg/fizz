@@ -78,6 +78,7 @@ export function TitleBar() {
       <div className="app-no-drag flex items-stretch">
         <TitleBarButton
           title={assistantOpen ? '关闭 AI 助手' : '打开 AI 助手'}
+          active={assistantOpen}
           onClick={() => setAssistantPanelOpen(!assistantOpen)}
         >
           <Sparkles className="size-3.5" />
@@ -121,27 +122,33 @@ export function TitleBar() {
 function TitleBarButton({
   title,
   destructive,
+  active,
   onClick,
   children
 }: {
   title: string
   destructive?: boolean
+  /** 开关类按钮的开启态（目前只有 AI 助手）：图标用主题色，与 web 端 `AiAssistantButton` 一致 */
+  active?: boolean
   onClick: () => void
   children: ReactNode
 }) {
-  const base = 'flex w-11 items-center justify-center text-muted-foreground transition-colors'
+  const base = 'flex w-11 items-center justify-center transition-colors'
   return (
     <button
       type="button"
       title={title}
+      aria-pressed={active}
       onClick={onClick}
       className={
-        destructive
-          // shadcn v4 没有 --destructive-foreground token（Button 的 destructive 变体也是
-          // bg-destructive text-white）：写 text-destructive-foreground 会因 token 缺失
-          // 静默不生成，图标停在灰色
-          ? `${base} hover:bg-destructive hover:text-white`
-          : `${base} hover:bg-secondary hover:text-foreground`
+        active
+          ? `${base} text-primary hover:bg-secondary hover:text-primary`
+          : destructive
+            // shadcn v4 没有 --destructive-foreground token（Button 的 destructive 变体也是
+            // bg-destructive text-white）：写 text-destructive-foreground 会因 token 缺失
+            // 静默不生成，图标停在灰色
+            ? `${base} text-muted-foreground hover:bg-destructive hover:text-white`
+            : `${base} text-muted-foreground hover:bg-secondary hover:text-foreground`
       }
     >
       {children}

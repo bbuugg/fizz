@@ -1012,26 +1012,23 @@ export function ApiPage({ requestId }: { requestId: string }) {
       )}
 
       {/*
-        响应区：高度由上面的分隔条拖动决定。与请求区同构 —— 整块是一棵 Radix Tabs，
-        标题行里放 `TabsList`（还没响应时退化成一行「响应」字样），下面是两个 `TabsContent`。
+        响应区：高度由上面的分隔条拖动决定。
+
+        ⚠️ 标题行**恒为「响应」**，`响应体 / 响应头` 的 TabsList 放在面板内容里 —— 别把
+        切换项挪回标题行：有没有响应会让同一块区域在「一行字」和「一排 tab」之间变形，
+        看起来像整块面板被替换掉了。标题行只放「这次响应是什么样」（状态码 / 耗时 / 大小 /
+        内容类型），正文的两种视图在下面的面板里切。
       */}
-      <Tabs
-        value={resTab}
-        onValueChange={(value) => setResTab(value as 'body' | 'headers')}
+      <div
         className="flex shrink-0 flex-col gap-0 overflow-hidden bg-background"
         style={respCollapsed ? undefined : { height: Math.round(resRatio * 100) + '%' }}
       >
-        <div className="flex shrink-0 items-center gap-3 px-3 py-1.5 text-xs">
-          {response ? (
-            <TabsList>
-              <TabsTrigger value="body">响应体</TabsTrigger>
-              <TabsTrigger value="headers">
-                响应头{respHeaders.length ? ` (${respHeaders.length})` : ''}
-              </TabsTrigger>
-            </TabsList>
-          ) : (
-            <span className="shrink-0 font-medium text-muted-foreground">响应</span>
-          )}
+        {/*
+          高度必须**定死**：状态码那枚徽标带 `py-0.5`，自然高度比纯文字高 4px ——
+          靠 `py-1.5` 撑的话，请求前后这一行会轻微跳一下。
+        */}
+        <div className="flex h-8 shrink-0 items-center gap-3 px-3 text-xs">
+          <span className="shrink-0 font-medium text-muted-foreground">响应</span>
           {response && (
             <span className={cn('shrink-0 rounded px-1.5 py-0.5 font-medium', statusClass(response.status))}>
               {response.status} {response.statusText}
@@ -1059,7 +1056,20 @@ export function ApiPage({ requestId }: { requestId: string }) {
 
         {!respCollapsed &&
           (response ? (
-            <>
+            <Tabs
+              value={resTab}
+              onValueChange={(value) => setResTab(value as 'body' | 'headers')}
+              className="flex min-h-0 flex-1 flex-col gap-0"
+            >
+              <div className="flex shrink-0 items-center px-3 pb-1.5">
+                <TabsList>
+                  <TabsTrigger value="body">响应体</TabsTrigger>
+                  <TabsTrigger value="headers">
+                    响应头{respHeaders.length ? ` (${respHeaders.length})` : ''}
+                  </TabsTrigger>
+                </TabsList>
+              </div>
+
               <TabsContent value="body" className="min-h-0 flex-1 overflow-hidden px-3 pb-3">
                 <div className="h-full overflow-hidden">
                   {/* 响应体用 Monaco：自带格式化按钮（工具栏的「代码」图标） */}
@@ -1111,13 +1121,13 @@ export function ApiPage({ requestId }: { requestId: string }) {
                   </div>
                 )}
               </TabsContent>
-            </>
+            </Tabs>
           ) : (
             <div className="px-3 pb-3 text-xs text-muted-foreground">
               发送请求后在此查看响应（状态码、耗时与正文）。
             </div>
           ))}
-      </Tabs>
+      </div>
     </div>
   )
 }
