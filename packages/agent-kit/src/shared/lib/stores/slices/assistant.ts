@@ -203,6 +203,10 @@ export interface AssistantSlice {
    * 返回 `false` = 这一下没发出去（没有会话 / 那条不见了 / 正在回复中），此时
    * **一个字都没删**：先截再发会撞上 `sendAssistant` 的「跑着不发」守卫，历史已经
    * 删了却没发出去就是白丢一段。面板据此把编辑态还回去。
+   *
+   * 返回 `true` = 历史已截断、新一轮**已经发起**（不是「整轮跑完了」）：`sendAssistant`
+   * 要等整条流结束才 resolve，所以这里**不 await** 它 —— 否则调用方拿到的「发出去了」
+   * 信号会晚一整轮，输入框里已发出的草稿要等回复结束才清。
    */
   resendAssistantMessage(
     messageId: string,
@@ -574,7 +578,12 @@ export const createAssistantSlice: StateCreator<AgentStore, [], [], AssistantSli
        * 截断后那份自然就是「从这条之前重来」，不需要额外的重置参数。
        */
       writeSession(key, (s) => ({ ...s, messages: s.messages.slice(0, index) }))
-      await get().sendAssistant(text, scope, target, terminalTabKey, permissionMode)
+      /**
+       * ⚠️ **不 await**：`sendAssistant` 内部等整条流跑完才 resolve，await 它会让本函数
+       * 的「已发出」回包晚一整轮 —— 面板据此清草稿时，输入框会在整个回复期间一直挂着
+       * 已经发出去的文本（用户报的就是这个）。发起即返回，失败由会话自己的 `error` 承载。
+       */
+      void get().sendAssistant(text, scope, target, terminalTabKey, permissionMode)
       return true
     },
 

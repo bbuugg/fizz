@@ -112,6 +112,35 @@ describe('assistant slice · 停止', () => {
   })
 })
 
+describe('assistant slice · 编辑重发', () => {
+  it('回包在发出后立刻到（不等整轮跑完），面板才能及时清空草稿', async () => {
+    const abort = vi.fn().mockResolvedValue({ aborted: true })
+    const streamAssistant = vi
+      .fn()
+      .mockResolvedValueOnce(undefined) // 第一轮立刻收尾，留下一条可编辑的历史
+      .mockImplementation(hangingStream) // 重发这一轮挂住（模拟正在回复）
+    const { slice, read } = makeStore({ abort, streamAssistant })
+
+    const sessionId = slice.ensureAssistantSession()
+    await slice.sendAssistant('旧话', 'project')
+    const userId = read(sessionId).messages[0]?.id
+    expect(userId).toBeTruthy()
+
+    let resendResult: boolean | null = null
+    void slice.resendAssistantMessage(userId!, '改后的话', 'project').then((ok) => {
+      resendResult = ok
+    })
+
+    // 重发已经开跑（这一轮流还挂着）……
+    await vi.waitFor(() => expect(read(sessionId).streaming).toBe(true))
+    // ……回包却已经到了：面板据此清草稿，输入框不会在整轮回复期间挂着已发出的文本
+    await vi.waitFor(() => expect(resendResult).toBe(true))
+
+    slice.stopAssistant()
+    await vi.waitFor(() => expect(read(sessionId).streaming).toBe(false))
+  })
+})
+
 describe('assistant slice · 会话池', () => {
   it('ensure 有就复用；new 才换新的一段并切过去', () => {
     const { slice, activeId } = makeStore({})
