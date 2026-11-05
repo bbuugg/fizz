@@ -187,12 +187,34 @@ npm run dev:web     # 另开一个终端：vite dev server（5173，/api 已代�
 ### 方式三：桌面端
 
 ```bash
-npm run dev:desktop     # 开发模式（Electron + 进程内 server）
+npm run dev:desktop     # 开发模式（Electron + 进程内 server，vite 5175）
 npm run pack:desktop    # 免安装目录
 npm run dist:desktop    # 当前平台安装包（另有 dist:win / dist:mac / dist:linux）
 ```
 
-桌面端数据目录与网页版隔离（`userData/server-data`），首次打开先配一个模型就能用。
+桌面端与网页版共用数据目录（`~/.fizz-server`，可用 `FIZZ_DATA_DIR` 覆盖）。
+`npm run dev:desktop` 例外：它用独立的 `Fizz Dev` userData（数据目录在
+`<userData>/server-data`），所以 **dev 版可以和安装好的客户端同时运行**，
+两边不会抢单实例锁，也不会互相覆盖存储。想让 dev 版连真实数据时显式设置
+`FIZZ_DATA_DIR`（此时别同时开另一个实例写同一份数据）。
+
+`FIZZ_DATA_DIR` 是原样使用的，**不做 `~` 展开**，各平台都要写绝对路径：
+
+```powershell
+# PowerShell：临时生效（当前窗口），然后从这个窗口启动 dev
+$env:FIZZ_DATA_DIR = "$env:USERPROFILE\.fizz-server"
+npm run dev:desktop
+
+# 永久生效（之后新启动的进程都能读到；需要重开终端 / 重启已开的客户端）
+setx FIZZ_DATA_DIR "$env:USERPROFILE\.fizz-server"
+```
+
+```bat
+:: cmd：临时生效
+set FIZZ_DATA_DIR=%USERPROFILE%\.fizz-server
+:: cmd：永久生效
+setx FIZZ_DATA_DIR "%USERPROFILE%\.fizz-server"
+```
 
 ### 方式四：安卓端
 

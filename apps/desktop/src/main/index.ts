@@ -6,9 +6,12 @@
  * 「窗口 → preload 传输桥 → 进程内 Hono（`@fizz/agent-host`）」这一条链路。
  * 托盘是唯一「比根应用多」的东西：关闭按钮默认把窗口收进托盘而不是退出进程。
  *
- * 数据目录由 `@fizz/agent-host/env` 设为 `userData/server-data`；因为 appId /
- * productName 与根应用不同，两者的 userData 天然隔离，互不干扰。
+ * 数据目录由 `@fizz/agent-host/env` 兜底为 `~/.fizz-server`（与 web / server 共用一份）。
+ * dev 态（`npm run dev:desktop`）另用 `Fizz Dev` 的 userData 与数据目录，见 `./dev-profile`
+ * —— 安装版与 dev 版因此可以同时运行。
  */
+// ⚠️ 必须排在所有 `@fizz/*` 导入之前：dev-profile 要在 agent-host/env 读取 FIZZ_DATA_DIR 之前求值
+import { IS_DEV_INSTANCE } from './dev-profile'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -57,7 +60,8 @@ import {
   type RemoteAccessState
 } from '../shared/window'
 
-const APP_NAME = 'Fizz'
+/** 托盘 / 退出菜单里的名字；dev 实例带后缀，两个实例同时跑时能分清 */
+const APP_NAME = IS_DEV_INSTANCE ? 'Fizz Dev' : 'Fizz'
 
 let mainWindow: BrowserWindow | null = null
 /** 会话浮窗（**单例**）；关闭即置空。开关语义见 openConversationWindow */
