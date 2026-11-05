@@ -80,7 +80,7 @@ export function CommandPaletteSearch({
         leading={
           <button
             type="button"
-            aria-label="返回命令列表"
+            aria-label={t('返回命令列表')}
             onClick={onBack}
             className="-ml-1 flex size-7 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
@@ -94,7 +94,7 @@ export function CommandPaletteSearch({
         icon={
           searching ? (
             /* 搜索进行中：把输入框的搜索图标换成转圈，进度信号收敛在图标位置 */
-            <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" aria-label="搜索中" />
+            <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" aria-label={t('搜索中')} />
           ) : undefined
         }
       />
@@ -105,10 +105,10 @@ export function CommandPaletteSearch({
             进度信号由输入框图标位置的转圈承担。 */}
         {!trimmed ? (
           <p className="py-6 text-center text-sm text-muted-foreground">
-            输入关键词，按标题与消息内容搜索全部会话
+            {t('输入关键词，按标题与消息内容搜索全部会话')}
           </p>
         ) : results.length > 0 ? (
-          <CommandGroup heading="会话">
+          <CommandGroup heading={t('会话')}>
             {results.map((hit) => {
               // 同一会话可能标题、消息各命中一条：key / value 都带上命中点保证唯一
               const key =
@@ -119,21 +119,21 @@ export function CommandPaletteSearch({
               return (
                 <CommandItem
                   key={key}
-                  value={`${hit.title || '未命名会话'} ${key}`}
+                  value={`${hit.title || t('未命名会话')} ${key}`}
                   keywords={[hit.title, workspaceName].filter((s): s is string => !!s)}
                   onSelect={() => onOpenHit(hit)}
                 >
                   {/* 归档会话仍然能被搜到 —— 给个标记，否则点开一个侧栏里看不见的会话会以为搜错了 */}
                   {hit.archived ? (
-                    <Archive aria-label="已归档" />
+                    <Archive aria-label={t('已归档')} />
                   ) : (
                     <MessageSquare />
                   )}
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
-                      <span className="truncate">{hit.title || '未命名会话'}</span>
+                      <span className="truncate">{hit.title || t('未命名会话')}</span>
                       {hit.archived && (
-                        <span className="shrink-0 text-[0.6875rem] text-muted-foreground">已归档</span>
+                        <span className="shrink-0 text-[0.6875rem] text-muted-foreground">{t('已归档')}</span>
                       )}
                       <span className="ml-auto max-w-32 shrink-0 truncate text-xs text-muted-foreground">
                         {workspaceName}
@@ -141,7 +141,7 @@ export function CommandPaletteSearch({
                     </div>
                     {hit.where === 'message' && (
                       <p className="truncate text-xs text-muted-foreground">
-                        {hit.role === 'user' ? '我：' : ''}
+                        {hit.role === 'user' ? t('我：') : ''}
                         {hit.snippet}
                       </p>
                     )}
@@ -155,11 +155,11 @@ export function CommandPaletteSearch({
              后续搜索列表保持不动，转圈在输入框图标位置 */
           <div className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
             <Loader2 className="size-3.5 animate-spin" />
-            搜索中…
+            {t('搜索中…')}
           </div>
         ) : (
           <p className="py-6 text-center text-sm text-muted-foreground">
-            没有匹配「{trimmed}」的会话
+            {t('没有匹配「{keyword}」的会话', { keyword: trimmed })}
           </p>
         )}
       </CommandList>

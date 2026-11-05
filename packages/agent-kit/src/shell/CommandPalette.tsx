@@ -37,7 +37,6 @@ import {
   FileCode2,
   Gauge,
   MessageSquare,
-  MessageSquarePlus,
   Moon,
   Network,
   FolderTree,
@@ -240,7 +239,7 @@ export function CommandPalette({
                     }}
                   >
                     <FileCode2 />
-                    <span>运行脚本</span>
+                    <span>{t('运行脚本')}</span>
                     <span className="ml-auto text-xs text-muted-foreground">
                       {app.scripts.length}
                     </span>
@@ -255,10 +254,11 @@ export function CommandPalette({
               跟「当前有没有选中工作区」无关。原先整个组挂在 `activeWorkspaceId` 上，
               于是「新对话」不选项目之后这组整块消失，搜索入口看起来就像被删掉了。
 
-              「新建会话 / 当前项目的会话列表」仍然只对活动工作区有意义，留在门里。
+              「当前项目的会话列表」仍然只对活动工作区有意义，留在门里；
+              新建会话不在这里（标题栏 / 项目行都有常驻入口）。
               归档会话不列在根级：那是搜索二级视图的事（归档是收起来，不是消失）。
             */}
-            <CommandGroup heading="会话">
+            <CommandGroup heading={t('会话')}>
               <CommandItem
                 // value 里带上已经敲的词：根级输入「部署」时这一行也能命中
                 // （cmdk 按 value 过滤，等于「输入什么都能看到它」），点进去直接带着词搜
@@ -271,20 +271,14 @@ export function CommandPalette({
               >
                 <Search />
                 <span className="truncate">
-                  {rootQuery.trim() ? `在所有会话中搜索「${rootQuery.trim()}」` : '搜索会话'}
+                  {rootQuery.trim()
+                    ? t('在所有会话中搜索「{query}」', { query: rootQuery.trim() })
+                    : t('搜索会话')}
                 </span>
                 <ChevronRight className="ml-auto" />
               </CommandItem>
               {activeWorkspaceId && (
                 <>
-                  <CommandItem
-                    keywords={['new', 'conversation', '会话', '新建', '新消息']}
-                    onSelect={run(() => void app.newConversation(activeWorkspaceId))}
-                  >
-                    <MessageSquarePlus />
-                    <span>新建会话</span>
-                    <CommandShortcut>{hint('new-conversation')}</CommandShortcut>
-                  </CommandItem>
                   {app.conversations
                     .filter((c) => c.workspaceId === activeWorkspaceId && !c.archivedAt)
                     .map((conversation) => (

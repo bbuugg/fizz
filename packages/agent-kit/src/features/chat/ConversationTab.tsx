@@ -552,6 +552,32 @@ export function ConversationTab({
                 onManage={() => setQuickManageOpen(true)}
               />
             )}
+            {/*
+              「在浮窗中打开」：会话浮窗的**唯一入口**（标题栏那颗全局开关已删除 ——
+              浮窗是「一条会话一个窗口」，没有「哪条会话」的全局开关没有意义）。
+
+              只给真实会话（草稿标签 conversationId 是 null）和实现了多窗口的宿主
+              （desktop）；web / 手机 `openConversationWindow` 为 undefined → 不渲染。
+              浮窗已开着这条就只是聚焦，换一条会让主进程重载那个窗口。
+              位置固定在终端分裂按钮左侧：它属于「整条会话」的动作，排在文件 / 源码 / 面板之前。
+            */}
+            {openFloatWindow && floatConversationId && (
+              <div className="hidden sm:flex">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="h-7! w-8! p-0!"
+                      aria-label={tr('在浮窗中打开')}
+                      onClick={() => void openFloatWindow(floatConversationId)}
+                    >
+                      <PictureInPicture2 className="size-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">{tr('在浮窗中打开')}</TooltipContent>
+                </Tooltip>
+              </div>
+            )}
             {hasDirectory && (
               /* 分裂按钮：左半开/收终端，右半箭头弹 shell 菜单 —— 选一项就新开一条终端 */
               <div className="flex items-center">
@@ -782,31 +808,6 @@ export function ConversationTab({
                   <TooltipContent side="bottom">
                     {sideTab !== null ? tr('收起面板') : tr('展开面板')}
                   </TooltipContent>
-                </Tooltip>
-              </div>
-            )}
-            {/*
-              「在浮窗中打开」：会话浮窗的**唯一入口**（标题栏那颗全局开关已删除 ——
-              浮窗是「一条会话一个窗口」，没有「哪条会话」的全局开关没有意义）。
-
-              只给真实会话（草稿标签 conversationId 是 null）和实现了多窗口的宿主
-              （desktop）；web / 手机 `openConversationWindow` 为 undefined → 不渲染。
-              浮窗已开着这条就只是聚焦，换一条会让主进程重载那个窗口。
-            */}
-            {openFloatWindow && floatConversationId && (
-              <div className="hidden sm:flex">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className="h-7! w-8! p-0!"
-                      aria-label={tr('在浮窗中打开')}
-                      onClick={() => void openFloatWindow(floatConversationId)}
-                    >
-                      <PictureInPicture2 className="size-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom">{tr('在浮窗中打开')}</TooltipContent>
                 </Tooltip>
               </div>
             )}
