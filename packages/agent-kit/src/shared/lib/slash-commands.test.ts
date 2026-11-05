@@ -9,8 +9,9 @@
  * （`scaffoldWorkspaceFile` 一次都没被调）。后者是关键 —— 只测前者的话，将来有人
  * 「顺手」再加一条落模板的调用，测试照样绿。
  *
- * `/git-commit` 防的是另一件事：用户给的提交信息必须**原样**进提示词（模型不许改写），
- * 而没给信息时命令也不能被「缺参数」拦下 —— 它得照常发出去让模型生成。
+ * `/git-commit` 防的是另一件事：提交信息**只由模型生成**，所以命令必须是不带参数的
+ * 形状直接就跑（不能被「缺参数」拦下），且提示词里要有「看 status / diff / log」与
+ * 「不 push」这些边界。
  */
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
@@ -74,27 +75,12 @@ describe('/init', () => {
 })
 
 describe('/git-commit', () => {
-  it('用户给了信息：原样进提示词，并要求一字不改', async () => {
+  it('无参也能跑（不拦「缺参数」），让模型看改动生成提交信息', async () => {
     const { ctx, send } = makeContext()
     const command = builtinSlashCommands(ctx).find((c) => c.name === 'git-commit')
     expect(command).toBeDefined()
 
-    command?.run(ctx, 'fix: 修正标题栏高度')
-    await flush()
-
-    expect(send).toHaveBeenCalledTimes(1)
-    const prompt = String(send.mock.calls[0]?.[0] ?? '')
-    expect(prompt).toContain('fix: 修正标题栏高度')
-    expect(prompt).toContain('原样使用，一字不改')
-    expect(prompt).toContain('不要 push')
-  })
-
-  it('没给信息：不拦（参数可选），让模型看改动生成', async () => {
-    const { ctx, send } = makeContext()
-    const command = builtinSlashCommands(ctx).find((c) => c.name === 'git-commit')
-    expect(command).toBeDefined()
-
-    // 分发层不能因为「缺参数」把它 reject —— 自动生成正是这条命令的一半用途
+    // 分发层不能因为「没参数」把它 reject —— 这条命令本来就不收参数
     const outcome = resolveSlashDispatch('/git-commit', builtinSlashCommands(ctx))
     expect(outcome.kind).toBe('run')
 
@@ -113,7 +99,7 @@ describe('/git-commit', () => {
     const { ctx, send, setError } = makeContext(false)
     const command = builtinSlashCommands(ctx).find((c) => c.name === 'git-commit')
 
-    command?.run(ctx, 'whatever')
+    command?.run(ctx, '')
     await flush()
 
     expect(send).not.toHaveBeenCalled()

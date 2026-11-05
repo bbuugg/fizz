@@ -38,14 +38,6 @@ export interface SlashCommand {
    */
   noArgs?: boolean
   /**
-   * 参数**可选**（如 `/git-commit [提交信息]`）：不给也能跑，给了就原样传进 `run`。
-   *
-   * 为什么与 `noArgs` 分开：`noArgs` 是「根本不存在参数」，浮层里按一下就直接执行；
-   * 这里是「有参数这条路、但不是必须」。缺参数时同样**不能**走 reject —— 否则
-   * `/git-commit` 自动生成信息的那一半永远执行不了。
-   */
-  optionalArgs?: boolean
-  /**
    * 可用性（返回 false 的命令不进列表）：命令存在 ≠ 此刻能用，比如只对某种会话
    * 后端有意义的命令（依赖服务端注入的那种，外部 agent 的协议给不了）。
    */
@@ -103,11 +95,11 @@ export function resolveSlashDispatch(text: string, commands: SlashCommand[]): Sl
   // 参数」三件事。想在无 ctx 的场景（单测、纯静态分析）判可用性，调用方自己
   // 先 filter 好再传进来即可。
   if (!parsed.args) {
-    // 无参 / 参数可选的命令直接进 run：`/init` 压根不需要参数，`/git-commit` 没给信息
-    // 就自动生成。走 reject 会让「不给参数」这半边永远执行不了。
+    // 无参命令（`/init`、`/git-commit`）直接进 run：它们的落点是固定的，走 reject
+    // 就永远执行不了。
     // ⚠️ 这条**不能**反过来放宽成「有 argsHint 就拦、没就放行」—— 命令名认不出时
     // 上一步已经归 text 了，能走到这里的都是表里的命令，缺参数对它们就是漏了。
-    if (command.noArgs || command.optionalArgs) return { kind: 'run', command, args: '' }
+    if (command.noArgs) return { kind: 'run', command, args: '' }
     return { kind: 'reject', message: `/${command.name} ${command.argsHint ?? '需要参数'}` }
   }
   return { kind: 'run', command, args: parsed.args }
@@ -144,13 +136,13 @@ export function filterCommands(commands: SlashCommand[], token: string): SlashCo
  *
  * 注册表就是下面这个数组：加进来浮层、补全、`resolveSlashDispatch*` 立刻认它。
  *
- * 两条命令都**交给模型**，差别只在提示词：
+ * 两条命令都**交给模型**，也没有参数：
  *
  * - `/init`：读项目、写 AGENTS.md。AGENTS.md 的价值全在正文（每轮全文注入的硬约束），
  *   一份「标题 + 空小节」的骨架等于让用户自己再写一遍 —— 早先就是这么做的，用户
  *   拿到手发现是空模板。所以它发一条提示词，让模型读项目、自己写（见 `INIT_PROMPT`）。
- * - `/git-commit`：把当前改动提交一次。用户给了信息就**原样**用（一字不改），没给就
- *   让模型看 diff、照着仓库既有风格自己写（见 `gitCommitPrompt`）。
+ * - `/git-commit`：把当前改动提交一次。提交信息由模型看 diff、照着仓库既有风格生成
+ *   （见 `GIT_COMMIT_PROMPT`）—— 不接受用户手写的信息，免得两套入口。
  *
  * 本文件里没有 fs / fetch，只有「发消息 + 出提示」。
  */
@@ -186,16 +178,15 @@ export function builtinSlashCommands(ctx: SlashCommandContext): SlashCommand[] {
       }
     },
     {
-      // 提交信息是「可选的原文」：给了就一字不改地用，没给才让模型自己写。
-      // 别把「没给」当成 reject —— 自动生成正是这条命令的一半用途（`optionalArgs`）。
+      // 提交信息一律由模型按改动生成：接受用户手写会多一套解析与「照抄还是润色」的
+      // 争议，而这条命令要的只是「看一眼改动，写清楚，提交」。
       name: 'git-commit',
       displayName: '提交改动',
-      description: '提交当前工作区的改动：给了信息就照用，没给就让模型看改动生成',
-      argsHint: '[提交信息]',
-      optionalArgs: true,
+      description: '让模型看当前改动、生成提交信息并提交',
+      noArgs: true,
       available: needsWorkspace,
-      run: (c, args) => {
-        void runGitCommit(c, args)
+      run: (c) => {
+        void runGitCommit(c)
       }
     }
   ]
@@ -257,55 +248,39 @@ async function runInit(c: SlashCommandContext): Promise<void> {
 }
 
 /**
- * `/git-commit` 的提示词。**给了信息与没给是两份**，别合成一份靠模型猜：
+ * `/git-commit` 的提示词。
  *
- * - 给了：那条信息就是用户要落进历史的话，模型只许照抄（「顺手润色」等于改掉用户的
- *   提交说明，而提交信息是给别人看的历史，不是模型的产出）；
- * - 没给：才让模型看 `git status` / `git diff`、参考 `git log` 的风格自己写。
+ * 提交信息由模型根据改动生成 —— 不给用户手写入口，所以这里要把「怎么写」说清楚：
+ * 先看 status / diff，再参考 `git log` 的既有风格；一句话说清做了什么、为什么。
  *
- * 两份共同写死的边界：只提交这次改动相关的文件（无关文件 / 密钥 / 构建产物不碰）、
+ * 边界同样写死：只提交这次改动相关的文件（无关文件 / 密钥 / 构建产物不碰）、
  * **不 push**（提交与推送是两个决定）、失败要贴 git 的原话而不是一句「提交失败」。
  */
-function gitCommitPrompt(message: string): string {
-  const commonTail = `只把这次改动相关的文件加入暂存区；无关文件、密钥、构建产物一律不要提交。
-不要 push —— 这条命令只做提交。
-如果工作区没有可提交的改动，直接告诉我，不要造空提交。
-完成后把提交 hash 与提交信息告诉我；失败就把 git 的原话贴出来。`
-  if (message) {
-    return `按下面这条提交信息，提交当前工作区的改动。
-
-提交信息（**原样使用，一字不改**）：
-"""
-${message}
-"""
-
-先看再提交：
-- \`git status\` / \`git diff\` 弄清这次改了哪些文件；
-- 提交信息必须是上面那条原文 —— 不改大小写、不加类型前缀、不改标点，也不要再附一段总结；
-${commonTail}`
-  }
-  return `为当前工作区做一次提交。
+const GIT_COMMIT_PROMPT = `为当前工作区做一次提交。
 
 先看，再决定：
 - \`git status\` / \`git diff\`（必要时 \`git diff --staged\`）弄清楚改了哪些文件、改了什么；
 - \`git log --oneline -10\` 看一眼这个仓库的提交信息风格，照着写。
 
 提交信息由你根据改动生成：一句话说清「做了什么、为什么」，具体到一眼能看懂；仓库已有固定风格（比如 Conventional Commits）就照它写，没有就别硬加前缀。
-${commonTail}`
-}
+
+只把这次改动相关的文件加入暂存区；无关文件、密钥、构建产物一律不要提交。
+不要 push —— 这条命令只做提交。
+如果工作区没有可提交的改动，直接告诉我，不要造空提交。
+完成后把提交 hash 与提交信息告诉我；失败就把 git 的原话贴出来。`
 
 /**
  * `/git-commit` 的执行：和 `/init` 同一条路 —— 发一条提示词，让模型自己在工作区里提交。
  *
  * 不在前端直接调 `gitAction('commit')` 的原因：提交前要先弄清「哪些文件该进这次提交」
- * 并写 / 拿到提交信息，那正是模型看 diff 的活；前端只负责把「信息是用户给的」这件事
+ * 并生成提交信息，那正是模型看 diff 的活；前端只负责把边界（不 push / 不碰无关文件）
  * 用提示词钉死。
  */
-async function runGitCommit(c: SlashCommandContext, args: string): Promise<void> {
+async function runGitCommit(c: SlashCommandContext): Promise<void> {
   if (!c.app.activeWorkspace?.path) {
     c.app.setError('先选一个有磁盘目录的项目（内置「任务」没有目录，提交不了）')
     return
   }
-  const ok = await c.app.send(gitCommitPrompt(args.trim()))
+  const ok = await c.app.send(GIT_COMMIT_PROMPT)
   if (!ok) c.app.setError('没能发出 /git-commit：这一下被拦住了（压缩上下文中 / 没有可用会话），稍后再试')
 }
