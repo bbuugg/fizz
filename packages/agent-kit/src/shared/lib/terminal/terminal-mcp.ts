@@ -5,7 +5,7 @@
  *
  * 「让 AI 操作终端」这件事在 dogi 里是**内置服务端工具**；fizz 的终端在服务端
  * 但会话不可寻址（见 `terminal-registry.ts`），所以执行必须在渲染端。把渲染端的这几个
- * 能力包成一个**进程内 MCP server**（`@modelcontextprotocol/sdk` 的 `Server` +
+ * 能力包成一个**进程内 MCP server**（`@modelcontextprotocol/sdk` 的 `McpServer` +
  * `InMemoryTransport`），有两点实打实的好处：
  *
  * 1. 工具**定义**（名字 / 描述 / JSON Schema）由 MCP 的 `tools/list` 产出，不是手写常量
@@ -20,13 +20,18 @@
  * 因为同一个 server 会服务多个标签页。
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
+/**
+ * 用高层的 `McpServer`（SDK 推荐 API）：工具由 `registerTool` 声明，`tools/list` 的
+ * JSON Schema 与 `tools/call` 的入参校验都取自**同一份 zod 形状**，不会出现「模型看到
+ * 一份 schema、执行时按另一份」的漂移。
+ *
+ * ⚠️ 代价：`server/mcp.js` 静态引 `zod-to-json-schema` + `zod/v4-mini`，渲染端产物里多出
+ * 一整条 zod 依赖链。为了四个终端工具认这笔账（见 `TOOL_SCHEMAS`），但别把它当通用通道。
+ */
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import type { ZodRawShapeCompat } from '@modelcontextprotocol/sdk/server/zod-compat.js'
+import { z } from 'zod'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  type Tool
-} from '@modelcontextprotocol/sdk/types.js'
 import type { ClientToolSpec } from '@fizz/contracts/agent-api'
 import {
   getActiveTerminalTabKey,
@@ -336,80 +341,98 @@ function sendKeys(input: { keys: string; sessionId?: string }): string {
   return `已向 ${handle.tabKey} 发送按键：${JSON.stringify(input.keys)}`
 }
 
-/** 工具名 → 实现（`tools/list` 与 `tools/call` 共用这一份名单） */
-const IMPLEMENTATIONS: Record<string, (input: Record<string, unknown>) => Promise<string> | string> =
-  {
-    list_terminal_sessions: () => listTerminalSessions(),
-    read_terminal_output: (input) =>
-      readTerminalOutput(input as { sessionId?: string; maxChars?: number; waitMs?: number }),
-    run_in_terminal: (input) =>
-      runInTerminal(input as { command: string; sessionId?: string; waitMs?: number }),
-    send_keys: (input) => sendKeys(input as { keys: string; sessionId?: string })
-  }
-
-/** 工具清单（MCP `tools/list` 的应答；也是上送服务端的 `ClientToolSpec[]`） */
-const TOOLS: Tool[] = [
-  {
-    name: 'list_terminal_sessions',
+/**
+ * 工具清单：**zod 形状是唯一真源**。
+ *
+ * `tools/list` 的 JSON Schema 由 SDK 从这里反推（`zod/v4-mini` 的 `toJSONSchema`），
+ * `tools/call` 的入参也按同一份 schema 校验 —— 参数说明写在 `.describe()` 里，**别在别处
+ * 再抄一份 `inputSchema` 常量**：两份迟早对不上（模型看到 A、校验用 B，且不报错）。
+ *
+ * `.describe()` 的文案就是模型读到的参数说明，「默认值 / 上限 / 什么时候别调」这类会直接
+ * 影响它怎么用工具的约束必须写进去，别只写「目标终端 id」这种名字级别的废话。
+ */
+const TOOL_SCHEMAS = {
+  list_terminal_sessions: {
     description: '列出当前打开的所有终端会话（本机终端与 SSH 主机终端）。',
-    inputSchema: { type: 'object', properties: {} }
+    shape: {}
   },
-  {
-    name: 'run_in_terminal',
+  run_in_terminal: {
     description:
       '在终端会话中执行一条命令（等同于用户在键盘上输入并回车），返回本次命令的新增输出（不含历史内容）。**输出一停下来就返回**（安静约 0.6 秒即认为停了；命令跑过 5 秒后按 2 秒算，避免长任务一顿一顿的日志被误判成结束），最多等 waitMs（默认 10 秒）—— 所以快命令很快返回，长命令会在跑完的那一刻返回。未指定 sessionId 时使用当前绑定的终端。同一条终端上的调用按到达顺序串行执行，输出不会与其它调用交错。⚠️ 「安静」不等于「跑完」：返回的输出末尾若有 shell 提示符说明命令已执行完；若没有，说明命令可能仍在运行（或中途停顿了一下）或进入了交互式程序（如 vim / top / less）—— 不要据此继续输入新命令；要等长任务跑完，用 read_terminal_output 一次等一段（它会自己等，**不要连续快速调用**），交互式程序用 send_keys 退出。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        command: { type: 'string', description: '要执行的命令，无需附加换行符' },
-        sessionId: {
-          type: 'string',
-          description: '目标终端会话 id（即标签 key），缺省为当前绑定的终端'
-        },
-        waitMs: {
-          type: 'number',
-          description:
-            '**等待上限**毫秒数，默认 10000（不是固定等待：输出安静下来会提前返回）。已知是长耗时命令（构建 / 安装 / 测试）可以加大，最大 45000'
-        }
-      },
-      required: ['command']
+    shape: {
+      command: z.string().describe('要执行的命令，无需附加换行符'),
+      sessionId: z
+        .string()
+        .optional()
+        .describe('目标终端会话 id（即标签 key），缺省为当前绑定的终端'),
+      waitMs: z
+        .number()
+        .optional()
+        .describe(
+          '**等待上限**毫秒数，默认 10000（不是固定等待：输出安静下来会提前返回）。已知是长耗时命令（构建 / 安装 / 测试）可以加大，最大 45000'
+        )
     }
   },
-  {
-    name: 'read_terminal_output',
+  read_terminal_output: {
     description:
       '读取终端会话的输出。**它会等**：先等新输出出现（最多 8 秒），有新输出就继续等它安静下来，然后把这一段增量返回（最多 waitMs，默认 20 秒）。命令还在跑时用它「等下一段」，**一次调用就够，不要连续快速调用**（每次调用本身就会等）。只想立刻看一眼当前屏幕（确认提示符 / 交互式程序状态）时传 waitMs: 0。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        sessionId: { type: 'string', description: '目标终端会话 id，缺省为当前绑定的终端' },
-        maxChars: { type: 'number', description: '最多返回字符数，默认 4000（waitMs: 0 时看当前屏幕用）' },
-        waitMs: {
-          type: 'number',
-          description:
-            '等待上限毫秒数，默认 20000；0 = 立刻返回当前屏幕（不等新输出）；最大 45000'
-        }
-      }
+    shape: {
+      sessionId: z.string().optional().describe('目标终端会话 id，缺省为当前绑定的终端'),
+      maxChars: z
+        .number()
+        .optional()
+        .describe('最多返回字符数，默认 4000（waitMs: 0 时看当前屏幕用）'),
+      waitMs: z
+        .number()
+        .optional()
+        .describe('等待上限毫秒数，默认 20000；0 = 立刻返回当前屏幕（不等新输出）；最大 45000')
     }
   },
-  {
-    name: 'send_keys',
+  send_keys: {
     description:
       '向终端发送按键或控制序列（不会自动回车）。主要用于退出交互式 / 前台程序：发送 "q" 退出 htop/less/man，发送 "C-c" 发送 Ctrl-C，发送 "C-d" 发送 Ctrl-D。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        keys: {
-          type: 'string',
-          description:
-            "要发送的按键序列。普通字符直接写（如 'q'、'exit'）；控制键写法 'C-c'、'C-d'、'Escape'；回车用 'Enter'。"
-        },
-        sessionId: { type: 'string', description: '目标终端会话 id，缺省为当前绑定的终端' }
-      },
-      required: ['keys']
+    shape: {
+      keys: z
+        .string()
+        .describe(
+          "要发送的按键序列。普通字符直接写（如 'q'、'exit'）；控制键写法 'C-c'、'C-d'、'Escape'；回车用 'Enter'。"
+        ),
+      sessionId: z.string().optional().describe('目标终端会话 id，缺省为当前绑定的终端')
     }
   }
-]
+} satisfies Record<string, { description: string; shape: ZodRawShapeCompat }>
+
+/** 工具名（注册、分派、串行集合都从这一份字面量派生） */
+type TerminalToolName = keyof typeof TOOL_SCHEMAS
+
+/** 工具名 → 实现。键必须与 `TOOL_SCHEMAS` 一一对应：漏一个编译期就报错 */
+const IMPLEMENTATIONS: Record<
+  TerminalToolName,
+  (input: Record<string, unknown>) => Promise<string> | string
+> = {
+  list_terminal_sessions: () => listTerminalSessions(),
+  read_terminal_output: (input) =>
+    readTerminalOutput(input as { sessionId?: string; maxChars?: number; waitMs?: number }),
+  run_in_terminal: (input) =>
+    runInTerminal(input as { command: string; sessionId?: string; waitMs?: number }),
+  send_keys: (input) => sendKeys(input as { keys: string; sessionId?: string })
+}
+
+/**
+ * 分派一次工具调用：同终端串行 + 异常直接抛（`McpServer` 会把 message 包成 `isError` 结果）。
+ *
+ * ⚠️ `serializeOn` 必须**同步**入队（中间不许 `await`）：入队顺序就是调用到达顺序，晚一步
+ * 算 key 就可能排到别的调用后面（见 `serializeOn` 的注释）。`McpServer` 在回调之前会先
+ * `await` 一次入参校验，四条工具走的是同一条校验路径、到达顺序仍然保持 —— 但**别在这条
+ * 路径上加「按工具分支」的异步前置步骤**，那会打乱这个前提。
+ */
+function dispatch(
+  name: TerminalToolName,
+  input: Record<string, unknown>
+): Promise<string> | string {
+  const impl = IMPLEMENTATIONS[name]
+  return SERIALIZED_TOOLS.has(name) ? serializeOn(targetKeyOf(input), () => impl(input)) : impl(input)
+}
 
 /**
  * 会**改动终端状态**的工具 —— 上送服务端时按 `mutating` 标记，服务端据此套审批闸
@@ -434,39 +457,24 @@ interface TerminalMcp {
 let mcpPromise: Promise<TerminalMcp> | null = null
 
 async function createTerminalMcp(): Promise<TerminalMcp> {
-  const server = new Server(
-    { name: 'fizz-terminal', version: '0.1.0' },
-    { capabilities: { tools: {} } }
-  )
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const name = request.params.name
-    const impl = IMPLEMENTATIONS[name]
-    if (!impl) {
-      return {
-        isError: true,
-        content: [{ type: 'text' as const, text: `未知的终端工具：${name}` }]
+  const server = new McpServer({ name: 'fizz-terminal', version: '0.1.0' })
+  /**
+   * 注册顺序 = `tools/list` 的返回顺序（`list_terminal_sessions` 排最前：模型先看到清单再动手）。
+   *
+   * 入参校验交给 SDK：`inputSchema` 传 zod raw shape，`McpServer` 包成 `z.object(...)` 并在
+   * 回调前 `safeParse` —— 模型多给的字段被剥掉、类型不对直接回 `isError`（从前是原样塞进
+   * 各实现的 `as` 硬转，错了要到终端里才炸）。回调里抛的异常也由它包成 `isError` 结果。
+   */
+  for (const [name, def] of Object.entries(TOOL_SCHEMAS)) {
+    server.registerTool(
+      name,
+      { description: def.description, inputSchema: def.shape },
+      async (args: Record<string, unknown>) => {
+        const text = await dispatch(name as TerminalToolName, args)
+        return { content: [{ type: 'text' as const, text }] }
       }
-    }
-    try {
-      const input = (request.params.arguments ?? {}) as Record<string, unknown>
-      /**
-       * ⚠️ `serializeOn` 必须在这里**同步**调用（不在 await 之后）：入队顺序就是调用
-       * 到达顺序，晚一步算 key 就可能排到别的任务后面。
-       */
-      const text = SERIALIZED_TOOLS.has(name)
-        ? await serializeOn(targetKeyOf(input), () => impl(input))
-        : await impl(input)
-      return { content: [{ type: 'text' as const, text: String(text) }] }
-    } catch (err) {
-      return {
-        isError: true,
-        content: [
-          { type: 'text' as const, text: err instanceof Error ? err.message : String(err) }
-        ]
-      }
-    }
-  })
+    )
+  }
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const client = new Client({ name: 'fizz-terminal-client', version: '0.1.0' })
@@ -475,13 +483,21 @@ async function createTerminalMcp(): Promise<TerminalMcp> {
   return {
     listTools: async () => {
       const { tools } = await client.listTools()
-      return tools.map((t) => ({
-        name: t.name,
-        description: t.description ?? t.name,
-        ...(t.inputSchema ? { inputSchema: t.inputSchema as Record<string, unknown> } : {}),
-        // 改动类工具带 `mutating`：服务端据此套审批闸（只读的不带 = 原样直通）
-        ...(MUTATING_TOOLS.has(t.name) ? { mutating: true } : {})
-      }))
+      return tools.map((t) => {
+        /**
+         * SDK 从 zod 反推的 schema 会带一个 `$schema` 版本声明 —— 那是「用哪套 zod 生成的」
+         * 的副作用，不是模型要的信息。上送前摘掉，`ClientToolSpec.inputSchema` 保持纯 draft 子集。
+         */
+        const inputSchema = { ...(t.inputSchema as Record<string, unknown> | undefined) }
+        delete inputSchema.$schema
+        return {
+          name: t.name,
+          description: t.description ?? t.name,
+          ...(Object.keys(inputSchema).length ? { inputSchema } : {}),
+          // 改动类工具带 `mutating`：服务端据此套审批闸（只读的不带 = 原样直通）
+          ...(MUTATING_TOOLS.has(t.name) ? { mutating: true } : {})
+        }
+      })
     },
     callTool: async (name, input) => {
       const result = await client.callTool({ name, arguments: input })

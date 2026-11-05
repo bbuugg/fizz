@@ -3,6 +3,7 @@
 import { useCallback, useSyncExternalStore } from 'react';
 import {
   Cable,
+  Cloud,
   Gauge,
   FileCode2,
   FileText,
@@ -17,7 +18,6 @@ import {
   FolderTree,
   Puzzle,
   ScrollText,
-  Server,
   Settings,
   ShieldQuestion,
   SquareTerminal,
@@ -134,7 +134,7 @@ export function useTabMeta(): (key: string) => TabMeta {
           title: host
             ? `SSH · ${host.username}@${host.host}:${host.port}`
             : (snapshot?.title ?? t('主机已从清单里删除')),
-          icon: <Server className="size-3.5 shrink-0" />
+          icon: <Cloud className="size-3.5 shrink-0" />
         }
       }
       if (isSftpTabKey(key)) {

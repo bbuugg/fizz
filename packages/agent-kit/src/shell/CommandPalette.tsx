@@ -39,6 +39,7 @@ import {
   MessageSquare,
   Moon,
   Network,
+  Cloud,
   FolderTree,
   ScrollText,
   Search,
@@ -403,7 +404,7 @@ export function CommandPalette({
                     keywords={keywords}
                     onSelect={run(() => onOpenHost(host))}
                   >
-                    {isLocal ? <SquareTerminal /> : <Server />}
+                    {isLocal ? <SquareTerminal /> : <Cloud />}
                     <span className="truncate">{label}</span>
                     <span className="ml-auto max-w-40 truncate font-mono text-xs text-muted-foreground">
                       {subtitle}

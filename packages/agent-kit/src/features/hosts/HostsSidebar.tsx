@@ -90,6 +90,7 @@ import { useMemo, useState, type ReactElement, type ReactNode } from 'react'
 import { useDrag } from 'react-dnd'
 import {
   ChevronRight,
+  Cloud,
   FileCode2,
   Folder,
   FolderInput,
@@ -1120,7 +1121,7 @@ function HostRow({
           {isLocal ? (
             <SquareTerminal className="size-4 shrink-0" />
           ) : (
-            <Server className="size-4 shrink-0" />
+            <Cloud className="size-4 shrink-0" />
           )}
           {/* `data-name-text`：被行尾浮层挤成省略号时由 lib/hover-reveal.ts 滑到行尾。
               **不给**自己的颜色：整行是 `text-muted-foreground`、hover 才加深到
