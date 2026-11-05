@@ -418,8 +418,8 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     /** 写工作区文件：返回 null = 成功，字符串 = 错误原因 */
     writeWorkspaceFile: s.writeWorkspaceFile,
     /**
-     * 脚手架：新建一份模板文件（技能 SKILL.md / AGENTS.md 空骨架），斜线命令
-     * `/create-skill` 走它（`/init` 改由模型生成，不走这里）。
+     * 脚手架：新建一份模板文件（技能 SKILL.md / AGENTS.md 空骨架）。斜线命令
+     * `/create-skill` 已移除，目前没有界面入口；`/init` 也不走这里（由模型生成）。
      * 成功返回落点 + 提示语，失败返回人话错误（调用方直接显示）。
      */
     scaffoldWorkspaceFile: s.scaffoldWorkspaceFile,

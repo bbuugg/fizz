@@ -443,8 +443,8 @@ export const API_ROUTES = {
    * 脚手架：给工作区**新建一份模板文件**：POST /api/workspaces/:id/scaffold
    * body: `FsScaffoldInput` → `FsScaffoldResult`
    *
-   * 为斜线命令 `/create-skill <名字>` 与 `/init` 服务（见 `@fizz/agent-kit` 的
-   * `shared/lib/slash-commands.ts`）。
+   * 斜线命令 `/create-skill` 已移除，目前**没有界面入口**；这条路由作为服务端能力
+   * 保留（`/init` 也不走它 —— 那份文档由模型读项目后自己写）。
    * 之所以要有这条独立路由而不是复用 `writeWorkspaceFile`：那条路只 `fs.writeFile`、
    * **不 mkdir**，而技能要落在 `.fizz/skills/<名字>/SKILL.md`（中间两层目录可能不存在）。
    * 「已存在一律 409，绝不覆盖」也在这条路里兜住。

@@ -245,9 +245,10 @@ export function Composer({
     if (!command || !slashContext) return
     const parsed = parseSlashInput(value)
     const args = parsed?.command === command.name ? parsed.args : ''
-    // 无参命令直接跑：它的「参数」就是命令名本身，补全成 `/agents ` 只会让用户
-    // 面对一个光标不知道该打什么（与 resolveSlashDispatch 的 noArgs 分支同一条判据）。
-    if (!args && !command.noArgs) {
+    // 无参 / 参数可选的命令直接跑：`/init` 的「参数」就是命令名本身，`/git-commit`
+    // 不给信息就该自动生成 —— 补全成 `/xxx ` 只会让用户面对一个光标不知道该打什么
+    // （与 resolveSlashDispatch 的 noArgs / optionalArgs 分支同一条判据）。
+    if (!args && !command.noArgs && !command.optionalArgs) {
       // 只有命令名没参数：先补全（argsHint 提示用户接着写）
       completeCommand(command)
       return
@@ -693,7 +694,7 @@ export function Composer({
               onClick={() => {
                 const parsed = parseSlashInput(value)
                 const args = parsed?.command === command.name ? parsed.args : ''
-                if (!args && !command.noArgs) completeCommand(command)
+                if (!args && !command.noArgs && !command.optionalArgs) completeCommand(command)
                 else {
                   onChange('')
                   command.run(slashContext!, args)

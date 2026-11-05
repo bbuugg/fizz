@@ -461,8 +461,9 @@ export interface ServerListsSlice {
   readWorkspaceFile: (workspaceId: string, path: string) => Promise<AgentFsFile | null>
   writeWorkspaceFile: (workspaceId: string, path: string, content: string) => Promise<string | null>
   /**
-   * 脚手架：新建一份模板文件（技能 SKILL.md / AGENTS.md 空骨架）。斜线命令 `/create-skill`
-   * 走它；`/init` 不走 —— 那份文档得由模型读项目后写（见 `slash-commands.ts`）。
+   * 脚手架：新建一份模板文件（技能 SKILL.md / AGENTS.md 空骨架）。斜线命令
+   * `/create-skill` 已移除，目前没有界面入口；`/init` 不走 —— 那份文档得由模型
+   * 读项目后写（见 `slash-commands.ts`）。
    *
    * 成功返回服务端的应答（落点 + 提示语），失败返回**人话错误**（调用方直接 toast）。
    * 刻意**不套 withRefresh**：建一个文件不会让任何清单变样，刷新整个 app 状态只会把

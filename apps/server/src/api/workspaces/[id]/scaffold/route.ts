@@ -2,7 +2,7 @@
  * 脚手架路由：给工作区新建一份模板文件（技能 SKILL.md / AGENTS.md）。
  *
  * 逻辑在 `lib/server/scaffold.ts`，这里只做「解析 body → 调领域 → 转响应」。
- * 入口是斜线命令 `/create-skill <名字>` 与 `/init`（见 `agent-ui` 的 `slash-commands.ts`）。
+ * 斜线命令 `/create-skill` 已移除，目前没有界面入口（这条路由作为服务端能力保留）。
  */
 import type { FsScaffoldInput } from '@fizz/contracts/agent-api'
 import { scaffoldFile, ScaffoldError } from '@/lib/server/scaffold'

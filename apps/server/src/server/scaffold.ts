@@ -1,7 +1,7 @@
 /**
  * 「脚手架」：给工作区新建一份**模板文件**（技能 SKILL.md / 项目约束 AGENTS.md）。
  *
- * 服务的入口是斜线命令 `/create-skill <名字>`（见 `agent-kit` 的 `slash-commands.ts`）。
+ * 目前**没有界面入口**（斜线命令 `/create-skill` 已移除）；保留这条服务端能力。
  * 它要在**磁盘上真的造出文件**，而不是把一段提示词塞进输入框让模型自己去建 ——
  * 后者多一轮往返，且模型可能建到别的地方去。
  *
@@ -19,8 +19,8 @@
  * 3. **落点用 `resolveInside` 兜一遍**。名字是用户输入，即使服务端已校验过形状，
  *    也不该让它有机会拼出越界路径。
  *
- * ⚠️ 技能落 `.fizz/skills/`（**项目级**）而不是 `~/.fizz/skills/`（用户级）：斜线命令
- * 是「在这个项目里加一个技能」的语义，跟着项目走；用户级要留给设置页那套目录管理。
+ * ⚠️ 技能落 `.fizz/skills/`（**项目级**）而不是 `~/.fizz/skills/`（用户级）：这是
+ * 「在这个项目里加一个技能」的语义，跟着项目走；用户级要留给设置页那套目录管理。
  */
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -81,7 +81,7 @@ function sanitizeFrontmatter(raw: string): string {
 /** 校验并规范化技能目录名；不合法时抛 400 并说明为什么 */
 export function skillDirName(raw: string | undefined): string {
   const name = (raw ?? '').trim()
-  if (!name) throw new ScaffoldError(400, '要给技能起个名字：/create-skill <名字>')
+  if (!name) throw new ScaffoldError(400, '要给技能起个名字')
   if (name.length > MAX_SKILL_NAME) {
     throw new ScaffoldError(400, `技能名太长（${name.length} 字符），上限 ${MAX_SKILL_NAME}`)
   }

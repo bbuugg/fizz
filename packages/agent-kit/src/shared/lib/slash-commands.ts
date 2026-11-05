@@ -5,13 +5,11 @@
  * Composer 的 SlashCommandPalette），↑↓ 选择、Tab 补全、Enter 执行；认不出的
  * `/xxx` 按**普通文本**发送（用户明确要求 —— 拦下正文比发错一句话更糟）。
  *
- * 注册表就是一个普通数组：内置命令在 `builtinSlashCommands`（**当前为空**），调用方
- * （ChatPanel）把它（或它的扩展）传给 Composer。**插话（steer）已不在这里** ——
+ * 注册表就是一个普通数组：内置命令在 `builtinSlashCommands`（`/init`、`/git-commit`），
+ * 调用方（ChatPanel）把它（或它的扩展）传给 Composer。**插话（steer）已不在这里** ——
  * 它改由发送钮上的「队列消息 / 插话」选择器承担（见 composer.tsx 的 `sendChooser`），
  * 不再占一个斜线命令。整套解析 / 分发 / 浮层 / 补全保留：往数组里加命令即生效。
  */
-import { toast } from 'sonner'
-import type { FsScaffoldInput } from '@fizz/contracts/agent-api'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 
 /** 命令执行时拿到的上下文：app 门面 + 会话是否在跑（可用性与行为都看它） */
@@ -39,6 +37,14 @@ export interface SlashCommand {
    * 「有没有 argsHint」不能拿来当这个判据 —— 有参命令也可能不写 argsHint。
    */
   noArgs?: boolean
+  /**
+   * 参数**可选**（如 `/git-commit [提交信息]`）：不给也能跑，给了就原样传进 `run`。
+   *
+   * 为什么与 `noArgs` 分开：`noArgs` 是「根本不存在参数」，浮层里按一下就直接执行；
+   * 这里是「有参数这条路、但不是必须」。缺参数时同样**不能**走 reject —— 否则
+   * `/git-commit` 自动生成信息的那一半永远执行不了。
+   */
+  optionalArgs?: boolean
   /**
    * 可用性（返回 false 的命令不进列表）：命令存在 ≠ 此刻能用，比如只对某种会话
    * 后端有意义的命令（依赖服务端注入的那种，外部 agent 的协议给不了）。
@@ -97,10 +103,11 @@ export function resolveSlashDispatch(text: string, commands: SlashCommand[]): Sl
   // 参数」三件事。想在无 ctx 的场景（单测、纯静态分析）判可用性，调用方自己
   // 先 filter 好再传进来即可。
   if (!parsed.args) {
-    // 无参命令（`/init`）直接进 run：它压根不需要参数，走 reject 就永远执行不了。
+    // 无参 / 参数可选的命令直接进 run：`/init` 压根不需要参数，`/git-commit` 没给信息
+    // 就自动生成。走 reject 会让「不给参数」这半边永远执行不了。
     // ⚠️ 这条**不能**反过来放宽成「有 argsHint 就拦、没就放行」—— 命令名认不出时
     // 上一步已经归 text 了，能走到这里的都是表里的命令，缺参数对它们就是漏了。
-    if (command.noArgs) return { kind: 'run', command, args: '' }
+    if (command.noArgs || command.optionalArgs) return { kind: 'run', command, args: '' }
     return { kind: 'reject', message: `/${command.name} ${command.argsHint ?? '需要参数'}` }
   }
   return { kind: 'run', command, args: parsed.args }
@@ -137,49 +144,31 @@ export function filterCommands(commands: SlashCommand[], token: string): SlashCo
  *
  * 注册表就是下面这个数组：加进来浮层、补全、`resolveSlashDispatch*` 立刻认它。
  *
- * 两条命令的分工（**别再把它们并成一类**）：
+ * 两条命令都**交给模型**，差别只在提示词：
  *
- * - `/create-skill`：**确定性落盘**。一个目录 + 一个 SKILL.md，正文是模板就够用；
- *   走服务端 `/api/workspaces/:id/scaffold`（`lib/server/scaffold.ts`）—— 那里
- *   `mkdir` 中间目录、且**已存在一律 409 绝不覆盖**（覆盖是破坏性的，该由用户在
- *   编辑器里明确做）。
- * - `/init`：**交给模型**。AGENTS.md 的价值全在正文（每轮全文注入的硬约束），
+ * - `/init`：读项目、写 AGENTS.md。AGENTS.md 的价值全在正文（每轮全文注入的硬约束），
  *   一份「标题 + 空小节」的骨架等于让用户自己再写一遍 —— 早先就是这么做的，用户
  *   拿到手发现是空模板。所以它发一条提示词，让模型读项目、自己写（见 `INIT_PROMPT`）。
+ * - `/git-commit`：把当前改动提交一次。用户给了信息就**原样**用（一字不改），没给就
+ *   让模型看 diff、照着仓库既有风格自己写（见 `gitCommitPrompt`）。
  *
- * 本文件里没有 fs / fetch，只有「调 store / 发消息 + 出提示」。
+ * 本文件里没有 fs / fetch，只有「发消息 + 出提示」。
  */
 export function builtinSlashCommands(ctx: SlashCommandContext): SlashCommand[] {
   /**
-   * 「这个工作区能不能落文件」：**只有一条判据 —— `activeWorkspace.path` 要在**。
+   * 「这个工作区能不能动」：**只有一条判据 —— `activeWorkspace.path` 要在**。
    *
    * 内置「任务」是**虚拟工作区**（path 为空，它没有磁盘目录）；聊天页本身已经
    * `disabled: !activeWorkspace`，所以「连没连线」不必在这里再判一遍（真没连上的话
    * 这条路会走到 store 的 `getApi()` 返回 null，得到一句「未连接」—— 那是对的提示）。
    *
    * 顺带记一条同源的教训（文件面板 `canReveal/canDownload` 踩过）：**只看「有没有这个
-   * 方法」会漏判平台**。这里反过来 —— 只看 `path` 就够，因为落点是服务端按工作区登记的
-   * 路径算的，前端无从也无需预判。
+   * 方法」会漏判平台**。这里反过来 —— 只看 `path` 就够，git 与落点都由服务端按工作区
+   * 登记的路径算，前端无从也无需预判。
    */
   const needsWorkspace = (c: SlashCommandContext): boolean => !!c.app.activeWorkspace?.path
 
   return [
-    {
-      // 命名照「动词-名词」：`/create-skill` 说的是「建一个技能」。早先叫 `/skill`，
-      // 那个读起来像「管理技能」而不是「创建」—— 这条命令只建、不列也不改。
-      name: 'create-skill',
-      displayName: '创建技能',
-      description: '在项目里新建一个技能（.fizz/skills/<名字>/SKILL.md），下一轮对话生效',
-      argsHint: '<名字> [一句说明]',
-      available: needsWorkspace,
-      run: (c, args) => {
-        // args 的形态是 `<名字> [一句说明]` —— 按**第一个空格**切，名字后面全部当描述。
-        // 不切的话整句都会变成目录名（而目录名只允许 ASCII 小写），用户补个中文说明就报错。
-        const [rawName, ...rest] = args.split(/\s+/)
-        const description = rest.join(' ').trim()
-        void createAndReport(c, { kind: 'skill', name: rawName, ...(description ? { description } : {}) })
-      }
-    },
     {
       // `/init` 是 AGENTS.md 生态的既有约定（Claude Code 与 opencode 的 `/init` 都是
       // 「为这个项目生成 AGENTS.md」），跟着它走的好处是从别的工具迁过来的人不用重学。
@@ -195,44 +184,21 @@ export function builtinSlashCommands(ctx: SlashCommandContext): SlashCommand[] {
       run: (c) => {
         void runInit(c)
       }
+    },
+    {
+      // 提交信息是「可选的原文」：给了就一字不改地用，没给才让模型自己写。
+      // 别把「没给」当成 reject —— 自动生成正是这条命令的一半用途（`optionalArgs`）。
+      name: 'git-commit',
+      displayName: '提交改动',
+      description: '提交当前工作区的改动：给了信息就照用，没给就让模型看改动生成',
+      argsHint: '[提交信息]',
+      optionalArgs: true,
+      available: needsWorkspace,
+      run: (c, args) => {
+        void runGitCommit(c, args)
+      }
     }
   ]
-}
-
-/**
- * 调脚手架并出提示。
- *
- * 两条通道分开走：**失败进 `app.setError`**（全局错误条，与 `resolveSlashDispatch`
- * 的 reject 分支同一个出口，用户习惯在顶部看到命令没成），**成功进 sonner toast**
- * —— 建文件不是「错误条」该承载的事，而落点（绝对路径 + 生效时机）是要一眼看到、
- * 随时能划走的信息，挂在错误条上反而不像正常反馈。
- *
- * 成败的判据是 `typeof result === 'string'`：store 那层约定「字符串 = 人话错误、
- * 对象 = 成功」（与 `writeWorkspaceFile` 同款）。
- */
-async function createAndReport(c: SlashCommandContext, input: FsScaffoldInput): Promise<void> {
-  const workspace = c.app.activeWorkspace
-  if (!workspace) {
-    c.app.setError('先选一个有磁盘目录的项目（内置「任务」没有目录，落不了文件）')
-    return
-  }
-  let result: Awaited<ReturnType<typeof c.app.scaffoldWorkspaceFile>>
-  try {
-    result = await c.app.scaffoldWorkspaceFile(workspace.id, input)
-  } catch (err) {
-    // store 那层已经兜过一层，但它是 `errorMessage` 的薄封装，这里再兜一次是为了
-    // 「同步抛出」的情况（未连接的 getApi 路径）——那会让整个命令崩掉且不留痕迹。
-    c.app.setError(err instanceof Error ? err.message : String(err))
-    return
-  }
-  if (typeof result === 'string') {
-    c.app.setError(result)
-    return
-  }
-  toast.success(`已创建 ${result.path}`, {
-    description: `${result.abs}\n${result.note}`,
-    duration: 6000
-  })
 }
 
 /**
@@ -288,4 +254,58 @@ async function runInit(c: SlashCommandContext): Promise<void> {
   }
   const ok = await c.app.send(INIT_PROMPT)
   if (!ok) c.app.setError('没能发出 /init：这一下被拦住了（压缩上下文中 / 没有可用会话），稍后再试')
+}
+
+/**
+ * `/git-commit` 的提示词。**给了信息与没给是两份**，别合成一份靠模型猜：
+ *
+ * - 给了：那条信息就是用户要落进历史的话，模型只许照抄（「顺手润色」等于改掉用户的
+ *   提交说明，而提交信息是给别人看的历史，不是模型的产出）；
+ * - 没给：才让模型看 `git status` / `git diff`、参考 `git log` 的风格自己写。
+ *
+ * 两份共同写死的边界：只提交这次改动相关的文件（无关文件 / 密钥 / 构建产物不碰）、
+ * **不 push**（提交与推送是两个决定）、失败要贴 git 的原话而不是一句「提交失败」。
+ */
+function gitCommitPrompt(message: string): string {
+  const commonTail = `只把这次改动相关的文件加入暂存区；无关文件、密钥、构建产物一律不要提交。
+不要 push —— 这条命令只做提交。
+如果工作区没有可提交的改动，直接告诉我，不要造空提交。
+完成后把提交 hash 与提交信息告诉我；失败就把 git 的原话贴出来。`
+  if (message) {
+    return `按下面这条提交信息，提交当前工作区的改动。
+
+提交信息（**原样使用，一字不改**）：
+"""
+${message}
+"""
+
+先看再提交：
+- \`git status\` / \`git diff\` 弄清这次改了哪些文件；
+- 提交信息必须是上面那条原文 —— 不改大小写、不加类型前缀、不改标点，也不要再附一段总结；
+${commonTail}`
+  }
+  return `为当前工作区做一次提交。
+
+先看，再决定：
+- \`git status\` / \`git diff\`（必要时 \`git diff --staged\`）弄清楚改了哪些文件、改了什么；
+- \`git log --oneline -10\` 看一眼这个仓库的提交信息风格，照着写。
+
+提交信息由你根据改动生成：一句话说清「做了什么、为什么」，具体到一眼能看懂；仓库已有固定风格（比如 Conventional Commits）就照它写，没有就别硬加前缀。
+${commonTail}`
+}
+
+/**
+ * `/git-commit` 的执行：和 `/init` 同一条路 —— 发一条提示词，让模型自己在工作区里提交。
+ *
+ * 不在前端直接调 `gitAction('commit')` 的原因：提交前要先弄清「哪些文件该进这次提交」
+ * 并写 / 拿到提交信息，那正是模型看 diff 的活；前端只负责把「信息是用户给的」这件事
+ * 用提示词钉死。
+ */
+async function runGitCommit(c: SlashCommandContext, args: string): Promise<void> {
+  if (!c.app.activeWorkspace?.path) {
+    c.app.setError('先选一个有磁盘目录的项目（内置「任务」没有目录，提交不了）')
+    return
+  }
+  const ok = await c.app.send(gitCommitPrompt(args.trim()))
+  if (!ok) c.app.setError('没能发出 /git-commit：这一下被拦住了（压缩上下文中 / 没有可用会话），稍后再试')
 }
