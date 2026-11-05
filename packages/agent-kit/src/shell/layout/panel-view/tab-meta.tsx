@@ -162,10 +162,14 @@ export function useTabMeta(): (key: string) => TabMeta {
       }
       if (isTunnelTabKey(key)) {
         // 隧道面板是全局单例，标签名固定；悬停提示带上「绑在服务端那台机器上」的提醒
+        //
+        // ⚠️ 全局单例的 label / title 是**静态文案**（登记表里存的只是中文原文），
+        // 不是主机名那种数据快照 —— 必须在这里 `t()` 现翻，不能直接用 `tool?.label`：
+        // 登记表在打开那一刻写死，切语言不会重建它（设置标签就是这么一直是中文的）。
         const tool = getToolTab(key)
         return {
-          label: tool?.label ?? t('隧道'),
-          title: tool?.title ?? t('SSH 隧道'),
+          label: t(tool?.label ?? '隧道'),
+          title: t(tool?.title ?? 'SSH 隧道'),
           icon: <Network className="size-3.5 shrink-0" />
         }
       }
@@ -173,8 +177,8 @@ export function useTabMeta(): (key: string) => TabMeta {
         // 应用日志面板同样是全局单例（`logs:list`），内部用 Tab 切命名空间
         const tool = getToolTab(key)
         return {
-          label: tool?.label ?? t('日志'),
-          title: tool?.title ?? t('应用日志'),
+          label: t(tool?.label ?? '日志'),
+          title: t(tool?.title ?? '应用日志'),
           icon: <ScrollText className="size-3.5 shrink-0" />
         }
       }
@@ -182,8 +186,8 @@ export function useTabMeta(): (key: string) => TabMeta {
         // 文件管理器：全局单例（`files:list`），浏览的是服务端那台机器的整盘
         const tool = getToolTab(key)
         return {
-          label: tool?.label ?? t('文件管理'),
-          title: tool?.title ?? t('文件管理'),
+          label: t(tool?.label ?? '文件管理'),
+          title: t(tool?.title ?? '文件管理'),
           icon: <FolderTree className="size-3.5 shrink-0" />
         }
       }
@@ -191,8 +195,8 @@ export function useTabMeta(): (key: string) => TabMeta {
         // 系统监控 + 任务管理器：全局单例（`sysmon:list`），看的是服务端那台机器
         const tool = getToolTab(key)
         return {
-          label: tool?.label ?? t('系统监控'),
-          title: tool?.title ?? t('系统监控'),
+          label: t(tool?.label ?? '系统监控'),
+          title: t(tool?.title ?? '系统监控'),
           icon: <Gauge className="size-3.5 shrink-0" />
         }
       }
@@ -200,8 +204,8 @@ export function useTabMeta(): (key: string) => TabMeta {
         // 定时任务面板也是全局单例（`triggers:list`），名字固定
         const tool = getToolTab(key)
         return {
-          label: tool?.label ?? t('定时任务'),
-          title: tool?.title ?? t('定时任务'),
+          label: t(tool?.label ?? '定时任务'),
+          title: t(tool?.title ?? '定时任务'),
           icon: <CalendarClock className="size-3.5 shrink-0" />
         }
       }
@@ -210,8 +214,8 @@ export function useTabMeta(): (key: string) => TabMeta {
         // 单个脚本的新建 / 编辑是模态框（`ScriptEditDialog`），不占标签。
         const tool = getToolTab(key)
         return {
-          label: tool?.label ?? t('脚本'),
-          title: tool?.title ?? t('脚本'),
+          label: t(tool?.label ?? '脚本'),
+          title: t(tool?.title ?? '脚本'),
           icon: <FileCode2 className="size-3.5 shrink-0" />
         }
       }
@@ -220,8 +224,8 @@ export function useTabMeta(): (key: string) => TabMeta {
         // 标签名再跟着当前分组变只会让人以为开了好几条设置
         const tool = getToolTab(key)
         return {
-          label: tool?.label ?? t('设置'),
-          title: tool?.title ?? t('设置'),
+          label: t(tool?.label ?? '设置'),
+          title: t(tool?.title ?? '设置'),
           icon: <Settings className="size-3.5 shrink-0" />
         }
       }

@@ -110,6 +110,7 @@ function ActivityButton({
 }) {
   const collapsed = useSidebarCollapsed()
   const isMobile = useIsMobile()
+  const t = useT()
   const { mobileSidebarOpen, setMobileSidebarOpen } = useAppContext()
 
   const [{ isDragging }, dragRef] = useDrag<ActivityDragItem, void, { isDragging: boolean }>({
@@ -201,7 +202,7 @@ function ActivityButton({
       {/* 这个 shadcn 变体的 ContextMenuContent 只收 `side`（没有 align） */}
       <ContextMenuContent side="right">
         <ContextMenuItem onSelect={() => moveActivityToOverflow(id)}>
-          收进「更多」
+          {t('收进「更多」')}
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
@@ -255,13 +256,16 @@ function MoreActivitiesButton({
             </Button>
           </PopoverTrigger>
         </TooltipTrigger>
-        <TooltipContent side="right">更多（右键图标可收进这里）</TooltipContent>
+        <TooltipContent side="right">{t('更多（右键图标可收进这里）')}</TooltipContent>
       </Tooltip>
       <PopoverContent side="right" align="start" className="w-52 p-1">
-        <div className="px-2 py-1 text-[0.625rem] text-muted-foreground">收起来的功能区</div>
+        <div className="px-2 py-1 text-[0.625rem] text-muted-foreground">
+          {t('收起来的功能区')}
+        </div>
         {items.map((item) => {
           const Icon = item.icon
           const current = item.id === activeId
+          const moveBackLabel = t('把「{name}」移回主栏', { name: item.label })
           return (
             <div
               key={item.id}
@@ -285,8 +289,8 @@ function MoreActivitiesButton({
               </button>
               <button
                 type="button"
-                title={`把「${item.label}」移回主栏`}
-                aria-label={`把「${item.label}」移回主栏`}
+                title={moveBackLabel}
+                aria-label={moveBackLabel}
                 onClick={() => moveActivityOutOfOverflow(item.id)}
                 className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-secondary hover:text-foreground group-hover:opacity-100"
               >
