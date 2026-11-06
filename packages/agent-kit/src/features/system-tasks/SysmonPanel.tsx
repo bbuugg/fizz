@@ -24,9 +24,13 @@
  *
  * ## 布局上的一条硬约束
  *
- * **进程表必须吃掉剩余全部高度并自己滚**（`min-h-0 flex-1 overflow-auto`）。上面那排
- * 卡片是 `shrink-0`：一张几十行的表如果能把这排卡片顶出视野，用户想对照「现在 CPU 多少」
- * 就得先滚回去 —— 而这正是看进程表时最常做的动作。
+ * **桌面（≥ sm）上进程表必须吃掉剩余全部高度并自己滚**（`min-h-0 flex-1 overflow-auto`）。
+ * 上面那排卡片是 `shrink-0`：一张几十行的表如果能把这排卡片顶出视野，用户想对照
+ * 「现在 CPU 多少」就得先滚回去 —— 而这正是看进程表时最常做的动作。
+ *
+ * **手机（< sm）反过来：整个面板是一个滚动容器**。窄屏上卡片是单列，主机信息条与工具栏
+ * 还会换行，四张卡就够把一屏占满 —— 再让进程表「自己滚」，它等于永远待在视野外。所以
+ * 窄屏把限高去掉（根节点 `overflow-y-auto`、进程区不再 `flex-1`），从上一直滚到表。
  *
  * ## CPU 百分比的口径
  *
@@ -160,13 +164,13 @@ export function SysmonPanel(): React.JSX.Element {
     (serverPlatform === '' && (source === 'cim' || source === 'tasklist'))
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
+    <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-background sm:overflow-hidden">
       <HostBar sysmon={sysmon} />
       <StatCards sysmon={sysmon} />
 
-      {/* 进程区：工具栏 + 表。表自己滚，卡片不许被顶走（见文件头） */}
+      {/* 进程区：工具栏 + 表。桌面下自己滚；窄屏随整页一起滚（见文件头） */}
       <ProcessToolbar sysmon={sysmon} />
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="sm:min-h-0 sm:flex-1 sm:overflow-auto">
         {sysmon.loading ? (
           // 骨架屏而不是转圈：形状先摆出来，数据一到原地替换（见 ProcessTableSkeleton）
           <ProcessTableSkeleton sysmon={sysmon} />
