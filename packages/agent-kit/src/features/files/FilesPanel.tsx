@@ -2867,13 +2867,18 @@ export function FilesPanel({
               </div>
             )
           ) : activeTab && activeTab.kind === 'html' && activeTab.viewMode === 'preview' ? (
-            // html 预览：沙箱 iframe + srcdoc（相对资源解析不到，见 FileHtmlPreview 的说明）
+            // html 预览：沙箱 iframe + srcdoc。相对资源由预览组件自己取字节内联成
+            // data: URL（srcdoc 的 base URL 是宿主的，见 FileHtmlPreview 文件头）
             activeTab.loading ? (
               <div className="flex h-full items-center justify-center">
                 <Loader2 className="size-6 animate-spin text-muted-foreground" />
               </div>
             ) : (
-              <FileHtmlPreview html={activeTab.content} />
+              <FileHtmlPreview
+                html={activeTab.content}
+                source={fsSource ?? undefined}
+                path={activeTab.path}
+              />
             )
           ) : activeTab && showPreview ? (
             <div className="flex h-full items-center justify-center overflow-auto p-4">
