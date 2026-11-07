@@ -1,6 +1,6 @@
 {
   "name": "@fizz/extension",
-  "version": "0.0.20",
+  "version": "0.0.21",
   "description": "Fizz 的 Chrome 扩展（MV3）：侧栏里跑手机版那套外壳，连自己那台 Fizz 服务端",
   "private": true,
   "type": "module",
