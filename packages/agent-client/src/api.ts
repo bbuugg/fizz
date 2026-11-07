@@ -87,6 +87,7 @@ import type {
   FsListResult,
   FsMkdirInput,
   FsMkdirResult,
+  FsWorkspaceMkdirInput,
   HealthInfo,
   McpServerToolsResult,
   ModelInput,
@@ -1361,7 +1362,7 @@ export function createApi(
       request<CollabStateResult>(
         API_ROUTES.conversationCollab.replace(":id", encodeURIComponent(id)),
       ),
-    /** 全量覆盖协作配置（画布拖拽 / 增删 Agent） */
+    /** 全量覆盖协作配置（增删改 Agent / 并行与单轮上限） */
     saveCollabSettings: (id: string, collab: CollabSettings) =>
       request<AgentConversation>(
         API_ROUTES.conversationCollab.replace(":id", encodeURIComponent(id)),
@@ -1600,6 +1601,21 @@ export function createApi(
           body: JSON.stringify(
             name === undefined ? { path, dest } : { path, dest, name },
           ),
+        },
+      ),
+    /**
+     * 在工作区某个目录下新建文件夹，返回新目录的**相对路径**。
+     * POST /api/workspaces/:id/files/mkdir  body: { parent, name }
+     *
+     * 与 `createServerDir` 的区别：那条收的是**宿主机绝对路径**（给「选工作区目录」
+     * 弹窗用，只认本机）；这条收工作区相对路径，远端工作区也能建。
+     */
+    createWorkspaceDir: (id: string, input: FsWorkspaceMkdirInput) =>
+      request<{ path: string }>(
+        API_ROUTES.workspaceFileMkdir.replace(":id", id),
+        {
+          method: "POST",
+          body: JSON.stringify(input),
         },
       ),
     /**

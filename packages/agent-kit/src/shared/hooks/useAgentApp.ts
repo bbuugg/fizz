@@ -214,7 +214,7 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     compaction: activeSlice?.compaction ?? null,
     /** 协作会话的运行态（任务 / 消息 / Agent 状态 + 实时文本）；普通会话 = null */
     collab: activeSlice?.collab ?? null,
-    /** 覆盖协作配置（画布拖拽 / 增删 Agent） */
+    /** 覆盖协作配置（增删改 Agent / 并行与单轮运行上限） */
     saveCollabSettings: (settings: CollabSettings) =>
       s.saveCollabSettings(settings, conversationId),
     /** 取消协作会话里某个正在跑的子任务 */
@@ -445,6 +445,8 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     copyWorkspaceFile: s.copyWorkspaceFile,
     /** 移动 / 重命名工作区里的文件或目录；成功返回新路径 */
     moveWorkspaceFile: s.moveWorkspaceFile,
+    /** 工作区相对路径的新建文件夹（远端也能用）；与 `createServerDir`（宿主机绝对路径）不是一回事 */
+    createWorkspaceDir: s.createWorkspaceDir,
     /** 切换权限模式（confirm = 破坏性操作先问一句）；活档改的是本标签那条会话的轮 */
     setPermissionMode: (mode: AiPermissionMode) =>
       s.setPermissionMode(mode, conversationId),

@@ -55,9 +55,6 @@ import { Button } from '@fizz/ui/button'
 import { Skeleton } from '@fizz/ui/skeleton'
 import { ChatPanel } from '@fizz/agent-kit/features/chat/ChatPanel'
 import { CollabWorkspace } from '@fizz/agent-kit/features/collab/CollabWorkspace'
-import { CollabAgentChatPanel } from '@fizz/agent-kit/features/collab/CollabAgentChatPanel'
-import { CollabMobileLayout } from '@fizz/agent-kit/features/chat/CollabMobileLayout'
-import { DEFAULT_COLLAB_SETTINGS, normalizeCollabSettings } from '@fizz/contracts/types'
 import { MobilePanelMenu } from '@fizz/agent-kit/features/chat/MobilePanelMenu'
 import { FilesPanel } from '@fizz/agent-kit/features/files/FilesPanel'
 import { GitPanel } from '@fizz/agent-kit/features/git/GitPanel'
@@ -266,34 +263,9 @@ export function ConversationTab({
     ? app.conversations.find((c) => c.id === conversationId)
     : undefined
   /**
-   * 协作布局右侧那块对话区**正在看谁**（`null` = 主智能体）。
-   *
-   * 状态放在这里而不是 `CollabWorkspace` 里，是因为右侧面板在画布**外面**
-   * （桌面左右分栏、手机上画布在上 / 对话在下）：画布只负责「点了谁」，这里决定
-   * 「右侧显示谁」。这样点击是**原地替换面板内容** —— 不弹窗、不新开标签、
-   * 分栏宽度与滚动位置都不动，观感与普通会话完全一致。
+   * 协作布局左侧的 Agent 名单由 `CollabWorkspace` 自己管；右侧始终是**同一条共享会话**
+   * （所有 Agent 的回复都带名字进这条时间线）。不再有「点节点看子 Agent 独立消息」。
    */
-  const [viewingAgentId, setViewingAgentId] = useState<string | null>(null)
-  /** 协作配置（画布与右侧 Agent 面板共用同一份口径，别各 normalize 一次） */
-  const collabSettings = useMemo(
-    () => normalizeCollabSettings(conversation?.collab ?? DEFAULT_COLLAB_SETTINGS),
-    [conversation?.collab]
-  )
-  /**
-   * 右侧要看的那份 Agent 配置。会话不是协作 / Agent 被删掉 → `null`，
-   * 右侧自动回落到主智能体对话（不能留一个「这个 Agent 已被删除」的死页面）。
-   */
-  const viewingAgent =
-    conversation?.kind === 'collab' && viewingAgentId
-      ? (collabSettings.agents.find((a) => a.id === viewingAgentId) ?? null)
-      : null
-  /*
-   * 标签换了会话（「新对话」草稿被建成真实会话、标签被复用）就回到主对话，
-   * 别把上一个会话的 Agent id 带过来 —— 那个 id 在新会话里根本不存在。
-   */
-  useEffect(() => {
-    setViewingAgentId(null)
-  }, [conversationId])
   const workspaceId = conversation?.workspaceId ?? app.activeWorkspaceId ?? ''
   const workspace = app.workspaces.find((w) => w.id === workspaceId)
   /**
@@ -317,8 +289,9 @@ export function ConversationTab({
   /** 「任务」这类虚拟工作区（path 为空）没有目录概念：终端 / 文件 / 快捷功能全部隐藏 */
   const hasDirectory = !!workspace?.path
   /**
-   * 远端工作区：首期只支持 Agent 工具与终端，文件面板 / 源码管理 / 浏览器面板都隐藏
-   * （它们按本机路径工作，点开只会失败）。终端走 SSH 通道见下面 `sshHostId`。
+   * 远端工作区：文件面板走 SFTP（列 / 读写 / 上传 / 打包下载 / 媒体），终端走 SSH 通道，
+   * 源码管理由服务端把 git 命令发到远端主机上跑（见 `gitExecFor`）—— 三者入口照常给。
+   * 只剩**浏览器画面**仍按本机预览通道工作，远端下不露头。
    */
   const isRemote = !!workspace?.remote
   const gitChangeCount = panel?.gitChanges?.count ?? 0
@@ -526,7 +499,7 @@ export function ConversationTab({
           conversation?.kind === 'collab' ? (
             <span
               className="inline-flex shrink-0 items-center gap-1 rounded-full bg-foreground/5 px-2 py-0.5 text-xs text-muted-foreground"
-              title={tr('多智能体协作：右侧对话是主智能体，画布上的 Agent 由它派活')}
+              title={tr('@ 点名由该智能体处理；不点名时全体判断是否需要接手')}
             >
               <Bot className="size-3 shrink-0" />
               {tr('多智能体协作')}
@@ -755,7 +728,7 @@ export function ConversationTab({
                 见下面 `MobilePanelMenu` —— 顶栏按钮一多就会把标题挤成两三个字。
                 （「打开工作区目录」是**项目级**动作，已搬到左侧栏项目行的「更多操作」，
                 见 `features/projects/OpenWorkspaceItems`。） */}
-            {hasDirectory && !isRemote && (
+            {hasDirectory && (
               /* 桌面（`sm` 以上）才平铺。⚠️ 不能在 Button 自身写 `hidden sm:inline-flex`：
                  Button 的 base class 里有 `inline-flex`，同层 display 工具类里
                  `inline-flex` 会盖过 `hidden`，手机上照样露出来 —— 所以用外层
@@ -779,7 +752,7 @@ export function ConversationTab({
                 </Tooltip>
               </div>
             )}
-            {hasDirectory && !isRemote && (
+            {hasDirectory && (
               <div className="hidden sm:flex">
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -846,8 +819,6 @@ export function ConversationTab({
                 canExpandPanel={tabKeys.length > 0}
                 showPreview={containerPreview}
                 showBrowser={!isRemote && !!conversationId && !isAcpConversation}
-                showFiles={!isRemote}
-                showGit={!isRemote}
                 onToggleFiles={() => toggleSideTabOf(key, 'files')}
                 onToggleGit={() => toggleSideTabOf(key, 'git')}
                 onTogglePreview={() => toggleSideTabOf(key, 'preview')}
@@ -863,25 +834,22 @@ export function ConversationTab({
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {conversation?.kind === 'collab' ? (
             /*
-              协作布局：左边多智能体画布、右边主智能体对话。
-
-              分栏用 `@fizz/ui/resizable`（shadcn 的 `ResizablePanelGroup` / `ResizablePanel` /
-              `ResizableHandle`，底层 `react-resizable-panels`），不再手搓 `ResizeHandle` + 宽度
-              状态：拖拽、键盘微调、min/max 夹取、容器变化时的重排都由组件负责，这里只剩
-              「读一次记忆值当初始宽」和「拖完存像素宽」两件事。
+              协作布局：左边 Agent 名单（增删改 / 实时状态），右边**同一条共享会话**。
+              所有 Agent 的回复都带名字进这条时间线，不再有「点节点看子 Agent 独立消息」。
             */
             <div
               ref={collabRef}
               className={cn('flex min-h-0 flex-1', isMobile ? 'flex-col' : 'flex-row')}
             >
               {isMobile ? (
-                <CollabMobileLayout
-                  app={app}
-                  panelKey={key}
-                  viewingAgent={viewingAgent}
-                  collabSettings={collabSettings}
-                  onViewAgent={setViewingAgentId}
-                />
+                <div className="flex min-h-0 flex-1 flex-col">
+                  <div className="max-h-[38dvh] shrink-0 overflow-y-auto border-b">
+                    <CollabWorkspace app={app} />
+                  </div>
+                  <div className="min-h-0 flex-1">
+                    <ChatPanel app={app} panelKey={key} />
+                  </div>
+                </div>
               ) : (
                 <ResizablePanelGroup
                   orientation="horizontal"
@@ -890,7 +858,7 @@ export function ConversationTab({
                     /*
                       只记**用户拖出来的**尺寸：挂载、容器变化、`defaultSize` 变更也会触发这个
                       回调（`meta.isUserInteraction` 为 false），把那些值写回 localStorage 会
-                      冲掉用户调好的宽度 —— 窄容器下还会被夹到 320 以下、直接存成 null。
+                      冲掉用户调好的宽度。
                     */
                     if (!meta.isUserInteraction) return
                     const px = chatPanelRef.current?.getSize().inPixels
@@ -898,19 +866,10 @@ export function ConversationTab({
                   }}
                 >
                   <ResizablePanel
-                    /*
-                      库把 `className` 挂在**内层** div 上（默认 `overflow: auto` + block 布局）：
-                      必须显式 flex-col，否则 `CollabWorkspace` 的 `flex-1` 在块级容器里不生效、
-                      高度会塌成内容高。`overflow` 得走 `style` 才盖得住库写的内联值。
-                    */
                     className="flex min-h-0 flex-col"
                     style={{ overflow: 'hidden' }}
                   >
-                    <CollabWorkspace
-                      app={app}
-                      viewingAgentId={viewingAgentId}
-                      onViewAgent={setViewingAgentId}
-                    />
+                    <CollabWorkspace app={app} />
                   </ResizablePanel>
                   {collabChatMax > collabChatMin && (
                     <ResizableHandle
@@ -920,27 +879,7 @@ export function ConversationTab({
                       */
                       disableDoubleClick
                       onDoubleClick={resetChatPanelWidth}
-                      /*
-                        ⚠️ 命中区要比那条 1px 的线宽得多。
-
-                        `@fizz/ui/resizable` 默认是「1px 线 + `after:w-1`（4px）伪元素」，而画布
-                        开着 `selectionOnDrag`（左键在画布上拖动 = 框选）：用户想拖分隔条，光标偏出
-                        那 4px 就落进画布，松手时得到的是一个选框而不是新的分栏宽度。
-
-                        这里把命中区**只往画布一侧**铺到 10px（伪元素 `-left-2.5` + `w-2.5`），
-                        并显式写 `cursor-col-resize`——光标是继承属性，伪元素也一并生效。
-                        只扩画布侧是有意的：误触方向就是画布；往对话面板一侧扩会吃掉面板
-                        最左几像素的点击（滚动条 / 气泡左内边距），得不偿失。
-
-                        ⚠️ `z-10` 不能省，而且必须比 React Flow 的 `renderer`（`z-index: 4`）
-                        高。`.react-flow` 根节点不创建层叠上下文（它只有 `direction` 和一堆
-                        CSS 变量），所以画布的层级会跑到外层来把 handle 的 `z-index: auto`
-                        盖住：伪元素那 10px 落在画布上，光标显示画布的 `pointer`、拖出来是
-                        框选 —— 一条 1px 的线上是 `col-resize`、旁边 10px 是 `pointer`，
-                        看起来就是「两个位置两种拖拽指示器」。抬到 10 之后这 10px 整块归
-                        handle，光标与行为才对得上。
-                      */
-                      className="relative z-10 cursor-col-resize after:-left-2.5 after:w-2.5 after:translate-x-0"
+                      className="relative z-10 cursor-col-resize"
                     />
                   )}
                   <ResizablePanel
@@ -949,43 +888,17 @@ export function ConversationTab({
                     minSize={collabChatMin}
                     maxSize={collabChatMax}
                     /*
-                      窗口缩放时对话面板保持像素宽、画布吃剩下的（改造前就是这个行为）。
+                      窗口缩放时对话面板保持像素宽、名单吃剩下的（改造前就是这个行为）。
                       默认的按比例缩放会把窄窗口里的聊天框一路压小。
                     */
                     groupResizeBehavior="preserve-pixel-size"
                     className={cn(
                       'flex min-h-0 flex-col',
-                      // 窄到拖不动时没有拖拽条，补一条边线把画布与对话分开
                       collabChatMax <= collabChatMin && 'border-l'
                     )}
                     style={{ overflow: 'hidden' }}
                   >
-                    {/*
-                      面板内容按「正在看谁」**原地替换**：主智能体 → 原样 `ChatPanel`
-                      （输入框、队列、审批全在）；子 Agent → `CollabAgentChatPanel`
-                      （同一套 `MessageList`，只读）。同一块面板换内容，不是新开标签也不是弹窗，
-                      宽度 / 拖拽条位置 / 分栏布局全都不动。
-
-                      ⚠️ 主对话**始终挂载**，被 Agent 面板盖住时只是 `hidden`：卸载会丢掉
-                      输入框里没发出去的草稿、排队消息和滚动位置 —— 用户点一下画布看进度、
-                      回来发现打了半天的字没了，比什么都糟。
-                    */}
-                    <div
-                      className={cn(
-                        'min-h-0 flex-1 flex-col',
-                        viewingAgent ? 'hidden' : 'flex'
-                      )}
-                    >
-                      <ChatPanel app={app} panelKey={key} />
-                    </div>
-                    {viewingAgent && (
-                      <CollabAgentChatPanel
-                        app={app}
-                        agent={viewingAgent}
-                        settings={collabSettings}
-                        onBackToMain={() => setViewingAgentId(null)}
-                      />
-                    )}
+                    <ChatPanel app={app} panelKey={key} />
                   </ResizablePanel>
                 </ResizablePanelGroup>
               )}

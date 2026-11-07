@@ -7,8 +7,7 @@
  * 无脑带上会让「点一下就等一下」。修剪只挂在用户手动点刷新时（见 GitPanel 的刷新按钮）。
  */
 import { domain } from '@/lib/server/state'
-import { remoteUnsupported } from '@/lib/server/remote-guard'
-import { workspaceRepoRoot } from '@/lib/workspace-repo'
+import { gitExecFor, notRepoMessage, workspaceRepoRoot } from '@/lib/workspace-repo'
 import { jsonError } from '@/app/api/_lib/auth'
 import { git, pruneRemoteRefs, type GitBranchesResult } from '@fizz/git'
 
@@ -19,22 +18,21 @@ export async function GET(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
-  const denied = remoteUnsupported(workspace, 'Git 面板')
-  if (denied) return denied
-  const root = await workspaceRepoRoot(workspace)
-  if (!root) return jsonError(400, '这个工作区不是 git 仓库（也可能这台机器上没装 git）')
+  const exec = gitExecFor(workspace)
+  const root = await workspaceRepoRoot(workspace, exec)
+  if (!root) return jsonError(400, notRepoMessage(workspace))
 
   // 只在手动刷新时修剪远端跟踪分支：远端已删的分支不该继续挂在列表里
   // （留着的话用户点删除只会撞上 git 的 "remote ref does not exist"）。
   // 离线 / 没凭据 / 超时都直接跳过，用上一次 fetch 的结果，不影响列表可用性。
   if (new URL(request.url).searchParams.get('prune') === '1') {
-    await pruneRemoteRefs(root)
+    await pruneRemoteRefs(root, 15_000, exec)
   }
 
   const [local, remote, current] = await Promise.all([
-    git(root, ['for-each-ref', 'refs/heads', '--format=%(refname:short)']),
-    git(root, ['for-each-ref', 'refs/remotes', '--format=%(refname:short)']),
-    git(root, ['branch', '--show-current'])
+    git(root, ['for-each-ref', 'refs/heads', '--format=%(refname:short)'], exec),
+    git(root, ['for-each-ref', 'refs/remotes', '--format=%(refname:short)'], exec),
+    git(root, ['branch', '--show-current'], exec)
   ])
   const lines = (text: string): string[] =>
     text.split('\n').map((s) => s.trim()).filter(Boolean)

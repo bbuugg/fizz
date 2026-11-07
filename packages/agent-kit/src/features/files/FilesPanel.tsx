@@ -555,17 +555,10 @@ function workspaceSource(getApp: () => AgentApp | undefined, workspaceId: string
     mkdir: async (dir, name) =>
       notifying('mkdir', async () => {
         const app = getApp()
-        if (!app || !app.api) return t('未连接')
-        const ws = app.workspaces.find((w) => w.id === workspaceId)
-        if (!ws) return t('工作区不存在')
-        // 把相对路径拼成服务端绝对路径（简单拼接，与服务端 resolveInside 一致）
-        const parent = dir ? `${ws.path}/${dir}` : ws.path
-        try {
-          await app.api.createServerDir({ parent, name })
-          return null
-        } catch (err) {
-          return err instanceof Error ? err.message : String(err)
-        }
+        if (!app?.api) return t('未连接')
+        // 工作区相对路径直接交给服务端：远端工作区由后端拼远端根，前端不碰路径拼接
+        // （以前拼 `ws.path` 走的是「宿主机绝对路径」那条接口，远端工作区根本建不了）
+        return app.createWorkspaceDir(workspaceId, dir, name)
       }),
     // 新建文件 = 写一个空内容的文件（写接口本身就是 create-or-overwrite）
     createFile: (dir, name) =>
@@ -2251,6 +2244,13 @@ export function FilesPanel({
     (!hasDualView(activeTab.kind) || activeTab.viewMode === 'preview')
   const editable = isEditable(activeTab?.kind)
   /**
+   * 远端工作区（文件在 SSH 那台机器上）：本机文件管理器够不着 →「显示 / 打开目录」两个入口
+   * 一律不露，由「下载」接位；「复制绝对路径」照旧 —— 拼出来的是远端 POSIX 路径，
+   * SSH 终端里正好能用。
+   */
+  const remoteWorkspace =
+    !!workspaceId && !!appRef.current?.workspaces.find((w) => w.id === workspaceId)?.remote
+  /**
    * 「下载 / 在文件管理器中显示」两个入口的可用性，**同一槽位二选一**：
    *
    * 判据是**宿主要不要得着这台机器**，不是"来源上声没声明方法"（踩过：`workspaceSource`
@@ -2259,9 +2259,13 @@ export function FilesPanel({
    *
    * - **desktop 宿主**：后端就跑在这台机器上，工作区路径真实存在于本机磁盘 → **只能定位**
    *   （在资源管理器里选中它，比下到浏览器下载目录顺手，下载反而多余）；
-   * - **web 宿主 / 容器工作台**：要么压根没有本机概念，要么文件在镜像里 → 只有**下载**。
+   * - **web 宿主 / 容器工作台 / 远端工作区**：要么压根没有本机概念，要么文件在镜像 / SSH
+   *   那台机器上 → 只有**下载**。
    */
-  const canReveal = !!fsSource?.revealInFileManager && !!getAgentHostOrNull()?.revealInFileManager
+  const canReveal =
+    !remoteWorkspace &&
+    !!fsSource?.revealInFileManager &&
+    !!getAgentHostOrNull()?.revealInFileManager
   const canDownload = !!fsSource?.download && !canReveal
   /**
    * 「在文件管理器中打开**目录**」的可用性（文件夹右键 / 文件树空白处 = 根目录）。
@@ -2269,10 +2273,13 @@ export function FilesPanel({
    * 与 `canReveal` 同一道判据（宿主真能碰本机才算），只是走另一条宿主出口
    * `openFileManagerAt`：「定位文件」与「打开目录」在系统层面就是两个动作
    * （Windows 是 explorer 的两种参数，macOS 是 `open` 与 `open -R`）。
-   * 这条入口只在 desktop 露头：web / 手机宿主没实现 `openFileManagerAt`，恒为 false。
+   * 这条入口只在 desktop 且工作区在本机时露头：web / 手机宿主没实现 `openFileManagerAt`，
+   * 远端工作区的目录则根本不在本机。
    */
   const canOpenInFileManager =
-    !!fsSource?.openInFileManager && !!getAgentHostOrNull()?.openFileManagerAt
+    !remoteWorkspace &&
+    !!fsSource?.openInFileManager &&
+    !!getAgentHostOrNull()?.openFileManagerAt
   /**
    * 「重新从磁盘读当前文件」的按钮 —— 挂在**标签自己身上**，关闭 × 的左侧
    * （`PanelTab` 的 `actions` 槽位）。

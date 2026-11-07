@@ -10,8 +10,7 @@
  * `@fizz/git` 里（白名单形状），这里只负责转成 400。
  */
 import { domain } from '@/lib/server/state'
-import { remoteUnsupported } from '@/lib/server/remote-guard'
-import { workspaceRepoRoot } from '@/lib/workspace-repo'
+import { gitExecFor, notRepoMessage, workspaceRepoRoot } from '@/lib/workspace-repo'
 import { jsonError } from '@/app/api/_lib/auth'
 import { commitShow, isSafeRev, type GitCommitDiffResult } from '@fizz/git'
 
@@ -25,16 +24,15 @@ export async function GET(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
-  const denied = remoteUnsupported(workspace, 'Git 面板')
-  if (denied) return denied
-  const root = await workspaceRepoRoot(workspace)
-  if (!root) return jsonError(400, '这个工作区不是 git 仓库（也可能这台机器上没装 git）')
+  const exec = gitExecFor(workspace)
+  const root = await workspaceRepoRoot(workspace, exec)
+  if (!root) return jsonError(400, notRepoMessage(workspace))
 
   const rev = (new URL(request.url).searchParams.get('hash') ?? '').trim()
   if (!isSafeRev(rev)) return jsonError(400, `提交引用不合法：${rev || '（空）'}`)
 
   try {
-    const result = await commitShow(root, rev)
+    const result = await commitShow(root, rev, exec)
     // 与 git/diff 一致：超长只截断正文，文件清单照全给（那个便宜，用户还想知道「都动了哪些文件」）
     const body: GitCommitDiffResult =
       result.diff.length > MAX_DIFF_CHARS

@@ -259,7 +259,7 @@ export function RemoteWorkspaceDialog({
               </div>
 
               <p className="text-xs text-muted-foreground">
-                {tr('首期远端工作区暂不支持文件面板、源码管理与技能 / 插件；终端与 Agent 工具可用。')}
+                {tr('首期远端工作区暂不支持 worktree、技能 / 项目规则注入与插件 / MCP / ACP；文件面板、终端、源码管理与 Agent 工具可用。')}
               </p>
             </>
           )}

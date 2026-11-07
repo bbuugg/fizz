@@ -500,6 +500,18 @@ export interface ServerListsSlice {
     dest: string,
     name?: string
   ) => Promise<WorkspaceWriteResult>
+  /**
+   * 在工作区某目录下新建文件夹。
+   *
+   * 与 `createServerDir` 的区别：那条收**宿主机绝对路径**（「选工作区目录」弹窗，
+   * 只认本机）；这条收工作区相对路径，**远端工作区也能建** —— 文件面板的「新建文件夹」
+   * 走这里。失败返回人话错误（调用方直接 toast），成功 null。
+   */
+  createWorkspaceDir: (
+    workspaceId: string,
+    parent: string,
+    name: string
+  ) => Promise<string | null>
   /** git 只读（出错**抛**）：面板要把 git 的原话直接讲给用户，吞掉就没法排查 */
   gitStatus: (workspaceId: string) => Promise<GitStatusResult>
   /** `prune` = 顺带 `git fetch --prune --all`（要联网，只在用户手动刷新时开） */
@@ -1410,6 +1422,27 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
         const message = errorMessage(err)
         get().setError(message)
         return { ok: false, error: message }
+      }
+    },
+    /**
+     * 在工作区某目录下新建文件夹。
+     *
+     * 文件树不进 store（按需拉），所以这里**不刷任何清单**，面板自己 `refresh()`。
+     * 失败时把服务端原话返回给调用方 toast；也写进 `error`（顶栏横幅），与删除 / 复制一致。
+     */
+    createWorkspaceDir: async (workspaceId, parent, name): Promise<string | null> => {
+      const api = get().getApi()
+      if (!api || !workspaceId) {
+        get().setError('未连接服务端')
+        return '未连接服务端'
+      }
+      try {
+        await api.createWorkspaceDir(workspaceId, { parent, name })
+        return null
+      } catch (err) {
+        const message = errorMessage(err)
+        get().setError(message)
+        return message
       }
     },
     gitStatus: (workspaceId) => requireApi().gitStatus(workspaceId),

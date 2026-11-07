@@ -25,7 +25,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
-import { ChevronLeft, Loader2, MessageSquare, RotateCw, Square, Unplug } from 'lucide-react'
+import { Bot, ChevronLeft, Loader2, MessageSquare, RotateCw, Square, Unplug } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
 import { SubagentViewProvider, type OpenSubagent } from '@fizz/agent-kit/features/chat/subagent-view'
 import { SUBAGENT_META, type SubagentDelegation } from '@fizz/contracts/types'
@@ -174,6 +174,11 @@ export interface MessageListProps {
    * 不传 = 只显示提示、不给按钮（容器工作台没有「发消息」的语义）。
    */
   onContinueMessage?: (message: AgentChatMessage) => void
+  /**
+   * 多智能体协作的**实时回复**（还没落盘的那些）：渲染在消息流末尾，和正式消息长得一样，
+   * 只是不挂操作行。本轮结束（`streaming` 落回 false）后由权威历史替换掉。
+   */
+  liveMessages?: AgentChatMessage[]
 }
 
 /** `MessageList` 里 `renderActions` 的参数 */
@@ -193,6 +198,7 @@ export interface MessageActionArgs {
  */
 export function MessageList({
   messages,
+  liveMessages,
   conversationId,
   streaming,
   replaying = false,
@@ -247,7 +253,27 @@ export function MessageList({
     node?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
-  const total = messages.length
+  /**
+   * 协作轮里主对话没有「唯一一条助手消息」：多个 Agent 同时流式输出时先挂在末尾，
+   * 结束（`streaming` 落回 false / 权威历史刷新）后由落盘消息替换。
+   * 同时把那条空的主占位隐藏掉（它不会有内容，露出来会显示「本轮没有返回内容」）。
+   */
+  const live = streaming && liveMessages?.length ? liveMessages : []
+  const displayMessages =
+    live.length > 0
+      ? [
+          ...messages.filter(
+            (message, index) =>
+              !(
+                index === messages.length - 1 &&
+                message.role === 'assistant' &&
+                message.parts.length === 0
+              )
+          ),
+          ...live
+        ]
+      : messages
+  const total = displayMessages.length
 
   return (
     // relative 只包住消息区（不含下方输入框）：「消息目录」的竖条相对它垂直居中。
@@ -327,13 +353,15 @@ export function MessageList({
             <ConversationEmptyState>{emptyState ?? <DefaultEmptyState />}</ConversationEmptyState>
           ) : (
             <>
-              {messages.map((message, index) => {
+              {displayMessages.map((message, index) => {
                 const isStreamingLast = streaming && index === total - 1
                 /** 正在编辑重发的那条：描边 + 压暗，和输入框上方的「编辑消息」条是一对标识 */
                 const isEditing = !!editingMessageId && message.id === editingMessageId
                 const messageCompaction =
                   compaction && compaction.messageId === message.id ? compaction : null
-                const actions = renderActions?.({ message, index, total }) ?? null
+                // 实时回复还没落盘，不挂编辑 / 删除 / 签出这些需要稳定 id 的操作
+                const isLive = message.id.startsWith('collab-live-')
+                const actions = isLive ? null : (renderActions?.({ message, index, total }) ?? null)
                 /*
                  * 流式末条**不渲染操作行**（连占位也不）—— 用户明确要求「不要占位」。
                  *
@@ -382,6 +410,13 @@ export function MessageList({
                         isEditing && 'opacity-60 ring-2 ring-ring/70 ring-offset-2 ring-offset-background'
                       )}
                     >
+                      {/* 协作会话的消息上标注是哪个 Agent 说的（普通会话不带 agentName） */}
+                      {message.role === 'assistant' && message.agentName ? (
+                        <div className="-mt-1 mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <Bot className="size-3.5" />
+                          <span className="font-medium text-foreground">{message.agentName}</span>
+                        </div>
+                      ) : null}
                       {/*
                         零 part 的助手消息有两种，必须分开：
                         - **正在跑**：还没吐第一个 part，显示「正在思考…」（由下面那个状态行槽渲染）；
@@ -701,6 +736,8 @@ export interface ChatComposerProps {
   slashCommands?: import('@fizz/agent-kit/shared/lib/slash-commands').SlashCommand[]
   /** 命令执行上下文（与 slashCommands 一同传） */
   slashContext?: import('@fizz/agent-kit/shared/lib/slash-commands').SlashCommandContext
+  /** `@` 点名的候选 Agent（多智能体协作会话） */
+  mentionCandidates?: Array<{ id: string; name: string; role?: string }>
   variant?: ChatComposerVariant
   /** 紧凑输入框（初始高度一行）—— 窄面板里的助手用，见 Composer 的 compact */
   compact?: boolean
@@ -734,6 +771,7 @@ export function ChatComposer({
   onAttachFiles,
   slashCommands,
   slashContext,
+  mentionCandidates,
   variant = 'page',
   compact
 }: ChatComposerProps) {
@@ -784,6 +822,7 @@ export function ChatComposer({
           onAttachFiles={onAttachFiles}
           slashCommands={slashCommands}
           slashContext={slashContext}
+          mentionCandidates={mentionCandidates}
           compact={compact}
         />
         {below ? <div className="flex min-w-0 items-center gap-2 px-1 bg-sidebar/60 rounded-b-lg mx-3">{below}</div> : null}

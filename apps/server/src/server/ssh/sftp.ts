@@ -564,6 +564,7 @@ class SftpService {
               name: item.filename,
               path: full,
               isDir: st.isDirectory(),
+              isSymlink: st.isSymbolicLink(),
               size: st.isDirectory() ? 0 : Number(st.size) || 0,
               mtime: st.mtime ? new Date(st.mtime).getTime() : 0
             }

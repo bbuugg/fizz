@@ -48,7 +48,7 @@ export function MobilePanelMenu({
   showPreview: boolean
   /** 真实会话才有浏览器画面（草稿标签连不到 `agent-browser` 会话） */
   showBrowser: boolean
-  /** 文件面板 / 源码管理：远端工作区首期不支持（本机路径语义），隐藏这两项 */
+  /** 文件面板 / 源码管理：默认露头（远端工作区也支持，见 FilesPanel / gitExecFor）；`false` 留给没有目录的场景 */
   showFiles?: boolean
   showGit?: boolean
   onToggleFiles: () => void

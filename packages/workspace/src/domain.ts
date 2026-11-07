@@ -1195,7 +1195,7 @@ export class AgentDomain {
     return this.commitConversation(conversation)
   }
 
-  /** 覆盖协作配置（全量；画布拖拽 / 增删 Agent 都走这里） */
+  /** 覆盖协作配置（全量；增删改 Agent / 并行与单轮上限都走这里） */
   setConversationCollab(id: string, collab: CollabSettings): AgentConversation {
     const existing = this.getConversation(id)
     if (!existing) throw new Error('会话不存在')

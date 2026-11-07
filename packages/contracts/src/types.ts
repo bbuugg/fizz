@@ -1138,6 +1138,12 @@ export interface AgentChatMessage {
   /** 这一轮实际跑了多少步（只有 `stopReason` 存在时给：撞上限时用户要看「用满了多少」） */
   steps?: number
   /**
+   * 协作会话里这条回复是哪个 Agent 说的（只有 `kind: 'collab'` 的助手消息有）。
+   * 渲染端据此在消息上方标出 Agent 名；普通会话的消息不带这两个字段。
+   */
+  agentId?: string
+  agentName?: string
+  /**
    * 上下文占用快照（见流事件的 `context-usage`）。
    *
    * 与 `usage` 分开：`usage` 是一轮跑完才有的完整统计；这个字段是「当前上下文用了
@@ -1299,11 +1305,12 @@ export type AcpPermissionMode = 'confirm' | 'allow'
 // 多智能体协作（collab）
 // ---------------------------------------------------------------------------
 //
-// 一个 collab 会话 = 一个「主智能体」+ 若干可配置的内置 Agent（都是 内置 Agent），
-// 主智能体通过 `delegate_to_agent` / `delegate_many` 派活，子 Agent 共享同一个工作区。
+// 一个 collab 会话 = 一条共享会话 + 若干平级的内置 Agent。
+// 用户点名（@）谁就由谁处理；没有点名则广播给全部 Agent，各自判断是否接手；
+// Agent 之间需要协同用 `SendMessage` 投递消息。
 //
-// ⚠️ 这里只放**跨端契约**（渲染端要画布、服务端要持久化、agent 要编排）。运行时
-// 编排器在 `@fizz/agent/src/collab/`，不要把这些类型反向塞进 agent 包。
+// ⚠️ 这里只放**跨端契约**（渲染端要名单 / 服务端要持久化 / agent 要编排）。运行时
+// 编排器在 `@fizz/agent/src/collab.ts`，不要把这些类型反向塞进 agent 包。
 
 export type CollabAgentStatus =
   | 'idle'
@@ -1318,22 +1325,11 @@ export type CollabTaskStatus = 'queued' | 'running' | 'done' | 'error' | 'cancel
 
 export type CollabMessageKind = 'delegate' | 'result' | 'note' | 'ask' | 'answer' | 'system'
 
-/** 画布上的节点位置（右上角原点，像素；缺省由前端按网格布局） */
-export interface CollabAgentPosition {
-  x: number
-  y: number
-}
-
-/**
- * 一个可配置的协作 Agent。
- *
- * `id` 由前端生成、创建后不改（任务 / 消息 / 画布都用它关联）；`name` 可重名，
- * 只用于展示。未配 `configId` / `modelId` 时沿用会话主模型。
- */
+/** 一个可配置的协作 Agent。 */
 export interface CollabAgentConfig {
   id: string
   name: string
-  /** 一句话职责（会进主智能体的工具描述，帮助它选人） */
+  /** 一句话职责（写进该 Agent 的系统提示词，也用作 @ 候选的说明） */
   role: string
   /** 系统提示词（追加在 Fizz 基础提示词之后） */
   instructions: string
@@ -1350,51 +1346,16 @@ export interface CollabAgentConfig {
   tools: string[]
   /** 单个任务最多跑多少步（工具轮）；缺省 12，服务端收敛到 1~40 */
   maxSteps?: number
-  position?: CollabAgentPosition
-}
-
-/** 主智能体在画布 / 接线 / 任务来源里的固定 id（子 Agent 的 id 由前端生成，不会撞） */
-export const COLLAB_MAIN_ID = 'main'
-
-/**
- * 画布上的一条**接线**：`source` 可以派活给 `target`。
- *
- * 这是**可编辑的拓扑**，不只是画给人看的：编排器按它路由 —— 主智能体只能派给
- * 有 `main → agent` 线的子 Agent，`ask_agent` 也只能问自己有出线的对象。
- * 删掉一条线就等于断掉那条派活路径（画布上「连上 / 断开」是同一个动作的两种结果）。
- */
-export interface CollabEdge {
-  /** 稳定 id（React Flow 的 edge id；同一对 source/target 只会有一条） */
-  id: string
-  /** 起点：`COLLAB_MAIN_ID` 或某个子 Agent 的 id */
-  source: string
-  /** 终点：某个子 Agent 的 id（主智能体不接活） */
-  target: string
 }
 
 /** 一个协作会话的配置（落会话目录的 `config.json`） */
 export interface CollabSettings {
-  /** 画布上主智能体的显示名 */
-  mainName: string
+  /** 参与共享会话的 Agent 名单（平级；没有「主智能体」） */
   agents: CollabAgentConfig[]
-  /**
-   * 接线（谁可以派活给谁）。
-   *
-   * ⚠️ **缺这个字段**（老会话 / 手工改坏的配置）= 按「主智能体连向每个子 Agent」补齐，
-   * 行为与加拓扑之前完全一致；**给了空数组**则是真的「谁都不连」，不会被补回去 ——
-   * 否则用户把线全删掉之后一刷新又长回来。
-   */
-  edges: CollabEdge[]
-  /** 同一时刻最多并行跑几个子任务 */
+  /** 同一时刻最多并行跑几个 Agent */
   maxParallel: number
-  /** 子 Agent 再往下派活的最大深度（1 = 只能主智能体派） */
-  maxDepth: number
-  /** 单个子任务最多连续多少步 / 轮 */
-  maxTurnsPerTask: number
-  /** 一轮主对话最多派多少个任务（含并行项），防止无限递归烧钱 */
+  /** 单轮用户消息最多触发多少次 Agent 运行（含 SendMessage 唤醒），防止无限协同烧钱 */
   maxTasksPerTurn: number
-  /** 是否允许子 Agent 通过 `ask_agent` 互相提问（仍由编排器路由、有环路检测） */
-  allowAgentMessaging: boolean
 }
 
 export function createCollabAgent(overrides: Partial<CollabAgentConfig> = {}): CollabAgentConfig {
@@ -1410,14 +1371,9 @@ export function createCollabAgent(overrides: Partial<CollabAgentConfig> = {}): C
 }
 
 export const DEFAULT_COLLAB_SETTINGS: CollabSettings = {
-  mainName: '主智能体',
   agents: [],
-  edges: [],
   maxParallel: 3,
-  maxDepth: 1,
-  maxTurnsPerTask: 12,
-  maxTasksPerTurn: 16,
-  allowAgentMessaging: true
+  maxTasksPerTurn: 16
 }
 
 const COLLAB_DEFAULT_TOOLS = ['read_file', 'list_files', 'search_files', 'find_files', 'web_fetch']
@@ -1425,13 +1381,6 @@ const COLLAB_DEFAULT_TOOLS = ['read_file', 'list_files', 'search_files', 'find_f
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {
   const n = typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : fallback
   return Math.min(max, Math.max(min, n))
-}
-
-function normalizePosition(value: unknown): CollabAgentPosition | undefined {
-  const input = (value ?? {}) as CollabAgentPosition
-  if (typeof input.x !== 'number' || typeof input.y !== 'number') return undefined
-  if (!Number.isFinite(input.x) || !Number.isFinite(input.y)) return undefined
-  return { x: Math.round(input.x), y: Math.round(input.y) }
 }
 
 /** 收敛手改坏 / 老数据的协作配置：绝不抛错，并且保证 agent id 唯一 */
@@ -1469,72 +1418,29 @@ export function normalizeCollabSettings(value: unknown): CollabSettings {
       ...(configId && modelId ? { configId, modelId } : {}),
       ...(item.maxSteps !== undefined
         ? { maxSteps: clampInt(item.maxSteps, 12, 1, 40) }
-        : {}),
-      ...(normalizePosition(item.position) ? { position: normalizePosition(item.position) } : {})
+        : {})
     })
   }
-  /**
-   * 接线归一：
-   * - 起点只能是 `main` 或**已存在的**子 Agent；终点只能是已存在的子 Agent；
-   * - 去掉自环与重复（同一对 source/target 只留一条）；
-   * - **没给 `edges` 字段**（老数据）= 补齐 `main → 每个子 Agent`，保持加拓扑前的行为；
-   *   给了（哪怕是空数组）就照给的来。
-   */
-  const known = new Set(agents.map((agent) => agent.id))
-  const knownNode = (id: string): boolean => id === COLLAB_MAIN_ID || known.has(id)
-  const edges: CollabEdge[] = []
-  const seenEdges = new Set<string>()
-  if (Array.isArray(input.edges)) {
-    for (const raw of input.edges) {
-      if (!raw || typeof raw !== 'object') continue
-      const item = raw as Partial<CollabEdge>
-      const source = typeof item.source === 'string' ? item.source.trim() : ''
-      const target = typeof item.target === 'string' ? item.target.trim() : ''
-      if (!knownNode(source) || !known.has(target) || source === target) continue
-      const key = `${source}->${target}`
-      if (seenEdges.has(key)) continue
-      seenEdges.add(key)
-      const id = typeof item.id === 'string' && item.id.trim() ? item.id.trim() : key
-      edges.push({ id, source, target })
-    }
-  } else {
-    for (const agent of agents) {
-      edges.push({ id: `${COLLAB_MAIN_ID}->${agent.id}`, source: COLLAB_MAIN_ID, target: agent.id })
-    }
-  }
   return {
-    mainName:
-      typeof input.mainName === 'string' && input.mainName.trim()
-        ? input.mainName.trim()
-        : DEFAULT_COLLAB_SETTINGS.mainName,
     agents,
-    edges,
     maxParallel: clampInt(input.maxParallel, DEFAULT_COLLAB_SETTINGS.maxParallel, 1, 8),
-    maxDepth: clampInt(input.maxDepth, DEFAULT_COLLAB_SETTINGS.maxDepth, 1, 4),
-    maxTurnsPerTask: clampInt(
-      input.maxTurnsPerTask,
-      DEFAULT_COLLAB_SETTINGS.maxTurnsPerTask,
-      1,
-      50
-    ),
     maxTasksPerTurn: clampInt(
       input.maxTasksPerTurn,
       DEFAULT_COLLAB_SETTINGS.maxTasksPerTurn,
       1,
       64
-    ),
-    allowAgentMessaging: input.allowAgentMessaging !== false
+    )
   }
 }
 
-/** 一次派活（主智能体 → 子 Agent，或子 Agent 之间） */
+/** 一次 Agent 运行（用户点名 / 广播 / SendMessage 唤醒） */
 export interface CollabTask {
   id: string
   agentId: string
   agentName: string
-  /** 发起方：`main` 或某个 agent id */
+  /** 发起方：`user` 或某个 agent id */
   from: string
-  /** 上层任务 id（子 Agent 再派活时；主智能体发起为 undefined） */
+  /** 上层任务 id（SendMessage 唤醒时指向投递方那次运行；用户发起为 undefined） */
   parentTaskId?: string
   prompt: string
   /** 主智能体补充的上下文（可选；会拼在 prompt 前） */
@@ -1563,7 +1469,7 @@ export interface CollabTask {
   finishedAt?: number
 }
 
-/** Agent 之间的一条可见消息（画布连线与「消息流」面板的数据源） */
+/** Agent 之间的一条可见消息（SendMessage 投递记录） */
 export interface CollabMessage {
   id: string
   from: string
@@ -1582,7 +1488,7 @@ export interface CollabAgentRuntime {
   step?: number
   startedAt?: number
   updatedAt: number
-  /** 正在流式输出的文本（只用于画布 / 检查器实时展示，不落盘） */
+  /** 正在流式输出的文本（只用于名单实时展示，不落盘） */
   liveText?: string
   error?: string
 }
@@ -2185,7 +2091,7 @@ export type AgentStreamEvent =
       updatedAt: number
     }
   | {
-      /** 子 Agent 的正文 / 思考增量（画布实时预览；收敛以任务 output 为准） */
+      /** 子 Agent 的正文 / 思考增量（名单卡片实时预览；收敛以任务 output 为准） */
       type: 'collab-delta'
       agentId: string
       taskId?: string
@@ -2193,7 +2099,7 @@ export type AgentStreamEvent =
       delta: string
     }
   | {
-      /** 子 Agent 的工具开始 / 结束（画布上显示当前在干什么） */
+      /** 子 Agent 的工具开始 / 结束（名单卡片上显示当前在干什么） */
       type: 'collab-tool'
       agentId: string
       taskId?: string
@@ -2206,7 +2112,7 @@ export type AgentStreamEvent =
       /**
        * 入参（`start`）/ 结果（`end`）的全文，服务端截断到 600 字符。
        *
-       * `label` 只有一行摘要，够画布角标用；右侧对话区要把它拼成**工具卡**，卡片上得能
+       * `label` 只有一行摘要，够名单角标用；共享对话区要把它拼成**工具卡**，卡片上得能
        * 看出「读的是哪个文件、跑出来什么」—— 摘要到不了那个粒度。
        */
       input?: string

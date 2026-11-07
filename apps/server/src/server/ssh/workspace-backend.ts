@@ -289,6 +289,8 @@ export function createRemoteBackend(hostId: string, rawRoot: string): WorkspaceB
       const entries = await sftpService.list(hostId, p)
       return entries.map((ent): WorkspaceDirEntry => {
         if (ent.isDir) return { name: ent.name, type: 'dir' }
+        // 链接按 lstat 报 symlink（文件树据此再 stat 一次跟随链接），其余当普通文件
+        if (ent.isSymlink) return { name: ent.name, type: 'symlink' }
         const out: WorkspaceDirEntry = { name: ent.name, type: 'file' }
         out.size = ent.size
         return out

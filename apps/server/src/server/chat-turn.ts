@@ -20,7 +20,7 @@
  */
 import { loadPlugins } from '@fizz/plugin/loader'
 import { assistantSliceId, buildUserParts, resolveMaxSteps, resolveToolCallConcurrency, type ChatRequest, type UploadFileRef } from '@fizz/contracts/agent-api'
-import { CollabRuntime, defaultContextWindowFromEnv, rawToolsPlugin, readProjectDoc, runAgent, type AgentConfirmInput, type MountedPlugin, type RunAgentResult } from '@fizz/agent'
+import { CollabRuntime, defaultContextWindowFromEnv, rawToolsPlugin, readProjectDoc, runAgent, type AgentConfirmInput, type CollabTurnResult, type MountedPlugin, type RunAgentResult } from '@fizz/agent'
 import {
   isRemoteWorkspace,
   normalizeReasoningEffort,
@@ -549,6 +549,10 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
 
   const assistantParts: AgentChatMessage['parts'] = []
   let turnUsage: TurnUsage | undefined
+  /** 协作会话本轮的结果：多条 Agent 回复 + 跳过 / 失败统计，收尾时按 Agent 归属落盘 */
+  let collabTurnResult: CollabTurnResult | undefined
+  /** 协作会话的收尾摘要（`conversation:finished` 的通知文案用；普通会话走 `excerptOf`） */
+  let collabExcerpt: string | undefined
   /**
    * 这一轮的耗时（finish 帧的 `durationMs`）。收尾时挂到助手消息上，折叠条抬头才报得出
    * 「已工作 N 秒」（见 `AgentChatMessage.durationMs`）。
@@ -799,14 +803,12 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
     }
 
     /**
-     * 多智能体协作：运行时编排器 + 主智能体的派活工具 / 提示词。
+     * 多智能体协作：运行时编排器（@ 点名 / 广播判定 / SendMessage 投递）。
      *
-     * 任务 / 消息状态独立写 `collab.json`（`onState` 内部节流），主对话消息仍走原链路；
-     * 子任务取消挂到 run 上供 `POST /api/chat/collab/cancel` 命中。
+     * 任务 / 消息状态独立写 `collab.json`（`onState` 内部节流）；回复以带 `agentId/agentName`
+     * 的助手消息落进主对话，取消挂到 run 上供 `POST /api/chat/collab/cancel` 命中。
      */
     let collabRuntime: CollabRuntime | undefined
-    let collabTools: Record<string, unknown> = {}
-    let collabPrompt: string | undefined
     if (isCollab) {
       const initialState = await domain.getCollabState(conversation.id)
       collabRuntime = new CollabRuntime({
@@ -833,8 +835,50 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
         onState: (state) => domain.saveCollabState(conversation.id, state)
       })
       run.collabCancel = (taskId) => collabRuntime?.cancelTask(taskId) ?? false
-      collabTools = collabRuntime.mainTools()
-      collabPrompt = collabRuntime.mainPrompt()
+    }
+
+    /**
+     * 协作会话**不跑主智能体**：用户 @ 谁就由谁处理，没 @ 就全体广播判定；
+     * 每个 Agent 的回复由 `persistCollabTurn` 落成带 `agentId/agentName` 的助手消息。
+     * 这里复用 `runAgent` 的单 Agent 运行能力，但编排在 `CollabRuntime.runTurn`。
+     */
+    if (isCollab && collabRuntime) {
+      try {
+        const result = await collabRuntime.runTurn({
+          history: historyForTurn(conversation, userMessage),
+          text: input.text ?? ''
+        })
+        collabTurnResult = result
+        if (result.usage) turnUsage = result.usage
+        collabExcerpt = result.replies
+          .map((reply) => reply.text)
+          .join('\n')
+          .trim()
+          .slice(0, 120)
+        if (run.controller.signal.aborted) return { finishReason: 'aborted' }
+        if (!result.replies.length && result.errors.length) {
+          return {
+            finishReason: 'error',
+            error: result.errors
+              .map((item) => `${item.agentName}：${item.error}`)
+              .join('；')
+          }
+        }
+        return { finishReason: 'done' }
+      } catch (err) {
+        const message = describeError(err).message
+        console.error('[server] 协作轮执行失败：', err)
+        // 让收尾仍走协作落盘路径：否则 `assistantParts` 是空的，用户只会看到一条空白回复
+        collabTurnResult = {
+          replies: [],
+          skipped: 0,
+          errors: [{ agentId: 'runtime', agentName: '协作运行时', error: message }]
+        }
+        return { finishReason: 'error', error: message }
+      } finally {
+        collabRuntime.close()
+        delete run.collabCancel
+      }
     }
 
     try {
@@ -916,7 +960,6 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
             }
           }),
       plugins,
-      ...(isCollab ? { extraTools: collabTools, extraPrompt: collabPrompt } : {}),
       /**
        * 浏览器工具（browser_*）：**内置这套真的挂上了**才追加系统提示词里那段浏览器说明。
        * 会话开关关掉、或被外部 MCP 的同名工具全顶掉时都是 false
@@ -1012,6 +1055,12 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
       : runAiSdkTurn()
 
   const persistAssistant = (parts: AgentChatMessage['parts']): void => {
+    // 协作会话没有「主智能体的一条回复」：把它已产出的每个 Agent 回复分别落盘。
+    // 运行时连结果都没来得及给出（抛错）时走下面的普通错误落盘路径。
+    if (collabTurnResult) {
+      persistCollabTurn()
+      return
+    }
     // acp 会话的消息在 agent 侧，本地不落盘；但收尾要补进进程内视图，
     // 这样「刚跑完就刷新」不会因为会话已 idle 而只能等下一次 session/load。
     if (isAcpConversation) {
@@ -1097,6 +1146,47 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
     }
   }
 
+  /**
+   * 协作轮的落盘：每个 Agent 的回复是一条带 `agentId/agentName` 的助手消息。
+   *
+   * 一条也没有时（全体静默跳过 / 没有 Agent）补一条提示，避免用户只看到自己那条
+   * 消息、以为「什么都没发生」。中止且没有产出时不补提示。
+   */
+  const persistCollabTurn = (): void => {
+    const result = collabTurnResult
+    if (!result) return
+    if (result.replies.length > 0) {
+      const messages: AgentChatMessage[] = result.replies.map((reply, index) => ({
+        id: `collab-a-${Date.now()}-${index}-${reply.agentId}`,
+        role: 'assistant',
+        parts:
+          reply.parts.length > 0
+            ? reply.parts
+            : [{ type: 'text', text: reply.text }],
+        createdAt: reply.createdAt,
+        ...(reply.usage ? { usage: reply.usage } : {}),
+        agentId: reply.agentId,
+        agentName: reply.agentName
+      }))
+      domain.appendMessages(conversation.id, messages, undefined, turnUsage)
+      return
+    }
+    if (run.controller.signal.aborted) return
+    const text = result.errors.length
+      ? `（本轮没有 Agent 完成：${result.errors
+          .map((item) => `${item.agentName}：${item.error}`)
+          .join('；')}）`
+      : '（这条消息没有 Agent 接手）'
+    persistAssistantMessage(
+      conversation.id,
+      [{ type: 'text', text }],
+      undefined,
+      input.assistantMessageId,
+      turnDurationMs,
+      undefined
+    )
+  }
+
   void runner
     .then((result) => {
       persistAssistant(assistantParts)
@@ -1148,7 +1238,7 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
       // 运行态清单与「跑完了」都在 finishRun 之后发：此刻正文已落盘，客户端收到就能直接
       // 去拉权威历史（发早了会拉到半截）
       markDirty(['activeRuns'])
-      const excerpt = excerptOf(assistantParts)
+      const excerpt = collabExcerpt ?? excerptOf(assistantParts)
       emitServerEvent({
         type: 'conversation:finished',
         conversationId: conversation.id,

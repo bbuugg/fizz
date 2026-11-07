@@ -74,8 +74,8 @@ export const WORKSPACE: Record<string, string> = {
   '正在读取…': 'Reading…',
   '这里没有子目录': 'No subdirectories here',
   '留空 = 用目录名': 'Empty = use the directory name',
-  '首期远端工作区暂不支持文件面板、源码管理与技能 / 插件；终端与 Agent 工具可用。':
-    'Remote workspaces do not support the file panel, source control, or skills/plugins yet; the terminal and agent tools work.',
+  '首期远端工作区暂不支持 worktree、技能 / 项目规则注入与插件 / MCP / ACP；文件面板、终端、源码管理与 Agent 工具可用。':
+    'Remote workspaces do not support worktrees, skill / project-rule injection, or plugins/MCP/ACP yet; the file panel, terminal, source control and agent tools work.',
   '连接中…': 'Connecting…',
   '添加': 'Add',
   '主机已删除': 'Host deleted',

@@ -1,5 +1,7 @@
 /**
- * git 路由（status / diff / branches / log / action）共用的 git 访问层，基于 simple-git。
+ * git 路由（status / diff / branches / log / action）共用的 git 访问层。
+ * 本地工作区走 simple-git；远端工作区由 `apps/server` 注入走 SSH exec 的 `GitExec`
+ * （见 `GitExec` 的注释），所以这里的每个 helper 都接受可选的 `exec`。
  * 「面板」指这层命令最终服务的源代码管理面板（非交互、无 TTY 的服务端环境）。
  *
  * 之前这里是手写的 execFile('git', ...) 包装（原本内嵌在 status route 里），换 simple-git
@@ -36,7 +38,7 @@ import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { simpleGit, type SimpleGit } from 'simple-git'
-import type { GitCommitDiffResult, GitCommitFileStat } from './types'
+import type { GitCommitDiffResult, GitCommitFileStat, GitLogResult } from './types'
 
 // 见头注释第 3 条：进程级兜底禁用 git 的终端凭据提示
 if (process.env.GIT_TERMINAL_PROMPT === undefined) {
@@ -51,6 +53,19 @@ export interface GitRun {
   stdout: string
   stderr: string
 }
+
+/**
+ * 一条 git 命令的执行方式。
+ *
+ * 本地工作区用 `localGitExec`（simple-git）；远端工作区由 `apps/server` 注入一个
+ * 走 SSH exec 的实现（见 `server/ssh/git-exec.ts`）。这一层只认「在哪个目录、跑什么
+ * 参数、拿回 stdout/stderr」，不关心命令最终在哪台机器上执行 —— 因此本包**不引入 ssh2**。
+ */
+export type GitExec = (
+  cwd: string,
+  args: string[],
+  opts?: { timeoutMs?: number }
+) => Promise<GitRun>
 
 /**
  * 造一个面向某目录的 simple-git 客户端。每次调用新建一个实例：
@@ -87,13 +102,13 @@ export function gitPanel(cwd: string, timeoutMs: number = GIT_TIMEOUT_MS): Simpl
 }
 
 /**
- * 跑一条 git 命令（simple-git 的 raw 通道）。**不抛异常**：失败也把 stderr 原样带回，
- * 调用方自己判断 —— 与 execFile 时代的签名一致，route 里的错误分支不用动。
+ * 本机执行：跑一条 git 命令（simple-git 的 raw 通道）。**不抛异常**：失败也把 stderr
+ * 原样带回，调用方自己判断 —— 与 execFile 时代的签名一致，route 里的错误分支不用动。
  *
  * 成功时 stderr 也要（checkout / init 的信息在 stderr 上），靠 outputHandler 抓。
  */
-export async function git(cwd: string, args: string[]): Promise<GitRun> {
-  const client = gitPanel(cwd)
+export const localGitExec: GitExec = async (cwd, args, opts) => {
+  const client = gitPanel(cwd, opts?.timeoutMs)
   let stderrText = ''
   client.outputHandler((_command, _stdout, stderr) => {
     stderr?.on('data', (chunk: Buffer) => {
@@ -112,6 +127,15 @@ export async function git(cwd: string, args: string[]): Promise<GitRun> {
   }
 }
 
+/** 跑一条 git 命令；`exec` 缺省是本机（simple-git），远端由调用方注入 */
+export async function git(
+  cwd: string,
+  args: string[],
+  exec: GitExec = localGitExec
+): Promise<GitRun> {
+  return exec(cwd, args)
+}
+
 /**
  * 尽力而为地修剪陈旧的远端跟踪分支（`git fetch --prune --quiet --all`）。
  *
@@ -122,21 +146,55 @@ export async function git(cwd: string, args: string[]): Promise<GitRun> {
  * 继续用上一次fetch 留下的列表。超时给得比 GIT_TIMEOUT_MS 短，因为这是列表接口的同步路径，
  * 不能为了一个可有可无的修剪把请求挂住。
  */
-export async function pruneRemoteRefs(cwd: string, timeoutMs = 15_000): Promise<boolean> {
-  const client = gitPanel(cwd, timeoutMs)
-  try {
-    await client.raw(['fetch', '--prune', '--quiet', '--all'])
-    return true
-  } catch {
-    return false
-  }
+export async function pruneRemoteRefs(
+  cwd: string,
+  timeoutMs = 15_000,
+  exec: GitExec = localGitExec
+): Promise<boolean> {
+  const res = await exec(cwd, ['fetch', '--prune', '--quiet', '--all'], { timeoutMs })
+  return res.ok
 }
 
 /** 解析仓库根目录（绝对路径）；不是仓库（或没装 git）返回 null */
-export async function repoRoot(dir: string): Promise<string | null> {
-  const res = await git(dir, ['rev-parse', '--show-toplevel'])
+export async function repoRoot(
+  dir: string,
+  exec: GitExec = localGitExec
+): Promise<string | null> {
+  const res = await git(dir, ['rev-parse', '--show-toplevel'], exec)
   const root = unquotePath(res.stdout.trim())
   return res.ok && root ? root : null
+}
+
+/**
+ * 解析 `git remote -v`：
+ * ```
+ * origin\thttps://example.com/a.git (fetch)
+ * origin\thttps://example.com/a.git (push)
+ * ```
+ * 每个远端取 **fetch** 地址（与 simple-git `getRemotes(true).refs.fetch` 同口径）；
+ * 只有 push 行（少见）时退回 push 地址。同名远端多行只保留一条。
+ */
+export function parseRemoteV(stdout: string): { name: string; url: string }[] {
+  const byName = new Map<string, { url: string; fetch: boolean }>()
+  for (const line of stdout.split('\n')) {
+    const m = /^(\S+)\t(.+?)\s+\((fetch|push)\)$/.exec(line)
+    if (!m) continue
+    const [, name = '', url = '', kind = ''] = m
+    if (!name || !url) continue
+    const prev = byName.get(name)
+    // fetch 行优先；同一类重复时以第一条为准（git 不会对同名远端输出两行 fetch）
+    if (!prev || (kind === 'fetch' && !prev.fetch)) byName.set(name, { url, fetch: kind === 'fetch' })
+  }
+  return [...byName].map(([name, { url }]) => ({ name, url }))
+}
+
+/** 已配置的远端（fetch 地址）；拿不到（没装 git / 不是仓库）返回空列表 */
+export async function gitRemotes(
+  cwd: string,
+  exec: GitExec = localGitExec
+): Promise<{ name: string; url: string }[]> {
+  const res = await git(cwd, ['remote', '-v'], exec)
+  return res.ok ? parseRemoteV(res.stdout) : []
 }
 
 /**
@@ -160,8 +218,11 @@ export function samePath(a: string, b: string): boolean {
 }
 
 /** 工作区相对仓库根的前缀（工作区指向仓库子目录时用来过滤改动列表） */
-export async function workspacePrefix(workspacePath: string): Promise<string> {
-  const res = await git(workspacePath, ['rev-parse', '--show-prefix'])
+export async function workspacePrefix(
+  workspacePath: string,
+  exec: GitExec = localGitExec
+): Promise<string> {
+  const res = await git(workspacePath, ['rev-parse', '--show-prefix'], exec)
   return res.ok ? res.stdout.trim() : ''
 }
 
@@ -286,6 +347,38 @@ function parseCommitMeta(line: string): Omit<GitCommitDiffResult, 'files' | 'dif
 }
 
 /**
+ * 解析 `git log --format=%H<US>%h<US>%an<US>%aI<US>%s` 的每一行（单测覆盖）。
+ * 提交说明按整行取 `%s`，其中不会出现 `\x1f`，所以直接按分隔符切是安全的。
+ */
+export function parseLogOutput(stdout: string): GitLogResult['commits'] {
+  const out: GitLogResult['commits'] = []
+  for (const line of stdout.split('\n')) {
+    if (!line) continue
+    const [hash = '', short = '', author = '', date = '', subject = ''] = line.split(FIELD_SEP)
+    if (!hash) continue
+    out.push({ hash, short, author, date, subject })
+  }
+  return out
+}
+
+/**
+ * 提交历史（`git log -n <limit>`）；空仓库（unborn HEAD）上 git 会失败，按空列表返回
+ * —— 与面板旧行为一致，不把「还没有提交」当错误。
+ */
+export async function gitLog(
+  cwd: string,
+  limit: number,
+  exec: GitExec = localGitExec
+): Promise<GitLogResult['commits']> {
+  const res = await git(
+    cwd,
+    ['log', '-n', String(limit), `--format=%H${FIELD_SEP}%h${FIELD_SEP}%an${FIELD_SEP}%aI${FIELD_SEP}%s`],
+    exec
+  )
+  return res.ok ? parseLogOutput(res.stdout) : []
+}
+
+/**
  * 取**一次提交**的元信息 + 文件清单 + 原始 unified diff。
  *
  * 这是 `GET .../git/commit` 的唯一数据源（历史面板点开某次提交要看的东西）。
@@ -303,12 +396,16 @@ function parseCommitMeta(line: string): Omit<GitCommitDiffResult, 'files' | 'dif
  * `isSafeRev` 之外**不自己校验** rev 是否存在：git 会报 `unknown revision`，
  * 把原话带给用户比我们猜「是不是不存在」更准（也可能是浅克隆、孤儿 ref 这类边界）。
  */
-export async function commitShow(cwd: string, rev: string): Promise<GitCommitDiffResult> {
+export async function commitShow(
+  cwd: string,
+  rev: string,
+  exec: GitExec = localGitExec
+): Promise<GitCommitDiffResult> {
   const [meta, nameStatus, numstat, diff] = await Promise.all([
-    git(cwd, ['show', '-s', `--format=%H${FIELD_SEP}%h${FIELD_SEP}%an${FIELD_SEP}%aI${FIELD_SEP}%s`, rev]),
-    git(cwd, ['show', '--name-status', '--format=', '-M', rev]),
-    git(cwd, ['show', '--numstat', '--format=', '-M', rev]),
-    git(cwd, ['show', '-p', '--no-color', '--no-ext-diff', '--no-textconv', '--format=', '-M', rev])
+    git(cwd, ['show', '-s', `--format=%H${FIELD_SEP}%h${FIELD_SEP}%an${FIELD_SEP}%aI${FIELD_SEP}%s`, rev], exec),
+    git(cwd, ['show', '--name-status', '--format=', '-M', rev], exec),
+    git(cwd, ['show', '--numstat', '--format=', '-M', rev], exec),
+    git(cwd, ['show', '-p', '--no-color', '--no-ext-diff', '--no-textconv', '--format=', '-M', rev], exec)
   ])
   // 元信息取不到 = 这个 rev 不存在 / 不是提交。把 git 的原话抛出去，route 转成 4xx
   if (!meta.ok) throw new Error(meta.stderr || `git show ${rev} 失败`)

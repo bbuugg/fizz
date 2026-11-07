@@ -129,6 +129,35 @@ function ChatPanelInner({
   /** 命令式二次确认（重试消息会不可逆地删历史，见 `onRetry`） */
   const confirm = useConfirm();
   const { messages, streaming, activeWorkspace } = app;
+  /**
+   * 协作会话：`@` 候选来自当前会话的 Agent 名单；实时回复来自 `app.collab.liveText`
+   * （流式期间先挂在消息末尾，本轮结束由权威历史替换）。
+   */
+  const activeConversation = app.conversations.find(
+    (item) => item.id === app.activeConversationId,
+  );
+  const collabAgents =
+    activeConversation?.kind === "collab" ? (activeConversation.collab?.agents ?? []) : [];
+  const mentionCandidates = collabAgents.map((agent) => ({
+    id: agent.id,
+    name: agent.name,
+    role: agent.role,
+  }));
+  const collabLiveMessages: AgentChatMessage[] = collabAgents.flatMap((agent) => {
+    const text = app.collab?.liveText[agent.id] ?? "";
+    const parts = app.collab?.liveParts[agent.id] ?? [];
+    if (!text && parts.length === 0) return [];
+    return [
+      {
+        id: `collab-live-${agent.id}`,
+        role: "assistant" as const,
+        parts: parts.length > 0 ? parts : [{ type: "text" as const, text }],
+        createdAt: 0,
+        agentId: agent.id,
+        agentName: agent.name,
+      },
+    ];
+  });
   const { textInput } = usePromptInputController();
   /**
    * 正在编辑重发的消息（null = 没在编辑）。编辑条引的是 `text`（原文），重发起点是 `id`。
@@ -551,6 +580,8 @@ function ChatPanelInner({
       <ChatSurface
         list={{
           messages,
+          // 多智能体协作的实时回复：本轮结束前挂在末尾，不挂操作行
+          ...(collabLiveMessages.length ? { liveMessages: collabLiveMessages } : {}),
           // 消息区上拉刷新（`onRefresh` → `reloadConversation`）要知道重拉哪一条 ——
           // 多标签下同时挂着好几条会话，不能读「当前会话」
           ...(app.activeConversationId ? { conversationId: app.activeConversationId } : {}),
@@ -821,7 +852,11 @@ function ChatPanelInner({
           // 消息目录：用户消息各占一段，悬停预览、点击跳转
           outline: true,
         }}
-        composer={composer}
+        composer={
+          mentionCandidates.length
+            ? { ...composer, mentionCandidates }
+            : composer
+        }
       />
       {/* 消息区划选 → 浮出「引用」按钮。浮层自挂 body（fixed），放在渲染树哪一层都行 */}
       <MessageQuoteLayer onQuote={(q) => setQuotes((prev) => [...prev, q])} />

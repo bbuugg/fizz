@@ -1,5 +1,9 @@
-import { repoRoot, samePath } from '@fizz/git'
+import { localGitExec, repoRoot, samePath, type GitExec } from '@fizz/git'
+import type { WorkspaceBackend } from '@fizz/contracts/workspace'
 import type { AgentWorkspace } from '@fizz/contracts/types'
+import { createLocalBackend } from '@fizz/tools'
+import { createRemoteBackend } from '@/lib/server/ssh/workspace-backend'
+import { createRemoteGitExec } from '@/lib/server/ssh/git-exec'
 
 /**
  * 这个工作区**自己的**仓库根；不是仓库（或这台机器没装 git）返回 `null`。
@@ -22,10 +26,39 @@ import type { AgentWorkspace } from '@fizz/contracts/types'
  * 「初始化仓库」也仍然可用 —— `git init` 作用在 `workspace.path` 上，与这里无关。
  */
 export async function workspaceRepoRoot(
-  workspace: Pick<AgentWorkspace, 'path' | 'scratch'>
+  workspace: Pick<AgentWorkspace, 'path' | 'scratch'>,
+  exec: GitExec = localGitExec
 ): Promise<string | null> {
-  const root = await repoRoot(workspace.path)
+  const root = await repoRoot(workspace.path, exec)
   if (!root) return null
   if (workspace.scratch === true && !samePath(root, workspace.path)) return null
   return root
+}
+
+/**
+ * 这个工作区的 git 执行器：远端工作区把命令发到那台 SSH 主机上跑，其余仍走本机
+ * （simple-git）。路由层拿到它之后，所有 `git(cwd, args, exec)` 本地 / 远端同一套代码。
+ */
+export function gitExecFor(workspace: Pick<AgentWorkspace, 'remote'>): GitExec {
+  return workspace.remote ? createRemoteGitExec(workspace.remote.hostId) : localGitExec
+}
+
+/**
+ * 以**仓库根**为边界的文件操作（diff 读未跟踪文件、回滚删未跟踪文件、目录回滚 stat）。
+ * 远端走 SFTP，本机走 fs —— 语义与 Agent 工具用的 `WorkspaceBackend` 完全一致。
+ */
+export function repoBackendFor(
+  workspace: Pick<AgentWorkspace, 'remote'>,
+  root: string
+): WorkspaceBackend {
+  return workspace.remote
+    ? createRemoteBackend(workspace.remote.hostId, root)
+    : createLocalBackend(root)
+}
+
+/** 「不是仓库」的提示文案：远端工作区要把「没装 git / 连不上」一并说清，别指向本机 */
+export function notRepoMessage(workspace: Pick<AgentWorkspace, 'remote'>): string {
+  return workspace.remote
+    ? '这个工作区不是 git 仓库（远端主机上也可能没装 git，或当前连不上）'
+    : '这个工作区不是 git 仓库（也可能这台机器上没装 git）'
 }
