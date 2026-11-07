@@ -21,12 +21,39 @@ describe('appendPartDelta', () => {
     expect(parts).toEqual([{ type: 'text', text: '你好，世界' }])
   })
 
-  it('类型切换时另起一段', () => {
+  /**
+   * 防的回归：思考与正文**交替**流（ACP 侧常见，`[思考两字][正文三字]…`）时又变回
+   * 「一段一个 part」。碎片化后渲染端会把每段思考各包一个「思考过程」分组，一段话被拆成
+   * 十几个段落；整轮结束后除最后一小段正文，其余全被收进折叠条。
+   */
+  it('思考 / 正文来回切换时不拆碎，各自收成一条', () => {
     const parts: AgentMessagePart[] = []
-    appendPartDelta(parts, 'text', 'a')
-    appendPartDelta(parts, 'reasoning', '想一想')
-    appendPartDelta(parts, 'text', 'b')
-    expect(parts.map((part) => part.type)).toEqual(['text', 'reasoning', 'text'])
+    appendPartDelta(parts, 'text', '正')
+    appendPartDelta(parts, 'reasoning', '想')
+    appendPartDelta(parts, 'text', '文')
+    appendPartDelta(parts, 'reasoning', '一')
+    appendPartDelta(parts, 'text', '接着写')
+    expect(parts).toEqual([
+      { type: 'text', text: '正文接着写' },
+      { type: 'reasoning', text: '想一' }
+    ])
+  })
+
+  it('工具调用是边界：跨过工具卡就另起一段', () => {
+    const parts: AgentMessagePart[] = []
+    appendPartDelta(parts, 'text', '动手前')
+    appendToolCall(parts, { toolCallId: 'c1', toolName: 'read_file', input: {} })
+    appendPartDelta(parts, 'text', '看到了')
+    expect(parts.map((part) => part.type)).toEqual(['text', 'tool-call', 'text'])
+  })
+
+  it('错误块是边界：正文不会并进「⚠️ …」里', () => {
+    const parts: AgentMessagePart[] = [{ type: 'text', text: '⚠️ 上游 500' }]
+    appendPartDelta(parts, 'text', '正文')
+    expect(parts).toEqual([
+      { type: 'text', text: '⚠️ 上游 500' },
+      { type: 'text', text: '正文' }
+    ])
   })
 })
 

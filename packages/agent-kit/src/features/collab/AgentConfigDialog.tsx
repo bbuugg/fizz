@@ -1,10 +1,8 @@
 /**
  * 协作 Agent 的配置弹窗（新建 / 编辑）。
  *
- * 从 `CollabWorkspace.tsx` 拆出来的原因：**右侧对话区**（`CollabAgentChatPanel`）里也要能点
- * 「编辑」—— 用户正在看这个 Agent 的消息时，改它的模型 / 权限 / 工具白名单不该被迫先切回画布
- * （切回画布等于放弃当前会话位置，手机上还得滚回去）。
- * 两处共用同一份表单，改动才不会一边生效一边忘了。
+ * 从 `CollabWorkspace.tsx` 拆出来的原因：Agent 名单与配置表单是两件事 —— 名单要一直
+ * 可见（看谁在跑、随时停止），表单只在增删改时弹出，拆开后名单渲染不必知道表单字段。
  */
 import { useState } from 'react'
 import { Check, X } from 'lucide-react'
@@ -67,9 +65,9 @@ export function AgentConfigDialog({
     <Dialog open onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[85dvh] flex-col gap-3 overflow-hidden sm:max-w-md">
         <DialogHeader className="shrink-0">
-          <DialogTitle>{isNew ? '添加协作 Agent' : `编辑「${agent.name}」`}</DialogTitle>
+          <DialogTitle>{isNew ? '添加智能体' : `编辑「${agent.name}」`}</DialogTitle>
           <DialogDescription>
-            Agent 与主智能体共享同一工作区。默认只读；需要改动文件 / 执行命令时再放开权限。
+            与其他 Agent 共享同一工作区与同一条会话；默认只读，需要改动文件 / 执行命令时再放开权限。
           </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 overflow-y-auto pr-1">
@@ -89,7 +87,7 @@ export function AgentConfigDialog({
                 id="collab-role"
                 value={draft.role}
                 onChange={(event) => set({ role: event.target.value })}
-                placeholder="一句话说明它擅长什么，主智能体据此选人"
+                placeholder="一句话说明它擅长什么；用户 @ 点名与广播判定都靠它"
               />
             </div>
             <div className="grid gap-1.5">

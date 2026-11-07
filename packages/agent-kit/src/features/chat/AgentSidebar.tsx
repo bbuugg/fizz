@@ -76,6 +76,7 @@ import {
   Check,
   ChevronRight,
   CirclePlus,
+  Cloud,
   Container,
   Download,
   Folder,
@@ -1132,7 +1133,19 @@ export function AgentSidebar({
      * 打开它已有的会话不拦（历史还能看）。
      */
     const wsMissing = !!workspace.dirMissing;
-    const missingHint = t("工作区目录不存在：{path}（可能已被删除或移动）", { path: workspace.path });
+    /**
+     * 远端工作区：`path` 是远端 POSIX 目录，所在主机的名字从 SSH 清单现查
+     * （主机被删时 `undefined`，界面显示「主机已删除」而不是冻结旧快照）。
+     */
+    const remoteHostName = workspace.remote
+      ? app.sshHosts.find((host) => host.id === workspace.remote?.hostId)?.name
+      : undefined;
+    const locationLabel = workspace.remote
+      ? `${remoteHostName ?? t("主机已删除")} · ${workspace.path}`
+      : workspace.path;
+    const missingHint = workspace.remote
+      ? t("远端目录不可用：{path}（目录不存在，或主机当前不可达）", { path: workspace.path })
+      : t("工作区目录不存在：{path}（可能已被删除或移动）", { path: workspace.path });
     /** 这个项目容器的状态（非容器型项目 / 快照还没到 = `undefined`）：只有 `running` 能「停止」 */
     const containerState = workspace.container
       ? containerProjects.projects.find((p) => p.workspaceId === workspace.id)
@@ -1166,10 +1179,10 @@ export function AgentSidebar({
           onMouseLeave={(e) => resetTruncatedName(e.currentTarget)}
           title={
             wsMissing
-              ? t("{path} — 目录不存在（可能已被删除或移动）", { path: workspace.path })
+              ? t("{path} — 目录不可用（可能已被删除或移动）", { path: locationLabel })
               : wsStatus
-                ? `${workspace.path} — ${wsStatus}`
-                : workspace.path
+                ? `${locationLabel} — ${wsStatus}`
+                : locationLabel
           }
         >
           {/* 行首图标：本项目（含 worktree 子项目）里有会话在跑就换成转圈、卡在等确认 / 等回答时
@@ -1186,19 +1199,19 @@ export function AgentSidebar({
             // 与会话行同一套打字气泡（项目级聚合态也是「有人在跑」）
             <TypingBubble />
           ) : wsMissing ? (
-            // 目录不在了：**保留图标形状**（还看得出是不是 worktree），把颜色换成 error。
+            // 目录不在了：**保留图标形状**（还看得出是不是 worktree / 远端），把颜色换成 error。
             // 排在「等确认 / 运行中」之后 —— 那两个是瞬时活动态，比「目录没了」更该抢眼。
-            workspace.isWorktree ? (
-              <GitBranch
-                className="size-4 shrink-0 text-destructive"
-                aria-label={t("工作区目录不存在")}
-              />
+            workspace.remote ? (
+              <Cloud className="size-4 shrink-0 text-destructive" aria-label={t("远端目录不可用")} />
+            ) : workspace.isWorktree ? (
+              <GitBranch className="size-4 shrink-0 text-destructive" aria-label={t("工作区目录不存在")} />
             ) : (
-              <Folder
-                className="size-4 shrink-0 text-destructive"
-                aria-label={t("工作区目录不存在")}
-              />
+              <Folder className="size-4 shrink-0 text-destructive" aria-label={t("工作区目录不存在")} />
             )
+          ) : workspace.remote ? (
+            <Cloud
+              className={cn("size-4 shrink-0", isActive ? "text-primary" : "text-muted-foreground")}
+            />
           ) : workspace.isWorktree ? (
             <GitBranch
               className={cn(
@@ -1383,10 +1396,10 @@ export function AgentSidebar({
                   {/* 「打开工作区目录」：从对话标签顶栏搬来的（原来那颗分裂按钮）。
                       它是**项目级**动作（开的是这个工作区目录，与当前看哪个会话无关），
                       摆在项目行的「更多操作」里才找得到；web 宿主没这个能力时整项不渲染。 */}
-                  <OpenWorkspaceItems
-                    path={workspace.path}
-                    disabled={wsMissing}
-                  />
+                  {/* 远端工作区：打开本机目录 / 文件管理器没有意义（目录在另一台机器上） */}
+                  {!workspace.remote && (
+                    <OpenWorkspaceItems path={workspace.path} disabled={wsMissing} />
+                  )}
                   {/*
                     容器型项目的「预览」**不在这里**：它已经搬进会话右侧的 SidePanel
                     （对话标签顶栏那颗按钮，见 `ConversationTab` 的 `containerPreview`）——
@@ -1395,54 +1408,59 @@ export function AgentSidebar({
                   */}
                   {/*
                     多智能体协作**点一下直接建会话**（默认班子，见 `defaultCollabSettings()`），
-                    不再弹窗选模型 / 配班子 —— 建好后在协作画布上改成员 / 角色 / 工具。
+                    不再弹窗选模型 / 配班子 —— 建好后在会话左侧的 Agent 名单里改成员 / 角色 / 工具。
                     普通会话（内置 / ACP）走「创建新任务」页，类型在页面的模型下拉里选。
                   */}
-                  <DropdownMenuItem
-                    disabled={wsMissing}
-                    onSelect={() => onNewInWorkspace("collab", workspace.id)}
-                  >
-                    <Users className="size-4" />
-                    {t("多智能体协作")}
-                  </DropdownMenuItem>
+                  {/* 远端工作区首期不支持协作会话（编排在本机跑，文件却在远端） */}
+                  {!workspace.remote && (
+                    <DropdownMenuItem
+                      disabled={wsMissing}
+                      onSelect={() => onNewInWorkspace("collab", workspace.id)}
+                    >
+                      <Users className="size-4" />
+                      {t("多智能体协作")}
+                    </DropdownMenuItem>
+                  )}
                   {/*
                     ⚠️ 这里**不再有「定时任务」**：新建定时任务统一走主区域的
                     `triggers:list` 面板（侧栏顶部那颗同名按钮 → 面板里的「新建定时任务」，
                     项目在那个表单里选）。入口按项目分散过一次就很难找回来 ——
                     到底在哪个项目里建的、和另一条什么关系，只能挨个点开看。
-                    ⚠️ 也**不再有「新建流程」**：流程功能整个删除，流程画布的能力
-                    （连智能体、接线、删节点 / 删线）并进了多智能体协作画布。
+                    ⚠️ 也**不再有「新建流程」**：流程功能整个删除，能力并进了多智能体协作。
                   */}
                   {/*
                     worktree 收进「工作区」二级菜单：新建（建目录 + 建分支）与加载（登记 `.worktree/`
                     下既有的目录）是同一件事的两种来源，摆在一层里才看得出是一对。
                   */}
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger>
-                      <GitBranch className="size-4" />
-                      {t("工作区")}
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent>
-                      <DropdownMenuItem
-                        disabled={wsMissing}
-                        onSelect={() =>
-                          onNewInWorkspace("worktree", workspace.id)
-                        }
-                      >
+                  {/* worktree 是 git 目录概念，远端工作区首期不支持 */}
+                  {!workspace.remote && (
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger>
                         <GitBranch className="size-4" />
-                        {t("新建工作区")}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        disabled={wsMissing}
-                        onSelect={() =>
-                          onNewInWorkspace("worktree-load", workspace.id)
-                        }
-                      >
-                        <Folder className="size-4" />
-                        {t("管理工作区")}
-                      </DropdownMenuItem>
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
+                        {t("工作区")}
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent>
+                        <DropdownMenuItem
+                          disabled={wsMissing}
+                          onSelect={() =>
+                            onNewInWorkspace("worktree", workspace.id)
+                          }
+                        >
+                          <GitBranch className="size-4" />
+                          {t("新建工作区")}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          disabled={wsMissing}
+                          onSelect={() =>
+                            onNewInWorkspace("worktree-load", workspace.id)
+                          }
+                        >
+                          <Folder className="size-4" />
+                          {t("管理工作区")}
+                        </DropdownMenuItem>
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
+                  )}
                   {/*
                     容器型项目专属：**容器状态**二级菜单 —— 启动 / 停止 / 重启 / 设置。
                     这几项都是「项目级」动作（与当前看哪个会话无关），收在一组里才看得出是

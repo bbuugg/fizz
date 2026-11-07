@@ -6,7 +6,7 @@
  * 这样同一段历史在三个端渲染出来是一致的。
  */
 import type { AgentChatMessage, AgentMessagePart, AgentStreamEvent } from '@fizz/contracts/types'
-import { ERROR_TEXT_PREFIX } from '@fizz/contracts/types'
+import { appendPartDelta, ERROR_TEXT_PREFIX } from '@fizz/contracts/types'
 import { t } from '@fizz/i18n'
 
 /**
@@ -83,23 +83,53 @@ export function appendStreamChunk(
   return out
 }
 
+/**
+ * 老数据的「碎片 parts」收敛成「一条思考 + 一条正文」。
+ *
+ * 只修显示、不改落盘数据：本仓的 ACP 适配层（以及部分网关）会把思考与正文**交替**流出来
+ * —— `[思考两字][正文三字][思考两字]…`。早先的增量合并只认「最后一条」，那种一轮就落成
+ * 十几条几字长的 part；渲染端按「连续的同类 part 成组」画，于是表现为：流式中每段思考各成
+ * 一个「思考过程」分组、一段话被拆成十几个段落，整轮结束后除最后那一小段正文，其余全被
+ * 收进折叠条（正文等于被藏了）。
+ *
+ * 合并口径与流式时**完全一样**（同一个 `appendPartDelta`，工具调用是边界），所以新老数据
+ * 在这里收敛到同一个形状。
+ *
+ * 返回的 `originIndex` 是「新下标 → 原下标」：合并会改变下标，而
+ * `ContextCompactionCard` 的插入位置（`afterPartIndex`）是按原下标给的，要靠它换算。
+ */
+export function coalescePartFragments(parts: AgentMessagePart[]): {
+  parts: AgentMessagePart[]
+  originIndex: number[]
+} {
+  const out: AgentMessagePart[] = []
+  const originIndex: number[] = []
+  parts.forEach((part, index) => {
+    if (part.type !== 'text' && part.type !== 'reasoning') {
+      out.push(part)
+      originIndex.push(index)
+      return
+    }
+    const before = out.length
+    appendPartDelta(out, part.type, part.text)
+    // 空字符串的 text part 不会新建 part（`appendPartDelta` 直接跳过），也就没有自己的下标
+    if (out.length > before) originIndex.push(index)
+  })
+  return { parts: out, originIndex }
+}
+
 /** 往 parts 尾部追加一个流事件（返回新数组，供 React 状态更新用） */
 export function applyEvent(parts: AgentMessagePart[], event: AgentStreamEvent): AgentMessagePart[] {
   const next = [...parts]
-  const last = next[next.length - 1]
 
   switch (event.type) {
     case 'text-delta': {
-      if (last?.type === 'text') next[next.length - 1] = { type: 'text', text: last.text + event.delta }
-      else next.push({ type: 'text', text: event.delta })
+      // 合并口径与落盘同源（`appendPartDelta`）：思考与正文交替流时不拆成一堆碎片
+      appendPartDelta(next, 'text', event.delta)
       return next
     }
     case 'reasoning-delta': {
-      if (last?.type === 'reasoning') {
-        next[next.length - 1] = { type: 'reasoning', text: last.text + event.delta }
-      } else {
-        next.push({ type: 'reasoning', text: event.delta })
-      }
+      appendPartDelta(next, 'reasoning', event.delta)
       return next
     }
     case 'tool-call-delta': {

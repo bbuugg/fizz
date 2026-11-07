@@ -24,6 +24,7 @@
  */
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { isRemoteWorkspace } from '@fizz/contracts/types'
 import { resolveInside } from '@fizz/contracts/workspace'
 import { WORKSPACE_CONFIG_DIR } from '@fizz/contracts/workspace-config'
 // ⚠️ 从包**根**引，不要引子路径：`@fizz/agent` 只导出了 `.`（见其 package.json 的
@@ -197,6 +198,10 @@ export async function scaffoldFile(
   if (!workspace) throw new ScaffoldError(404, `项目不存在：${workspaceId}`)
   if (!workspace.path) {
     throw new ScaffoldError(400, `项目「${workspace.name}」没有磁盘目录，放不了文件`)
+  }
+  // 远端工作区首期没有项目级技能 / AGENTS.md 注入，写过去也只是一份没人读的文件
+  if (isRemoteWorkspace(workspace)) {
+    throw new ScaffoldError(400, '远端工作区首期不支持项目脚手架，请在 SSH 终端里手工创建')
   }
 
   if (input.kind === 'skill') {

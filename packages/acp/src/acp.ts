@@ -2022,6 +2022,36 @@ export function abortAcpTurn(agentId: string, conversationId: string): void {
 }
 
 /**
+ * 增量接进**本步内最近的一条同类型 part**（工具调用是边界）。
+ *
+ * 与 `@fizz/contracts/types` 的 `appendPartDelta` 同一口径，这里不能 import 它：
+ * ACP 是外部协议层，`check:boundaries` 不许它反向依赖 contracts（只能 `import type`）。
+ *
+ * 为什么不能只接「最后一条」：agent 会把思考与正文**交替**流出来（`[思考两字][正文三字]…`），
+ * 只认最后一条时那一轮就落成十几条几字长的 part —— 渲染端按「连续同类 part 成组」画，
+ * 于是每段思考各成一个「思考过程」分组、一段话被拆成十几段，整轮结束后除最后一小段正文，
+ * 其余全被收进折叠条。
+ */
+function appendDeltaPart(
+  parts: AgentMessagePart[],
+  type: "text" | "reasoning",
+  delta: string,
+): AgentMessagePart[] {
+  if (!delta) return parts;
+  const next = [...parts];
+  for (let index = next.length - 1; index >= 0; index -= 1) {
+    const part = next[index];
+    if (!part) continue;
+    if (part.type === "tool-call" || part.type === "tool-result") break;
+    if (part.type !== type) continue;
+    next[index] = { type, text: part.text + delta };
+    return next;
+  }
+  next.push({ type, text: delta });
+  return next;
+}
+
+/**
  * 一帧流事件折进 parts（与 app/api/chat 里 onEvent 的折叠同一套语义）。
  * 回放专用：把 toAcpStreamEvent 的输出攒成可渲染的消息。
  */
@@ -2029,23 +2059,12 @@ function foldReplayPart(
   parts: AgentMessagePart[],
   event: AgentStreamEvent,
 ): AgentMessagePart[] {
-  if (event.type === "text-delta") {
-    const last = parts[parts.length - 1];
-    if (last?.type === "text")
-      return [
-        ...parts.slice(0, -1),
-        { type: "text", text: last.text + event.delta },
-      ];
-    return [...parts, { type: "text", text: event.delta }];
-  }
-  if (event.type === "reasoning-delta") {
-    const last = parts[parts.length - 1];
-    if (last?.type === "reasoning")
-      return [
-        ...parts.slice(0, -1),
-        { type: "reasoning", text: last.text + event.delta },
-      ];
-    return [...parts, { type: "reasoning", text: event.delta }];
+  if (event.type === "text-delta" || event.type === "reasoning-delta") {
+    return appendDeltaPart(
+      parts,
+      event.type === "text-delta" ? "text" : "reasoning",
+      event.delta,
+    );
   }
   if (event.type === "tool-call") {
     const index = parts.findIndex(

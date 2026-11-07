@@ -26,6 +26,7 @@ import type {
   AgentBackend,
   AgentChatMessage,
   AgentConversation,
+  AgentWorkspace,
   CollabSettings,
   CollabState,
   ConversationAutoSummary,
@@ -115,6 +116,56 @@ async function fileExists(path: string): Promise<boolean> {
 /** 兜底会话根目录（工作区不可用时用它，保证数据不丢） */
 export function fallbackConversationRoot(dataDir: string): string {
   return join(dataDir, 'conversations')
+}
+
+/** 远端工作区的会话根放在数据目录下（`conversations/remote/<工作区 id>`） */
+export const REMOTE_CONVERSATION_DIR = 'remote'
+
+/**
+ * 远端工作区的会话根：**固定在本机数据目录**，不写远端 `.fizz/conversation`。
+ *
+ * 理由：每条消息都要经 SFTP 落盘会把一次聊天变成几十次网络往返；主机断线后历史
+ * 也还得看得见。历史是这台服务端的资产，跟着数据目录一起备份 / 迁移。
+ */
+export function remoteConversationRoot(dataDir: string, workspaceId: string): string {
+  return join(fallbackConversationRoot(dataDir), REMOTE_CONVERSATION_DIR, workspaceId)
+}
+
+/**
+ * 按工作区记录解析会话根（本地 / 远端两条分支的唯一入口）。
+ *
+ * 远端恒返回 `fallback: true`：目录不在工作区里，调用方据此跳过「扫项目目录」那类
+ * 逻辑；`remote` 标记供需要区分的调用方使用。
+ */
+export async function conversationRootFor(
+  workspace: Pick<AgentWorkspace, 'id' | 'path' | 'remote'> | null | undefined,
+  dataDir: string,
+  opts?: { create?: boolean }
+): Promise<{ root: string; fallback: boolean; remote: boolean }> {
+  if (workspace?.remote?.hostId) {
+    const root = remoteConversationRoot(dataDir, workspace.id)
+    if (opts?.create) await fs.mkdir(root, { recursive: true })
+    return { root, fallback: true, remote: true }
+  }
+  const resolved = await resolveConversationRoot(workspace?.path, dataDir, opts)
+  return { ...resolved, remote: false }
+}
+
+/** 扫描 `conversations/remote/*` 下的全部会话（启动装配用；不需要连远端） */
+export async function listRemoteConversations(dataDir: string): Promise<AgentConversation[]> {
+  const base = join(fallbackConversationRoot(dataDir), REMOTE_CONVERSATION_DIR)
+  let entries: import('node:fs').Dirent[]
+  try {
+    entries = await fs.readdir(base, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const out: AgentConversation[] = []
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    out.push(...(await listConversationsIn(join(base, entry.name))))
+  }
+  return out
 }
 
 /**

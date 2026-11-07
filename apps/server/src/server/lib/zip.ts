@@ -15,6 +15,7 @@
 import { promises as fs } from 'node:fs'
 import { basename, join } from 'node:path'
 import { deflateRawSync, inflateRawSync } from 'node:zlib'
+import type { WorkspaceBackend } from '@fizz/contracts/workspace'
 
 /** CRC32 查表（zip 的每个文件都要带校验和，zlib 不直接给，自己算最快） */
 const CRC_TABLE = (() => {
@@ -375,4 +376,76 @@ export async function zipDirectory(
   options: ZipBuildOptions = {}
 ): Promise<ZipBuildResult> {
   return zipPaths([rootAbs], options)
+}
+
+/**
+ * 把**远端**（SSH 工作区）的一个目录递归打成 zip。
+ *
+ * 与 `zipDirectory` 的骨架、忽略规则、大小 / 条目上限、目录条目语义完全一致，差别只有
+ * 取数据的方式：这里全部经 `WorkspaceBackend`（远端 = SFTP），本地路径不进 `fs`。
+ * 两边共用同一个 `ZipWriter` —— zip 的字段偏移只有一份实现。
+ *
+ * 符号链接 / 设备文件按「跳过」处理（与 `zipPaths` 同一取舍）：跟进去可能成环。
+ * 注意远端 `readDir` 对符号链接报的是 `file`（lstat 语义），这里再用 `stat`（跟随链接）
+ * 判一次类型，指向目录的链接同样跳过，不会无限递归。
+ */
+export async function zipRemoteDirectory(
+  backend: WorkspaceBackend,
+  rootAbs: string,
+  options: ZipBuildOptions = {}
+): Promise<ZipBuildResult> {
+  const maxFileBytes = options.maxFileBytes ?? 64 * 1024 * 1024
+  const maxTotalBytes = options.maxTotalBytes ?? 256 * 1024 * 1024
+  const maxEntries = options.maxEntries ?? 20000
+
+  const rootStat = await backend.stat(rootAbs)
+  if (!rootStat) throw new Error('文件夹不存在')
+  if (rootStat.type !== 'dir') throw new Error('不是文件夹')
+
+  const writer = new ZipWriter()
+  let totalBytes = 0
+  let skipped = 0
+  const dateOf = (mtimeMs?: number): Date => new Date(mtimeMs ?? Date.now())
+
+  const walk = async (dirAbs: string, zipPrefix: string): Promise<void> => {
+    const entries = await backend.readDir(dirAbs)
+    for (const entry of entries) {
+      if (writer.entries >= maxEntries) {
+        skipped++
+        options.onSkip?.('limit', entry.name)
+        continue
+      }
+      const abs = backend.join(dirAbs, entry.name)
+      const zipName = `${zipPrefix}/${entry.name}`
+      if (options.ignore?.(abs, entry.type === 'dir')) {
+        skipped++
+        options.onSkip?.('ignored', zipName)
+        continue
+      }
+      const st = await backend.stat(abs).catch(() => null)
+      if (!st) continue
+      if (entry.type === 'dir') {
+        if (st.type !== 'dir') continue
+        writer.addEntry(`${zipName}/`, Buffer.alloc(0), dateOf(st.mtimeMs), true)
+        await walk(abs, zipName)
+        continue
+      }
+      // 符号链接 / 设备文件等（stat 跟随链接后仍不是普通文件）一律跳过
+      if (st.type !== 'file') continue
+      if (st.size > maxFileBytes || totalBytes + st.size > maxTotalBytes) {
+        skipped++
+        options.onSkip?.('too-large', zipName)
+        continue
+      }
+      const raw = await backend.readFile(abs).catch(() => null)
+      if (!raw) continue
+      totalBytes += raw.length
+      writer.addEntry(zipName, raw, dateOf(st.mtimeMs), false)
+    }
+  }
+
+  const name = backend.basename(rootAbs) || 'archive'
+  writer.addEntry(`${name}/`, Buffer.alloc(0), dateOf(rootStat.mtimeMs), true)
+  await walk(rootAbs, name)
+  return { buffer: writer.finish(), skipped }
 }

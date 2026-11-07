@@ -334,7 +334,6 @@ export const CHAT: Record<string, string> = {
   '更多面板入口': 'More panel entries',
   '浏览器里打不开本机路径：{path}（这个动作需要在宿主机上执行）': 'Cannot open a local path in the browser: {path} (this action must run on the host machine)',
   '{title} · 临时会话：不指定项目的对话（目录在服务端数据目录）': '{title} · scratch conversation: not bound to a project (directory lives in the server data dir)',
-  '多智能体协作：右侧对话是主智能体，画布上的 Agent 由它派活': 'Multi-agent: the chat on the right is the main agent; it assigns work to the agents on the canvas',
   '外部 Agent：{name}': 'External agent: {name}',
   '新会话': 'New conversation',
   '后台任务 · {count} 项运行中': 'Background tasks · {count} running',

@@ -19,6 +19,7 @@ import type {
 } from '@fizz/contracts/agent-api'
 import { WORKTREE_IDENTIFIER_RE } from '@fizz/contracts/agent-api'
 import { agentBrowserSessionId } from '@fizz/contracts'
+import { isRemoteWorkspace } from '@fizz/contracts/types'
 import { browserSessions } from '@fizz/tools'
 import { addWorktree, cloneRepo, ensureWorktreesIgnored, hasCommits, isCloneCanceled, refExists, removeWorktree, repoNameFromUrl, resolveRepoRoot, type GitLogLevel } from '@fizz/git'
 import { resolveDataDir } from '@fizz/workspace'
@@ -415,6 +416,9 @@ function inferParent(worktreePath: string) {
 export async function createWorktree(workspaceId: string, input: WorktreeInput): Promise<AgentWorkspace> {
   const workspace = domain.getWorkspace(workspaceId)
   if (!workspace) throw new ProjectServiceError(404, '工作区不存在')
+  if (isRemoteWorkspace(workspace)) {
+    throw new ProjectServiceError(400, '远端工作区不支持 worktree（目录在远端主机上）')
+  }
 
   const identifier = input.identifier?.trim() ?? ''
   if (!WORKTREE_IDENTIFIER_RE.test(identifier)) {

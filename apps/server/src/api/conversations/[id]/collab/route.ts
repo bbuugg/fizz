@@ -2,7 +2,7 @@
  * 协作会话配置与运行态：
  *
  * - `GET  /api/conversations/:id/collab` → 运行态快照（任务 / 消息 / 最近状态）
- * - `PATCH /api/conversations/:id/collab` → 全量覆盖协作配置（画布拖拽 / 增删 Agent）
+ * - `PATCH /api/conversations/:id/collab` → 全量覆盖协作配置（增删改 Agent / 并行与单轮上限）
  *
  * 运行态独立于会话主文件（`collab.json`），所以这里不返回会话对象，避免把大消息体带上。
  */

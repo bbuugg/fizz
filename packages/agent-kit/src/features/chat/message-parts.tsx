@@ -8,7 +8,7 @@
  * 会话列表、模型配置…）一起拖了进来，容器侧其实一个都不用。这里把它们单独成文件：
  * **只依赖 `@fizz/contracts` 的消息类型**，任何有消息流的宿主都能直接用。
  */
-import { memo, useState, type ReactNode } from 'react'
+import { memo, useMemo, useState, type ReactNode } from 'react'
 import { Check, Copy, ArrowRightLeft, GitBranch, Pencil, RotateCw, Trash2 } from 'lucide-react'
 import { ShimmerLabel } from '@fizz/agent-kit/shared/ai-elements/shimmer-label'
 import { Button } from '@fizz/ui/button'
@@ -23,6 +23,7 @@ import {
 } from '@fizz/agent-kit/shared/lib/turn-step'
 import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
 import {
+  coalescePartFragments,
   isErrorText,
   isStoppableToolRunning,
   textOf,
@@ -126,6 +127,10 @@ export interface MessageFollowupBridge {
  * ⚠️ 空白文本不算「文本」：模型会在思考 / 工具之间偶发输出纯换行的 text part
  * （实测存量数据里大量「\n\n\n」），它没有可见内容，若不打断会被当成正文渲染成
  * 空白段落，还会把本该连在一起的工具段拆成多个组 —— 分组时直接跳过。
+ *
+ * ⚠️ 分组前先跑一遍 `coalescePartFragments`：ACP 侧会把思考与正文**交替**流出来，
+ * 老数据因此落成一堆几字长的 part —— 直接分组就是十几行「思考过程」+ 被拆碎的段落，
+ * 整轮结束后正文还会大部分被收进折叠条。合并只修显示，不动落盘数据。
  */
 export interface MessagePartsProps {
   message: AgentChatMessage
@@ -230,10 +235,22 @@ function MessagePartsInner({
 
   const ownCompaction =
     compaction && compaction.messageId === message.id ? compaction : null
-  const compactionIndex = Math.max(
-    0,
-    Math.min(ownCompaction?.afterPartIndex ?? message.parts.length, message.parts.length)
-  )
+  /**
+   * 显示用的 parts：把老数据里「思考 / 正文交替流落成的碎片 part」合并回一条思考 + 一条正文
+   *（见 `coalescePartFragments`）。只影响这一次渲染，不动 `message` 本身 —— 落盘数据保持原样。
+   */
+  const display = useMemo(() => coalescePartFragments(message.parts), [message.parts])
+  const parts = display.parts
+  /**
+   * 交接文档卡要插在**原下标** `afterPartIndex` 之前。合并会改变下标，所以按
+   * `originIndex`（新 → 原）换算：范围内第一个还存在的 part 之前就是卡的位置。
+   */
+  const compactionIndex = (() => {
+    if (!ownCompaction) return parts.length
+    const target = ownCompaction.afterPartIndex ?? parts.length
+    const found = display.originIndex.findIndex((origin) => origin >= target)
+    return found === -1 ? parts.length : found
+  })()
   const compactionNode = ownCompaction ? (
     <ContextCompactionCard key={`${message.id}-compaction`} compaction={ownCompaction} />
   ) : null
@@ -263,7 +280,7 @@ function MessagePartsInner({
         part={part}
         // 流式 = 整轮在跑 + 这条是最后一条消息 + 这个 part 是消息的最后一个。
         // 只有 reasoning 消费它（「思考中」的判断依据）。
-        streaming={isStreamingLast && partIndex === message.parts.length - 1}
+        streaming={isStreamingLast && partIndex === parts.length - 1}
         // 停止钮的判据：**整条消息在跑**（不要求是最后一个 part）—— 见 PartViewProps.turnLive。
         turnLive={isStreamingLast}
         followupPending={!!followupReq}
@@ -286,11 +303,11 @@ function MessagePartsInner({
   /** 原样铺开全部 parts（用户消息走这条；分组 / 折叠相关的一切都不参与） */
   const renderAll = (): ReactNode => {
     const out: ReactNode[] = []
-    message.parts.forEach((part, partIndex) => {
+    parts.forEach((part, partIndex) => {
       if (compactionNode && partIndex === compactionIndex) out.push(compactionNode)
       out.push(renderPart(part, partIndex))
     })
-    if (compactionNode && compactionIndex >= message.parts.length) out.push(compactionNode)
+    if (compactionNode && compactionIndex >= parts.length) out.push(compactionNode)
     return <>{out}</>
   }
 
@@ -312,7 +329,7 @@ function MessagePartsInner({
   let lastTextIndex = -1
   /** 最后一个「有东西」的 part（空白文本不算）：判断哪一段过程是正在跑的尾巴 */
   let lastVisibleIndex = -1
-  message.parts.forEach((part, i) => {
+  parts.forEach((part, i) => {
     if (isBlankText(part)) return
     lastVisibleIndex = i
     if (part.type === 'text' && part.text.trim() && !isErrorText(part.text)) lastTextIndex = i
@@ -479,7 +496,7 @@ function MessagePartsInner({
       </TurnStepGroup>
     )
   }
-  message.parts.forEach((part, partIndex) => {
+  parts.forEach((part, partIndex) => {
     if (compactionNode && partIndex === compactionIndex) {
       flushRun()
       nodes.push(compactionNode)
@@ -493,7 +510,7 @@ function MessagePartsInner({
     nodes.push(renderPart(part, partIndex))
   })
   flushRun()
-  if (compactionNode && compactionIndex >= message.parts.length) nodes.push(compactionNode)
+  if (compactionNode && compactionIndex >= parts.length) nodes.push(compactionNode)
   /**
    * 撞步数上限：正文之后补一行「为什么停」+「继续」。
    *

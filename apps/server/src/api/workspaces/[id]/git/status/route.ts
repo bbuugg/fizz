@@ -2,15 +2,16 @@
  * 源代码管理（git）：仓库状态。
  * GET /api/workspaces/:id/git/status
  *
- * git 调用走 @fizz/git 的 git-panel.ts（simple-git）。status 的解析保留自有的
- * porcelain v2 解析器 —— 不用 simple-git 的 status()，原因见 git-panel.ts 头注释第 4 条。
+ * git 调用走 @fizz/git 的 git-panel.ts：本地默认 simple-git，远端工作区由路由层注入
+ * SSH 执行器（`gitExecFor`），两条路径共用这里的解析。status 保留自有的 porcelain v2
+ * 解析器 —— 不用 simple-git 的 status()，原因见 git-panel.ts 头注释第 4 条。
  */
 import { domain } from '@/lib/server/state'
-import { workspaceRepoRoot } from '@/lib/workspace-repo'
+import { gitExecFor, workspaceRepoRoot } from '@/lib/workspace-repo'
 import { jsonError } from '@/app/api/_lib/auth'
 import {
   git,
-  gitPanel,
+  gitRemotes,
   unquotePath,
   workspacePrefix,
   type GitChange,
@@ -134,9 +135,10 @@ export async function GET(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const exec = gitExecFor(workspace)
   // 临时工作区只认自己的仓库（否则会拿外层主目录仓库当自己的，status 要扫整个主目录
   // 才回来 —— 面板就一直停在「读取仓库状态…」）。判据与理由在 workspace-repo.ts
-  const root = await workspaceRepoRoot(workspace)
+  const root = await workspaceRepoRoot(workspace, exec)
   if (!root) return Response.json(emptyStatus())
   /**
    * 工作区是仓库**子目录**时的改动列表：`-- <prefix>` 把 status 限制在子树里。
@@ -147,19 +149,18 @@ export async function GET(
    *
    * ⚠️ `prefix` 必须先拿到（不能和 status 并行）：它是 pathspec 的一部分。
    */
-  const prefix = await workspacePrefix(workspace.path)
+  const prefix = await workspacePrefix(workspace.path, exec)
   const statusArgs = ['status', '--porcelain=v2', '--branch', '--untracked-files=all']
   if (prefix) statusArgs.push('--', prefix)
   const [res, remotes, stashRes] = await Promise.all([
-    git(root, statusArgs),
-    // remote -v 的解析交给 simple-git（getRemotes(true) 同时给出 fetch / push 地址）
-    gitPanel(root).getRemotes(true).then((list) =>
-      list.map((r) => ({ name: r.name, url: r.refs.fetch ?? r.refs.push ?? '' }))
-    ).catch(() => []),
+    git(root, statusArgs, exec),
+    // `git remote -v` 的解析在 @fizz/git 里（本地 / 远端同一份）：
+    // 取 fetch 地址，与旧的 getRemotes(true) 同口径
+    gitRemotes(root, exec),
     // 还没有任何贮藏时 `git stash list` 输出为空但退出码是 0；真出错（没装 git 等）就当没有，别把状态页拖垮。
     // ⚠️ 分隔符是 git 的 `%x1f`（`%` 开头），**别写成 `\x1f`** —— 那会被 JS 先转成一个真的控制字符，
     // 而 git 拿到字面的 `\x1f` 后只会原样输出，解析时按 0x1F 拆就一个也匹配不上（实测过）
-    git(root, ['stash', 'list', '--format=%gd%x1f%gs']).catch(() => ({
+    git(root, ['stash', 'list', '--format=%gd%x1f%gs'], exec).catch(() => ({
       ok: false,
       stdout: '',
       stderr: ''

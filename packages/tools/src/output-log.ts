@@ -33,8 +33,7 @@
  * - 保留 30 份 / 24 小时，落盘时顺手清旧的（尽力而为，失败不影响使用）。
  */
 import { randomBytes } from 'node:crypto'
-import { promises as fs } from 'node:fs'
-import { basename, join } from 'node:path'
+import type { WorkspaceBackend } from '@fizz/contracts/workspace'
 
 /**
  * 单个工具结果回给模型的字符预算（也是命令输出落盘的触发阈值）。
@@ -83,34 +82,37 @@ interface SpillResult {
 }
 
 /** 落盘目录（含 .gitignore 兜底）：任何失败都往上抛，由调用方决定降级 */
-async function ensureDir(root: string): Promise<string> {
-  const dir = join(root, TOOL_OUTPUT_DIR)
-  await fs.mkdir(dir, { recursive: true })
+async function ensureDir(backend: WorkspaceBackend): Promise<string> {
+  const dir = backend.join(backend.root, TOOL_OUTPUT_DIR)
+  await backend.mkdirp(dir)
   // `.fizz/.gitignore`：缓存不进版本库。已存在的一律不动（用户可能自己往里加过东西）
-  await fs.writeFile(join(root, '.fizz', '.gitignore'), '*', { flag: 'wx' }).catch(() => undefined)
+  const gitignore = backend.join(backend.root, '.fizz', '.gitignore')
+  const exists = await backend.stat(gitignore).catch(() => null)
+  if (!exists) await backend.writeFile(gitignore, '*').catch(() => undefined)
   return dir
 }
 
 /** 尽力而为地清旧缓存：超期或超量的删掉。失败吞掉 —— 缓存不值得为它报错 */
-async function sweepOldOutputs(dir: string): Promise<void> {
+async function sweepOldOutputs(backend: WorkspaceBackend, dir: string): Promise<void> {
   try {
-    const names = await fs.readdir(dir).catch(() => [] as string[])
+    const entries = await backend.readDir(dir).catch(() => [])
     const alive: Array<{ path: string; mtime: number }> = []
-    for (const name of names) {
-      if (!/\.(log|md)$/.test(name)) continue
-      const abs = join(dir, name)
-      const stat = await fs.stat(abs).catch(() => null)
+    for (const ent of entries) {
+      if (ent.type !== 'file' || !/\.(log|md)$/.test(ent.name)) continue
+      const abs = backend.join(dir, ent.name)
+      const stat = await backend.stat(abs).catch(() => null)
       if (!stat) continue
-      if (Date.now() - stat.mtimeMs > OUTPUT_TTL_MS) {
-        await fs.rm(abs, { force: true }).catch(() => undefined)
+      // SFTP 拿不到 mtime 时按「还活着」处理：宁可少清，也不误删刚落盘的文件
+      if (stat.mtimeMs !== undefined && Date.now() - stat.mtimeMs > OUTPUT_TTL_MS) {
+        await backend.remove(abs, { force: true }).catch(() => undefined)
         continue
       }
-      alive.push({ path: abs, mtime: stat.mtimeMs })
+      alive.push({ path: abs, mtime: stat.mtimeMs ?? 0 })
     }
     if (alive.length <= MAX_OUTPUT_FILES) return
     alive.sort((a, b) => a.mtime - b.mtime)
     for (const old of alive.slice(0, alive.length - MAX_OUTPUT_FILES)) {
-      await fs.rm(old.path, { force: true }).catch(() => undefined)
+      await backend.remove(old.path, { force: true }).catch(() => undefined)
     }
   } catch {
     // 忽略：清理失败不影响本次读写
@@ -120,22 +122,23 @@ async function sweepOldOutputs(dir: string): Promise<void> {
 /**
  * 把过长内容落进工作区，返回「相对路径 + 行数」。
  *
- * 落盘失败（只读文件系统、磁盘满…）时**不抛**：降级成 `null`，调用方退回到纯截断 ——
- * 一次缓存写失败不该把整轮工具调用搞挂。
+ * `backend` 为 `null`（未绑定工作区）或落盘失败（只读文件系统、磁盘满…）时**不抛**：
+ * 降级成 `null`，调用方退回到纯截断 —— 一次缓存写失败不该把整轮工具调用搞挂。
  */
 export async function spillToWorkspace(
-  root: string,
+  backend: WorkspaceBackend | null,
   text: string,
   meta: { tool: string; detail?: string }
 ): Promise<SpillResult | null> {
-  if (!root) return null
+  if (!backend?.root) return null
   try {
-    const dir = await ensureDir(root)
+    const dir = await ensureDir(backend)
     const ext = meta.tool === 'web_fetch' ? 'md' : 'log'
-    const relPath = `${TOOL_OUTPUT_DIR}/${meta.tool === 'web_fetch' ? 'web-fetch' : 'cmd'}-${randomBytes(4).toString('hex')}.${ext}`
-    const absPath = join(root, relPath)
-    await fs.writeFile(absPath, text, 'utf8')
-    await sweepOldOutputs(dir)
+    const name = `${meta.tool === 'web_fetch' ? 'web-fetch' : 'cmd'}-${randomBytes(4).toString('hex')}.${ext}`
+    const relPath = `${TOOL_OUTPUT_DIR}/${name}`
+    const absPath = backend.join(dir, name)
+    await backend.writeFile(absPath, text)
+    await sweepOldOutputs(backend, dir)
     return { relPath, absPath, totalLines: countLines(text) }
   } catch {
     return null
@@ -151,8 +154,8 @@ export async function spillToWorkspace(
 export async function summarizeLongOutput(
   full: string,
   meta: {
-    /** 工作区根：全文落盘到它下面的 .fizz/tool-output/ */
-    root: string
+    /** 工作区后端：全文落盘到它下面的 .fizz/tool-output/；null = 不落盘只截断 */
+    backend: WorkspaceBackend | null
     tool: string
     detail?: string
     extra?: string
@@ -164,11 +167,11 @@ export async function summarizeLongOutput(
   const headChars = meta.headChars ?? Math.floor(SUMMARY_BODY_CHARS / 2)
   const tailChars = meta.tailChars ?? Math.floor(SUMMARY_BODY_CHARS / 2)
 
-  const spilled = await spillToWorkspace(meta.root, full, {
+  const spilled = await spillToWorkspace(meta.backend, full, {
     tool: meta.tool,
     ...(meta.detail ? { detail: meta.detail } : {})
   })
-  // 落盘失败（只读文件系统 / 磁盘满）：降级成纯截断，不假装"东西还在"
+  // 未绑定工作区 / 落盘失败（只读文件系统 / 磁盘满）：降级成纯截断，不假装"东西还在"
   if (!spilled) {
     const clipped = clipToBudget(full, SUMMARY_BODY_CHARS)
     return `${clipped}\n…（输出过长且无法落盘，仅保留开头一段；请改用更精确的命令 / 参数缩小输出）`
@@ -181,7 +184,7 @@ export async function summarizeLongOutput(
   const headLines = countLines(head)
   const tailStartLine = countLines(full.slice(0, tailStart)) + 1
   // 唯一文件名主干（cmd-1a2b / web-fetch-1a2b）：给 search_files 的 filePattern 用
-  const stem = basename(spilled.relPath).replace(/\.(log|md)$/, '')
+  const stem = (spilled.relPath.split('/').pop() ?? spilled.relPath).replace(/\.(log|md)$/, '')
 
   const notice = [
     '【输出过长，已完整落盘到工作区文件】',

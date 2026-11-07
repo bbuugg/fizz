@@ -14,17 +14,25 @@
  * 只读类工具（list/read/search/find/read_skill）在任何模式下都不拦。
  */
 import { spawn } from 'node:child_process'
-import { promises as fs } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
 import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
-import { commandShellPath, gitBashPath } from '@fizz/shells'
+import { gitBashPath } from '@fizz/shells'
 import { buildReadSkillTool, type AgentSkill } from '@fizz/skills'
-import { createIgnoreChecker, relPathOf, resolveInside } from '@fizz/contracts/workspace'
+import type {
+  WorkspaceBackend,
+  WorkspaceExecResult,
+  WorkspaceSearchFile
+} from '@fizz/contracts/workspace'
 import { tr } from '@fizz/i18n'
 import { applyTolerantEdit } from './edit-match'
-import { createAnsiStripper, stripAnsi } from './ansi'
+import { stripAnsi } from './ansi'
 import { createOutputDecoder } from './output-decoder'
+import {
+  createLocalBackend,
+  killChild,
+  MAX_SEARCH_FILE_SIZE,
+  resolveShellSpawn
+} from './backend'
 import {
   clipToBudget,
   MAX_TOOL_RESULT_CHARS,
@@ -40,19 +48,6 @@ export type AgentPermissionMode = 'full' | 'confirm' | 'readonly'
  * read_file 的 offset/limit 即可，不走 output-log（那里只留给 execute_command）。
  */
 const MAX_FILE_BYTES = 8_000_000
-/** 搜索文件的大小上限（1MB，跳过大文件避免卡死） */
-const MAX_SEARCH_FILE_SIZE = 1_048_576
-/** 搜索命中的单行截断长度 */
-const MAX_LINE_CHARS = 200
-/**
- * 单条输出流（stdout / stderr）的缓存上限（字符）：超出后只留最新的一段，
- * 防止一条 `yes` / `find /` 之类把内存吃光。
- *
- * ⚠️ 这**不是**给模型的截断上限：以前这里留着 MAX_CMD_OUT 然后 `slice(-MAX_CMD_OUT)`，
- * 等于在缓冲阶段就把中间内容**丢掉了**，后面再怎么提示都找不回来。现在只留一个防爆内存
- * 的兜底，返回给模型的那一段走 `summarizeLongOutput`（落盘 + 给日志 id）。
- */
-const MAX_CMD_CAPTURE = 4_000_000
 
 export interface AgentToolOptions {
   /** 确认模式下 execute_command 执行前需用户批准（整轮固定的静态档） */
@@ -113,6 +108,13 @@ export interface AgentToolOptions {
    * 钩子抛错不影响工具结果本身（规则只是补充说明）。
    */
   nestedDocs?: (absPath: string, isDirectory: boolean) => Promise<string | null>
+  /**
+   * 工作区后端（本地 / 远端）。不传 = 用 `root` 现建本地后端（行为与从前一致）。
+   *
+   * 所有文件 / 搜索 / 命令工具都经它读写，`root` 在远端工作区里是该主机上的 POSIX
+   * 绝对路径 —— 工具定义本身不再直接碰 `node:fs` / `spawn`。
+   */
+  backend?: WorkspaceBackend
 }
 
 /**
@@ -143,16 +145,17 @@ function clampInt(v: number | undefined, min: number, max: number, fallback: num
  * 超大文件报错的理由只剩「读不动」这一个（`MAX_FILE_BYTES`），不再是因为「太大不适合
  * 一次返回」—— 后者由 read_file 的 offset/limit 分段读解决。
  */
-async function readTextFile(abs: string): Promise<string> {
-  const stat = await fs.stat(abs)
-  if (stat.isDirectory()) throw new Error(`不是文件：${basename(abs)}`)
+async function readTextFile(backend: WorkspaceBackend, abs: string): Promise<string> {
+  const stat = await backend.stat(abs)
+  if (!stat) throw new Error(`文件不存在：${backend.rel(abs)}`)
+  if (stat.type === 'dir') throw new Error(`不是文件：${backend.basename(abs)}`)
   if (stat.size > MAX_FILE_BYTES) {
     throw new Error(
       `文件过大（${stat.size} 字节，超过 ${MAX_FILE_BYTES} 字节上限），无法整体按文本读取。` +
         '请先用 search_files 定位关键内容，再用 read_file 的 offset/limit 分段读取'
     )
   }
-  const buf = await fs.readFile(abs)
+  const buf = await backend.readFile(abs, { maxBytes: MAX_FILE_BYTES })
   if (buf.includes(0)) throw new Error('二进制文件，无法以文本方式读取')
   return buf.toString('utf8')
 }
@@ -160,428 +163,58 @@ async function readTextFile(abs: string): Promise<string> {
 // ---------- 文件系统遍历 ----------
 
 async function listDir(
+  backend: WorkspaceBackend,
   dir: string,
-  root: string,
   depth: number,
   ignored: (rel: string, isDir: boolean) => boolean,
   lines: string[]
 ): Promise<void> {
-  const entries = await fs.readdir(dir, { withFileTypes: true })
-  entries.sort((a, b) => {
-    const ad = a.isDirectory() ? 0 : 1
-    const bd = b.isDirectory() ? 0 : 1
+  // 远端 SFTP 的 readdir 顺序不保证，统一在这里排序（目录在前、同类按名称）
+  const entries = [...(await backend.readDir(dir))].sort((a, b) => {
+    const ad = a.type === 'dir' ? 0 : 1
+    const bd = b.type === 'dir' ? 0 : 1
     return ad === bd ? a.name.localeCompare(b.name) : ad - bd
   })
   for (const ent of entries) {
-    const abs = join(dir, ent.name)
-    const rel = relPathOf(root, abs)
-    if (ignored(rel, ent.isDirectory())) continue
-    if (ent.isDirectory()) {
+    const abs = backend.join(dir, ent.name)
+    const rel = backend.rel(abs)
+    if (ignored(rel, ent.type === 'dir')) continue
+    if (ent.type === 'dir') {
       lines.push(`${rel}/`)
-      if (depth > 0) await listDir(abs, root, depth - 1, ignored, lines)
-    } else if (ent.isFile()) {
-      const size = (await fs.stat(abs)).size
-      lines.push(`${rel}\t${size}B`)
-    }
-  }
-}
-
-/** 单个文件的内容命中；需要上下文行时才保留全文（否则大结果集会白占内存） */
-interface SearchFileHit {
-  rel: string
-  hits: Array<{ line: number; text: string }>
-  source?: string[]
-}
-
-interface SearchAcc {
-  files: SearchFileHit[]
-  /** 已命中的总行数（跨文件累计，用于 maxResults 封顶） */
-  hits: number
-  max: number
-}
-
-async function searchDir(
-  dir: string,
-  root: string,
-  re: RegExp,
-  fileRe: RegExp | null,
-  ignored: (rel: string, isDir: boolean) => boolean,
-  acc: SearchAcc,
-  needSource: boolean
-): Promise<void> {
-  if (acc.hits >= acc.max) return
-  const entries = await fs.readdir(dir, { withFileTypes: true })
-  for (const ent of entries) {
-    if (acc.hits >= acc.max) return
-    const abs = join(dir, ent.name)
-    const rel = relPathOf(root, abs)
-    if (ignored(rel, ent.isDirectory())) continue
-    if (ent.isDirectory()) {
-      await searchDir(abs, root, re, fileRe, ignored, acc, needSource)
-      continue
-    }
-    if (!ent.isFile()) continue
-    await scanFile(abs, rel, re, fileRe, acc, needSource)
-  }
-}
-
-/** 扫单个文件：命中行攒进 acc（超大小 / 二进制跳过；fileRe 对文件名生效） */
-async function scanFile(
-  abs: string,
-  rel: string,
-  re: RegExp,
-  fileRe: RegExp | null,
-  acc: SearchAcc,
-  needSource: boolean
-): Promise<void> {
-  if (acc.hits >= acc.max) return
-  if (fileRe && !fileRe.test(rel.split('/').pop() ?? rel)) return
-  const stat = await fs.stat(abs)
-  if (stat.size > MAX_SEARCH_FILE_SIZE) return
-  const buf = await fs.readFile(abs)
-  if (buf.includes(0)) return
-  const source = buf.toString('utf8').split('\n')
-  const hits: Array<{ line: number; text: string }> = []
-  for (let i = 0; i < source.length && acc.hits < acc.max; i++) {
-    re.lastIndex = 0
-    if (re.test(source[i])) {
-      hits.push({ line: i + 1, text: source[i].trimEnd().slice(0, MAX_LINE_CHARS) })
-      acc.hits++
-    }
-  }
-  if (hits.length) acc.files.push(needSource ? { rel, hits, source } : { rel, hits })
-}
-
-/**
- * 把 glob 编译成 RegExp：`**` 跨目录，`*` / `?` 不跨 `/`。
- * 不含 `/` 的 glob（如 `*.ts`）自动补 `**​/` 前缀，让它能匹配任意层级 —— 符合直觉。
- */
-export function globToRegExp(glob: string): RegExp {
-  const raw = glob.trim()
-  const pat = raw.includes('/') ? raw : `**/${raw}`
-  let re = ''
-  for (let i = 0; i < pat.length; i++) {
-    const ch = pat[i]
-    if (ch === '*') {
-      if (pat[i + 1] === '*') {
-        i++
-        if (pat[i + 1] === '/') {
-          // `**/` —— 连同分隔符一起可选，避免 `**​/*.ts` 强制要求中间多一层目录
-          i++
-          re += '(?:.*/)?'
-        } else {
-          // 结尾的 `**`（如 `foo/**`）—— 退化成「跨目录任意串」，否则会强制要求尾随 /
-          re += '.*'
-        }
-      } else {
-        re += '[^/]*'
-      }
-    } else if (ch === '?') {
-      re += '[^/]'
-    } else if ('\\^$.|+()[]{}'.includes(ch)) {
-      re += `\\${ch}`
-    } else {
-      re += ch
-    }
-  }
-  return new RegExp(`^${re}$`)
-}
-
-/** 按文件名 glob 递归查找（复用同一套忽略规则，匹配相对路径） */
-async function findFiles(
-  dir: string,
-  root: string,
-  re: RegExp,
-  ignored: (rel: string, isDir: boolean) => boolean,
-  out: string[],
-  max: number
-): Promise<void> {
-  if (out.length >= max) return
-  const entries = await fs.readdir(dir, { withFileTypes: true })
-  entries.sort((a, b) => a.name.localeCompare(b.name))
-  for (const ent of entries) {
-    if (out.length >= max) return
-    const abs = join(dir, ent.name)
-    const rel = relPathOf(root, abs)
-    if (ignored(rel, ent.isDirectory())) continue
-    if (ent.isDirectory()) {
-      await findFiles(abs, root, re, ignored, out, max)
-    } else if (ent.isFile()) {
-      if (re.test(rel)) out.push(rel)
+      if (depth > 0) await listDir(backend, abs, depth - 1, ignored, lines)
+    } else if (ent.type === 'file') {
+      lines.push(`${rel}\t${ent.size ?? 0}B`)
     }
   }
 }
 
 /** 把内容命中格式化成模型友好的文本 */
-function formatSearchHits(acc: SearchAcc, context: number): string {
-  if (!acc.files.length) return '（未找到匹配）'
+function formatSearchHits(files: WorkspaceSearchFile[], context: number): string {
+  if (!files.length) return '（未找到匹配）'
   const out: string[] = []
   if (context <= 0) {
     // 保持 ripgrep 的 `路径:行号: 内容` 风格 —— 模型对这种格式最熟
-    for (const f of acc.files) {
-      for (const h of f.hits) out.push(`${f.rel}:${h.line}: ${h.text}`)
+    for (const f of files) {
+      for (const h of f.hits) out.push(`${f.file}:${h.line}: ${h.text}`)
     }
     return out.join('\n')
   }
-  for (const f of acc.files) {
-    const src = f.source
-    if (!src) continue
-    out.push(`${f.rel}:`)
-    // 合并重叠的上下文区间，避免同一段被打印多次
-    const ranges: Array<[number, number]> = []
-    for (const h of f.hits) {
-      const s = Math.max(1, h.line - context)
-      const e = Math.min(src.length, h.line + context)
-      const last = ranges[ranges.length - 1]
-      if (last && s <= last[1] + 1) last[1] = Math.max(last[1], e)
-      else ranges.push([s, e])
-    }
-    const hitLines = new Set(f.hits.map((h) => h.line))
-    ranges.forEach(([s, e], idx) => {
-      if (idx > 0) out.push('--')
-      for (let n = s; n <= e; n++) {
-        const mark = hitLines.has(n) ? ':' : '-'
-        out.push(`${n}${mark} ${src[n - 1].trimEnd().slice(0, MAX_LINE_CHARS)}`)
+  for (const f of files) {
+    if (!f.context) continue
+    out.push(`${f.file}:`)
+    for (const c of f.context) {
+      // line=0 是后端插入的分组分隔（见 contracts/workspace 的 WorkspaceSearchFile）
+      if (c.line === 0) {
+        out.push('--')
+        continue
       }
-    })
+      out.push(`${c.line}${c.hit ? ':' : '-'} ${c.text}`)
+    }
   }
   return out.join('\n')
 }
 
 // ---------- 命令执行 ----------
-
-/**
- * 杀掉整棵进程树（超时 / 中止 / 单条停止都走它）。
- *
- * ⚠️ **不再看 `child.killed`**：那个标志只表示「我们向**它自己**发过信号」，与「树还在不在」
- * 无关。以前的 `if (child.exitCode !== null || child.killed) return` 会让第二次调用直接
- * 什么都不做 —— 用户报「AI 跑了 `npx vite`，我点停止停不下来」，多半就是第一刀（某个
- * 只杀 shell 的路径或 SIGINT）已经把 `killed` 置上，后面这道保险丝全被跳过了。
- * 现在无条件再打一记整树 kill：幂等（进程没了 taskkill / kill 都是空转）。
- */
-function killChild(child: ReturnType<typeof spawn>, isWin: boolean): void {
-  const pid = child.pid
-  if (!pid) return
-  if (isWin) {
-    /**
-     * ⚠️ `taskkill` 是**异步**的：`spawn` 自己不抛错，ENOENT / 权限不足 / 「进程已退出」
-     * 全都只走 `'error'` 事件或非 0 退出码 —— 以前的 `try { spawn(...) } catch {}` 一个都
-     * 接不住，失败了就是**静默空转**（命令继续跑、端口继续占着）。这里两条路都补上：
-     * 打整树，同时在任何失败信号上退回直接 kill shell。
-     */
-    const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
-      stdio: 'ignore',
-      windowsHide: true
-    })
-    const fallback = (): void => {
-      try {
-        child.kill('SIGKILL')
-      } catch {
-        // 已退出
-      }
-    }
-    killer.on('error', fallback)
-    // 非 0 = 树已经不在 / 拿不到（权限、pid 已被回收）：退回单杀，能杀多少算多少
-    killer.on('exit', (code) => {
-      if (code !== 0) fallback()
-    })
-    return
-  }
-  // detached 起的（见 runCommand 的 spawn 选项）自成进程组：先杀整组，退不回再单杀
-  try {
-    process.kill(-pid, 'SIGKILL')
-    return
-  } catch {
-    // 组已经没了 / 不是组首：退回单杀
-  }
-  try {
-    child.kill('SIGKILL')
-  } catch {
-    // 已退出
-  }
-}
-
-/**
- * 把一条命令翻译成「起哪个 shell、带什么参数、什么环境」。
- *
- * 前台（`runCommand`）与后台（`spawnBackgroundShell`）**必须用同一份判定**：两条路要是
- * 各挑一次 shell，同一条命令「直接跑」和「丢后台跑」的行为就会不一样 —— 最典型的是
- * Windows 上前台走 Git Bash、后台掉进 PowerShell，管道 / `&&` / 单引号整个不认。
- *
- * shell 选择：POSIX 恒为 `/bin/bash -lc`；Windows **优先 Git Bash** —— 模型拿到的是
- * POSIX 工具链（ls / grep / sed / find / cat / 管道…），与主流编码代理一致。Git Bash 的
- * coreutils 在 `<Git>\usr\bin`，登录 profile 之外再显式置前，保证 ls / grep 一定找得到
- * （继承的 Windows PATH 里通常没有它）。没有 Git Bash 时回退 PowerShell 7（`pwsh`，启动
- * 更快、UTF-8 默认行为更少坑），再没装就退到系统自带的 5.1（强制 UTF-8 输出，cmd 的 GBK
- * 会乱码）。判定在 `@fizz/shells` 的 `commandShellPath()` 与 `gitBashPath()`，
- * 与终端选择器共用同一份探测。
- */
-function resolveShellSpawn(command: string): {
-  shellCmd: string
-  shellArgs: string[]
-  env: NodeJS.ProcessEnv
-  isWin: boolean
-} {
-  const isWin = process.platform === 'win32'
-  const bashPath = isWin ? gitBashPath() : null
-  const useBash = !isWin || Boolean(bashPath)
-  const shellCmd = isWin ? (bashPath ?? commandShellPath()) : '/bin/bash'
-  const shellArgs = isWin
-    ? useBash
-      ? ['-lc', command]
-      : [
-          '-NoLogo',
-          '-NoProfile',
-          '-NonInteractive',
-          '-Command',
-          `[Console]::OutputEncoding=[Text.Encoding]::UTF8;$OutputEncoding=[Text.Encoding]::UTF8;${command}`
-        ]
-    : ['-lc', command]
-  const env =
-    isWin && useBash
-      ? {
-          ...process.env,
-          PATH: `${join(dirname(bashPath!), '..', 'usr', 'bin')};${process.env.PATH ?? ''}`
-        }
-      : process.env
-  return { shellCmd, shellArgs, env, isWin }
-}
-
-/**
- * 在工作区目录下执行 shell 命令：输出 stdout + stderr（超预算时把全文落进工作区的
- * `.fizz/tool-output/`，回行号坐标），超时 / abortSignal 触发时终止整个进程树
- * （POSIX 用进程组，Windows 用 taskkill /T）。
- *
- * `root` 只用于落盘（全文要能被 read_file 读到，就必须在工作区内）。
- */
-async function runCommand(
-  command: string,
-  cwd: string,
-  timeoutMs: number,
-  root: string,
-  signal?: AbortSignal,
-  /** 实时输出与生命周期的旁路（execute_command 用；不传 = 行为与从前一致） */
-  sink?: {
-    onOutput: (stream: 'stdout' | 'stderr', chunk: string) => void
-    onEnd?: () => void
-  }
-): Promise<string> {
-  const { shellCmd, shellArgs, env, isWin } = resolveShellSpawn(command)
-  const child = spawn(shellCmd, shellArgs, {
-    cwd,
-    env,
-    windowsHide: true,
-    ...(isWin ? {} : { detached: true })
-  })
-  let stdout = ''
-  let stderr = ''
-  // 实时转发的清洗器（每条流各一份：chunk 边界会把转义序列劈开，见 ansi.ts）
-  const cleanStdout = createAnsiStripper()
-  const cleanStderr = createAnsiStripper()
-  // 输出解码（每条流各一份）：Windows 上同一批命令可能吐 UTF-8（Git Bash 的 coreutils）
-  // 也可能是 GBK（命令里显式调的 powershell 5.1），见 output-decoder.ts 的头注释
-  const decodeStdout = createOutputDecoder()
-  const decodeStderr = createOutputDecoder()
-
-  return new Promise<string>((resolve) => {
-    let settled = false
-    /**
-      * 收场：把 stdout + stderr 拼成**完整**输出，超预算时交给 `summarizeLongOutput`
-      * 把全文落进工作区并回行号坐标（模型用 read_file 的 offset/limit 接着读）。
-     *
-     * stderr 以前是**完全不截断**直接拼在后面的（stdout 才截），一条刷满错误输出的
-     * 命令能把整个结果顶爆；现在两条流走同一条路，一视同仁。
-     */
-    const finish = async (reason: 'exit' | 'timeout' | 'aborted', code?: number | null) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      signal?.removeEventListener('abort', onAbort)
-      sink?.onEnd?.()
-      const info =
-        reason === 'exit'
-          ? `（退出码 ${code}）`
-          : reason === 'timeout'
-            ? `（超时 ${timeoutMs}ms，已终止进程树）`
-            : '（已中止）'
-      /*
-       * 先剥 ANSI 再 trim：命令是经管道跑的，但 `npm run` 会给脚本注入 `FORCE_COLOR`，
-       * vite / tsc / jest 照样吐颜色（`\u001b[32m➜\u001b[39m`）。不剥的话模型拿到的是
-       * `[32m` 这种残渣，既占字符预算又会被当成正文照抄。见 `ansi.ts`。
-       */
-      // 没有换行结尾的残留（最后一行 / 进度条）也要吐出来，否则最后一句报错会丢
-      stdout += decodeStdout.flush()
-      stderr += decodeStderr.flush()
-      const out = stripAnsi(stdout).trim()
-      const err = stripAnsi(stderr).trim()
-      const full = `$ ${command}\n${info}\n${out}${err ? `\n${err}` : ''}`
-      resolve(
-        await summarizeLongOutput(full, {
-          root,
-          tool: 'execute_command',
-          detail: command.slice(0, 200)
-        })
-      )
-    }
-    /**
-     * 收树两次：立刻一记整树 SIGKILL / taskkill（SIGKILL 不可捕获，通常一步到位），
-     * 600ms 后再补一记 —— 有些 shell（Git Bash 的 `-lc`、`npm run` 的短命包装进程）
-     * 会在第一记打下去之后才 **fork** 出真正的命令（`npx vite` 的 vite 是孙子辈），
-     * 只打一记会漏掉最后出生的那一批，用户就看到「停不下来、端口还占着」。
-     * 补刀定时器 `unref()`：别把服务端进程吊住。
-     */
-    const reap = (): void => {
-      killChild(child, isWin)
-      const straggler = setTimeout(() => killChild(child, isWin), 600)
-      straggler.unref?.()
-    }
-    const onAbort = () => {
-      reap()
-      void finish('aborted')
-    }
-    const timer = setTimeout(() => {
-      reap()
-      void finish('timeout')
-    }, timeoutMs)
-    if (signal) {
-      if (signal.aborted) {
-        onAbort()
-      } else {
-        signal.addEventListener('abort', onAbort, { once: true })
-      }
-    }
-
-    // 只保留最新的一段，防 `yes` / `find /` 之类把内存吃光；丢的部分只发生在超出
-    // MAX_CMD_CAPTURE 的极端情况下，正常命令的输出是完整的
-    child.stdout.on('data', (d: Buffer) => {
-      // 解码走 output-decoder（UTF-8 优先、整行回退 GBK）：直接 toString('utf8')
-      // 会把 powershell 的 GBK 中文解成 `�`（用户实测的「一堆乱码」）
-      const chunk = decodeStdout.decode(d)
-      if (!chunk) return
-      stdout += chunk
-      if (stdout.length > MAX_CMD_CAPTURE) stdout = stdout.slice(-MAX_CMD_CAPTURE)
-      // 实时增量：纯转发（不在这里缓存），防爆由调用方负责（见 parts.ts 的 MAX_LIVE_OUTPUT）；
-      // 渲染态是文本，转义序列要在这里就剥掉（收口时的结果另有一份完整清洗）
-      sink?.onOutput('stdout', cleanStdout(chunk))
-    })
-    child.stderr.on('data', (d: Buffer) => {
-      const chunk = decodeStderr.decode(d)
-      if (!chunk) return
-      stderr += chunk
-      if (stderr.length > MAX_CMD_CAPTURE) stderr = stderr.slice(-MAX_CMD_CAPTURE)
-      sink?.onOutput('stderr', cleanStderr(chunk))
-    })
-    child.on('error', (err) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      signal?.removeEventListener('abort', onAbort)
-      sink?.onEnd?.()
-      resolve(`$ ${command}\n（命令启动失败：${err.message}）`)
-    })
-    child.on('exit', (code) => void finish('exit', code))
-  })
-}
 
 /** 后台命令的收场结果 */
 export interface BackgroundShellExit {
@@ -700,23 +333,62 @@ function intentOf(input: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+/**
+ * 把后端执行结果拼成 `execute_command` 的模型可见文本。
+ *
+ * 格式与改造前的 `runCommand` 逐字对齐：`$ 命令\n（收场说明）\nstdout\nstderr`；
+ * 超预算交给 `summarizeLongOutput` 落盘（后端决定落本地还是远端工作区）。
+ */
+async function formatExecResult(
+  backend: WorkspaceBackend,
+  command: string,
+  result: WorkspaceExecResult,
+  timeoutMs: number
+): Promise<string> {
+  const info =
+    result.reason === 'exit'
+      ? `（退出码 ${result.exitCode}）`
+      : result.reason === 'timeout'
+        ? `（超时 ${timeoutMs}ms，已终止进程树）`
+        : result.reason === 'aborted'
+          ? '（已中止）'
+          : `（命令启动失败：${result.error ?? '未知错误'}）`
+  // 先剥 ANSI 再 trim：`npm run` 会给脚本注入 FORCE_COLOR，vite / tsc / jest 照样吐颜色
+  const out = stripAnsi(result.stdout).trim()
+  const err = stripAnsi(result.stderr).trim()
+  const full = `$ ${command}\n${info}\n${out}${err ? `\n${err}` : ''}`
+  return summarizeLongOutput(full, {
+    backend,
+    tool: 'execute_command',
+    detail: command.slice(0, 200)
+  })
+}
+
 /** 构建工作区 Agent 工具集（绑定 root 目录；改动类工具按权限模式拦一道） */
 export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
   // 权限档**每次调用现取**：传了 getter 就以它为准（运行中切档立刻生效），否则退回静态快照
   const currentMode = (): AgentPermissionMode => opts.getPermissionMode?.() ?? opts.permissionMode
+  // 文件 / 搜索 / 命令一律经后端：不传 = 本地（行为与从前一致），远端由服务端注入
+  const backend = opts.backend ?? createLocalBackend(root)
   // 工具描述必须如实描述执行环境，模型才会放心用对应风格的命令
   const isWin = process.platform === 'win32'
   const bashPath = isWin ? gitBashPath() : null
-  const shellNote = isWin
-    ? bashPath
-      ? '命令运行在 Git Bash（POSIX）环境：可以用 ls / grep / sed / find / cat / 管道等 Unix 工具与语法；Windows 路径建议写成 C:/xxx 或 /c/xxx 形式。'
-      : '命令运行在 PowerShell 环境（未检测到 Git Bash）。'
-    : '命令运行在 bash 环境。'
-  const shellNoteEn = process.platform === 'win32'
-    ? bashPath
-      ? 'Commands run in Git Bash (POSIX): you can use ls / grep / sed / find / cat, pipes, and Unix syntax. For Windows paths prefer C:/xxx or /c/xxx.'
-      : 'Commands run in PowerShell (Git Bash not detected).'
-    : 'Commands run in bash.'
+  const shellNote =
+    backend.kind === 'remote'
+      ? '命令运行在远端 Linux 主机的 POSIX shell（bash/sh）中：可以用 ls / grep / sed / find / cat、管道与 Unix 语法；路径是远端主机上的绝对路径。'
+      : isWin
+        ? bashPath
+          ? '命令运行在 Git Bash（POSIX）环境：可以用 ls / grep / sed / find / cat / 管道等 Unix 工具与语法；Windows 路径建议写成 C:/xxx 或 /c/xxx 形式。'
+          : '命令运行在 PowerShell 环境（未检测到 Git Bash）。'
+        : '命令运行在 bash 环境。'
+  const shellNoteEn =
+    backend.kind === 'remote'
+      ? 'Commands run in a POSIX shell (bash/sh) on the remote Linux host: ls / grep / sed / find / cat, pipes, and Unix syntax are available; paths are absolute paths on that host.'
+      : isWin
+        ? bashPath
+          ? 'Commands run in Git Bash (POSIX): you can use ls / grep / sed / find / cat, pipes, and Unix syntax. For Windows paths prefer C:/xxx or /c/xxx.'
+          : 'Commands run in PowerShell (Git Bash not detected).'
+        : 'Commands run in bash.'
 
   /**
    * 改动类工具的统一闸门。
@@ -767,13 +439,13 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
         depth: z.number().optional().describe(tr('递归深度，默认 0（仅当前目录），最大 4', 'Recursion depth; default 0 (current directory only), max 4'))
       }),
       execute: async ({ path = '', depth = 0 }) => {
-        const absDir = resolveInside(root, path)
-        const stat = await fs.stat(absDir).catch(() => null)
+        const absDir = backend.resolve(path)
+        const stat = await backend.stat(absDir)
         if (!stat) throw new Error(`路径不存在：${path || '.'}（相对于工作区根）`)
-        if (!stat.isDirectory()) throw new Error(`不是目录：${path || '.'}（list_dir 的 path 必须是目录）`)
-        const ignored = await createIgnoreChecker(root)
+        if (stat.type !== 'dir') throw new Error(`不是目录：${path || '.'}（list_dir 的 path 必须是目录）`)
+        const ignored = await backend.ignoreChecker()
         const lines: string[] = []
-        await listDir(absDir, root, clampInt(depth, 0, 4, 0), ignored, lines)
+        await listDir(backend, absDir, clampInt(depth, 0, 4, 0), ignored, lines)
         return withNestedDocs(lines.length ? lines.join('\n') : '（空目录）', absDir, true)
       }
     }),
@@ -796,9 +468,9 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
         limit: z.number().optional().describe(tr('返回行数上限，默认 200，最大 2000', 'Maximum lines to return; default 200, max 2000'))
       }),
       execute: async ({ path, offset = 1, limit = 200 }) => {
-        const abs = resolveInside(root, path)
-        const text = await readTextFile(abs)
-        const rel = relPathOf(root, abs)
+        const abs = backend.resolve(path)
+        const text = await readTextFile(backend, abs)
+        const rel = backend.rel(abs)
         const lines = text.split('\n')
         const start = Math.max(0, offset - 1)
         const slice = lines.slice(start, start + clampInt(limit, 1, 2000, 200))
@@ -853,10 +525,9 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
           intent: intentOf(input)
         })
         if (refused) return refused
-        const abs = resolveInside(root, path)
-        await fs.mkdir(dirname(abs), { recursive: true })
-        await fs.writeFile(abs, content, 'utf8')
-        return `已写入 ${relPathOf(root, abs)}（${content.length} 字符）`
+        const abs = backend.resolve(path)
+        await backend.writeFile(abs, content)
+        return `已写入 ${backend.rel(abs)}（${content.length} 字符）`
       }
     }),
 
@@ -884,17 +555,12 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
       execute: async (input, options) => {
         const { path, edits } = input
         if (edits.length === 0) throw new Error('edits 是空的：至少给一处 oldText/newText')
-        const abs = resolveInside(root, path)
-        let text: string
-        try {
-          text = await readTextFile(abs)
-        } catch (err) {
-          // 文件不存在给一句人话：模型常常拿一个猜的路径来 edit（原始 ENOENT 看不出该怎么办）
-          if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
-            throw new Error(`文件不存在：${path}（edit_file 只能改已存在的文件，新建请用 write_file）`)
-          }
-          throw err
+        const abs = backend.resolve(path)
+        // 文件不存在给一句人话：模型常常拿一个猜的路径来 edit（原始 ENOENT 看不出该怎么办）
+        if (!(await backend.stat(abs))) {
+          throw new Error(`文件不存在：${path}（edit_file 只能改已存在的文件，新建请用 write_file）`)
         }
+        let text = await readTextFile(backend, abs)
 
         /*
          * 先在**内存里**把替换全部跑通，再走审批闸门。
@@ -923,8 +589,8 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
         })
         if (refused) return refused
 
-        await fs.writeFile(abs, text, 'utf8')
-        return `已应用 ${applied.length} 处编辑（${relPathOf(root, abs)}）：${applied.join('；')}`
+        await backend.writeFile(abs, text)
+        return `已应用 ${applied.length} 处编辑（${backend.rel(abs)}）：${applied.join('；')}`
       }
     }),
 
@@ -965,44 +631,47 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
         maxResults = 200
       }) => {
         const flags = caseInsensitive ? 'i' : ''
-        let re: RegExp
+        // 先在 JS 侧预检正则：远端 rg/grep 的方言差异会给出难读的报错，语法错在这里就说清
         try {
-          re = new RegExp(pattern, flags)
+          new RegExp(pattern, flags)
         } catch (e) {
           throw new Error(`无效的正则：${(e as Error).message}`)
         }
-        let fileRe: RegExp | null = null
         if (filePattern) {
           try {
-            fileRe = new RegExp(filePattern, flags)
+            new RegExp(filePattern, flags)
           } catch (e) {
             throw new Error(`无效的文件名正则：${(e as Error).message}`)
           }
         }
-        const absPath = resolveInside(root, path)
-        const stat = await fs.stat(absPath).catch(() => null)
-        if (!stat) throw new Error(`路径不存在：${path || '.'}（相对于工作区根）`)
+        const absPath = backend.resolve(path)
+        if (!(await backend.stat(absPath))) {
+          throw new Error(`路径不存在：${path || '.'}（相对于工作区根）`)
+        }
         const ctx = clampInt(context, 0, 5, 0)
         const max = clampInt(maxResults, 1, 1000, 200)
-        const acc: SearchAcc = { files: [], hits: 0, max }
-        if (stat.isFile()) {
-          // 借 OpenCode / ripgrep 的语义：path 显式指向**文件**时只搜这一个文件。
-          // 不走忽略规则 —— 显式点名 = 明确意图（.env 这类被忽略的文件也照搜）。
-          await scanFile(absPath, relPathOf(root, absPath), re, fileRe, acc, ctx > 0)
-        } else {
-          const ignored = await createIgnoreChecker(root)
-          await searchDir(absPath, root, re, fileRe, ignored, acc, ctx > 0)
-        }
-        if (!acc.files.length) return '（未找到匹配）'
+        // path 显式指向文件时由后端只搜这一个（不走忽略规则 —— 显式点名 = 明确意图）
+        const files = await backend.search({
+          pattern,
+          caseInsensitive,
+          subPath: path,
+          ...(filePattern ? { filePattern } : {}),
+          context: ctx,
+          maxResults: max,
+          maxFileBytes: MAX_SEARCH_FILE_SIZE,
+          ignore: await backend.ignoreChecker()
+        })
+        if (!files.length) return '（未找到匹配）'
+        const totalHits = files.reduce((n, f) => n + f.hits.length, 0)
         if (filesOnly) {
-          const rows = acc.files.map((f) => `${f.rel}:${f.hits.length}`)
-          return `${rows.join('\n')}\n（${acc.files.length} 个文件，共 ${acc.hits} 处匹配）`
+          const rows = files.map((f) => `${f.file}:${f.hits.length}`)
+          return `${rows.join('\n')}\n（${files.length} 个文件，共 ${totalHits} 处匹配）`
         }
-        const full = formatSearchHits(acc, ctx)
+        const full = formatSearchHits(files, ctx)
         // 超预算就按预算裁剪，但必须说清「还有匹配没查完」与怎么把范围收窄，
         // 而不是让模型以为「只有这些命中」
         const tail =
-          acc.hits >= max
+          totalHits >= max
             ? `\n…（本轮已到 ${max} 行命中上限，还有匹配没查完：想看更多就提高 maxResults（上限 1000）、缩小 path / filePattern，或换更精确的 pattern）…`
             : ''
         return `${clipToBudget(full, MAX_TOOL_RESULT_CHARS)}${tail}`
@@ -1026,20 +695,18 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
         maxResults: z.number().optional().describe(tr('最大返回条数，默认 200，最大 1000', 'Maximum results; default 200, max 1000'))
       }),
       execute: async ({ pattern, path = '', maxResults = 200 }) => {
-        const re = globToRegExp(pattern)
-        const absPath = resolveInside(root, path)
-        const stat = await fs.stat(absPath).catch(() => null)
-        if (!stat) throw new Error(`路径不存在：${path || '.'}（相对于工作区根）`)
-        const max = clampInt(maxResults, 1, 1000, 200)
-        const out: string[] = []
-        if (stat.isFile()) {
-          // 显式给了文件：只检查这一个是否匹配 glob（借 ripgrep --files 的语义）
-          const rel = relPathOf(root, absPath)
-          if (re.test(rel)) out.push(rel)
-        } else {
-          const ignored = await createIgnoreChecker(root)
-          await findFiles(absPath, root, re, ignored, out, max)
+        const absPath = backend.resolve(path)
+        if (!(await backend.stat(absPath))) {
+          throw new Error(`路径不存在：${path || '.'}（相对于工作区根）`)
         }
+        const max = clampInt(maxResults, 1, 1000, 200)
+        // path 显式指向文件时由后端只检查这一个（借 ripgrep --files 的语义）
+        const out = await backend.find({
+          pattern,
+          subPath: path,
+          maxResults: max,
+          ignore: await backend.ignoreChecker()
+        })
         if (!out.length) return `（没有匹配 ${pattern} 的文件）`
         const more = out.length >= max ? `\n…（已达上限 ${max}，可能有更多）` : ''
         return `${out.length} 个文件：\n${out.join('\n')}${more}`
@@ -1088,9 +755,10 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
           intent: intentOf(input)
         })
         if (refused) return refused
-        const execDir = resolveInside(root, cwd)
-        const stat = await fs.stat(execDir)
-        if (!stat.isDirectory())
+        const execDir = backend.resolve(cwd)
+        const stat = await backend.stat(execDir)
+        if (!stat) throw new Error(`执行目录不存在：${cwd || '.'}（相对于工作区根）`)
+        if (stat.type !== 'dir')
           throw new Error(`执行目录不是目录：${cwd || '.'}（cwd 必须是目录；要操作某个文件请把路径写进命令里）`)
 
         /**
@@ -1100,6 +768,10 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
          * 本轮的 abort / 超时都打不到它（那正是「dev server 活过这一轮」的实现方式）。
          */
         if (runInBackground) {
+          // 后台进程归本地任务登记表持有；远端工作区没有对应的进程表（首期不支持）
+          if (backend.kind === 'remote') {
+            return '远端工作区首期不支持后台执行（runInBackground），命令**没有**启动。请改为普通执行（受本轮超时约束），或让用户在远端自己开一个终端。'
+          }
           if (!opts.onBackgroundCommand) {
             return '当前环境不支持后台执行（没有任务登记通道），命令**没有**启动。请改为普通执行，或让用户自己开一个终端。'
           }
@@ -1131,11 +803,15 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
         const toolCallId = options.toolCallId
         opts.onCommandStart?.(toolCallId, stop)
         try {
-          return await runCommand(command, execDir, t, root, ctrl.signal, {
-            onOutput: (stream, chunk) => opts.onCommandOutput?.(toolCallId, stream, chunk),
-            onEnd: () => opts.onCommandEnd?.(toolCallId)
+          const result = await backend.exec(command, {
+            cwd: execDir,
+            timeoutMs: t,
+            signal: ctrl.signal,
+            onOutput: (stream, chunk) => opts.onCommandOutput?.(toolCallId, stream, chunk)
           })
+          return await formatExecResult(backend, command, result, t)
         } finally {
+          opts.onCommandEnd?.(toolCallId)
           options.abortSignal?.removeEventListener('abort', stop)
         }
       }
@@ -1221,15 +897,11 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
       }),
       execute: async (input, options) => {
         const { path, recursive = false } = input
-        const abs = resolveInside(root, path)
+        const abs = backend.resolve(path)
         // 先确认存在：删一个不存在的路径直接报错，避免「静默成功」让模型误以为已删除
-        let stat: Awaited<ReturnType<typeof fs.stat>>
-        try {
-          stat = await fs.stat(abs)
-        } catch {
-          throw new Error(`路径不存在：${path}`)
-        }
-        const isDir = stat.isDirectory()
+        const stat = await backend.stat(abs)
+        if (!stat) throw new Error(`路径不存在：${path}`)
+        const isDir = stat.type === 'dir'
         if (isDir && !recursive) {
           throw new Error(
             `${path} 是目录。删除目录必须显式传 recursive: true（会连同目录内所有内容一起删除）。`
@@ -1243,8 +915,7 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
           intent: intentOf(input)
         })
         if (refused) return refused
-        if (isDir) await fs.rm(abs, { recursive: true })
-        else await fs.unlink(abs)
+        await backend.remove(abs, { recursive: isDir, force: true })
         return `已删除${isDir ? '目录' : '文件'} ${path}`
       }
     }),

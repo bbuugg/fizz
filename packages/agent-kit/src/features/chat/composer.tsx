@@ -34,6 +34,7 @@ import { Popover, PopoverAnchor, PopoverContent } from '@fizz/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@fizz/ui/select'
 import type { AiPermissionMode } from '@fizz/contracts/types'
 import {
+  AtSign,
   ChevronDown,
   Clock,
   Eye,
@@ -164,6 +165,14 @@ interface ComposerProps {
   /** 命令执行上下文（与 slashCommands 一同传） */
   slashContext?: SlashCommandContext
   /**
+   * `@` 点名的候选 Agent（只在多智能体协作会话传）。
+   *
+   * 输入框里敲 `@` 时在**上方**浮出名单（与斜线命令同一套浮层逻辑）：↑↓ 选择、
+   * Tab / Enter 补全、Esc 只关浮层。补全只是把 `@名字` 写进草稿 —— 真正的路由在
+   * 服务端按消息文本解析（见 `@fizz/agent` 的 `resolveCollabMentions`）。
+   */
+  mentionCandidates?: Array<{ id: string; name: string; role?: string }>
+  /**
    * 紧凑输入框：初始高度收成一行的量级（而不是默认的三行）。
    *
    * 给**窄面板**里的助手用 —— 面板只有 ~384px 宽（可拖到 320），默认 `min-h-[72px]`
@@ -202,6 +211,7 @@ export function Composer({
   onAttachFiles,
   slashCommands,
   slashContext,
+  mentionCandidates,
   compact = false
 }: ComposerProps) {
   // 订阅语言：下面这些文案都在渲染期求值（`t()`）
@@ -254,6 +264,49 @@ export function Composer({
     }
     onChange('')
     command.run(slashContext, args)
+  }
+
+  // ---------- @ 点名 ----------
+  /**
+   * 只认「`@` 前面是空白 / 标点或行首」且到光标为止没有空白的那一小段。
+   * 名字本身可以带空格，那种情况用户只能从候选里选（选中后写入完整的 `@名字`）。
+   */
+  const [caret, setCaret] = useState(value.length)
+  const [mentionDismissed, setMentionDismissed] = useState(false)
+  const [mentionHighlight, setMentionHighlight] = useState(0)
+  const mentionToken = useMemo(() => {
+    if (disabled || !mentionCandidates?.length) return null
+    const before = value.slice(0, caret)
+    const match = /(?:^|[\s(（，,：:；;])@([^\s@]*)$/.exec(before)
+    if (!match) return null
+    const query = match[1]
+    return { query, start: before.length - query.length - 1 }
+  }, [value, caret, disabled, mentionCandidates])
+  const mentionMatches = useMemo(() => {
+    if (!mentionToken || !mentionCandidates) return []
+    const q = mentionToken.query.trim().toLowerCase()
+    return mentionCandidates.filter(
+      (agent) =>
+        !q || agent.name.toLowerCase().includes(q) || (agent.role ?? '').toLowerCase().includes(q)
+    )
+  }, [mentionToken, mentionCandidates])
+  const mentionVisible =
+    !!mentionToken && !mentionDismissed && mentionMatches.length > 0 && !paletteOpen
+  useEffect(() => {
+    // 换一个 `@` 或继续打字后，Esc 关闭状态与高亮都复位
+    setMentionDismissed(false)
+    setMentionHighlight(0)
+  }, [mentionToken?.start, mentionToken?.query])
+  const completeMention = (agent: { name: string }): void => {
+    if (!mentionToken) return
+    const next = `${value.slice(0, mentionToken.start)}@${agent.name} ${value.slice(caret)}`
+    const position = mentionToken.start + agent.name.length + 2
+    onChange(next)
+    setCaret(position)
+    requestAnimationFrame(() => {
+      textareaRef?.current?.focus()
+      textareaRef?.current?.setSelectionRange(position, position)
+    })
   }
 
   /**
@@ -470,9 +523,36 @@ export function Composer({
           <textarea
             ref={textareaRef}
             value={value}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={(e) => {
+              onChange(e.target.value)
+              setCaret(e.target.selectionStart)
+            }}
+            onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
             onPaste={handlePaste}
             onKeyDown={(e) => {
+              // @ 点名浮层打开时先接管导航键（与斜线命令同一套交互）
+              if (mentionVisible) {
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  e.preventDefault()
+                  setMentionHighlight((h) =>
+                    e.key === 'ArrowDown'
+                      ? (h + 1) % mentionMatches.length
+                      : (h - 1 + mentionMatches.length) % mentionMatches.length
+                  )
+                  return
+                }
+                if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing)) {
+                  e.preventDefault()
+                  const agent = mentionMatches[mentionHighlight]
+                  if (agent) completeMention(agent)
+                  return
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  setMentionDismissed(true)
+                  return
+                }
+              }
               // 斜线命令浮层打开时先接管导航键：↑↓ 选择、Tab 补全、Enter 执行/补全、
               // Esc 只关浮层（不触发「停止本轮」——用户是在选命令，不是要刹车）
               if (paletteOpen && candidates.length > 0 && slashContext) {
@@ -667,7 +747,7 @@ export function Composer({
           </div>
         </div>
       </PopoverAnchor>
-      {paletteVisible && (
+      {(paletteVisible || mentionVisible) && (
         <PopoverContent
           side="top"
           align="start"
@@ -676,10 +756,37 @@ export function Composer({
           onInteractOutside={(e) => e.preventDefault()}
           onEscapeKeyDown={(e) => e.preventDefault()}
           role="listbox"
-          aria-label={tr('斜线命令')}
+          aria-label={mentionVisible ? tr('点名智能体') : tr('斜线命令')}
           className="w-[var(--radix-popover-trigger-width)] min-w-64 max-h-64 overflow-y-auto rounded-xl p-1"
         >
-          {candidates.map((command, i) => (
+          {mentionVisible
+            ? mentionMatches.map((agent, i) => (
+                <button
+                  key={agent.id}
+                  type="button"
+                  role="option"
+                  aria-selected={i === mentionHighlight}
+                  className={cn(
+                    'flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors',
+                    i === mentionHighlight ? 'bg-foreground/10' : 'hover:bg-foreground/5'
+                  )}
+                  onMouseEnter={() => setMentionHighlight(i)}
+                  onClick={() => completeMention(agent)}
+                >
+                  <AtSign className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-xs font-medium text-foreground">
+                      @{agent.name}
+                    </span>
+                    {agent.role && (
+                      <span className="block truncate text-xs text-muted-foreground">
+                        {agent.role}
+                      </span>
+                    )}
+                  </span>
+                </button>
+              ))
+            : candidates.map((command, i) => (
             <button
               key={command.name}
               type="button"

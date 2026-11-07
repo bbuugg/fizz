@@ -602,8 +602,10 @@ function openBridgeWorkbench(pathAndQuery: string): WorkbenchSocket {
  * 只说 `hostId`：主机凭据在服务端解密后直接去连，**不进渲染端**；
  * 这里把桥的原始帧适配成 `TerminalProcess`（与 `openLocalTerminal` 的形状一致）。
  */
-function openBridgeSshTerminal({ hostId, cols, rows }: SshTerminalOpenOptions): TerminalProcess {
-  const socket = openBridgeWorkbench(sshTerminalWsPath({ hostId, cols, rows }))
+function openBridgeSshTerminal({ hostId, cols, rows, cwd }: SshTerminalOpenOptions): TerminalProcess {
+  const socket = openBridgeWorkbench(
+    sshTerminalWsPath({ hostId, cols, rows, ...(cwd ? { cwd } : {}) })
+  )
   const dataSubs = new Set<(data: Uint8Array) => void>()
   const exitSubs = new Set<(exitCode: number, reason?: string) => void>()
   /** SSH 建连进度订阅（与 web 端同一条协议，见 web-host 的 openTerminalWs） */

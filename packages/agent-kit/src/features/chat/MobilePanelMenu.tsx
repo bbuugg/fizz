@@ -31,6 +31,8 @@ export function MobilePanelMenu({
   canExpandPanel,
   showPreview,
   showBrowser,
+  showFiles = true,
+  showGit = true,
   onToggleFiles,
   onToggleGit,
   onTogglePreview,
@@ -46,6 +48,9 @@ export function MobilePanelMenu({
   showPreview: boolean
   /** 真实会话才有浏览器画面（草稿标签连不到 `agent-browser` 会话） */
   showBrowser: boolean
+  /** 文件面板 / 源码管理：默认露头（远端工作区也支持，见 FilesPanel / gitExecFor）；`false` 留给没有目录的场景 */
+  showFiles?: boolean
+  showGit?: boolean
   onToggleFiles: () => void
   onToggleGit: () => void
   onTogglePreview: () => void
@@ -66,19 +71,23 @@ export function MobilePanelMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-44">
-        <DropdownMenuItem onSelect={onToggleFiles}>
-          <Files className="size-3.5 shrink-0" />
-          {sideTab === 'files' ? tr('收起工作区文件') : tr('工作区文件')}
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={onToggleGit}>
-          <GitBranch className="size-3.5 shrink-0" />
-          {sideTab === 'git' ? tr('收起源代码管理') : tr('源代码管理')}
-          {gitChangeCount > 0 && (
-            <span className="ml-auto min-w-4 shrink-0 rounded-full bg-destructive px-1 text-center text-[0.625rem] font-medium leading-4 text-white tabular-nums">
-              {gitChangeCount}
-            </span>
-          )}
-        </DropdownMenuItem>
+        {showFiles && (
+          <DropdownMenuItem onSelect={onToggleFiles}>
+            <Files className="size-3.5 shrink-0" />
+            {sideTab === 'files' ? tr('收起工作区文件') : tr('工作区文件')}
+          </DropdownMenuItem>
+        )}
+        {showGit && (
+          <DropdownMenuItem onSelect={onToggleGit}>
+            <GitBranch className="size-3.5 shrink-0" />
+            {sideTab === 'git' ? tr('收起源代码管理') : tr('源代码管理')}
+            {gitChangeCount > 0 && (
+              <span className="ml-auto min-w-4 shrink-0 rounded-full bg-destructive px-1 text-center text-[0.625rem] font-medium leading-4 text-white tabular-nums">
+                {gitChangeCount}
+              </span>
+            )}
+          </DropdownMenuItem>
+        )}
         {showPreview && (
           <DropdownMenuItem onSelect={onTogglePreview}>
             <MonitorPlay className="size-3.5 shrink-0" />

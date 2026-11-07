@@ -365,12 +365,12 @@ function browserOpenTerminal({
  * SSH 终端：WS 打 `/api/ssh/terminal`（只传 hostId，凭据由服务端解密后连）。
  * 服务端连不上 / 认证失败会把错误行写进输出再 close，UI 侧按普通终端处理即可。
  */
-function browserOpenSshTerminal({ hostId, cols, rows }: SshTerminalOpenOptions): TerminalProcess {
+function browserOpenSshTerminal({ hostId, cols, rows, cwd }: SshTerminalOpenOptions): TerminalProcess {
   const connection = requireConnection()
   return openTerminalWs(
     wsUrlFor(
       connection,
-      `${sshTerminalWsPath({ hostId, cols, rows })}&token=${encodeURIComponent(connection.token)}`
+      `${sshTerminalWsPath({ hostId, cols, rows, ...(cwd ? { cwd } : {}) })}&token=${encodeURIComponent(connection.token)}`
     )
   )
 }

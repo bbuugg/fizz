@@ -55,9 +55,6 @@ import { Button } from '@fizz/ui/button'
 import { Skeleton } from '@fizz/ui/skeleton'
 import { ChatPanel } from '@fizz/agent-kit/features/chat/ChatPanel'
 import { CollabWorkspace } from '@fizz/agent-kit/features/collab/CollabWorkspace'
-import { CollabAgentChatPanel } from '@fizz/agent-kit/features/collab/CollabAgentChatPanel'
-import { CollabMobileLayout } from '@fizz/agent-kit/features/chat/CollabMobileLayout'
-import { DEFAULT_COLLAB_SETTINGS, normalizeCollabSettings } from '@fizz/contracts/types'
 import { MobilePanelMenu } from '@fizz/agent-kit/features/chat/MobilePanelMenu'
 import { FilesPanel } from '@fizz/agent-kit/features/files/FilesPanel'
 import { GitPanel } from '@fizz/agent-kit/features/git/GitPanel'
@@ -266,34 +263,9 @@ export function ConversationTab({
     ? app.conversations.find((c) => c.id === conversationId)
     : undefined
   /**
-   * 协作布局右侧那块对话区**正在看谁**（`null` = 主智能体）。
-   *
-   * 状态放在这里而不是 `CollabWorkspace` 里，是因为右侧面板在画布**外面**
-   * （桌面左右分栏、手机上画布在上 / 对话在下）：画布只负责「点了谁」，这里决定
-   * 「右侧显示谁」。这样点击是**原地替换面板内容** —— 不弹窗、不新开标签、
-   * 分栏宽度与滚动位置都不动，观感与普通会话完全一致。
+   * 协作布局左侧的 Agent 名单由 `CollabWorkspace` 自己管；右侧始终是**同一条共享会话**
+   * （所有 Agent 的回复都带名字进这条时间线）。不再有「点节点看子 Agent 独立消息」。
    */
-  const [viewingAgentId, setViewingAgentId] = useState<string | null>(null)
-  /** 协作配置（画布与右侧 Agent 面板共用同一份口径，别各 normalize 一次） */
-  const collabSettings = useMemo(
-    () => normalizeCollabSettings(conversation?.collab ?? DEFAULT_COLLAB_SETTINGS),
-    [conversation?.collab]
-  )
-  /**
-   * 右侧要看的那份 Agent 配置。会话不是协作 / Agent 被删掉 → `null`，
-   * 右侧自动回落到主智能体对话（不能留一个「这个 Agent 已被删除」的死页面）。
-   */
-  const viewingAgent =
-    conversation?.kind === 'collab' && viewingAgentId
-      ? (collabSettings.agents.find((a) => a.id === viewingAgentId) ?? null)
-      : null
-  /*
-   * 标签换了会话（「新对话」草稿被建成真实会话、标签被复用）就回到主对话，
-   * 别把上一个会话的 Agent id 带过来 —— 那个 id 在新会话里根本不存在。
-   */
-  useEffect(() => {
-    setViewingAgentId(null)
-  }, [conversationId])
   const workspaceId = conversation?.workspaceId ?? app.activeWorkspaceId ?? ''
   const workspace = app.workspaces.find((w) => w.id === workspaceId)
   /**
@@ -316,6 +288,12 @@ export function ConversationTab({
 
   /** 「任务」这类虚拟工作区（path 为空）没有目录概念：终端 / 文件 / 快捷功能全部隐藏 */
   const hasDirectory = !!workspace?.path
+  /**
+   * 远端工作区：文件面板走 SFTP（列 / 读写 / 上传 / 打包下载 / 媒体），终端走 SSH 通道，
+   * 源码管理由服务端把 git 命令发到远端主机上跑（见 `gitExecFor`）—— 三者入口照常给。
+   * 只剩**浏览器画面**仍按本机预览通道工作，远端下不露头。
+   */
+  const isRemote = !!workspace?.remote
   const gitChangeCount = panel?.gitChanges?.count ?? 0
   const gitBadge =
     gitChangeCount > 0 ? `${gitChangeCount}${panel?.gitChanges?.truncated ? '+' : ''}` : null
@@ -384,6 +362,11 @@ export function ConversationTab({
       // tabKey 就是从 panel.terminals 拼出来的，必然找得到
       const tab = panel.terminals.find((t) => terminalTabKey(t.id) === tabKey)!
       const isContainerTerminal = !!tab.containerWorkspaceId
+      /**
+       * 远端工作区：侧栏终端走 SSH 主机那条通道，`tab.cwd` 是远端 POSIX 目录。
+       * 此时不再传 `workspaceId`（SSH 终端的命令历史是全局一份，不挂项目）。
+       */
+      const sshHostId = workspace?.remote?.hostId
       const label =
         panel.terminals.length > 1
           ? tr('终端 {index}', { index: panel.terminals.indexOf(tab) + 1 })
@@ -399,11 +382,12 @@ export function ConversationTab({
             cwd={tab.cwd}
             // 停用时不抢焦点（否则切回来会直接抢走输入焦点）
             visible={sideTab === tabKey}
-            shellId={tab.shellId}
+            shellId={sshHostId ? undefined : tab.shellId}
             // 容器终端不带宿主项目的命令历史（与主区域容器工作台一致）
-            workspaceId={isContainerTerminal ? undefined : workspaceId || undefined}
-            containerWorkspaceId={tab.containerWorkspaceId}
-            containerShell={tab.containerShell}
+            workspaceId={isContainerTerminal || sshHostId ? undefined : workspaceId || undefined}
+            sshHostId={sshHostId}
+            containerWorkspaceId={sshHostId ? undefined : tab.containerWorkspaceId}
+            containerShell={sshHostId ? undefined : tab.containerShell}
             onReady={(proc) => handleTerminalReady(tab.id, proc)}
           />
         ),
@@ -515,7 +499,7 @@ export function ConversationTab({
           conversation?.kind === 'collab' ? (
             <span
               className="inline-flex shrink-0 items-center gap-1 rounded-full bg-foreground/5 px-2 py-0.5 text-xs text-muted-foreground"
-              title={tr('多智能体协作：右侧对话是主智能体，画布上的 Agent 由它派活')}
+              title={tr('@ 点名由该智能体处理；不点名时全体判断是否需要接手')}
             >
               <Bot className="size-3 shrink-0" />
               {tr('多智能体协作')}
@@ -540,7 +524,7 @@ export function ConversationTab({
         }
         trailing={
           <>
-            {hasDirectory && (
+            {hasDirectory && !isRemote && (
               /* ⚡ 快捷功能：**始终渲染**（0 条时也是唯一入口），增删改在它下拉的最底部 */
               <WorkspaceQuickActions
                 workspaceId={workspaceId}
@@ -586,10 +570,13 @@ export function ConversationTab({
                     <Button
                       variant="outline"
                       className={cn(
-                        'relative h-7! w-8! rounded-r-none border-r-0 p-0!',
+                        'relative h-7! w-8! p-0!',
+                        // 远端工作区只有一种终端（SSH 到那台主机），没有 shell 可选，
+                        // 右侧箭头下拉不渲染 —— 这一颗就按整颗按钮的圆角收口
+                        isRemote ? undefined : 'rounded-r-none border-r-0',
                         isTerminalTabKey(sideTab) ? 'text-primary' : undefined
                       )}
-                      aria-label={tr('终端')}
+                      aria-label={isRemote ? tr('远端终端') : tr('终端')}
                       disabled={!workspaceId}
                       onClick={() => toggleTerminalPanelOf(key)}
                     >
@@ -607,72 +594,80 @@ export function ConversationTab({
                       ? tr('收起面板')
                       : terminalCount > 0
                         ? tr('终端（已开 {count} 条）', { count: terminalCount })
-                        : tr('终端')}
+                        : isRemote
+                          ? tr('远端终端')
+                          : tr('终端')}
                   </TooltipContent>
                 </Tooltip>
-                <DropdownMenu>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          variant="outline"
-                          className="h-7! w-5! rounded-l-none p-0! data-[state=open]:bg-accent"
-                          aria-label={tr('选择终端')}
-                          disabled={!workspaceId}
-                        >
-                          <ChevronDown className="size-3.5" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">{tr('选择终端')}</TooltipContent>
-                  </Tooltip>
-                  <DropdownMenuContent
-                    align="end"
-                    className="w-48"
-                    /* 选完 shell 焦点别弹回工具栏按钮：终端面板打开时会自己 focus */
-                    onCloseAutoFocus={(e) => e.preventDefault()}
-                  >
-                    <DropdownMenuLabel className="text-xs text-muted-foreground">{tr('选择终端')}</DropdownMenuLabel>
-                    {/*
-                      容器型项目才有这一项：开的是容器内的终端（服务端 `docker exec`），
-                      不是宿主 shell。放最上面 —— 这类项目里它是常用项，宿主 shell 是例外。
-                    */}
-                    {containerPreview && (
-                      <>
-                        <DropdownMenuItem
-                          onSelect={() =>
-                            workspaceId && openTerminalTabOf(key, null, { workspaceId })
-                          }
-                        >
-                          <Box className="size-3.5" />
-                          <span className="truncate">{tr('容器终端')}</span>
-                          {activeTerminalIsContainer && <Check className="ml-auto size-3.5" />}
+                {/*
+                  远端工作区下拉整块不渲染：能选的只有「本机 shell」和「容器终端」，
+                  两者都连不到远端主机；那颗主按钮已经开的是 SSH 终端。
+                */}
+                {!isRemote && (
+                  <DropdownMenu>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="outline"
+                            className="h-7! w-5! rounded-l-none p-0! data-[state=open]:bg-accent"
+                            aria-label={tr('选择终端')}
+                            disabled={!workspaceId}
+                          >
+                            <ChevronDown className="size-3.5" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">{tr('选择终端')}</TooltipContent>
+                    </Tooltip>
+                    <DropdownMenuContent
+                      align="end"
+                      className="w-48"
+                      /* 选完 shell 焦点别弹回工具栏按钮：终端面板打开时会自己 focus */
+                      onCloseAutoFocus={(e) => e.preventDefault()}
+                    >
+                      <DropdownMenuLabel className="text-xs text-muted-foreground">{tr('选择终端')}</DropdownMenuLabel>
+                      {/*
+                        容器型项目才有这一项：开的是容器内的终端（服务端 `docker exec`），
+                        不是宿主 shell。放最上面 —— 这类项目里它是常用项，宿主 shell 是例外。
+                      */}
+                      {containerPreview && (
+                        <>
+                          <DropdownMenuItem
+                            onSelect={() =>
+                              workspaceId && openTerminalTabOf(key, null, { workspaceId })
+                            }
+                          >
+                            <Box className="size-3.5" />
+                            <span className="truncate">{tr('容器终端')}</span>
+                            {activeTerminalIsContainer && <Check className="ml-auto size-3.5" />}
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                        </>
+                      )}
+                      {terminalShells && terminalShells.shells.length > 0 ? (
+                        terminalShells.shells.map((shell) => (
+                          <DropdownMenuItem
+                            key={shell.id}
+                            onSelect={() => {
+                              // 选谁就记住谁：下次（任何会话的）新终端都用它。
+                              // 显式默认终端设置已去掉，偏好就靠这一次选择累积。
+                              setTerminalShell(shell.id)
+                              openTerminalTabOf(key, shell.id)
+                            }}
+                          >
+                            <span className="truncate">{shell.name}</span>
+                            {shell.id === checkedShellId && <Check className="ml-auto size-3.5" />}
+                          </DropdownMenuItem>
+                        ))
+                      ) : (
+                        <DropdownMenuItem disabled className="text-xs text-muted-foreground">
+                          {terminalShells ? tr('没有检测到可选的终端') : tr('正在检测终端…')}
                         </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                      </>
-                    )}
-                    {terminalShells && terminalShells.shells.length > 0 ? (
-                      terminalShells.shells.map((shell) => (
-                        <DropdownMenuItem
-                          key={shell.id}
-                          onSelect={() => {
-                            // 选谁就记住谁：下次（任何会话的）新终端都用它。
-                            // 显式默认终端设置已去掉，偏好就靠这一次选择累积。
-                            setTerminalShell(shell.id)
-                            openTerminalTabOf(key, shell.id)
-                          }}
-                        >
-                          <span className="truncate">{shell.name}</span>
-                          {shell.id === checkedShellId && <Check className="ml-auto size-3.5" />}
-                        </DropdownMenuItem>
-                      ))
-                    ) : (
-                      <DropdownMenuItem disabled className="text-xs text-muted-foreground">
-                        {terminalShells ? tr('没有检测到可选的终端') : tr('正在检测终端…')}
-                      </DropdownMenuItem>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
               </div>
             )}
             {/*
@@ -687,7 +682,7 @@ export function ConversationTab({
               ⚠️ ACP 会话不给：运行的是外部 Agent，`browser_*` 那套工具它根本用不上，
               这颗入口点开只会是个永远「未启动」的空面板。
             */}
-            {conversationId && !isAcpConversation && (
+            {conversationId && !isAcpConversation && !isRemote && (
               <div className="hidden sm:flex">
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -823,7 +818,7 @@ export function ConversationTab({
                    菜单里的这一项也得跟着判，否则手机上会出现一颗点开没反应的开关。 */
                 canExpandPanel={tabKeys.length > 0}
                 showPreview={containerPreview}
-                showBrowser={!!conversationId && !isAcpConversation}
+                showBrowser={!isRemote && !!conversationId && !isAcpConversation}
                 onToggleFiles={() => toggleSideTabOf(key, 'files')}
                 onToggleGit={() => toggleSideTabOf(key, 'git')}
                 onTogglePreview={() => toggleSideTabOf(key, 'preview')}
@@ -839,25 +834,22 @@ export function ConversationTab({
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {conversation?.kind === 'collab' ? (
             /*
-              协作布局：左边多智能体画布、右边主智能体对话。
-
-              分栏用 `@fizz/ui/resizable`（shadcn 的 `ResizablePanelGroup` / `ResizablePanel` /
-              `ResizableHandle`，底层 `react-resizable-panels`），不再手搓 `ResizeHandle` + 宽度
-              状态：拖拽、键盘微调、min/max 夹取、容器变化时的重排都由组件负责，这里只剩
-              「读一次记忆值当初始宽」和「拖完存像素宽」两件事。
+              协作布局：左边 Agent 名单（增删改 / 实时状态），右边**同一条共享会话**。
+              所有 Agent 的回复都带名字进这条时间线，不再有「点节点看子 Agent 独立消息」。
             */
             <div
               ref={collabRef}
               className={cn('flex min-h-0 flex-1', isMobile ? 'flex-col' : 'flex-row')}
             >
               {isMobile ? (
-                <CollabMobileLayout
-                  app={app}
-                  panelKey={key}
-                  viewingAgent={viewingAgent}
-                  collabSettings={collabSettings}
-                  onViewAgent={setViewingAgentId}
-                />
+                <div className="flex min-h-0 flex-1 flex-col">
+                  <div className="max-h-[38dvh] shrink-0 overflow-y-auto border-b">
+                    <CollabWorkspace app={app} />
+                  </div>
+                  <div className="min-h-0 flex-1">
+                    <ChatPanel app={app} panelKey={key} />
+                  </div>
+                </div>
               ) : (
                 <ResizablePanelGroup
                   orientation="horizontal"
@@ -866,7 +858,7 @@ export function ConversationTab({
                     /*
                       只记**用户拖出来的**尺寸：挂载、容器变化、`defaultSize` 变更也会触发这个
                       回调（`meta.isUserInteraction` 为 false），把那些值写回 localStorage 会
-                      冲掉用户调好的宽度 —— 窄容器下还会被夹到 320 以下、直接存成 null。
+                      冲掉用户调好的宽度。
                     */
                     if (!meta.isUserInteraction) return
                     const px = chatPanelRef.current?.getSize().inPixels
@@ -874,19 +866,10 @@ export function ConversationTab({
                   }}
                 >
                   <ResizablePanel
-                    /*
-                      库把 `className` 挂在**内层** div 上（默认 `overflow: auto` + block 布局）：
-                      必须显式 flex-col，否则 `CollabWorkspace` 的 `flex-1` 在块级容器里不生效、
-                      高度会塌成内容高。`overflow` 得走 `style` 才盖得住库写的内联值。
-                    */
                     className="flex min-h-0 flex-col"
                     style={{ overflow: 'hidden' }}
                   >
-                    <CollabWorkspace
-                      app={app}
-                      viewingAgentId={viewingAgentId}
-                      onViewAgent={setViewingAgentId}
-                    />
+                    <CollabWorkspace app={app} />
                   </ResizablePanel>
                   {collabChatMax > collabChatMin && (
                     <ResizableHandle
@@ -896,27 +879,7 @@ export function ConversationTab({
                       */
                       disableDoubleClick
                       onDoubleClick={resetChatPanelWidth}
-                      /*
-                        ⚠️ 命中区要比那条 1px 的线宽得多。
-
-                        `@fizz/ui/resizable` 默认是「1px 线 + `after:w-1`（4px）伪元素」，而画布
-                        开着 `selectionOnDrag`（左键在画布上拖动 = 框选）：用户想拖分隔条，光标偏出
-                        那 4px 就落进画布，松手时得到的是一个选框而不是新的分栏宽度。
-
-                        这里把命中区**只往画布一侧**铺到 10px（伪元素 `-left-2.5` + `w-2.5`），
-                        并显式写 `cursor-col-resize`——光标是继承属性，伪元素也一并生效。
-                        只扩画布侧是有意的：误触方向就是画布；往对话面板一侧扩会吃掉面板
-                        最左几像素的点击（滚动条 / 气泡左内边距），得不偿失。
-
-                        ⚠️ `z-10` 不能省，而且必须比 React Flow 的 `renderer`（`z-index: 4`）
-                        高。`.react-flow` 根节点不创建层叠上下文（它只有 `direction` 和一堆
-                        CSS 变量），所以画布的层级会跑到外层来把 handle 的 `z-index: auto`
-                        盖住：伪元素那 10px 落在画布上，光标显示画布的 `pointer`、拖出来是
-                        框选 —— 一条 1px 的线上是 `col-resize`、旁边 10px 是 `pointer`，
-                        看起来就是「两个位置两种拖拽指示器」。抬到 10 之后这 10px 整块归
-                        handle，光标与行为才对得上。
-                      */
-                      className="relative z-10 cursor-col-resize after:-left-2.5 after:w-2.5 after:translate-x-0"
+                      className="relative z-10 cursor-col-resize"
                     />
                   )}
                   <ResizablePanel
@@ -925,43 +888,17 @@ export function ConversationTab({
                     minSize={collabChatMin}
                     maxSize={collabChatMax}
                     /*
-                      窗口缩放时对话面板保持像素宽、画布吃剩下的（改造前就是这个行为）。
+                      窗口缩放时对话面板保持像素宽、名单吃剩下的（改造前就是这个行为）。
                       默认的按比例缩放会把窄窗口里的聊天框一路压小。
                     */
                     groupResizeBehavior="preserve-pixel-size"
                     className={cn(
                       'flex min-h-0 flex-col',
-                      // 窄到拖不动时没有拖拽条，补一条边线把画布与对话分开
                       collabChatMax <= collabChatMin && 'border-l'
                     )}
                     style={{ overflow: 'hidden' }}
                   >
-                    {/*
-                      面板内容按「正在看谁」**原地替换**：主智能体 → 原样 `ChatPanel`
-                      （输入框、队列、审批全在）；子 Agent → `CollabAgentChatPanel`
-                      （同一套 `MessageList`，只读）。同一块面板换内容，不是新开标签也不是弹窗，
-                      宽度 / 拖拽条位置 / 分栏布局全都不动。
-
-                      ⚠️ 主对话**始终挂载**，被 Agent 面板盖住时只是 `hidden`：卸载会丢掉
-                      输入框里没发出去的草稿、排队消息和滚动位置 —— 用户点一下画布看进度、
-                      回来发现打了半天的字没了，比什么都糟。
-                    */}
-                    <div
-                      className={cn(
-                        'min-h-0 flex-1 flex-col',
-                        viewingAgent ? 'hidden' : 'flex'
-                      )}
-                    >
-                      <ChatPanel app={app} panelKey={key} />
-                    </div>
-                    {viewingAgent && (
-                      <CollabAgentChatPanel
-                        app={app}
-                        agent={viewingAgent}
-                        settings={collabSettings}
-                        onBackToMain={() => setViewingAgentId(null)}
-                      />
-                    )}
+                    <ChatPanel app={app} panelKey={key} />
                   </ResizablePanel>
                 </ResizablePanelGroup>
               )}

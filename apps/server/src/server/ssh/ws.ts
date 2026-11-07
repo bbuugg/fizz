@@ -13,6 +13,7 @@ import type { Duplex } from 'node:stream'
 import type { IncomingMessage } from 'node:http'
 import { domain } from '../state'
 import { handleTerminalChannel, type TerminalChannelSession } from '../terminal/channel'
+import { parseTerminalCwd } from './remote-command'
 import { openSshTerminalSession } from './session'
 
 export function handleSshTerminalUpgrade(
@@ -25,6 +26,8 @@ export function handleSshTerminalUpgrade(
   const hostId = url.searchParams.get('hostId') ?? ''
   const cols = Number(url.searchParams.get('cols') ?? 80)
   const rows = Number(url.searchParams.get('rows') ?? 24)
+  // 远端工作区打开终端时带上的目录：shell 就绪后切过去，缺省停在登录目录
+  const cwd = parseTerminalCwd(url.searchParams.get('cwd'))
 
   handleTerminalChannel({
     req,
@@ -42,7 +45,11 @@ export function handleSshTerminalUpgrade(
       const host = domain.resolveSshHost(hostId)
       return openSshTerminalSession(
         host,
-        { cols: Number.isFinite(cols) ? cols : 80, rows: Number.isFinite(rows) ? rows : 24 },
+        {
+          cols: Number.isFinite(cols) ? cols : 80,
+          rows: Number.isFinite(rows) ? rows : 24,
+          ...(cwd ? { cwd } : {})
+        },
         // 输出 / 退出 / 建连进度怎么下发到 WS 上，已经由通道接好（见 channel.ts 的 sink）
         sink
       )

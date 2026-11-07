@@ -57,11 +57,12 @@ import {
   type PrefsSnapshot
 } from '@fizz/contracts'
 import {
+  conversationRootFor,
   fallbackConversationRoot,
   listConversationsIn,
+  listRemoteConversations,
   readCollabStateDir,
   removeConversationDir,
-  resolveConversationRoot,
   writeCollabState as writeCollabStateToRoot,
   writeConversation as writeConversationToRoot
 } from './conversation-store'
@@ -602,8 +603,10 @@ export class JsonStore {
     for (const c of await listConversationsIn(fallbackConversationRoot(this.dataDir))) {
       merged.set(c.id, c)
     }
+    // 远端工作区的会话固定落在 `conversations/remote/*`：单独扫，别依赖工作区记录还在
+    for (const c of await listRemoteConversations(this.dataDir)) merged.set(c.id, c)
     for (const workspace of this.data.workspaces) {
-      const { root, fallback } = await resolveConversationRoot(workspace.path, this.dataDir)
+      const { root, fallback } = await conversationRootFor(workspace, this.dataDir)
       if (fallback) continue
       for (const c of await listConversationsIn(root)) merged.set(c.id, c)
     }
@@ -703,7 +706,7 @@ export class JsonStore {
   /** 立即写一个会话（等待落盘；装载期迁移用） */
   private async writeConversationNow(conversation: AgentConversation): Promise<void> {
     const workspace = this.data.workspaces.find((w) => w.id === conversation.workspaceId)
-    const { root } = await resolveConversationRoot(workspace?.path, this.dataDir, { create: true })
+    const { root } = await conversationRootFor(workspace, this.dataDir, { create: true })
     await writeConversationToRoot(root, conversation)
   }
 
@@ -712,7 +715,7 @@ export class JsonStore {
     const conversation = this.data.conversations.find((c) => c.id === conversationId)
     if (!conversation || conversation.kind !== 'collab') return null
     const workspace = this.data.workspaces.find((w) => w.id === conversation.workspaceId)
-    const { root } = await resolveConversationRoot(workspace?.path, this.dataDir, { create: false })
+    const { root } = await conversationRootFor(workspace, this.dataDir, { create: false })
     const state = await readCollabStateDir(join(root, conversationId))
     if (state) return state
     const fallback = await readCollabStateDir(
@@ -725,13 +728,12 @@ export class JsonStore {
   writeCollabState(conversationId: string, state: CollabState): void {
     const conversation = this.data.conversations.find((c) => c.id === conversationId)
     if (!conversation) return
-    const workspacePath = this.data.workspaces.find(
-      (w) => w.id === conversation.workspaceId
-    )?.path
+    // 工作区记录整条取好再入队（与 deleteConversationFiles 同理：远端分支要 id）
+    const workspace = this.data.workspaces.find((w) => w.id === conversation.workspaceId)
     const dataDir = this.dataDir
     this.convWriting = this.convWriting
       .then(async () => {
-        const { root } = await resolveConversationRoot(workspacePath, dataDir, { create: true })
+        const { root } = await conversationRootFor(workspace, dataDir, { create: true })
         await writeCollabStateToRoot(root, conversationId, state)
       })
       .catch((err) => console.error('[collab] 写盘失败：', err))
@@ -744,20 +746,24 @@ export class JsonStore {
    * 若等到队列跑起来才查 `workspaces`，记录已经没了，会算不出会话在项目里的位置。
    */
   deleteConversationFiles(conversation: AgentConversation): void {
-    const workspacePath = this.data.workspaces.find((w) => w.id === conversation.workspaceId)?.path
+    const workspace = this.data.workspaces.find((w) => w.id === conversation.workspaceId)
     const dataDir = this.dataDir
     this.convWriting = this.convWriting
       .then(async () => {
-        const { root, fallback } = await resolveConversationRoot(workspacePath, dataDir)
-        if (!fallback) await removeConversationDir(join(root, conversation.id))
+        const { root } = await conversationRootFor(workspace, dataDir)
+        await removeConversationDir(join(root, conversation.id))
         await removeConversationDir(join(fallbackConversationRoot(dataDir), conversation.id))
       })
       .catch((err) => console.error('[conversation] 删除目录失败：', err))
   }
 
-  /** 确保某个工作区的会话目录就绪（新增工作区时调一次，让 `.fizz/conversation/` 立即可见） */
-  async ensureConversationDir(workspacePath: string): Promise<void> {
-    await resolveConversationRoot(workspacePath, this.dataDir, { create: true })
+  /**
+   * 确保某个工作区的会话目录就绪（新增工作区时调一次，让目录立即可见）。
+   *
+   * 本地 = `<工作区>/.fizz/conversation/`；远端 = 本机 `conversations/remote/<id>/`。
+   */
+  async ensureConversationDir(workspace: AgentWorkspace): Promise<void> {
+    await conversationRootFor(workspace, this.dataDir, { create: true })
   }
 
   // ---------- 密钥 ----------

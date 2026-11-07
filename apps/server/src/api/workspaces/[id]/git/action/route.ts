@@ -9,16 +9,21 @@
  * 4. 破坏性动作（回滚、删分支）服务端只负责把 git 的原话带回，**不做二次确认** ——
  *    确认是界面的事（用户在面板上点的），服务端再问一遍只会让接口没法给脚本 / 外部调用用。
  */
-import { promises as fs } from 'node:fs'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute } from 'node:path'
 import {
   COMMIT_IDENTITY,
   commitAll,
   git,
   type GitActionInput,
+  type GitExec,
   type GitRun
 } from '@fizz/git'
-import { workspaceRepoRoot } from '@/lib/workspace-repo'
+import {
+  gitExecFor,
+  notRepoMessage,
+  repoBackendFor,
+  workspaceRepoRoot
+} from '@/lib/workspace-repo'
 import { domain } from '@/lib/server/state'
 import { jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 
@@ -56,9 +61,39 @@ function chunkPaths(paths: string[], maxCount = 200, maxChars = 8000): string[][
   return chunks
 }
 
-async function isTracked(root: string, path: string): Promise<boolean> {
-  const res = await git(root, ['ls-files', '--error-unmatch', '--', path])
+async function isTracked(root: string, path: string, exec: GitExec): Promise<boolean> {
+  const res = await git(root, ['ls-files', '--error-unmatch', '--', path], exec)
   return res.ok
+}
+
+/**
+ * 远端工作区的「初始化并首次提交」。
+ *
+ * 本机走 `commitAll`（带 worktree 那套 safe.directory / 行尾配置），远端没有那些宿主约束，
+ * 用同一批 git 命令即可：`add -A` → 有暂存改动就 commit（带显式身份，远端不一定配了
+ * user.name）→ 数一下这次提交动了几个文件。没有改动返回 null，由调用方补空提交。
+ */
+async function commitEverythingRemote(
+  exec: GitExec,
+  cwd: string,
+  message: string
+): Promise<{ commit: string; changedFiles: number } | null> {
+  await git(cwd, ['add', '-A'], exec)
+  // `diff --cached --quiet`：退出码 0 = 没有暂存改动（= 没东西可提交）
+  const staged = await git(cwd, ['diff', '--cached', '--quiet'], exec)
+  if (staged.ok) return null
+  const identity = [
+    '-c', `user.name=${COMMIT_IDENTITY['user.name']}`,
+    '-c', `user.email=${COMMIT_IDENTITY['user.email']}`
+  ]
+  const commit = await git(cwd, [...identity, 'commit', '-m', message], exec)
+  if (!commit.ok) throw new Error(commit.stderr || commit.stdout || 'git commit 失败')
+  const hash = await git(cwd, ['rev-parse', 'HEAD'], exec)
+  const changed = await git(cwd, ['show', '--pretty=format:', '--name-only', 'HEAD'], exec)
+  return {
+    commit: hash.stdout.trim(),
+    changedFiles: changed.stdout.split('\n').filter((line) => line.trim()).length
+  }
 }
 
 export async function POST(
@@ -68,6 +103,9 @@ export async function POST(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const exec = gitExecFor(workspace)
+  /** 本请求内的 git 执行入口：本地 / 远端由 `exec` 决定，下面的命令不用关心在哪跑 */
+  const gitAt = (cwd: string, args: string[]): Promise<GitRun> => git(cwd, args, exec)
 
   const body = await parseJsonBody<GitActionInput>(request)
   if (!body) return jsonError(400, '缺少请求体')
@@ -77,20 +115,22 @@ export async function POST(
     if (!workspace.path) return jsonError(400, '这个工作区没有目录，无法初始化 git 仓库')
     // 用 workspaceRepoRoot 而不是 repoRoot：临时工作区落在别人仓库的子目录里时，
     // 「已经是仓库了」这个判断会让它永远 init 不了（见 lib/workspace-repo.ts）
-    if (body.action === 'init-commit' && (await workspaceRepoRoot(workspace))) {
+    if (body.action === 'init-commit' && (await workspaceRepoRoot(workspace, exec))) {
       return jsonError(400, '这个工作区已经是 git 仓库了')
     }
-    const res = await git(workspace.path, ['init'])
+    const res = await gitAt(workspace.path, ['init'])
     if (!res.ok) return jsonError(500, res.stderr || 'git init 失败')
     if (body.action === 'init') return Response.json({ output: outputOf(res) })
 
     const commitMessage = (body.message ?? '').trim() || '初始化仓库'
-    let committed: Awaited<ReturnType<typeof commitAll>>
+    let committed: { commit: string; changedFiles: number } | null
     try {
-      committed = await commitAll({
-        worktreePath: workspace.path,
-        message: commitMessage
-      })
+      committed = workspace.remote
+        ? await commitEverythingRemote(exec, workspace.path, commitMessage)
+        : await commitAll({
+            worktreePath: workspace.path,
+            message: commitMessage
+          })
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err)
       return jsonError(
@@ -99,7 +139,7 @@ export async function POST(
       )
     }
     if (!committed) {
-      const empty = await git(workspace.path, [
+      const empty = await gitAt(workspace.path, [
         '-c', `user.name=${COMMIT_IDENTITY['user.name']}`,
         '-c', `user.email=${COMMIT_IDENTITY['user.email']}`,
         'commit', '--allow-empty', '-m', commitMessage
@@ -117,8 +157,10 @@ export async function POST(
     return Response.json({ output })
   }
 
-  const root = await workspaceRepoRoot(workspace)
-  if (!root) return jsonError(400, '这个工作区不是 git 仓库（也可能这台机器上没装 git）')
+  const root = await workspaceRepoRoot(workspace, exec)
+  if (!root) return jsonError(400, notRepoMessage(workspace))
+  /** 回滚里涉及「删未跟踪文件 / 判断目录」的少量文件操作：远端走 SFTP，本机走 fs */
+  const backend = repoBackendFor(workspace, root)
 
   switch (body.action) {
     case 'stage': {
@@ -126,7 +168,7 @@ export async function POST(
       if (!paths.length) return jsonError(400, '没有要暂存的文件')
       const bad = paths.map(invalidRelPath).find(Boolean)
       if (bad) return jsonError(400, bad)
-      const res = await git(root, ['add', '--', ...paths])
+      const res = await gitAt(root, ['add', '--', ...paths])
       if (!res.ok) return jsonError(500, res.stderr || 'git add 失败')
       return Response.json({ output: '' })
     }
@@ -136,9 +178,9 @@ export async function POST(
       if (!paths.length) return jsonError(400, '没有要取消暂存的文件')
       const bad = paths.map(invalidRelPath).find(Boolean)
       if (bad) return jsonError(400, bad)
-      let res = await git(root, ['restore', '--staged', '--', ...paths])
-      if (!res.ok) res = await git(root, ['reset', 'HEAD', '--', ...paths])
-      if (!res.ok) res = await git(root, ['rm', '--cached', '-r', '--', ...paths])
+      let res = await gitAt(root, ['restore', '--staged', '--', ...paths])
+      if (!res.ok) res = await gitAt(root, ['reset', 'HEAD', '--', ...paths])
+      if (!res.ok) res = await gitAt(root, ['rm', '--cached', '-r', '--', ...paths])
       if (!res.ok) return jsonError(500, res.stderr || '取消暂存失败')
       return Response.json({ output: '' })
     }
@@ -146,7 +188,7 @@ export async function POST(
     case 'commit': {
       const message = (body.message ?? '').trim()
       if (!message) return jsonError(400, '提交信息不能为空')
-      const res = await git(root, ['commit', '-m', message])
+      const res = await gitAt(root, ['commit', '-m', message])
       if (!res.ok) return jsonError(500, res.stderr || 'git commit 失败')
       return Response.json({ output: res.stdout.trim() })
     }
@@ -155,11 +197,11 @@ export async function POST(
       const ref = (body.ref ?? '').trim()
       if (!ref || ref.startsWith('-')) return jsonError(400, '缺少要检出的分支 / 提交')
       if (ref.startsWith('(')) return jsonError(400, `${ref} 不是一个可检出的分支`)
-      const exists = (full: string) => git(root, ['show-ref', '--verify', '--quiet', full])
+      const exists = (full: string) => gitAt(root, ['show-ref', '--verify', '--quiet', full])
 
       // 1) 本地分支：直接切（最常见的路径）
       if ((await exists(`refs/heads/${ref}`)).ok) {
-        const res = await git(root, ['checkout', ref])
+        const res = await gitAt(root, ['checkout', ref])
         if (!res.ok) return jsonError(500, res.stderr || 'git checkout 失败')
         return Response.json({ output: outputOf(res) })
       }
@@ -177,7 +219,7 @@ export async function POST(
        */
       const remoteRef = `refs/remotes/${ref}`
       if ((await exists(remoteRef)).ok) {
-        const remotes = (await git(root, ['remote'])).stdout
+        const remotes = (await gitAt(root, ['remote'])).stdout
           .split('\n')
           .map((s) => s.trim())
           .filter(Boolean)
@@ -192,14 +234,14 @@ export async function POST(
         // 本地已有同名分支（`origin/main` → `main`）：切过去就行，不重复建
         const target = (await exists(`refs/heads/${local}`)).ok ? local : null
         const res = target
-          ? await git(root, ['checkout', target])
-          : await git(root, ['checkout', '-b', local, '--track', remoteRef])
+          ? await gitAt(root, ['checkout', target])
+          : await gitAt(root, ['checkout', '-b', local, '--track', remoteRef])
         if (!res.ok) return jsonError(500, res.stderr || 'git checkout 失败')
         return Response.json({ output: outputOf(res) })
       }
 
       // 3) 其余（提交 hash / tag）：检出具体提交本来就该是分离头指针
-      const res = await git(root, ['checkout', '--detach', ref])
+      const res = await gitAt(root, ['checkout', '--detach', ref])
       if (!res.ok) return jsonError(500, res.stderr || 'git checkout 失败')
       return Response.json({ output: outputOf(res) })
     }
@@ -210,9 +252,9 @@ export async function POST(
       if (name.startsWith('-') || /\s/.test(name)) return jsonError(400, `分支名不合法：${name}`)
       const from = (body.from ?? '').trim()
       if (from.startsWith('-')) return jsonError(400, `起点不合法：${from}`)
-      const exists = await git(root, ['show-ref', '--verify', '--quiet', `refs/heads/${name}`])
+      const exists = await gitAt(root, ['show-ref', '--verify', '--quiet', `refs/heads/${name}`])
       if (exists.ok) return jsonError(400, `分支 ${name} 已经存在`)
-      const res = await git(root, from ? ['checkout', '-b', name, from] : ['checkout', '-b', name])
+      const res = await gitAt(root, from ? ['checkout', '-b', name, from] : ['checkout', '-b', name])
       if (!res.ok) return jsonError(400, res.stderr || '新建分支失败')
       return Response.json({ output: outputOf(res) })
     }
@@ -222,15 +264,15 @@ export async function POST(
       if (!name) return jsonError(400, '分支名不能为空')
       // 与 create-branch 同一套校验：分支名不允许以 - 开头（会被 git 当选项）、也不允许空格
       if (name.startsWith('-') || /\s/.test(name)) return jsonError(400, `分支名不合法：${name}`)
-      const exists = await git(root, ['show-ref', '--verify', '--quiet', `refs/heads/${name}`])
+      const exists = await gitAt(root, ['show-ref', '--verify', '--quiet', `refs/heads/${name}`])
       if (!exists.ok) return jsonError(400, `本地分支 ${name} 不存在`)
       // 当前分支 git 一定不让删（main worktree 或别的 worktree 占着），自己先判一句人话 ——
       // git 的原话是 "cannot delete branch 'x' used by worktree at ..."，看不出是被谁占
-      const current = await git(root, ['branch', '--show-current'])
+      const current = await gitAt(root, ['branch', '--show-current'])
       if (current.stdout.trim() === name) {
         return jsonError(400, '不能删除当前所在的分支：先切到别的分支再删')
       }
-      const res = await git(root, body.force
+      const res = await gitAt(root, body.force
         ? ['branch', '--delete', '--force', name]
         : ['branch', '--delete', name])
       if (!res.ok) {
@@ -257,7 +299,7 @@ export async function POST(
       if (remote.startsWith('-') || /\s/.test(remote)) return jsonError(400, `远端名不合法：${remote}`)
       if (!branch) return jsonError(400, '分支名不能为空')
       if (branch.startsWith('-') || /\s/.test(branch)) return jsonError(400, `分支名不合法：${branch}`)
-      const remotes = (await git(root, ['remote'])).stdout
+      const remotes = (await gitAt(root, ['remote'])).stdout
         .split('\n').map((s) => s.trim()).filter(Boolean)
       if (!remotes.includes(remote)) {
         return jsonError(400, `远端 ${remote} 不存在（已配置：${remotes.join('、') || '无'}）`)
@@ -267,22 +309,22 @@ export async function POST(
       // 典型场景是分支在 GitHub 界面 / 别的客户端已删，本地的 refs/remotes/<remote>/<branch> 还是陈的，
       // 用户看到列表就点删除，于是撞上一条看起来像失败、其实目标早已不存在的报错。
       // 探测用 ls-remote（只读、不改任何 ref），拿不到远端状态时（离线 / 鉴权失败）才退回 push 的原话。
-      const probe = await git(root, ['ls-remote', '--heads', remote, branch])
+      const probe = await gitAt(root, ['ls-remote', '--heads', remote, branch])
       if (!probe.ok) {
         return jsonError(502, probe.stderr || `连不上远端 ${remote}，无法确认分支是否存在`)
       }
       const existsRemotely = probe.stdout.trim().length > 0
       if (!existsRemotely) {
         // 远端已无此分支：把本地那条陈旧的远端跟踪 ref 顺手抹掉，让列表立刻一致
-        await git(root, ['update-ref', '-d', `refs/remotes/${remote}/${branch}`])
+        await gitAt(root, ['update-ref', '-d', `refs/remotes/${remote}/${branch}`])
         return Response.json({ output: `远端 ${remote} 上已经没有 ${branch} 了（顺手清掉了本地残留的远端跟踪分支）` })
       }
       // 这就是一次 force push（远端 ref 被推空），但它是用户显式要求的删除，不是顺手带上的
-      const res = await git(root, ['push', remote, '--delete', branch])
+      const res = await gitAt(root, ['push', remote, '--delete', branch])
       if (!res.ok) {
         // 竞态：探测之后、push 之前分支被别人删了。同一个目标已经达成，按成功回。
         if (/remote ref does not exist/i.test(res.stderr)) {
-          await git(root, ['update-ref', '-d', `refs/remotes/${remote}/${branch}`])
+          await gitAt(root, ['update-ref', '-d', `refs/remotes/${remote}/${branch}`])
           return Response.json({ output: `远端 ${remote} 上的 ${branch} 已不存在，视为已删除` })
         }
         return jsonError(500, res.stderr || res.stdout || '删除远端分支失败')
@@ -297,22 +339,22 @@ export async function POST(
       const mode = body.mode === 'all' ? 'all' : 'worktree'
 
       if (mode === 'worktree') {
-        if (!(await isTracked(root, path))) {
-          const abs = join(root, path)
-          const stat = await fs.stat(abs).catch(() => null)
+        if (!(await isTracked(root, path, exec))) {
+          const abs = backend.join(root, path)
+          const stat = await backend.stat(abs).catch(() => null)
           if (!stat) return jsonError(404, '文件不存在')
-          if (!stat.isFile()) return jsonError(400, '只能回退普通文件')
-          await fs.rm(abs)
+          if (stat.type !== 'file') return jsonError(400, '只能回退普通文件')
+          await backend.remove(abs, { recursive: false, force: true })
           return Response.json({ output: `已删除未跟踪文件 ${path}` })
         }
-        const res = await git(root, ['restore', '--worktree', '--', path])
+        const res = await gitAt(root, ['restore', '--worktree', '--', path])
         if (!res.ok) return jsonError(400, res.stderr || `回退 ${path} 失败`)
         return Response.json({ output: `已丢弃 ${path} 未暂存的改动` })
       }
 
-      const res = await git(root, ['restore', '--staged', '--worktree', '--', path])
+      const res = await gitAt(root, ['restore', '--staged', '--worktree', '--', path])
       if (res.ok) return Response.json({ output: `已把 ${path} 回退到上次提交` })
-      const unstage = await git(root, ['rm', '--cached', '-r', '--', path])
+      const unstage = await gitAt(root, ['rm', '--cached', '-r', '--', path])
       if (!unstage.ok) return jsonError(400, res.stderr || `回退 ${path} 失败`)
       return Response.json({
         output: `仓库还没有提交，已取消暂存（文件内容保留）：${path}`
@@ -333,7 +375,7 @@ export async function POST(
       const tracked: string[] = []
       const untracked: string[] = []
       for (const chunk of chunks) {
-        const listed = (await git(root, ['ls-files', '-z', '--', ...chunk])).stdout
+        const listed = (await gitAt(root, ['ls-files', '-z', '--', ...chunk])).stdout
           .split('\0').filter(Boolean)
         const trackedSet = new Set(listed)
         for (const p of chunk) (trackedSet.has(p) ? tracked : untracked).push(p)
@@ -343,7 +385,7 @@ export async function POST(
       let restored = 0
       let unstaged = 0
       for (const chunk of chunkPaths(tracked)) {
-        const res = await git(root, [
+        const res = await gitAt(root, [
           'restore',
           ...(mode === 'all' ? ['--staged'] : []),
           '--worktree', '--', ...chunk
@@ -354,7 +396,7 @@ export async function POST(
         }
         if (mode !== 'all') return jsonError(400, res.stderr || '回滚失败')
         // unborn HEAD（仓库还没有提交）：回落成只取消暂存、内容保留
-        const unstage = await git(root, ['rm', '--cached', '-r', '--', ...chunk])
+        const unstage = await gitAt(root, ['rm', '--cached', '-r', '--', ...chunk])
         if (!unstage.ok) return jsonError(400, res.stderr || '回滚失败')
         unstaged += chunk.length
       }
@@ -369,10 +411,10 @@ export async function POST(
 
       let removed = 0
       for (const path of untracked) {
-        const abs = join(root, path)
-        const stat = await fs.stat(abs).catch(() => null)
-        if (!stat?.isFile()) continue
-        await fs.rm(abs)
+        const abs = backend.join(root, path)
+        const stat = await backend.stat(abs).catch(() => null)
+        if (stat?.type !== 'file') continue
+        await backend.remove(abs, { recursive: false, force: true })
         removed++
       }
       if (removed) parts.push(`删除了 ${removed} 个未跟踪文件`)
@@ -385,8 +427,8 @@ export async function POST(
       const bad = invalidRelPath(path)
       if (bad) return jsonError(400, bad)
       const mode = body.mode === 'worktree' ? 'worktree' : 'all'
-      const stat = await fs.stat(join(root, path)).catch(() => null)
-      if (!stat?.isDirectory()) return jsonError(404, '目录不存在')
+      const stat = await backend.stat(backend.join(root, path)).catch(() => null)
+      if (stat?.type !== 'dir') return jsonError(404, '目录不存在')
 
       // 目录本身作为 pathspec 交给 git（递归整棵子树），**不枚举文件**：
       // 几千个文件时把每个路径塞进命令行会撞上系统命令长度上限（Windows ~32K 字符）
@@ -395,26 +437,26 @@ export async function POST(
       // 未跟踪的文件 / 目录先清（git clean -fd，不碰 ignored）。必须赶在 unborn 回落的
       // 「取消暂存」之前：取消暂存后那些文件会变成未跟踪，再 clean 就把内容误删了。
       // 数量用 ls-files --others 现算（clean 的输出措辞跟 locale 走，数它不可靠）
-      const others = await git(root, ['ls-files', '--others', '-z', '--', path])
+      const others = await gitAt(root, ['ls-files', '--others', '-z', '--', path])
       const untrackedCount = others.ok ? others.stdout.split('\0').filter(Boolean).length : 0
-      const clean = await git(root, ['clean', '-fd', '--', path])
+      const clean = await gitAt(root, ['clean', '-fd', '--', path])
       if (!clean.ok) return jsonError(400, clean.stderr || `清理 ${path} 里的未跟踪文件失败`)
       if (untrackedCount) parts.push(`删除了 ${untrackedCount} 个未跟踪文件`)
 
       // 已跟踪文件：目录下没有被 git 跟踪的文件就跳过 restore（pathspec 匹配不到会报错）
-      const tracked = await git(root, ['ls-files', '-z', '--', path])
+      const tracked = await gitAt(root, ['ls-files', '-z', '--', path])
       if (tracked.ok && tracked.stdout) {
         if (mode === 'worktree') {
-          const res = await git(root, ['restore', '--worktree', '--', path])
+          const res = await gitAt(root, ['restore', '--worktree', '--', path])
           if (!res.ok) return jsonError(400, res.stderr || `回滚 ${path} 失败`)
           parts.push(`已丢弃 ${path} 里未暂存的改动`)
         } else {
-          const res = await git(root, ['restore', '--staged', '--worktree', '--', path])
+          const res = await gitAt(root, ['restore', '--staged', '--worktree', '--', path])
           if (res.ok) {
             parts.push(`已把 ${path} 里的改动回退到上次提交`)
           } else {
             // unborn HEAD（仓库还没有提交）：回落成只取消暂存、内容保留（内容此时在磁盘上）
-            const unstage = await git(root, ['rm', '--cached', '-r', '--', path])
+            const unstage = await gitAt(root, ['rm', '--cached', '-r', '--', path])
             if (!unstage.ok) return jsonError(400, res.stderr || `回滚 ${path} 失败`)
             parts.push(`仓库还没有提交：已取消暂存 ${path} 里的文件（内容保留）`)
           }
@@ -431,11 +473,11 @@ export async function POST(
       if (name.startsWith('-') || /\s/.test(name)) return jsonError(400, `远端名不合法：${name}`)
       if (!url) return jsonError(400, '远端地址不能为空')
       if (url.startsWith('-')) return jsonError(400, `远端地址不合法：${url}`)
-      const names = (await git(root, ['remote'])).stdout
+      const names = (await gitAt(root, ['remote'])).stdout
         .split('\n').map((s) => s.trim()).filter(Boolean)
       const res = names.includes(name)
-        ? await git(root, ['remote', 'set-url', name, url])
-        : await git(root, ['remote', 'add', name, url])
+        ? await gitAt(root, ['remote', 'set-url', name, url])
+        : await gitAt(root, ['remote', 'add', name, url])
       if (!res.ok) return jsonError(400, res.stderr || '设置远端失败')
       return Response.json({
         output: names.includes(name) ? `已更新远端 ${name}` : `已添加远端 ${name}`
@@ -446,24 +488,24 @@ export async function POST(
       const name = (body.name ?? '').trim()
       if (!name) return jsonError(400, '远端名不能为空')
       if (name.startsWith('-') || /\s/.test(name)) return jsonError(400, `远端名不合法：${name}`)
-      const names = (await git(root, ['remote'])).stdout
+      const names = (await gitAt(root, ['remote'])).stdout
         .split('\n').map((s) => s.trim()).filter(Boolean)
       if (!names.includes(name)) return jsonError(404, `没有这个远端：${name}`)
-      const res = await git(root, ['remote', 'remove', name])
+      const res = await gitAt(root, ['remote', 'remove', name])
       if (!res.ok) return jsonError(400, res.stderr || '删除远端失败')
       return Response.json({ output: `已删除远端 ${name}` })
     }
 
     case 'push': {
-      const current = await git(root, ['branch', '--show-current'])
+      const current = await gitAt(root, ['branch', '--show-current'])
       const branch = current.stdout.trim()
       if (!branch) return jsonError(400, '处于分离头指针：先切回一个分支再推送')
-      const remotes = (await git(root, ['remote'])).stdout
+      const remotes = (await gitAt(root, ['remote'])).stdout
         .split('\n').map((s) => s.trim()).filter(Boolean)
       // 界面上「推送到…」挑的远端；没挑就按上游那条老路走
       const chosen = (body.remote ?? '').trim()
       if (chosen && !remotes.includes(chosen)) return jsonError(400, `没有这个远端：${chosen}`)
-      const upstream = await git(root, [
+      const upstream = await gitAt(root, [
         'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'
       ])
       const hasUpstream = upstream.ok && upstream.stdout.trim().length > 0
@@ -487,16 +529,16 @@ export async function POST(
           ? ['push', chosen, branch]
           : ['push']
         : ['push', '--set-upstream', target, branch]
-      const res = await git(root, args)
+      const res = await gitAt(root, args)
       if (!res.ok) return jsonError(500, res.stderr || 'git push 失败')
       return Response.json({ output: outputOf(res) })
     }
 
     case 'pull': {
-      const current = await git(root, ['branch', '--show-current'])
+      const current = await gitAt(root, ['branch', '--show-current'])
       const branch = current.stdout.trim()
       if (!branch) return jsonError(400, '处于分离头指针：先切回一个分支再拉取')
-      const upstream = await git(root, [
+      const upstream = await gitAt(root, [
         'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'
       ])
       if (!upstream.ok || !upstream.stdout.trim()) {
@@ -505,7 +547,7 @@ export async function POST(
           `当前分支「${branch}」还没有设置上游（upstream）：先推送一次（面板上的「推送」按钮）设好上游，或在终端里跑 git push --set-upstream origin ${branch}`
         )
       }
-      const res = await git(root, ['pull'])
+      const res = await gitAt(root, ['pull'])
       if (!res.ok) {
         const detail = res.stderr || res.stdout || 'git pull 失败'
         // 冲突时 git pull 的退出码是 1，stderr 里会有冲突文件列表；这里把原话带给前端
@@ -523,7 +565,7 @@ export async function POST(
         if (message.startsWith('-')) return jsonError(400, '贮藏说明不能以 - 开头')
         args.push('-m', message)
       }
-      const res = await git(root, args)
+      const res = await gitAt(root, args)
       if (!res.ok) return jsonError(400, res.stderr || '贮藏失败')
       return Response.json({ output: outputOf(res) || '已贮藏当前改动' })
     }
@@ -535,7 +577,7 @@ export async function POST(
       // ref 是拼进命令行的，只认 `stash@{n}` 这一种形状，别让它变成任意参数
       if (ref && !/^stash@\{\d+\}$/.test(ref)) return jsonError(400, `贮藏引用不合法：${ref}`)
       const sub = body.action === 'stash-pop' ? 'pop' : body.action === 'stash-apply' ? 'apply' : 'drop'
-      const res = await git(root, ['stash', sub, ...(ref ? [ref] : [])])
+      const res = await gitAt(root, ['stash', sub, ...(ref ? [ref] : [])])
       // ⚠️ 报错用 `outputOf`（stderr 优先、退回 stdout）而不是只看 stderr：
       // `stash pop` 撞上冲突时退出码是 1，而「哪个文件冲突、stash 还留着」这些全在 stdout 上
       if (!res.ok) return jsonError(400, outputOf(res) || `git stash ${sub} 失败`)

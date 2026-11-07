@@ -1,5 +1,5 @@
 /**
- * 多智能体协作会话里「最右侧主智能体对话面板」的宽度。
+ * 多智能体协作会话里「右侧共享会话面板」的宽度（左侧是 Agent 名单）。
  *
  * 与 `terminal-assistant-width.ts` 同一套：全局一份、`null` = 用户没拖过，
  * 默认宽度与拖拽上限都按容器宽度现场算。这个面板的开合不由用户控制（协作会话恒显示），
@@ -11,7 +11,7 @@ const KEY = 'fizz.web.collabChatWidth'
 
 /** 再窄消息就折行到没法读了 */
 export const COLLAB_CHAT_MIN_WIDTH = 320
-/** 画布至少留这么多，否则节点会挤成一团 */
+/** 名单至少留这么多，否则名字 / 状态挤成一团 */
 export const COLLAB_CANVAS_MIN_WIDTH = 360
 /** 容器宽度还没量到时的兜底（`useContainerWidth` 首帧是 0） */
 const FALLBACK_CONTAINER_WIDTH = 1200
@@ -50,7 +50,7 @@ export function resetCollabChatWidth(): void {
   setCollabChatWidth(Number.NaN)
 }
 
-/** 窄容器下把最小宽度让到一半，避免画布被挤没 */
+/** 窄容器下把最小宽度让到一半，避免名单被挤没 */
 export function minCollabChatWidth(containerWidth: number): number {
   const w = containerWidth > 0 ? containerWidth : FALLBACK_CONTAINER_WIDTH
   return Math.min(COLLAB_CHAT_MIN_WIDTH, Math.round(w / 2))
@@ -65,7 +65,7 @@ export function defaultCollabChatWidth(containerWidth: number): number {
   )
 }
 
-/** 拖拽上限：容器宽 - 画布最小宽（画布最小宽随容器收缩） */
+/** 拖拽上限：容器宽 - 名单最小宽（名单最小宽随容器收缩） */
 export function maxCollabChatWidth(containerWidth: number): number {
   const w = containerWidth > 0 ? containerWidth : FALLBACK_CONTAINER_WIDTH
   const canvasMin = Math.min(COLLAB_CANVAS_MIN_WIDTH, Math.round(w * 0.55))

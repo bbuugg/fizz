@@ -106,6 +106,15 @@ export async function runShutdown(
     stopAllTunnels()
   })
 
+  // 3.75 远端工作区的执行 / SFTP 连接：同样是真实 socket（SFTP 池闲置 3 分钟、
+  //     执行池闲置 5 分钟），不主动关会把进程拖到超时强制退出
+  await step('关闭远端工作区连接', async () => {
+    const { remoteExecService } = await import('./ssh/exec')
+    const { sftpService } = await import('./ssh/sftp')
+    remoteExecService.disposeAll()
+    sftpService.closeAll()
+  })
+
   // 3.8 容器型项目：公网入口（独立监听 `FIZZ_PUBLIC_HTTP_PORT`，关监听器 + 清端口缓存）。
   //     **不 stop 项目容器** —— 它们是 detached 的，服务重启后仍在跑；
   //     停掉反而把「下次要用得等冷启动」变成每次重启都要等（启动由用户在项目菜单里点，

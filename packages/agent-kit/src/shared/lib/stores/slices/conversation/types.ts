@@ -455,7 +455,7 @@ export interface ConversationSlice {
   compressContextNow: (
     scope?: string | null,
   ) => Promise<{ ok: boolean; reason?: string }>;
-  /** 覆盖协作配置（画布拖拽 / 增删 Agent）；成功后就地更新会话清单里的那份 */
+  /** 覆盖协作配置（增删改 Agent / 并行与单轮运行上限）；成功后就地更新会话清单里的那份 */
   saveCollabSettings: (
     settings: CollabSettings,
     scope?: string | null,

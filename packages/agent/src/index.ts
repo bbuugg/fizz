@@ -8,7 +8,7 @@
  * - `project-doc.ts` —— 工作区根目录项目约束文档（AGENTS.md / CLAUDE.md）读盘与提示词段落；
  * - `models-probe.ts` —— 上游 provider 模型清单探测（设置页用）。
  * - `subagents.ts` —— 子任务（supervisor 模式）：只读 explorer / reviewer 与派活工具。
- * - `collab.ts` —— 多智能体协作编排器：主智能体派活、并发 / 深度 / 循环控制、状态快照。
+ * - `collab.ts` —— 多智能体协作编排器：@ 点名 / 广播判定、SendMessage 投递、状态快照。
  */
 export * from './agent'
 export * from './prompt'

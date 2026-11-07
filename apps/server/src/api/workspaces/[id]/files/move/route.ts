@@ -1,7 +1,11 @@
-import { promises as fs } from 'node:fs'
-import { basename, join, relative, sep } from 'node:path'
-import { resolveInside } from '@fizz/contracts/workspace'
+import { sep } from 'node:path'
 import { domain } from '@/lib/server/state'
+import {
+  copyWithinWorkspace,
+  reservedSegment,
+  workspaceFilesBackend
+} from '@/lib/workspace-files'
+import type { WorkspaceBackend } from '@fizz/contracts/workspace'
 import { describeError, jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 
 /**
@@ -14,18 +18,18 @@ import { describeError, jsonError, parseJsonBody } from '@/app/api/_lib/auth'
  *
  * `dest: ''` = 工作区根目录。
  *
- * 优先 `fs.rename`（同卷瞬间完成）；跨设备（EXDEV）时退回「复制到目标 + 删源」。
+ * 优先 `rename`（同卷瞬间完成）；本地跨设备（EXDEV）、远端 SFTP 的 rename 跨文件系统失败时，
+ * 都退回「复制到目标 + 删源」。
  */
-
-/** `.git` / `.fizz` 不能进也不能出：把它们移走 / 移入和删掉一样危险 */
-function reservedHit(rel: string): string | null {
-  const hit = rel.split('/').filter(Boolean).find((s) => s === '.git' || s === '.fizz')
-  return hit ?? null
-}
 
 /** 跨设备移动：`rename` 报 EXDEV 时需要走「复制 + 删源」 */
 function isExdev(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'EXDEV'
+}
+
+/** 路径分隔符跟着 backend 走：本地 Windows 是 `\`，远端 POSIX 是 `/` */
+function sepOf(backend: WorkspaceBackend): string {
+  return backend.kind === 'remote' ? '/' : sep
 }
 
 export async function POST(
@@ -35,6 +39,7 @@ export async function POST(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const backend = workspaceFilesBackend(workspace)
   const body = await parseJsonBody<{ path?: string; dest?: string; name?: string }>(request)
   // ⚠️ 判**类型**而不是真值：`dest: ''` 是合法值（移到工作区根目录）
   if (typeof body?.path !== 'string' || typeof body.dest !== 'string') {
@@ -47,54 +52,56 @@ export async function POST(
     if (newName === '.' || newName === '..' || /[/\\]/.test(newName)) {
       return jsonError(400, '新名字里不能有 / 或 \\')
     }
-    const hit = reservedHit(newName)
+    const hit = reservedSegment(newName)
     if (hit) return jsonError(400, `「${hit}」是受保护的目录，不能使用`)
   }
 
   let srcAbs: string
   let destDirAbs: string
   try {
-    srcAbs = resolveInside(workspace.path, body.path)
-    destDirAbs = resolveInside(workspace.path, body.dest ?? '')
+    srcAbs = backend.resolve(body.path)
+    destDirAbs = backend.resolve(body.dest ?? '')
   } catch {
     return jsonError(403, '路径越界')
   }
-  const srcRel = relative(workspace.path, srcAbs).split(sep).join('/')
+  const srcRel = backend.rel(srcAbs)
   if (!srcRel) return jsonError(400, '不能移动工作区根目录')
-  const reserved =
-    reservedHit(srcRel) ?? reservedHit(relative(workspace.path, destDirAbs).split(sep).join('/'))
+  // `.git` / `.fizz` 不能进也不能出：把它们移走 / 移入和删掉一样危险
+  const reserved = reservedSegment(srcRel) ?? reservedSegment(backend.rel(destDirAbs))
   if (reserved) return jsonError(400, `「${reserved}」是受保护的目录，不能移动`)
 
-  const srcStat = await fs.stat(srcAbs).catch(() => null)
+  const srcStat = await backend.stat(srcAbs)
   if (!srcStat) return jsonError(404, '要移动的文件或文件夹不存在')
-  if (!(await fs.stat(destDirAbs).catch(() => null))?.isDirectory()) {
+  const destStat = await backend.stat(destDirAbs)
+  if (!destStat || destStat.type !== 'dir') {
     return jsonError(400, '目标文件夹不存在')
   }
 
-  const target = join(destDirAbs, newName ?? basename(srcAbs))
+  const target = backend.join(destDirAbs, newName ?? backend.basename(srcAbs))
   // 原地移动（目标就是自己）：当成功返回，不报错 —— 与「复制到同目录」的手感一致
   if (target === srcAbs) {
     return Response.json({ path: srcRel })
   }
-  if (srcStat.isDirectory() && target.startsWith(srcAbs + sep)) {
+  if (srcStat.type === 'dir' && target.startsWith(srcAbs + sepOf(backend))) {
     return jsonError(400, '不能把文件夹移动到它自己里面')
   }
-  if (await fs.stat(target).then(() => true).catch(() => false)) {
-    return jsonError(409, `目标位置已存在同名条目：${basename(target)}`)
+  if ((await backend.stat(target).catch(() => null)) !== null) {
+    return jsonError(409, `目标位置已存在同名条目：${backend.basename(target)}`)
   }
 
   try {
     try {
-      await fs.rename(srcAbs, target)
+      await backend.rename(srcAbs, target)
     } catch (err) {
-      if (!isExdev(err)) throw err
+      // 本地只在跨卷时兜底；远端 SFTP rename 跨文件系统失败没有固定的错误码，一律兜底
+      if (backend.kind === 'local' && !isExdev(err)) throw err
       // 跨设备：先复制过去再删源（rename 不支持跨卷）
-      await fs.cp(srcAbs, target, { recursive: true })
-      await fs.rm(srcAbs, { recursive: true, force: true })
+      await copyWithinWorkspace(backend, srcAbs, target)
+      await backend.remove(srcAbs, { recursive: true, force: true })
     }
   } catch (err) {
     const { status, message } = describeError(err)
     return jsonError(status, `移动失败：${message}`)
   }
-  return Response.json({ path: relative(workspace.path, target).split(sep).join('/') })
+  return Response.json({ path: backend.rel(target) })
 }

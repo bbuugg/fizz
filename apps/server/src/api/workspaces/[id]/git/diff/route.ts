@@ -2,12 +2,17 @@
  * 源代码管理（git）：单文件 diff。
  * GET /api/workspaces/:id/git/diff?path=&staged=1
  */
-import { promises as fs } from 'node:fs'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute } from 'node:path'
+import type { WorkspaceBackend } from '@fizz/contracts/workspace'
 import { domain } from '@/lib/server/state'
-import { workspaceRepoRoot } from '@/lib/workspace-repo'
+import {
+  gitExecFor,
+  notRepoMessage,
+  repoBackendFor,
+  workspaceRepoRoot
+} from '@/lib/workspace-repo'
 import { jsonError } from '@/app/api/_lib/auth'
-import { git, type GitDiffResult } from '@fizz/git'
+import { git, type GitDiffResult, type GitExec } from '@fizz/git'
 
 const MAX_DIFF_CHARS = 400_000
 const MAX_UNTRACKED_BYTES = 1024 * 1024
@@ -20,17 +25,25 @@ function invalidRelPath(p: string): string | null {
   return null
 }
 
-async function isTracked(root: string, path: string): Promise<boolean> {
-  const res = await git(root, ['ls-files', '--error-unmatch', '--', path])
+async function isTracked(root: string, path: string, exec: GitExec): Promise<boolean> {
+  const res = await git(root, ['ls-files', '--error-unmatch', '--', path], exec)
   return res.ok
 }
 
-async function untrackedDiff(root: string, path: string): Promise<string> {
-  const abs = join(root, path)
-  const stat = await fs.stat(abs).catch(() => null)
-  if (!stat?.isFile() || stat.size > MAX_UNTRACKED_BYTES) return ''
-  const buf = await fs.readFile(abs)
-  if (buf.includes(0)) return ''
+/**
+ * 未跟踪文件没有 git diff，这里补一份「空 → 全文」。
+ * 读文件走 backend：远端工作区是 SFTP，本机仍是 fs —— 与 Agent 工具同一套路径语义。
+ */
+async function untrackedDiff(
+  root: string,
+  path: string,
+  backend: WorkspaceBackend
+): Promise<string> {
+  const abs = backend.join(root, path)
+  const stat = await backend.stat(abs).catch(() => null)
+  if (!stat || stat.type !== 'file' || stat.size > MAX_UNTRACKED_BYTES) return ''
+  const buf = await backend.readFile(abs, { maxBytes: MAX_UNTRACKED_BYTES }).catch(() => null)
+  if (!buf || buf.includes(0)) return ''
   const lines = buf.toString('utf8').split('\n')
   if (lines.length && lines[lines.length - 1] === '') lines.pop()
   const head = [
@@ -50,8 +63,9 @@ export async function GET(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
-  const root = await workspaceRepoRoot(workspace)
-  if (!root) return jsonError(400, '这个工作区不是 git 仓库（也可能这台机器上没装 git）')
+  const exec = gitExecFor(workspace)
+  const root = await workspaceRepoRoot(workspace, exec)
+  if (!root) return jsonError(400, notRepoMessage(workspace))
 
   const url = new URL(request.url)
   const path = url.searchParams.get('path') ?? ''
@@ -63,11 +77,11 @@ export async function GET(
   if (staged) args.push('--cached')
   args.push('--', path)
 
-  const res = await git(root, args)
+  const res = await git(root, args, exec)
   if (!res.ok) return jsonError(500, res.stderr || 'git diff 失败')
   let diff = res.stdout
-  if (!diff.trim() && !staged && !(await isTracked(root, path))) {
-    diff = await untrackedDiff(root, path)
+  if (!diff.trim() && !staged && !(await isTracked(root, path, exec))) {
+    diff = await untrackedDiff(root, path, repoBackendFor(workspace, root))
   }
   if (diff.length > MAX_DIFF_CHARS) diff = diff.slice(0, MAX_DIFF_CHARS)
 

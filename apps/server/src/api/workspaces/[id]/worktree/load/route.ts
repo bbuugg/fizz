@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import type { WorktreeLoadInput } from '@fizz/contracts/agent-api'
 import { WORKTREE_IDENTIFIER_RE } from '@fizz/contracts/agent-api'
 import { domain } from '@/lib/server/state'
+import { remoteUnsupported } from '@/lib/server/remote-guard'
 import { describeError, jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 
 /** worktree 项目的目录容器（相对源项目目录） */
@@ -26,6 +27,8 @@ export async function POST(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const denied = remoteUnsupported(workspace, 'worktree')
+  if (denied) return denied
 
   const input = await parseJsonBody<WorktreeLoadInput>(request)
   if (!input) return jsonError(400, '请求体不是合法 JSON')

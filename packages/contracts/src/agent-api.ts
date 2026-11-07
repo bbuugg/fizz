@@ -37,6 +37,7 @@ import type {
   ConversationContextSummary,
   FollowupAnswerItem,
   QueuedMessage,
+  RemoteWorkspaceRef,
   UploadFileRef,
 } from "./types";
 // 域类型已迁到各自的包（类型真源）；这里的 HTTP DTO 组合它们时用 type-only 引用，
@@ -439,6 +440,16 @@ export const API_ROUTES = {
    * 静默覆盖会毁数据）。返回新条目的相对路径。
    */
   workspaceFileMove: "/api/workspaces/:id/files/move",
+  /**
+   * 在工作区里**新建文件夹**：POST /api/workspaces/:id/files/mkdir
+   * body: `FsMkdirInput`（`parent` = 相对父目录，空串 = 根；`name` = 单层目录名）
+   * → `FsMkdirResult`（新目录的相对路径）。
+   *
+   * 不能复用 `/api/fs/dirs`：那条路把 `parent` 当**服务端本机路径**，远端工作区
+   * （目录在另一台机器上）会落空。这条和其余 files 路由一样按工作区定位，本地 / 远端
+   * 各走自己的 backend。
+   */
+  workspaceFileMkdir: "/api/workspaces/:id/files/mkdir",
   /**
    * 脚手架：给工作区**新建一份模板文件**：POST /api/workspaces/:id/scaffold
    * body: `FsScaffoldInput` → `FsScaffoldResult`
@@ -877,10 +888,13 @@ export function sshTerminalWsPath(options: {
   hostId: string;
   cols: number;
   rows: number;
+  /** 打开后要切到的目录（远端 POSIX 绝对路径）；缺省 = 登录目录 */
+  cwd?: string;
 }): string {
+  const cwd = options.cwd ? `&cwd=${encodeURIComponent(options.cwd)}` : "";
   return (
     `${SSH_TERMINAL_WS_PATH}?hostId=${encodeURIComponent(options.hostId)}` +
-    `&cols=${options.cols}&rows=${options.rows}`
+    `&cols=${options.cols}&rows=${options.rows}${cwd}`
   );
 }
 
@@ -1062,6 +1076,11 @@ export interface WorkspaceInput {
    * 界面上「选目录 / 导入」这些入口都不会传它。
    */
   scratch?: boolean;
+  /**
+   * 远端工作区：目录在指定 SSH 主机上，`path` 是远端 POSIX 绝对路径。
+   * 与本机的 worktree / 容器 / 临时工作区互斥。
+   */
+  remote?: RemoteWorkspaceRef;
 }
 
 /** 重命名工作区（PATCH /api/workspaces/:id） */
@@ -1299,6 +1318,19 @@ export interface FsMkdirInput {
 /** `POST /api/fs/mkdir` 应答：新建出来的绝对路径（前端建完直接进去） */
 export interface FsMkdirResult {
   path: string;
+}
+
+/**
+ * `POST /api/workspaces/:id/files/mkdir` 请求体：在**工作区内**建一个文件夹。
+ *
+ * 与 `FsMkdirInput`（服务端本机绝对路径）分开：远端工作区的目录在另一台机器上，
+ * 这条路由只认相对工作区根的路径。应答 `{ path }` 也是相对路径。
+ */
+export interface FsWorkspaceMkdirInput {
+  /** 父目录的**工作区相对路径**（空串 / 缺省 = 工作区根目录） */
+  parent?: string;
+  /** 新文件夹名字（单层，不带路径） */
+  name: string;
 }
 
 export interface ConversationInput {
@@ -2314,7 +2346,7 @@ export interface ConversationQueueInput {
 /**
  * 覆盖协作配置：PATCH /api/conversations/:id/collab
  *
- * 全量覆盖（画布拖拽 / 增删 Agent 都发整份配置）。服务端会 `normalizeCollabSettings`
+ * 全量覆盖（增删改 Agent / 并行与单轮上限都发整份配置）。服务端会 `normalizeCollabSettings`
  * 后落 `config.json`，并把任务 / 消息状态独立留在 `collab.json`。
  */
 export interface ConversationCollabInput {
@@ -3041,6 +3073,12 @@ export interface SftpEntry {
   /** 远端绝对路径（父目录已归一化，可直接喂回 list / remove / rename） */
   path: string;
   isDir: boolean;
+  /**
+   * lstat 结果是符号链接（`isDir` 此时按 lstat 也是 false，即使链接指向目录）。
+   *
+   * 文件树用它决定要不要再 `stat` 一次跟随链接问出真实类型；其余消费方可以忽略。
+   */
+  isSymlink?: boolean;
   /** 目录恒为 0；文件取 lstat 的字节数 */
   size: number;
   /** 最后修改时间（毫秒时间戳；取不到时为 0） */

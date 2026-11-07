@@ -9,6 +9,7 @@ export const SETTINGS: Record<string, string> = {
   '外观': 'Appearance',
   '快捷键': 'Shortcuts',
   '终端': 'Terminal',
+  '远端终端': 'Remote terminal',
   '偏好': 'Preferences',
   'AI': 'AI',
   '模型 ({count})': 'Models ({count})',

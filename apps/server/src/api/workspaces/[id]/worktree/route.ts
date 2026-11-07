@@ -13,6 +13,7 @@ import { listWorktrees, resolveRepoRoot } from '@fizz/git'
 import { createWorktree, projectError } from '@/lib/server/projects'
 import { WORKTREE_DIR } from '@/lib/server/projects-pure'
 import { domain } from '@/lib/server/state'
+import { remoteUnsupported } from '@/lib/server/remote-guard'
 import { jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 
 export async function POST(
@@ -47,6 +48,8 @@ export async function GET(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const denied = remoteUnsupported(workspace, 'worktree')
+  if (denied) return denied
 
   const baseDir = join(workspace.path, WORKTREE_DIR)
   const entries = await readdir(baseDir, { withFileTypes: true }).catch(() => null)
