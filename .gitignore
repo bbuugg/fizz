@@ -5,6 +5,7 @@ out
 .env
 .env.*
 !.env.example
+.codegraph
 .playwright-cli
 # 新端（server / cli / web）的构建产物
 apps/*/dist

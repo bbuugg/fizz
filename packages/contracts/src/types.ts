@@ -1567,9 +1567,20 @@ export interface CollabState {
 }
 
 /**
- * 流式增量并入 parts：同类型的**相邻** part 直接追加，不一个字一个 part。
+ * 流式增量并入 parts：接进**本步内最近的一条同类型 part**，不一个字一个 part。
  *
- * 前后端共用这一份：服务端收口 `CollabTask.parts`、前端拼运行中的实时预览，
+ * 「本步」的边界是工具调用：往回找的路上撞到 `tool-call` / `tool-result` 就另起一段 ——
+ * 那是被切开的另一段过程，正文不该跨过工具卡继续长。错误块（`⚠️ ` 前缀）同样是边界，
+ * 否则一段正常回答会被并进错误提示里，跟着一起渲染成错误。
+ *
+ * 为什么不是「只接最后一条」（2026-11 修）：ACP 侧（以及部分网关）会把思考与正文
+ * **交替**流出来 —— `[思考两字][正文三字][思考两字]…`。只认最后一条时每一小段各自成
+ * 一条 part，而渲染端按「连续的同类 part 成组」画：
+ * - 流式中每段思考都被单独包成一个「思考过程」分组，一段话被拆成十几个 markdown 段落；
+ * - 整轮结束后除最后一小段正文，其余全被收进折叠条 —— 正文等于被藏了。
+ * 往回找同类那条接着写，两种流交替回来就是「一条思考 + 一条正文」。
+ *
+ * 前后端共用这一份：服务端收口消息 / `CollabTask.parts`、前端拼运行中的实时预览，
  * 两处的合并口径必须一致，否则「跑的时候」和「跑完之后」的卡片会跳一下。
  */
 export function appendPartDelta(
@@ -1578,11 +1589,16 @@ export function appendPartDelta(
   delta: string
 ): void {
   if (!delta) return
-  const last = parts[parts.length - 1]
-  if (last && last.type === type) {
-    // 复制最后一条而不是原地改：调用方（前端 store）每帧做的是浅拷贝数组，
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index]
+    if (!part) continue
+    if (part.type === 'tool-call' || part.type === 'tool-result') break
+    // 错误块不接增量（见上面注释）；判据与渲染端的 `isErrorText` 同一口径
+    if (part.type === 'text' && part.text.trimStart().startsWith(ERROR_TEXT_PREFIX)) break
+    if (part.type !== type) continue
+    // 复制替换而不是原地改：调用方（前端 store）每帧做的是浅拷贝数组，
     // 共享的 part 对象被原地改会「追溯」污染上一帧的快照。
-    parts[parts.length - 1] = { ...last, text: last.text + delta }
+    parts[index] = { ...part, text: part.text + delta }
     return
   }
   parts.push({ type, text: delta })

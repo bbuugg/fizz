@@ -6,7 +6,7 @@
  * 纯内存操作:不 emit、不落盘 —— 事件下发与持久化由调用方自己做。
  */
 import type { AgentChatMessage, AgentMessagePart, AgentStreamEvent } from '@fizz/contracts/types'
-import { ERROR_TEXT_PREFIX } from '@fizz/contracts/types'
+import { appendPartDelta, ERROR_TEXT_PREFIX } from '@fizz/contracts/types'
 
 /**
  * 错误占位的文本 part（`⚠️ ` 前缀，渲染成醒目的一段）。
@@ -29,7 +29,7 @@ export function excerptOf(parts: AgentChatMessage['parts'], max = 120): string |
 /**
  * 把一条流事件折叠进 parts 数组(原地修改)。
  *
- * - delta 类:合并进最后一个同类型 part,没有就新建;
+ * - delta 类:合并进本步内最近的一条同类型 part(见 `appendPartDelta`),没有就新建;
  * - tool-call:按 toolCallId 更新或追加;
  * - tool-result:按 toolCallId 回填输出;
  * - tool-call-delta:只喂流式渲染,不进落盘形状(落盘以完整 tool-call 的 input 为准);
@@ -39,14 +39,10 @@ export function excerptOf(parts: AgentChatMessage['parts'], max = 120): string |
  * - finish / context-usage:不产生 part(finish 的 usage 由调用方自行采集)。
  */
 export function foldEventIntoParts(parts: AgentMessagePart[], event: AgentStreamEvent): void {
-  if (event.type === 'text-delta') {
-    const last = parts[parts.length - 1]
-    if (last?.type === 'text') last.text += event.delta
-    else parts.push({ type: 'text', text: event.delta })
-  } else if (event.type === 'reasoning-delta') {
-    const last = parts[parts.length - 1]
-    if (last?.type === 'reasoning') last.text += event.delta
-    else parts.push({ type: 'reasoning', text: event.delta })
+  if (event.type === 'text-delta' || event.type === 'reasoning-delta') {
+    // 合并口径见 `appendPartDelta`：思考与正文交替流（ACP 常见）时也必须各自收成一条，
+    // 否则一段正文会被拆成十几条 part，渲染端每段思考都单独成一个「思考过程」分组。
+    appendPartDelta(parts, event.type === 'text-delta' ? 'text' : 'reasoning', event.delta)
   } else if (event.type === 'tool-call') {
     const index = parts.findIndex((p) => p.type === 'tool-call' && p.toolCallId === event.toolCallId)
     if (index >= 0) {
