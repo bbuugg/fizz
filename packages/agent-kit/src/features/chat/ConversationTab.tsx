@@ -316,6 +316,11 @@ export function ConversationTab({
 
   /** 「任务」这类虚拟工作区（path 为空）没有目录概念：终端 / 文件 / 快捷功能全部隐藏 */
   const hasDirectory = !!workspace?.path
+  /**
+   * 远端工作区：首期只支持 Agent 工具与终端，文件面板 / 源码管理 / 浏览器面板都隐藏
+   * （它们按本机路径工作，点开只会失败）。终端走 SSH 通道见下面 `sshHostId`。
+   */
+  const isRemote = !!workspace?.remote
   const gitChangeCount = panel?.gitChanges?.count ?? 0
   const gitBadge =
     gitChangeCount > 0 ? `${gitChangeCount}${panel?.gitChanges?.truncated ? '+' : ''}` : null
@@ -384,6 +389,11 @@ export function ConversationTab({
       // tabKey 就是从 panel.terminals 拼出来的，必然找得到
       const tab = panel.terminals.find((t) => terminalTabKey(t.id) === tabKey)!
       const isContainerTerminal = !!tab.containerWorkspaceId
+      /**
+       * 远端工作区：侧栏终端走 SSH 主机那条通道，`tab.cwd` 是远端 POSIX 目录。
+       * 此时不再传 `workspaceId`（SSH 终端的命令历史是全局一份，不挂项目）。
+       */
+      const sshHostId = workspace?.remote?.hostId
       const label =
         panel.terminals.length > 1
           ? tr('终端 {index}', { index: panel.terminals.indexOf(tab) + 1 })
@@ -399,11 +409,12 @@ export function ConversationTab({
             cwd={tab.cwd}
             // 停用时不抢焦点（否则切回来会直接抢走输入焦点）
             visible={sideTab === tabKey}
-            shellId={tab.shellId}
+            shellId={sshHostId ? undefined : tab.shellId}
             // 容器终端不带宿主项目的命令历史（与主区域容器工作台一致）
-            workspaceId={isContainerTerminal ? undefined : workspaceId || undefined}
-            containerWorkspaceId={tab.containerWorkspaceId}
-            containerShell={tab.containerShell}
+            workspaceId={isContainerTerminal || sshHostId ? undefined : workspaceId || undefined}
+            sshHostId={sshHostId}
+            containerWorkspaceId={sshHostId ? undefined : tab.containerWorkspaceId}
+            containerShell={sshHostId ? undefined : tab.containerShell}
             onReady={(proc) => handleTerminalReady(tab.id, proc)}
           />
         ),
@@ -540,7 +551,7 @@ export function ConversationTab({
         }
         trailing={
           <>
-            {hasDirectory && (
+            {hasDirectory && !isRemote && (
               /* ⚡ 快捷功能：**始终渲染**（0 条时也是唯一入口），增删改在它下拉的最底部 */
               <WorkspaceQuickActions
                 workspaceId={workspaceId}
@@ -586,10 +597,13 @@ export function ConversationTab({
                     <Button
                       variant="outline"
                       className={cn(
-                        'relative h-7! w-8! rounded-r-none border-r-0 p-0!',
+                        'relative h-7! w-8! p-0!',
+                        // 远端工作区只有一种终端（SSH 到那台主机），没有 shell 可选，
+                        // 右侧箭头下拉不渲染 —— 这一颗就按整颗按钮的圆角收口
+                        isRemote ? undefined : 'rounded-r-none border-r-0',
                         isTerminalTabKey(sideTab) ? 'text-primary' : undefined
                       )}
-                      aria-label={tr('终端')}
+                      aria-label={isRemote ? tr('远端终端') : tr('终端')}
                       disabled={!workspaceId}
                       onClick={() => toggleTerminalPanelOf(key)}
                     >
@@ -607,72 +621,80 @@ export function ConversationTab({
                       ? tr('收起面板')
                       : terminalCount > 0
                         ? tr('终端（已开 {count} 条）', { count: terminalCount })
-                        : tr('终端')}
+                        : isRemote
+                          ? tr('远端终端')
+                          : tr('终端')}
                   </TooltipContent>
                 </Tooltip>
-                <DropdownMenu>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          variant="outline"
-                          className="h-7! w-5! rounded-l-none p-0! data-[state=open]:bg-accent"
-                          aria-label={tr('选择终端')}
-                          disabled={!workspaceId}
-                        >
-                          <ChevronDown className="size-3.5" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">{tr('选择终端')}</TooltipContent>
-                  </Tooltip>
-                  <DropdownMenuContent
-                    align="end"
-                    className="w-48"
-                    /* 选完 shell 焦点别弹回工具栏按钮：终端面板打开时会自己 focus */
-                    onCloseAutoFocus={(e) => e.preventDefault()}
-                  >
-                    <DropdownMenuLabel className="text-xs text-muted-foreground">{tr('选择终端')}</DropdownMenuLabel>
-                    {/*
-                      容器型项目才有这一项：开的是容器内的终端（服务端 `docker exec`），
-                      不是宿主 shell。放最上面 —— 这类项目里它是常用项，宿主 shell 是例外。
-                    */}
-                    {containerPreview && (
-                      <>
-                        <DropdownMenuItem
-                          onSelect={() =>
-                            workspaceId && openTerminalTabOf(key, null, { workspaceId })
-                          }
-                        >
-                          <Box className="size-3.5" />
-                          <span className="truncate">{tr('容器终端')}</span>
-                          {activeTerminalIsContainer && <Check className="ml-auto size-3.5" />}
+                {/*
+                  远端工作区下拉整块不渲染：能选的只有「本机 shell」和「容器终端」，
+                  两者都连不到远端主机；那颗主按钮已经开的是 SSH 终端。
+                */}
+                {!isRemote && (
+                  <DropdownMenu>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="outline"
+                            className="h-7! w-5! rounded-l-none p-0! data-[state=open]:bg-accent"
+                            aria-label={tr('选择终端')}
+                            disabled={!workspaceId}
+                          >
+                            <ChevronDown className="size-3.5" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">{tr('选择终端')}</TooltipContent>
+                    </Tooltip>
+                    <DropdownMenuContent
+                      align="end"
+                      className="w-48"
+                      /* 选完 shell 焦点别弹回工具栏按钮：终端面板打开时会自己 focus */
+                      onCloseAutoFocus={(e) => e.preventDefault()}
+                    >
+                      <DropdownMenuLabel className="text-xs text-muted-foreground">{tr('选择终端')}</DropdownMenuLabel>
+                      {/*
+                        容器型项目才有这一项：开的是容器内的终端（服务端 `docker exec`），
+                        不是宿主 shell。放最上面 —— 这类项目里它是常用项，宿主 shell 是例外。
+                      */}
+                      {containerPreview && (
+                        <>
+                          <DropdownMenuItem
+                            onSelect={() =>
+                              workspaceId && openTerminalTabOf(key, null, { workspaceId })
+                            }
+                          >
+                            <Box className="size-3.5" />
+                            <span className="truncate">{tr('容器终端')}</span>
+                            {activeTerminalIsContainer && <Check className="ml-auto size-3.5" />}
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                        </>
+                      )}
+                      {terminalShells && terminalShells.shells.length > 0 ? (
+                        terminalShells.shells.map((shell) => (
+                          <DropdownMenuItem
+                            key={shell.id}
+                            onSelect={() => {
+                              // 选谁就记住谁：下次（任何会话的）新终端都用它。
+                              // 显式默认终端设置已去掉，偏好就靠这一次选择累积。
+                              setTerminalShell(shell.id)
+                              openTerminalTabOf(key, shell.id)
+                            }}
+                          >
+                            <span className="truncate">{shell.name}</span>
+                            {shell.id === checkedShellId && <Check className="ml-auto size-3.5" />}
+                          </DropdownMenuItem>
+                        ))
+                      ) : (
+                        <DropdownMenuItem disabled className="text-xs text-muted-foreground">
+                          {terminalShells ? tr('没有检测到可选的终端') : tr('正在检测终端…')}
                         </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                      </>
-                    )}
-                    {terminalShells && terminalShells.shells.length > 0 ? (
-                      terminalShells.shells.map((shell) => (
-                        <DropdownMenuItem
-                          key={shell.id}
-                          onSelect={() => {
-                            // 选谁就记住谁：下次（任何会话的）新终端都用它。
-                            // 显式默认终端设置已去掉，偏好就靠这一次选择累积。
-                            setTerminalShell(shell.id)
-                            openTerminalTabOf(key, shell.id)
-                          }}
-                        >
-                          <span className="truncate">{shell.name}</span>
-                          {shell.id === checkedShellId && <Check className="ml-auto size-3.5" />}
-                        </DropdownMenuItem>
-                      ))
-                    ) : (
-                      <DropdownMenuItem disabled className="text-xs text-muted-foreground">
-                        {terminalShells ? tr('没有检测到可选的终端') : tr('正在检测终端…')}
-                      </DropdownMenuItem>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
               </div>
             )}
             {/*
@@ -687,7 +709,7 @@ export function ConversationTab({
               ⚠️ ACP 会话不给：运行的是外部 Agent，`browser_*` 那套工具它根本用不上，
               这颗入口点开只会是个永远「未启动」的空面板。
             */}
-            {conversationId && !isAcpConversation && (
+            {conversationId && !isAcpConversation && !isRemote && (
               <div className="hidden sm:flex">
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -733,7 +755,7 @@ export function ConversationTab({
                 见下面 `MobilePanelMenu` —— 顶栏按钮一多就会把标题挤成两三个字。
                 （「打开工作区目录」是**项目级**动作，已搬到左侧栏项目行的「更多操作」，
                 见 `features/projects/OpenWorkspaceItems`。） */}
-            {hasDirectory && (
+            {hasDirectory && !isRemote && (
               /* 桌面（`sm` 以上）才平铺。⚠️ 不能在 Button 自身写 `hidden sm:inline-flex`：
                  Button 的 base class 里有 `inline-flex`，同层 display 工具类里
                  `inline-flex` 会盖过 `hidden`，手机上照样露出来 —— 所以用外层
@@ -757,7 +779,7 @@ export function ConversationTab({
                 </Tooltip>
               </div>
             )}
-            {hasDirectory && (
+            {hasDirectory && !isRemote && (
               <div className="hidden sm:flex">
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -823,7 +845,9 @@ export function ConversationTab({
                    菜单里的这一项也得跟着判，否则手机上会出现一颗点开没反应的开关。 */
                 canExpandPanel={tabKeys.length > 0}
                 showPreview={containerPreview}
-                showBrowser={!!conversationId && !isAcpConversation}
+                showBrowser={!isRemote && !!conversationId && !isAcpConversation}
+                showFiles={!isRemote}
+                showGit={!isRemote}
                 onToggleFiles={() => toggleSideTabOf(key, 'files')}
                 onToggleGit={() => toggleSideTabOf(key, 'git')}
                 onTogglePreview={() => toggleSideTabOf(key, 'preview')}

@@ -92,7 +92,10 @@ export interface ToolTab {
   alias?: string
   /** 悬停提示（更完整的描述，如 `SSH · root@10.0.0.8:22`） */
   title: string
-  /** 本机终端：工作目录（**建标签那一刻**定下，之后不跟随当前工作区变；空串 = 主目录） */
+  /**
+   * 终端的工作目录：本机终端是本地绝对路径（空串 = 主目录）；主机终端（`sshHostId`）
+   * 是远端 POSIX 目录（不传 = 登录目录）。
+   */
   cwd?: string
   /** 本机终端：shell id（null = 跟随平台默认） */
   shellId?: string | null
@@ -227,7 +230,10 @@ export function pruneToolTabs(openKeys: readonly string[]): void {
  * 标签用新名字，已开的旧标签名由 `PanelView` 读清单实时刷新，不受影响。
  */
 let hostSeq = 0
-export function openHostTab(host: SshHostConfig, options?: { scriptInput?: string }): string {
+export function openHostTab(
+  host: SshHostConfig,
+  options?: { scriptInput?: string; cwd?: string }
+): string {
   const seq = ++hostSeq
   const key = hostTabKey(host.id, seq)
   tabs.set(key, {
@@ -236,6 +242,8 @@ export function openHostTab(host: SshHostConfig, options?: { scriptInput?: strin
     label: host.name,
     title: `SSH · ${host.username}@${host.host}:${host.port}`,
     sshHostId: host.id,
+    // 远端工作区：shell 就绪后切到这个目录（不传 = 登录目录）
+    ...(options?.cwd ? { cwd: options.cwd } : {}),
     // 运行脚本时带上：终端就绪后由 TerminalPanel 写入一次（一条脚本 = 一条新标签）
     ...(options?.scriptInput ? { scriptInput: options.scriptInput } : {})
   })

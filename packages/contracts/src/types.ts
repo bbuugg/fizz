@@ -776,12 +776,27 @@ export interface ContainerProjectUpdateInput {
 
 // ---------- AI Agent（工作区编程/运维助手） ----------
 
-/** Agent 工作区：绑定的本地目录，工具只能在工作区内读写与执行命令 */
+/**
+ * 远端工作区引用：目录在某个 SSH 主机上。
+ *
+ * 只存主机 id，不冗余主机名 / 用户名 —— 展示时从主机清单现查；凭据也只在
+ * SSH 主机存储里（`SecretBox`），绝不下发到客户端。
+ */
+export interface RemoteWorkspaceRef {
+  hostId: string
+}
+
+/** Agent 工作区：绑定的目录，工具只能在工作区内读写与执行命令 */
 export interface AgentWorkspace {
   id: string
   /** 展示名（默认取目录名，可改） */
   name: string
-  /** 绝对路径 */
+  /**
+   * 绝对路径。
+   *
+   * - 没有 `remote` 时是本机绝对路径；
+   * - 有 `remote` 时是该 SSH 主机上的 **POSIX 绝对路径**（如 `/srv/app`）。
+   */
   path: string
   /**
    * 是不是**worktree 项目**：从某个项目按分支拉出来的独立工作树，目录落在
@@ -822,8 +837,23 @@ export interface AgentWorkspace {
    * 目录，文件工具 / 终端 / 技能都能用，会话文件落在它自己的 `.fizz/conversation/` 下。
    */
   scratch?: boolean
+  /**
+   * 有值 = **远端工作区**：目录在 `remote.hostId` 这台 SSH 主机上，`path` 是远端
+   * POSIX 绝对路径。缺省 = 本机目录，行为与加这个字段之前逐字一致。
+   *
+   * ⚠️ 重命名 / 重新登记都走 `addWorkspace`（逐字段重建整条记录），必须原样保留；
+   * 漏了会把远端工作区静默降级成本地工作区（症状：工具开始操作本机同名路径）。
+   */
+  remote?: RemoteWorkspaceRef
   createdAt: number
   updatedAt: number
+}
+
+/** 判一个工作区是不是远端（缺省字段 = 老数据 = 本地） */
+export function isRemoteWorkspace(
+  workspace: Pick<AgentWorkspace, 'remote'> | null | undefined
+): boolean {
+  return !!workspace?.remote?.hostId
 }
 
 // ---------- 笔记（登记任意目录，管理其中的 Markdown） ----------

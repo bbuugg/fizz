@@ -26,6 +26,7 @@
  * 「完整」和「不存在」两种状态。
  */
 import { Readable } from 'node:stream'
+import { randomUUID } from 'node:crypto'
 import type { Client, SFTPWrapper, Stats } from 'ssh2'
 import type { SftpEntry } from '@fizz/contracts/agent-api'
 import { appLog } from '@fizz/workspace'
@@ -73,6 +74,17 @@ export function normalizeSftpPath(input: string): string {
   if (!p.startsWith('/')) p = '/' + p
   if (p.length > 1) p = p.replace(/\/+$/, '')
   return p || '/'
+}
+
+/**
+ * 远端一项的元信息（工作区存在性探测 / 远端 backend 的 `stat` 用）。
+ *
+ * `mtimeMs` 可能缺：某些 SFTP 服务端不返回 mtime，调用方不能拿它当「文件存在」的判据。
+ */
+export interface RemoteStat {
+  type: 'file' | 'dir' | 'symlink' | 'other'
+  size: number
+  mtimeMs?: number
 }
 
 /** 在目录下拼一项（根目录不会再拼出双斜杠：`/` + `name` → `/name`） */
@@ -352,6 +364,179 @@ class SftpService {
         const st = await call<Stats>((cb) => sftp.lstat(current, cb as never)).catch(() => null)
         if (!st?.isDirectory()) throw err
       }
+    }
+  }
+
+  /**
+   * 列一个远端目录（**SFTP 文件管理**标签用的读接口）。
+   *
+   * 每个条目再 lstat 一次拿类型 / 大小 / 时间：SFTP 的 readdir 只回文件名与 longname，
+   * 没有结构化的属性。个别条目 lstat 失败（软链接悬空、权限不足）**不拖垮整份列表** ——
+   * 降级成「按文件、0 字节」继续展示，总比整个目录打不开强。
+   *
+   * 排序在服务端做（目录优先、各自按名）而不是交给两端各排一次：web 与 desktop 的
+   * `localeCompare` 行为不一定一致，放一处才能保证两边看到的顺序相同。
+   */
+  /**
+   * 取远端路径的元信息；**不存在返回 null**，连接 / 认证失败照常抛出。
+   *
+   * 两者必须分开：工作区巡检据此判断「目录被删」（可标 `dirMissing`）还是「主机暂时
+   * 连不上」（不能把用户的目录标成丢了）。ssh2 的 ENOENT 是 code 2。
+   */
+  async stat(hostId: string, rawPath: string): Promise<RemoteStat | null> {
+    const entry = await this.acquire(hostId)
+    const remote = normalizeSftpPath(rawPath)
+    try {
+      const st = await call<Stats>((cb) => entry.sftp.stat(remote, cb as never))
+      this.touch(entry)
+      const type: RemoteStat['type'] = st.isDirectory()
+        ? 'dir'
+        : st.isSymbolicLink()
+          ? 'symlink'
+          : st.isFile()
+            ? 'file'
+            : 'other'
+      return {
+        type,
+        size: st.size,
+        ...(typeof st.mtime === 'number' ? { mtimeMs: st.mtime * 1000 } : {})
+      }
+    } catch (err) {
+      this.touch(entry)
+      if ((err as { code?: number }).code === 2) return null
+      throw err
+    }
+  }
+
+  /**
+   * 读整份远端文件（工作区后端的 `readFile`）。
+   *
+   * `maxBytes` 先按 stat 拦一道（大文件连读流都不用开）；流式收集时再拦一次，
+   * 防「stat 之后文件又长大」的竞态。不存在 / 不是文件都抛错，由调用方转成人话。
+   */
+  async readFile(
+    hostId: string,
+    rawPath: string,
+    opts?: { maxBytes?: number }
+  ): Promise<Buffer> {
+    const entry = await this.acquire(hostId)
+    const remote = normalizeSftpPath(rawPath)
+    try {
+      const st = await call<Stats>((cb) => entry.sftp.stat(remote, cb as never))
+      if (st.isDirectory()) throw new Error('不是文件')
+      const max = opts?.maxBytes
+      if (max !== undefined && Number(st.size) > max) {
+        throw new Error(`文件过大（${st.size} 字节，超过 ${max} 字节上限）`)
+      }
+      return await new Promise<Buffer>((resolve, reject) => {
+        const chunks: Buffer[] = []
+        let size = 0
+        let settled = false
+        const finish = (err?: Error): void => {
+          if (settled) return
+          settled = true
+          if (err) {
+            read.destroy()
+            reject(err)
+            return
+          }
+          resolve(Buffer.concat(chunks))
+        }
+        const read = entry.sftp.createReadStream(remote)
+        read.on('data', (chunk: Buffer) => {
+          size += chunk.length
+          if (max !== undefined && size > max) {
+            finish(new Error(`文件过大（超过 ${max} 字节上限）`))
+            return
+          }
+          chunks.push(chunk)
+        })
+        read.on('error', (err: Error) => finish(err))
+        read.on('end', () => finish())
+        read.on('close', () => finish())
+      })
+    } finally {
+      if (this.conns.has(hostId)) this.touch(entry)
+    }
+  }
+
+  /**
+   * 写整份远端文件（工作区后端的 `writeFile`）。
+   *
+   * `atomic`：先写同目录临时文件再 rename —— 断线 / 崩溃时不会在目标位置留下半份内容
+   * （工具 `write_file` 就是这么写的）。SFTP v3 的 rename 在 OpenSSH 上覆盖已有文件；
+   * 目标存在导致 rename 失败时退回「删目标再 rename」。
+   */
+  async writeBuffer(
+    hostId: string,
+    rawPath: string,
+    data: Buffer | string,
+    opts?: { atomic?: boolean; createParents?: boolean }
+  ): Promise<void> {
+    const entry = await this.acquire(hostId)
+    const target = normalizeSftpPath(rawPath)
+    const bytes = typeof data === 'string' ? Buffer.from(data, 'utf8') : data
+    const dir = target.slice(0, target.lastIndexOf('/')) || '/'
+    try {
+      if (opts?.createParents !== false) await this.mkdirRecursive(entry.sftp, dir)
+      if (!opts?.atomic) {
+        await this.writeFile(entry.sftp, target, bytes, 'w', `ws-${randomUUID()}`)
+        return
+      }
+      const tmp = joinSftpPath(dir, `.fizz-tmp-${randomUUID().slice(0, 12)}`)
+      await this.writeFile(entry.sftp, tmp, bytes, 'w', `ws-${randomUUID()}`)
+      try {
+        await call<void>((cb) => entry.sftp.rename(tmp, target, cb as never))
+      } catch (err) {
+        // 个别 SFTP 服务的 rename 不覆盖已有目标：删掉再试一次，失败时清临时文件
+        await call<void>((cb) => entry.sftp.unlink(target, cb as never)).catch(() => undefined)
+        await call<void>((cb) => entry.sftp.rename(tmp, target, cb as never)).catch(
+          async (renameErr) => {
+            await call<void>((cb) => entry.sftp.unlink(tmp, cb as never)).catch(() => undefined)
+            throw renameErr ?? err
+          }
+        )
+      }
+    } finally {
+      if (this.conns.has(hostId)) this.touch(entry)
+    }
+  }
+
+  /** 逐层创建远端目录（工作区后端的 `mkdirp`） */
+  async mkdirs(hostId: string, rawPath: string): Promise<void> {
+    const entry = await this.acquire(hostId)
+    try {
+      await this.mkdirRecursive(entry.sftp, normalizeSftpPath(rawPath))
+    } finally {
+      if (this.conns.has(hostId)) this.touch(entry)
+    }
+  }
+
+  /**
+   * 删除文件 / 目录（工作区后端的 `remove`）。
+   *
+   * `force` 只吞「目标本来就不存在」（ENOENT = code 2），权限等真错误照常抛 ——
+   * 与 `fs.rm({ force })` 的语义一致。
+   */
+  async removePath(
+    hostId: string,
+    rawPath: string,
+    opts?: { recursive?: boolean; force?: boolean }
+  ): Promise<void> {
+    const entry = await this.acquire(hostId)
+    const remote = normalizeSftpPath(rawPath)
+    try {
+      const st = await call<Stats>((cb) => entry.sftp.lstat(remote, cb as never))
+      if (st.isDirectory()) {
+        if (opts?.recursive) await this.removeEntry(entry.sftp, remote)
+        else await call<void>((cb) => entry.sftp.rmdir(remote, cb as never))
+      } else {
+        await call<void>((cb) => entry.sftp.unlink(remote, cb as never))
+      }
+    } catch (err) {
+      if (!(opts?.force && (err as { code?: number }).code === 2)) throw err
+    } finally {
+      if (this.conns.has(hostId)) this.touch(entry)
     }
   }
 

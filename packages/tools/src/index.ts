@@ -29,6 +29,8 @@
  *   chromium（`extraResources` 拷进来的 headless shell），dev / server / cli 不受影响。
  */
 export * from './tools'
+export * from './backend'
+export * from './output-decoder'
 export * from './edit-match'
 export * from './ask-followup'
 export * from './web-fetch'

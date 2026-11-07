@@ -17,6 +17,7 @@ import type { SshCharset } from '@fizz/contracts/types'
 import type { ResolvedSshHost } from '@fizz/workspace'
 import { appLog, startTerminalTranscript, type TerminalTranscript } from '@fizz/workspace'
 import { connectWithJumps, type ConnectedChain } from './connect'
+import { buildCdLine } from './remote-command'
 
 /** 必须是 256 色终端，否则 htop / lazygit 这类 ncurses 程序会渲染成黑白 */
 const TERM_TYPE = 'xterm-256color'
@@ -66,14 +67,17 @@ class SshSession implements SshTerminalSession {
    * 不会把一个汉字劈成两半解出半个乱码。
    */
   private readonly decoder: ReturnType<typeof iconv.getDecoder>
+  /** 远端工作区目录：shell 就绪后切过去（缺省 = 登录目录） */
+  private readonly cwd: string | undefined
 
   constructor(
     host: ResolvedSshHost,
-    options: { cols: number; rows: number },
+    options: { cols: number; rows: number; cwd?: string },
     handlers: SshTerminalHandlers
   ) {
     this.desiredCols = Math.max(2, Math.floor(options.cols) || 80)
     this.desiredRows = Math.max(2, Math.floor(options.rows) || 24)
+    this.cwd = options.cwd
     this.charset = host.charset ?? 'utf-8'
     this.handlers = handlers
     this.hostLabel = `${host.name ?? host.host}（${host.username}@${host.host}:${host.port || 22}）`
@@ -130,6 +134,8 @@ class SshSession implements SshTerminalSession {
         // 输出始终按原始字节发给渲染端：ZMODEM 必须先检查协议字节，再解码普通文本。
         stream.on('data', (data: Buffer | string) => this.emitOutput(data))
         stream.stderr?.on('data', (data: Buffer | string) => this.emitOutput(data))
+        // 远端工作区打开的终端：shell 就绪后切到工作区目录（回显照常进转录）
+        if (this.cwd) this.write(buildCdLine(this.cwd))
         stream.on('close', () => {
           if (this.killed) return
           this.killed = true

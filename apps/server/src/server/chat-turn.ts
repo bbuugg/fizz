@@ -22,6 +22,7 @@ import { loadPlugins } from '@fizz/plugin/loader'
 import { assistantSliceId, buildUserParts, resolveMaxSteps, resolveToolCallConcurrency, type ChatRequest, type UploadFileRef } from '@fizz/contracts/agent-api'
 import { CollabRuntime, defaultContextWindowFromEnv, rawToolsPlugin, readProjectDoc, runAgent, type AgentConfirmInput, type MountedPlugin, type RunAgentResult } from '@fizz/agent'
 import {
+  isRemoteWorkspace,
   normalizeReasoningEffort,
   resolveContextWindow,
   resolveModelSettings,
@@ -63,6 +64,7 @@ import { refreshAcpSessionState } from './acp-session-state'
 import { appendAcpTranscript } from './acp-transcripts'
 import { describeError } from './lib/http'
 import { buildAssistantMessage } from './assistant-message'
+import { createRemoteBackend } from './ssh/workspace-backend'
 
 /** confirm 模式审批的缺省超时与等待体工厂迁到了 `./confirm-gate`(聊天 / 助手共用) */
 
@@ -318,10 +320,33 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
   const workspace = domain.getWorkspace(conversation.workspaceId)
   if (!workspace) return rejectTurn(404, '会话所属工作区不存在')
 
+  /**
+   * 远端工作区：Agent 的文件 / 命令工具经 SSH 走远端，引擎、会话、审批仍在本进程。
+   * backend 本身不建连接（两个 service 懒建 + 池化），这里每轮现建一个即可。
+   */
+  const remoteWorkspace = isRemoteWorkspace(workspace)
+  const workspaceBackend = remoteWorkspace && workspace.remote
+    ? createRemoteBackend(workspace.remote.hostId, workspace.path)
+    : undefined
+
   // 会话必须显式绑定后端（创建/选择时落库）—— 不存在任何「跟随工作区 / 跟随默认」的回退
   const backend = input.backend ?? conversation.backend
   if (!backend) {
     return rejectTurn(400, '会话还没有选择模型 / Agent，请在输入框上方选择后重新发送')
+  }
+
+  /**
+   * 外部 Agent（ACP）在本进程起子进程，只能跑本地目录；多智能体协作的子 Agent 也按
+   * 本地工作区装配工具。远端工作区首期两条都不支持 —— 直接说清，别让它们拿远端
+   * POSIX 路径当本地 cwd 去执行。
+   */
+  if (remoteWorkspace) {
+    if (backend === 'acp') {
+      return rejectTurn(400, '远端工作区首期不支持外部 Agent（ACP），请改用内置模型')
+    }
+    if (conversation.kind === 'collab') {
+      return rejectTurn(400, '远端工作区首期不支持多智能体协作会话')
+    }
   }
 
   // 插件注册的模型：解析前刷新一次（指纹没变时只是几次 stat），否则插件加 / 改的配置
@@ -392,8 +417,12 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
 
   // `path` 空的虚拟工作区（「任务」/「项目助手」）：技能目录与项目文档都在项目里，
   // 没有就跳过 —— 不能让空串落进 `readProjectDoc` 的路径解析（那会相对进程 cwd 去找 AGENTS.md）
-  const skills = workspace.path ? await serverSkillsForAgent(workspace.path) : []
-  const projectDoc = workspace.path ? await readProjectDoc(workspace.path) : null
+  //
+  // 远端工作区首期不注入项目级技能 / AGENTS.md（它们要经 SFTP 读，且插件与项目工具
+  // 的路径语义都按本地写死）；技能清单与项目文档一律为空，模型只能靠远端文件本身。
+  const skills = !remoteWorkspace && workspace.path ? await serverSkillsForAgent(workspace.path) : []
+  const projectDoc =
+    !remoteWorkspace && workspace.path ? await readProjectDoc(workspace.path) : null
 
   /**
    * 服务端权威的一份偏好（`CoreData.prefs`）：请求体给了就用请求体（会话级覆盖 / 旧客户端），
@@ -461,7 +490,7 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
     title: conversationTitle,
     confirmTimeoutMs,
     workspace: { id: workspace.id, name: workspace.name },
-    ...(workspace.path ? { approvedCommandsPath: workspace.path } : {}),
+    ...(workspace.path && !remoteWorkspace ? { approvedCommandsPath: workspace.path } : {}),
     broadcast: (event) => emitServerEvent(event)
   })
   const waitForConfirmReply = gate.waitForConfirmReply
@@ -636,7 +665,7 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
      * **剔掉**同名的键（内置让位），不让两者同时进注册表。
      */
     const browserTools: Record<string, unknown> =
-      browserSettings.enabled && browserRuntimeInfo().installed
+      !remoteWorkspace && browserSettings.enabled && browserRuntimeInfo().installed
         ? buildBrowserToolSet({
             channel: resolveBrowserChannel,
             conversationId: conversation.id,
@@ -724,19 +753,23 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
      * `discoverServerPlugins`（见 `plugin-roots.ts`）—— 这里、插件路由、上传源目录共用它，
      * 免得某处漏扫了内置插件。
      */
-    try {
-      const descriptors = await discoverServerPlugins({
-        workspaceId: workspace.id,
-        workspacePath: workspace.path
-      })
-      // 运行时配置（plugins.yml + 设置页里填的值）在挂载前合上：插件读 `config.xxx`
-      const { loaded, errors } = await loadPlugins(withRuntimeConfig(descriptors.filter((d) => d.enabled)))
-      for (const err of errors) console.warn('[server] 插件加载失败（已跳过）：', err)
-      for (const item of loaded) {
-        plugins.push({ plugin: item.plugin, config: item.config })
+    // 远端工作区首期不加载项目级 / 用户级插件：它们的工具与配置都按本地路径装配
+    // （工作区级插件要读 `<工作区>/.fizz`），远端下只会拿 POSIX 路径当本地路径用。
+    if (!remoteWorkspace) {
+      try {
+        const descriptors = await discoverServerPlugins({
+          workspaceId: workspace.id,
+          workspacePath: workspace.path
+        })
+        // 运行时配置（plugins.yml + 设置页里填的值）在挂载前合上：插件读 `config.xxx`
+        const { loaded, errors } = await loadPlugins(withRuntimeConfig(descriptors.filter((d) => d.enabled)))
+        for (const err of errors) console.warn('[server] 插件加载失败（已跳过）：', err)
+        for (const item of loaded) {
+          plugins.push({ plugin: item.plugin, config: item.config })
+        }
+      } catch (err) {
+        console.warn('[server] 插件发现失败（继续跑内置能力）：', err)
       }
-    } catch (err) {
-      console.warn('[server] 插件发现失败（继续跑内置能力）：', err)
     }
 
     /**
@@ -807,6 +840,8 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
     try {
       return await runAgent({
         workspace,
+      // 远端工作区的文件 / 命令走 SSH；不传 = 本地（行为与改造前一致）
+      ...(workspaceBackend ? { workspaceBackend } : {}),
       // 自动摘要固化的缓存键：必须是**会话** id，不是 workspace.id（一个工作区下多个会话）
       conversationId: conversation.id,
       // 重启后内存缓存是空的：用会话里落盘的固化点接上，摘要重算后再写回
@@ -841,38 +876,45 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
        *
        * 进程用 `spawnBackgroundShell` 起（与前台共用同一份 shell 判定，别在服务端抄第二份），
        * 输出按行写进任务日志：用户在输入框上方那一行展开，看到的就是这条进程的真实输出。
+       *
+       * 远端工作区不传：后台进程表在本机，远端命令没有对应的进程表（工具侧也会按
+       * `backend.kind === 'remote'` 明确回绝）。
        */
-      onBackgroundCommand: async ({ command, cwd, title }) => {
-        const handle = startBackgroundTask({
-          sessionId: conversation.id,
-          kind: 'agent-command',
-          title,
-          detail: cwd,
-          run: async (signal, log) => {
-            log(`$ ${command}`)
-            // 块边界不等于行边界：两条流各留一个「半行」缓冲，收场时把剩下的吐出来
-            const pending: Record<'stdout' | 'stderr', string> = { stdout: '', stderr: '' }
-            const write = (stream: 'stdout' | 'stderr', chunk: string): void => {
-              const parts = (pending[stream] + chunk).split('\n')
-              pending[stream] = parts.pop() ?? ''
-              for (const line of parts) log(line)
+      ...(remoteWorkspace
+        ? {}
+        : {
+            onBackgroundCommand: async ({ command, cwd, title }: { command: string; cwd: string; title: string }) => {
+              const handle = startBackgroundTask({
+                sessionId: conversation.id,
+                kind: 'agent-command',
+                title,
+                detail: cwd,
+                run: async (signal, log) => {
+                  log(`$ ${command}`)
+                  // 块边界不等于行边界：两条流各留一个「半行」缓冲，收场时把剩下的吐出来
+                  const pending: Record<'stdout' | 'stderr', string> = { stdout: '', stderr: '' }
+                  const write = (stream: 'stdout' | 'stderr', chunk: string): void => {
+                    const parts = (pending[stream] + chunk).split('\n')
+                    pending[stream] = parts.pop() ?? ''
+                    for (const line of parts) log(line)
+                  }
+                  const shell = spawnBackgroundShell(command, cwd, {
+                    signal,
+                    onOutput: (stream, chunk) => write(stream, chunk)
+                  })
+                  const exit = await shell.done
+                  for (const stream of ['stdout', 'stderr'] as const) {
+                    if (pending[stream].trim()) log(pending[stream])
+                  }
+                  // 三种收场都要让登记表知道为什么结束（它据此判 done / failed / canceled）
+                  if (exit.error) throw new Error(`启动失败：${exit.error}`)
+                  if (exit.killed) throw new Error('已停止')
+                  if (exit.code !== 0) throw new Error(`退出码 ${exit.code}`)
+                }
+              })
+              return { id: handle.id }
             }
-            const shell = spawnBackgroundShell(command, cwd, {
-              signal,
-              onOutput: (stream, chunk) => write(stream, chunk)
-            })
-            const exit = await shell.done
-            for (const stream of ['stdout', 'stderr'] as const) {
-              if (pending[stream].trim()) log(pending[stream])
-            }
-            // 三种收场都要让登记表知道为什么结束（它据此判 done / failed / canceled）
-            if (exit.error) throw new Error(`启动失败：${exit.error}`)
-            if (exit.killed) throw new Error('已停止')
-            if (exit.code !== 0) throw new Error(`退出码 ${exit.code}`)
-          }
-        })
-        return { id: handle.id }
-      },
+          }),
       plugins,
       ...(isCollab ? { extraTools: collabTools, extraPrompt: collabPrompt } : {}),
       /**

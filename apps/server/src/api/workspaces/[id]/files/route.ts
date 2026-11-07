@@ -3,6 +3,7 @@ import { basename, join } from 'node:path'
 import type { AgentFsEntry } from '@fizz/contracts/types'
 import { createIgnoreChecker, relPathOf, resolveInside } from '@fizz/contracts/workspace'
 import { domain } from '@/lib/server/state'
+import { remoteUnsupported } from '@/lib/server/remote-guard'
 import { jsonError } from '@/app/api/_lib/auth'
 import { zipDirectory } from '@/lib/server/lib/zip'
 
@@ -15,6 +16,8 @@ export async function GET(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const denied = remoteUnsupported(workspace, '文件面板')
+  if (denied) return denied
   const url = new URL(request.url)
   // `?zip=<rel>`：把某个文件夹打包成 zip 直接吐出来（文件视图的「下载文件夹」）。
   // 与下面「列目录」是同一资源（工作区的文件）的两种表示，所以共用这条路由、不另开一条。

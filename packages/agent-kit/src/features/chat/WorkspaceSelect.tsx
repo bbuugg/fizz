@@ -7,6 +7,7 @@ import {
 import { useDirectoryPicker } from "@fizz/agent-kit/shared/hooks/use-directory-picker";
 import { useStateValue } from "@fizz/agent-kit/shared/lib/state-ws";
 import { WorkspacePicker } from "@fizz/agent-kit/features/chat/WorkspacePicker";
+import { RemoteWorkspaceDialog } from "@fizz/agent-kit/features/chat/RemoteWorkspaceDialog";
 import type { AgentApp } from "@fizz/agent-kit/shared/hooks/useAgentApp";
 import { useT } from "@fizz/agent-kit/shared/lib/language";
 import { type ContainerProjectsSnapshot } from "@fizz/contracts/types";
@@ -33,7 +34,7 @@ export function WorkspaceSelect({ app }: { app: AgentApp }) {
    * ⚠️ 侧栏那颗「+」**已经删掉**了，加项目只剩这一处入口 ——
    * 别再把入口往回加，两处维护同一组弹窗迟早会漂。
    */
-  const [addMode, setAddMode] = useState<"git" | "container" | null>(null);
+  const [addMode, setAddMode] = useState<"git" | "container" | "remote" | null>(null);
   /** 容器型项目的唯一能力门控（服务端有 docker 才有这个选项） */
   const containerProjects = useStateValue<ContainerProjectsSnapshot>(
     "containerProjects",
@@ -79,9 +80,14 @@ export function WorkspaceSelect({ app }: { app: AgentApp }) {
           app.selectWorkspace(next, false);
           if (app.activeConversationId) void app.openConversation(null);
         }}
+        remoteHostName={(workspace) =>
+          app.sshHosts.find((host) => host.id === workspace.remote?.hostId)?.name ?? null
+        }
         actions={[
           { value: "__add_dir__", label: t("选择文件夹…") },
           { value: "__add_git__", label: t("从 Git 导入…") },
+          // 远端工作区：目录在 SSH 主机上，Agent 经 SFTP / 远端 shell 操作它
+          { value: "__add_remote__", label: t("连接远端服务器…") },
           // 容器型项目：服务端有 docker 才出现（目录由服务端固定生成，用户不可选）
           ...(containerProjects.available
             ? [{ value: "__add_container__", label: t("新建容器型项目…") }]
@@ -90,6 +96,7 @@ export function WorkspaceSelect({ app }: { app: AgentApp }) {
         onAction={(action) => {
           if (action === "__add_dir__") pickDir();
           else if (action === "__add_container__") setAddMode("container");
+          else if (action === "__add_remote__") setAddMode("remote");
           else setAddMode("git");
         }}
         title={t("工作区：Agent 只能读写这个目录里的东西。切换会回到空会话（会话归属不可改）")}
@@ -106,6 +113,12 @@ export function WorkspaceSelect({ app }: { app: AgentApp }) {
         app={app}
         open={addMode === "container"}
         onOpenChange={(open) => setAddMode(open ? "container" : null)}
+        onCreated={(ws) => selectNewWorkspace(app, ws)}
+      />
+      <RemoteWorkspaceDialog
+        app={app}
+        open={addMode === "remote"}
+        onOpenChange={(open) => setAddMode(open ? "remote" : null)}
         onCreated={(ws) => selectNewWorkspace(app, ws)}
       />
     </>

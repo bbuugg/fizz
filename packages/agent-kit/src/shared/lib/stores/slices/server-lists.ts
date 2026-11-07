@@ -368,7 +368,11 @@ export interface ServerListsSlice {
    * 回对象而不是布尔：调用方紧接着就要**选中它**（初始页 / 侧栏「添加项目」的落点），
    * 有了 id 可以直接选，不必再「等列表刷新 → 按路径找回来」两跳（那要一个 effect + 一次多余渲染）。
    */
-  addWorkspace: (input: { name?: string; path: string }) => Promise<AgentWorkspace | null>
+  addWorkspace: (input: {
+    name?: string
+    path: string
+    remote?: { hostId: string }
+  }) => Promise<AgentWorkspace | null>
   /**
    * 从 Git 导入项目：服务端克隆远端仓库到 `parentDir/<目录名>` 并登记。
    * 克隆可能跑几分钟（大仓库慢网），调用方自己显示 busy。

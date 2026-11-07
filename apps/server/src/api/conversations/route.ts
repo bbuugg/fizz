@@ -5,6 +5,7 @@
  * 桌面端引导加载需要全文，用 ?full=1 让服务端返回含完整消息的会话全集。
  */
 import { randomUUID } from 'node:crypto'
+import { isRemoteWorkspace } from '@fizz/contracts/types'
 import { abortAcpTurn, createAcpSession } from '@fizz/acp'
 import { domain } from '@/lib/server/state'
 import { ensurePiConfirmExtension } from '@/lib/server/acp-extension'
@@ -65,7 +66,17 @@ export async function POST(request: Request) {
    * 做权威判定：目录刚被删、巡检还没跑到的那几秒里也能立刻拒掉。
    * `path` 为空的虚拟工作区（「任务」/「项目助手」）没有目录概念，跳过。
    */
-  if (workspace.path && !(await domain.isWorkspaceDirAvailable(workspace.path))) {
+  const remote = isRemoteWorkspace(workspace)
+  if (remote) {
+    // 远端目录不能在本机 stat：「目录在不在」只认巡检给的结论（SFTP 探测，连不上不置位）。
+    // 这里不额外连一次 SSH —— 建会话本身不等同于要用远端，连不上应该由本轮对话明确报错。
+    if (workspace.dirMissing) {
+      return jsonError(400, `远端工作区目录不存在：${workspace.path}（可能已被删除或移动）`)
+    }
+    if (input.backend === 'acp') {
+      return jsonError(400, '远端工作区首期不支持外部 Agent（ACP），请改用内置 Agent')
+    }
+  } else if (workspace.path && !(await domain.isWorkspaceDirAvailable(workspace.path))) {
     return jsonError(400, `工作区目录不存在：${workspace.path}（可能已被删除或移动）`)
   }
 

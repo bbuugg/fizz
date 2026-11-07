@@ -22,6 +22,7 @@ import {
 import { HOOKS, hookValue } from '@fizz/plugin'
 import type { HooksService, Plugin, PluginObject, ResolvedTool, ToolOrigin } from '@fizz/plugin'
 import type { AgentConfirmInput, AiPermissionMode } from '@fizz/contracts/types'
+import type { WorkspaceBackend } from '@fizz/contracts/workspace'
 
 /** 挂载一个插件时携带的配置（`ctx.plugin(plugin, config)` 的 config） */
 export interface MountedPlugin {
@@ -63,12 +64,14 @@ export function fileToolsPlugin(root: string, options: AgentToolOptions): Plugin
 export function webToolsPlugin(
   root: string,
   /** 单条抓取的停止钩子（与 execute_command 同一张表，见 agent.ts 的 commandStops） */
-  stopHooks: Parameters<typeof buildWebFetchTool>[1] = {}
+  stopHooks: Parameters<typeof buildWebFetchTool>[1] = {},
+  /** 落盘后端（远端工作区把超长正文写回远端）；不传 = 用 root 现建本地后端 */
+  backend?: WorkspaceBackend
 ): PluginObject {
   return {
     name: 'builtin:web-tools',
     apply(ctx) {
-      ctx.tools.registerAll(buildWebFetchTool(root, stopHooks), {
+      ctx.tools.registerAll(buildWebFetchTool(root, stopHooks, backend), {
         priority: 0,
         origin: BUILTIN_ORIGIN,
         source: 'builtin:web_fetch'

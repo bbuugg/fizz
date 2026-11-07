@@ -53,6 +53,7 @@ import type {
   LocalHostInput,
   NotesRoot,
   NotesRootInput,
+  RemoteWorkspaceRef,
   SubagentTurnUsage,
   TransferImportResult,
   TransferKind,
@@ -106,6 +107,7 @@ import {
   type StoredLocalHost,
   type StoredSshHost
 } from './store'
+import { validateRemoteWorkspacePath } from '@fizz/contracts/workspace'
 import { pickContainer } from './container-carry'
 import { acpAgentKey } from '@fizz/contracts/agent-api'
 import { applyTransferPayload, buildTransferPayload, type TransferSnapshot } from './transfer'
@@ -414,6 +416,20 @@ export interface PluginModelEntry extends AiModelConfig {
   sourceName: string
 }
 
+/**
+ * 远端标记在「重新登记 / 重命名」时的存活判据（与 `pickContainer` 同款）。
+ *
+ * `addWorkspace` 是逐字段重建整条记录：重命名只传 `name` + 原路径，漏了这里就会把
+ * 远端工作区**静默降级**成本地工作区 —— 下一次工具调用开始操作本机同名路径。
+ */
+export function pickRemote(
+  input?: RemoteWorkspaceRef,
+  prev?: RemoteWorkspaceRef,
+  byPath?: RemoteWorkspaceRef
+): RemoteWorkspaceRef | undefined {
+  return input ?? prev ?? byPath
+}
+
 export class AgentDomain {
   /** 插件注册的模型配置（内存态，随插件刷新整体替换） */
   private externalModels: PluginModelEntry[] = []
@@ -605,16 +621,56 @@ export class AgentDomain {
   }
 
   async addWorkspace(input: WorkspaceInput): Promise<AgentWorkspace> {
-    const raw = input.path.trim()
-    if (!isAbsolute(raw)) throw new Error('工作区路径必须是绝对路径')
-    const path = resolve(raw)
-    const stat = await fs.stat(path).catch(() => null)
-    if (!stat?.isDirectory()) throw new Error(`目录不存在或不是目录：${path}`)
-
     const data = this.store.snapshot()
-    const byPath = data.workspaces.find((w) => w.path === path)
     const prev = input.id ? data.workspaces.find((w) => w.id === input.id) : undefined
     if (input.id && !prev) throw new Error('工作区不存在')
+
+    // 先定「是不是远端」，再决定路径用哪套规范化：远端是 POSIX，本机是宿主绝对路径
+    if (input.remote && prev && !prev.remote) {
+      throw new Error('已登记的本机工作区不能直接改成远端工作区，请新建一个远端工作区')
+    }
+    const requestedRemote = input.remote ?? prev?.remote
+    let path: string
+    if (requestedRemote) {
+      path = validateRemoteWorkspacePath(input.path)
+    } else {
+      const raw = input.path.trim()
+      if (!isAbsolute(raw)) throw new Error('工作区路径必须是绝对路径')
+      path = resolve(raw)
+    }
+
+    // 去重键是 `(hostId, path)`：同名目录可能同时存在于本机与远端，不能撞成一条
+    const key = requestedRemote?.hostId ?? 'local'
+    const byPath = data.workspaces.find(
+      (w) => w.path === path && (w.remote?.hostId ?? 'local') === key
+    )
+    const remote = pickRemote(input.remote, prev?.remote, byPath?.remote)
+
+    if (remote) {
+      const hostId = remote.hostId?.trim() ?? ''
+      if (!hostId) throw new Error('缺少 SSH 主机')
+      const host = data.sshHosts.find((h) => h.id === hostId)
+      if (!host) throw new Error('所选 SSH 主机不存在或已被删除')
+      if (isStoredLocal(host)) throw new Error('本机终端配置不能作为远端工作区的主机')
+      // 远端首期不支持 worktree / 容器 / 临时工作区：这些流程都假定目录在本机
+      if (input.isWorktree ?? prev?.isWorktree ?? byPath?.isWorktree) {
+        throw new Error('远端工作区不支持 worktree')
+      }
+      if (input.parentWorkspaceId ?? byPath?.parentWorkspaceId ?? prev?.parentWorkspaceId) {
+        throw new Error('远端工作区不能挂在其他项目下面')
+      }
+      if (input.container ?? prev?.container ?? byPath?.container) {
+        throw new Error('远端工作区不支持容器')
+      }
+      if (input.scratch ?? prev?.scratch ?? byPath?.scratch) {
+        throw new Error('远端工作区不支持临时工作区标记')
+      }
+    } else {
+      // 本机路径仍要当场 stat：工作区清单就是服务端的路径白名单。
+      // 远端只做字符串校验 —— 存在性由 API 层用 SFTP 探测（领域层不碰网络）。
+      const stat = await fs.stat(path).catch(() => null)
+      if (!stat?.isDirectory()) throw new Error(`目录不存在或不是目录：${path}`)
+    }
 
     const now = Date.now()
     // 父项目 id：新建时由调用方传入；更新既有 worktree 时保留原值（避免被抹掉）
@@ -630,6 +686,7 @@ export class AgentDomain {
       // 已有 worktree 项目走更新（重命名）时保留原值
       ...(input.isWorktree ?? prev?.isWorktree ? { isWorktree: true } : {}),
       ...(parentWorkspaceId ? { parentWorkspaceId } : {}),
+      ...(remote && remote.hostId ? { remote } : {}),
       ...(carried ? { container: carried } : {}),
       // 临时工作区标记：只有服务端懒创建时带；重命名 / 重新登记要原样保留，
       // 否则它会突然出现在侧栏的项目列表里
@@ -643,8 +700,8 @@ export class AgentDomain {
         ? d.workspaces.map((w) => (w.id === workspace.id ? workspace : w))
         : [...d.workspaces, workspace]
     })
-    // 项目一登记就把 `.fizz/conversation/` 建出来（会话会往这里落）
-    await this.store.ensureConversationDir(path)
+    // 本地项目在 `.fizz/conversation/` 建目录；远端落本机 `conversations/remote/<id>/`
+    await this.store.ensureConversationDir(workspace)
     return workspace
   }
 

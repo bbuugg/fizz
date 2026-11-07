@@ -27,7 +27,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { parseExpression } from 'cron-parser'
-import type { TaskTrigger } from '@fizz/contracts/types'
+import { isRemoteWorkspace, type TaskTrigger } from '@fizz/contracts/types'
 import { domain, triggerDomain } from './state'
 import { refreshPluginModels } from './plugin-models'
 
@@ -248,6 +248,13 @@ async function processFire(
    * 与新建会话（`POST /api/conversations`）同一条判据、同一句人话；`path` 为空的虚拟工作区
    * 没有目录概念，跳过。抛出去由 `fireTrigger` 的 catch 记日志 —— 任务保持原样，等用户修好。
    */
+  // 远端工作区首期不支持定时任务：无人值守时无法给出「主机不可达」的交互反馈，
+  // 静默失败比明确拒绝更难查。明确报错，任务保持原样等用户改绑本机工作区。
+  if (workspace && isRemoteWorkspace(workspace)) {
+    throw new Error(
+      `定时任务「${trigger.name}」绑定的工作区在远端主机上：首期不支持定时任务，请改绑本机工作区`
+    )
+  }
   if (workspace?.path && !(await domain.isWorkspaceDirAvailable(workspace.path))) {
     throw new Error(
       `定时任务「${trigger.name}」绑定的工作区目录不存在：${workspace.path}（可能已被删除或移动）：请编辑它重新选择工作区`

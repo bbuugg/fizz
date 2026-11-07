@@ -40,6 +40,8 @@
  */
 import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
+import type { WorkspaceBackend } from '@fizz/contracts/workspace'
+import { createLocalBackend } from './backend'
 import { summarizeLongOutput } from './output-log'
 import { browserRuntimeInfo } from './playwright-browsers'
 import { abortableSleep, launchHeadlessChromium, pageErrorMessage } from './headless'
@@ -191,7 +193,7 @@ async function formatPage(
   p: FetchedPage,
   requestedUrl: string,
   clampedMax: number,
-  root: string
+  backend: WorkspaceBackend | null
 ): Promise<string> {
   const clipped = p.markdown.length > clampedMax
   const md = clipped ? p.markdown.slice(0, clampedMax) : p.markdown
@@ -205,7 +207,7 @@ async function formatPage(
   const header = `# ${p.title || '(无标题)'}\n源地址：${p.finalUrl}（抓取自 ${requestedUrl}）\n`
   const full = `${header}\n${md}${linkSection}`
   return summarizeLongOutput(full, {
-    root,
+    backend,
     tool: 'web_fetch',
     detail: p.finalUrl,
     extra: clipped
@@ -338,7 +340,13 @@ interface WebFetchInput {
   maxChars?: number
 }
 
-export function buildWebFetchTool(root: string, stopHooks: WebFetchStopHooks = {}): ToolSet {
+export function buildWebFetchTool(
+  root: string,
+  stopHooks: WebFetchStopHooks = {},
+  /** 落盘后端：不传 = 按 `root` 现建本地后端（无工作区时 root 为空串 → 只截断不落盘） */
+  backend?: WorkspaceBackend
+): ToolSet {
+  const spillBackend = backend ?? (root ? createLocalBackend(root) : null)
   /**
    * 这一轮暴露几个抓取引擎：**装配期现读**运行时。没装就**连 `engine` 这个入参都不给**
    * （理由见文件头「没装浏览器 = 只有一个引擎」），description 也换成单引擎版本。
@@ -419,7 +427,7 @@ export function buildWebFetchTool(root: string, stopHooks: WebFetchStopHooks = {
             engine === 'browser'
               ? await fetchByBrowser(target, timeout, signal)
               : await fetchByHttp(target, timeout, signal)
-          return await formatPage(page, target.toString(), clampedMax, root)
+          return await formatPage(page, target.toString(), clampedMax, spillBackend)
         } catch (err) {
           // 缺运行时：给能执行的下一步，别让模型以为「换个 URL 再试 browser」就行
           if (err instanceof BrowserRuntimeMissingError) {

@@ -20,6 +20,7 @@ import {
 } from '@fizz/git'
 import { workspaceRepoRoot } from '@/lib/workspace-repo'
 import { domain } from '@/lib/server/state'
+import { remoteUnsupported } from '@/lib/server/remote-guard'
 import { jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 
 function invalidRelPath(p: string): string | null {
@@ -68,6 +69,8 @@ export async function POST(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const denied = remoteUnsupported(workspace, 'Git 面板')
+  if (denied) return denied
 
   const body = await parseJsonBody<GitActionInput>(request)
   if (!body) return jsonError(400, '缺少请求体')

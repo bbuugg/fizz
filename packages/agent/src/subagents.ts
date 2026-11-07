@@ -19,6 +19,7 @@ import { stepCountIs, streamText, type ToolSet } from 'ai'
 import { z } from 'zod'
 import { buildAgentTools, buildWebFetchTool, buildGitReadTool, filterToolSet } from '@fizz/tools'
 import { SUBAGENT_MAX_STEPS, SUBAGENT_META, SUBAGENT_MIN_STEPS } from '@fizz/contracts/types'
+import type { WorkspaceBackend } from '@fizz/contracts/workspace'
 import type {
   AgentStreamEvent,
   AiModelConfig,
@@ -234,6 +235,11 @@ function recordSubagentUsage(stats: DelegationStats, id: string, usage: unknown)
 export interface BuildDelegationToolsOptions {
   workspacePath: string
   workspaceName: string
+  /**
+   * 工作区后端（本地 / 远端）。不传 = 按 `workspacePath` 现建本地后端。
+   * 远端后端下白名单会自动剔除 `git_read`（远端首期不提供 git 只读视图）。
+   */
+  backend?: WorkspaceBackend
   model: AiModelConfig
   /**
    * 子任务专用模型（设置页选的完整配置）。不传 = 沿用父模型；某个子任务规格里的
@@ -275,17 +281,26 @@ export function buildDelegationTools(
   const out: Record<string, unknown> = {}
 
   // 子 agent 的工具集单独取一份，再按白名单过滤（父那份带写操作与 extraTools）
+  const remote = opts.backend?.kind === 'remote'
   const allTools = {
-    ...buildAgentTools(opts.workspacePath, { permissionMode: 'readonly', skills: [] }),
-    ...buildWebFetchTool(opts.workspacePath ?? ''),
-    // git_read 只给子任务：父有 execute_command，不需要它
-    ...buildGitReadTool(opts.workspacePath)
+    ...buildAgentTools(opts.workspacePath, {
+      permissionMode: 'readonly',
+      skills: [],
+      ...(opts.backend ? { backend: opts.backend } : {})
+    }),
+    ...buildWebFetchTool(opts.workspacePath ?? '', {}, opts.backend),
+    // git_read 只给子任务：父有 execute_command，不需要它。远端首期不提供 git 只读视图，
+    // 连工具都不建 —— 白名单里还留着它会让 filterToolSet 直接抛错。
+    ...(remote ? {} : buildGitReadTool(opts.workspacePath))
   }
 
   for (const id of ids) {
     const spec = SUBAGENT_SPECS[id]
     if (!spec) throw new Error(`未知的 subagent id：${id}`)
-    const tools = filterToolSet(allTools, [...spec.includeTools, 'web_fetch'])
+    const include = remote
+      ? spec.includeTools.filter((name) => name !== 'git_read')
+      : [...spec.includeTools]
+    const tools = filterToolSet(allTools, [...include, 'web_fetch'])
     /** 这一轮这个子任务的步数上限（设置页可覆盖） */
     const maxSteps = resolveMaxSteps(id, opts.maxSteps)
     // 优先级：规格里的 preferredModelId（父配置内的便宜档）> 设置页的子任务模型 > 父模型

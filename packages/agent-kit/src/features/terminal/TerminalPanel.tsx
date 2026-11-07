@@ -174,7 +174,8 @@ export function TerminalPanel({
    */
   localHistory = false,
   /**
-   * SSH 主机配置 id：传了就连这条远端主机（凭据由服务端解密），此时不需要 `cwd`。
+   * SSH 主机配置 id：传了就连这条远端主机（凭据由服务端解密）；此时 `cwd` 是可选的
+   * 远端 POSIX 目录（远端工作区用它切目录）。
    * 它的命令历史**不挂项目**，全局一份、存服务端数据目录（见 contracts 的
    * `terminalSshHistory`）。受控：变化即拆旧会话重建。
    */
@@ -214,7 +215,10 @@ export function TerminalPanel({
   /** 容器内 shell（缺省 `/bin/bash`）；仅容器分支有意义 */
   containerShell
 }: {
-  /** 本机终端的工作目录；SSH 终端（传了 `sshHostId`）不需要 */
+  /**
+   * 本机终端的工作目录；`sshHostId` 分支里它表示远端 POSIX 目录（远端工作区打开的
+   * 终端用它切目录），不传 = 登录目录
+   */
   cwd?: string
   openTerminal?: (options: TerminalOpenOptions) => TerminalProcess
   /** 终端进程就绪（快捷功能要往里写命令：没开就先开，开了直接复用） */
@@ -1179,7 +1183,13 @@ export function TerminalPanel({
       // SSH 主机：走宿主 / 服务端的 SSH 通道（只说 hostId，凭据不出服务端）；
       // 本机终端：走 openTerminal 覆盖（容器工作台）或服务端 PTY，需要 cwd
       const proc = sshHostId
-        ? openSshTerminal({ hostId: sshHostId, cols: term.cols, rows: term.rows })
+        ? openSshTerminal({
+            hostId: sshHostId,
+            cols: term.cols,
+            rows: term.rows,
+            // 远端工作区打开的终端：shell 就绪后切到该目录（缺省 = 登录目录）
+            ...(cwd ? { cwd } : {})
+          })
         : (openTerminal ?? openServerTerminal)({
             cwd: cwd ?? '',
             cols: term.cols,

@@ -14,6 +14,7 @@ import { promises as fs } from 'node:fs'
 import { FS_UPLOAD_MAX_BYTES, type FsUploadInput } from '@fizz/contracts/agent-api'
 import { resolveInside } from '@fizz/contracts/workspace'
 import { domain } from '@/lib/server/state'
+import { remoteUnsupported } from '@/lib/server/remote-guard'
 import { jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 
 /** base64 严格形状（容忍空白与缺 padding）：Buffer.from 对非法字符是宽容解码，会静默产出脏字节 */
@@ -26,6 +27,8 @@ export async function POST(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const denied = remoteUnsupported(workspace, '文件面板')
+  if (denied) return denied
 
   const body = await parseJsonBody<FsUploadInput>(request)
   if (!body) return jsonError(400, '缺少请求体')

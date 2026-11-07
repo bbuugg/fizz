@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs'
 import { resolveInside } from '@fizz/contracts/workspace'
 import { domain } from '@/lib/server/state'
+import { remoteUnsupported } from '@/lib/server/remote-guard'
 import { jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 
 const MAX_READ_BYTES = 2 * 1024 * 1024
@@ -13,6 +14,8 @@ export async function GET(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const denied = remoteUnsupported(workspace, '文件面板')
+  if (denied) return denied
   const url = new URL(request.url)
   const rel = url.searchParams.get('path') ?? ''
   let abs: string
@@ -38,6 +41,8 @@ export async function POST(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const denied = remoteUnsupported(workspace, '文件面板')
+  if (denied) return denied
   const body = await parseJsonBody<{ path?: string; content?: string }>(request)
   if (!body) return jsonError(400, '缺少请求体')
   const rel = body.path ?? ''

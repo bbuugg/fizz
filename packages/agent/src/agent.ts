@@ -63,6 +63,7 @@ import {
   type AgentStopReason
 } from '@fizz/contracts/types'
 import { extractNestedDocPaths, readNestedProjectDocs, type ProjectDoc } from './project-doc'
+import type { WorkspaceBackend } from '@fizz/contracts/workspace'
 import type { Context, TurnFinishPayload, TurnStartPayload } from '@fizz/plugin'
 import type {
   AgentChatMessage,
@@ -83,6 +84,11 @@ export type { AgentConfirmInput, RunAgentResult } from '@fizz/contracts/types'
 
 export interface RunAgentOptions {
   workspace: AgentWorkspace
+  /**
+   * 工作区后端（本地 / 远端）。不传 = 按 `workspace.path` 现建本地后端（行为与从前一致）。
+   * 远端工作区由服务端注入 SSH 后端；此时子任务白名单会自动剔除 `git_read`。
+   */
+  workspaceBackend?: WorkspaceBackend
   history: AgentChatMessage[]
   model: AiModelConfig
   skills: SkillInfo[]
@@ -505,6 +511,8 @@ export interface AgentSetup {
 
 export function buildAgentSetup(opts: {
   workspace: AgentWorkspace
+  /** 工作区后端（见 RunAgentOptions.workspaceBackend）；不传 = 本地 */
+  workspaceBackend?: WorkspaceBackend
   skills: SkillInfo[]
   /** 工作区根目录的项目约束文档（AGENTS.md），见 RunAgentOptions.projectDoc */
   projectDoc?: ProjectDoc | null
@@ -583,6 +591,7 @@ export function buildAgentSetup(opts: {
       ...(opts.requestConfirm ? { requestConfirm: opts.requestConfirm } : {}),
       // 单条命令停止 + 实时输出：三个回调成组注入（缺 commandStops = 都不注入，
       // 行为与加这个能力之前逐字节一致；subagent 那条 buildAgentTools 刻意不传）
+      ...(opts.workspaceBackend ? { backend: opts.workspaceBackend } : {}),
       ...(opts.commandStops
         ? {
             onCommandStart: (id: string, stop: () => void) => opts.commandStops!.set(id, stop),
@@ -625,7 +634,9 @@ export function buildAgentSetup(opts: {
             onStart: (id: string, stop: () => void) => opts.commandStops!.set(id, stop),
             onEnd: (id: string) => opts.commandStops!.delete(id)
           }
-        : {}
+        : {},
+      // 远端工作区把 web_fetch 的超长正文落回远端 .fizz/tool-output（不传 = 本地）
+      opts.workspaceBackend
     )
   )
 
@@ -971,16 +982,19 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
    * 静态部分（系统提示词 + 工具集）整轮只建一次：它们同时是**上下文估算**的输入
    * （见 `estimateBaseTokens`），重建不会变，但每次尝试重算会白跑一遍 schema 序列化。
    */
-  // 子目录规则：从历史里恢复已注入过的 marker，同一份只进一次上下文
+  // 子目录规则：从历史里恢复已注入过的 marker，同一份只进一次上下文。
+  // 远端工作区首期不注入 AGENTS.md（文件在远端主机，本地读不到），由服务端不传 projectDoc 配合。
   const loadedNestedDocs = extractNestedDocPaths(opts.history)
-  const nestedDocs = opts.workspace.path
-    ? (absPath: string, isDirectory: boolean) =>
-        readNestedProjectDocs(opts.workspace.path, absPath, loadedNestedDocs, isDirectory)
-    : null
+  const nestedDocs =
+    opts.workspace.path && !opts.workspace.remote
+      ? (absPath: string, isDirectory: boolean) =>
+          readNestedProjectDocs(opts.workspace.path, absPath, loadedNestedDocs, isDirectory)
+      : null
   const agentSetup =
     opts.setup ??
     buildAgentSetup({
       workspace: opts.workspace,
+      ...(opts.workspaceBackend ? { workspaceBackend: opts.workspaceBackend } : {}),
       skills: opts.skills,
       projectDoc: opts.projectDoc ?? null,
       permissionMode: opts.permissionMode,
@@ -1172,6 +1186,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
           ? buildDelegationTools(opts.subagents, {
               workspacePath: opts.workspace.path,
               workspaceName: opts.workspace.name,
+              ...(opts.workspaceBackend ? { backend: opts.workspaceBackend } : {}),
               model: effectiveModel,
               ...(opts.subagentModel
                 ? { subagentModel: withModelApiStyle(opts.subagentModel) }

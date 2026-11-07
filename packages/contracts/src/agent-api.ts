@@ -37,6 +37,7 @@ import type {
   ConversationContextSummary,
   FollowupAnswerItem,
   QueuedMessage,
+  RemoteWorkspaceRef,
   UploadFileRef,
 } from "./types";
 // 域类型已迁到各自的包（类型真源）；这里的 HTTP DTO 组合它们时用 type-only 引用，
@@ -877,10 +878,13 @@ export function sshTerminalWsPath(options: {
   hostId: string;
   cols: number;
   rows: number;
+  /** 打开后要切到的目录（远端 POSIX 绝对路径）；缺省 = 登录目录 */
+  cwd?: string;
 }): string {
+  const cwd = options.cwd ? `&cwd=${encodeURIComponent(options.cwd)}` : "";
   return (
     `${SSH_TERMINAL_WS_PATH}?hostId=${encodeURIComponent(options.hostId)}` +
-    `&cols=${options.cols}&rows=${options.rows}`
+    `&cols=${options.cols}&rows=${options.rows}${cwd}`
   );
 }
 
@@ -1062,6 +1066,11 @@ export interface WorkspaceInput {
    * 界面上「选目录 / 导入」这些入口都不会传它。
    */
   scratch?: boolean;
+  /**
+   * 远端工作区：目录在指定 SSH 主机上，`path` 是远端 POSIX 绝对路径。
+   * 与本机的 worktree / 容器 / 临时工作区互斥。
+   */
+  remote?: RemoteWorkspaceRef;
 }
 
 /** 重命名工作区（PATCH /api/workspaces/:id） */

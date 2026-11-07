@@ -45,6 +45,7 @@ Fizz 是自托管的 AI Agent 工作台：**所有能力跑在一个 Node 进程
 - 对话走 SSE，**必须有应用层心跳**（15s），否则空闲会被掐断。
 - **API key 绝不进 git**；落盘走 `SecretBox`（AES-256-GCM）。发往浏览器的视图不含明文（`hasApiKey` / `envKeys`），别为了「编辑好回填」把明文加回去。
 - **插件配置只认设置页（系统配置），不读环境变量**：一个凭据两个真源时，排查「为什么发不出去 / 传不上去」永远得先问「你到底配在哪」（`FIZZ_CONTAINER_DOMAIN` 也是同一条理由移除的）。容器 / 无界面部署用的是同一个设置页。
+- **远端工作区（`AgentWorkspace.remote`）**：`path` 是远端 POSIX 绝对路径，Agent 的文件 / 命令一律经 `WorkspaceBackend`（本地实现在 `packages/tools`，远端实现在 `apps/server/src/server/ssh`）；`packages/tools` **不得引入 ssh2**。会话文件、审批、历史仍留本机（`<数据目录>/conversations/remote/<id>`），不要按远端路径解析。
 
 ### 耗时任务
 

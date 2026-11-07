@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs'
 import { resolveInside } from '@fizz/contracts/workspace'
 import { domain } from '@/lib/server/state'
+import { remoteUnsupported } from '@/lib/server/remote-guard'
 import { describeError, jsonError } from '@/app/api/_lib/auth'
 
 /**
@@ -29,6 +30,8 @@ export async function DELETE(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const denied = remoteUnsupported(workspace, '文件面板')
+  if (denied) return denied
   const raw = new URL(request.url).searchParams.get('path')
   const reason = guardRelPath(raw)
   if (reason) return jsonError(400, reason)

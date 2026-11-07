@@ -9,6 +9,7 @@
  * （历史功能不创建项目目录，见 `lib/server/terminal/history.ts`）。
  */
 import { domain } from '@/lib/server/state'
+import { remoteUnsupported } from '@/lib/server/remote-guard'
 import { describeError, jsonError } from '@/app/api/_lib/auth'
 import {
   addTerminalHistory,
@@ -21,6 +22,8 @@ import type { TerminalHistoryData } from '@fizz/contracts/agent-api'
 async function respond(workspaceId: string): Promise<Response> {
   const workspace = domain.getWorkspace(workspaceId)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const denied = remoteUnsupported(workspace, '终端历史')
+  if (denied) return denied
   try {
     const data: TerminalHistoryData = { entries: await listTerminalHistory(workspace.path) }
     return Response.json(data)
@@ -45,6 +48,8 @@ export async function POST(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const denied = remoteUnsupported(workspace, '终端历史')
+  if (denied) return denied
   try {
     const input = (await request.json()) as { cmd?: unknown }
     if (typeof input?.cmd !== 'string') return jsonError(400, '缺少 cmd')
@@ -63,6 +68,8 @@ export async function DELETE(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const denied = remoteUnsupported(workspace, '终端历史')
+  if (denied) return denied
   try {
     const cmd = new URL(request.url).searchParams.get('cmd')
     if (cmd) await removeTerminalHistory(workspace.path, cmd)

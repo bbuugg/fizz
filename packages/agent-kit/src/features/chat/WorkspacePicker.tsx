@@ -43,6 +43,11 @@ export interface WorkspacePickerProps {
   /** 列表尾部的动作项（选择文件夹 / 从 Git 导入），点中走 `onAction`、不改变 value */
   actions?: { value: string; label: string }[]
   onAction?: (value: string) => void
+  /**
+   * 远端工作区所在主机的展示名（从 SSH 主机清单里查）。返回空 = 主机已删除
+   * （此时显示「主机已删除」，`dirMissing` 的文案也不一样）。
+   */
+  remoteHostName?: (workspace: AgentWorkspace) => string | null
   disabled?: boolean
 }
 
@@ -64,6 +69,7 @@ export function WorkspacePicker({
   title = t('工作区：Agent 只能读写这个目录里的东西'),
   actions,
   onAction,
+  remoteHostName,
   disabled
 }: WorkspacePickerProps) {
   // 订阅语言（默认值里的 t() 只在本组件重渲染时才会重算）
@@ -103,10 +109,18 @@ export function WorkspacePicker({
         {workspaces.map((workspace) => (
           <SelectItem key={workspace.id} value={workspace.id}>
             {workspace.name}
+            {workspace.remote ? (
+              <span className="text-muted-foreground">
+                {' '}
+                · {remoteHostName?.(workspace) ?? t('主机已删除')}
+              </span>
+            ) : null}
             {/* 目录被删 / 被移走（服务端巡检标的 `dirMissing`）：照旧可选 —— 选它是合法的
                 （比如目录马上就回来了），但要让人先看见，别等保存 / 发送时才被服务端打回 */}
             {workspace.dirMissing ? (
-              <span className="text-muted-foreground">{t('（目录不存在）')}</span>
+              <span className="text-muted-foreground">
+                {workspace.remote ? t('（远端目录不可用）') : t('（目录不存在）')}
+              </span>
             ) : null}
           </SelectItem>
         ))}

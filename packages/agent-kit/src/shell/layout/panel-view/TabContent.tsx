@@ -104,7 +104,7 @@ export function TerminalTabContent({ tabKey, active }: { tabKey: string; active:
   return (
     <TerminalTabView tabKey={tabKey}>
       <TerminalPanel
-        // 本机终端的工作目录（主机终端不用它，走 `sshHostId`）
+        // 终端的工作目录：本机终端是本地路径；主机终端（`sshHostId`）是远端 POSIX 目录
         cwd={tool.cwd}
         // 不是正被看着的那个就别抢输入焦点（收起 / 切走的标签仍常挂载）
         visible={active}

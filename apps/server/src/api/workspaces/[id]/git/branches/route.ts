@@ -7,6 +7,7 @@
  * 无脑带上会让「点一下就等一下」。修剪只挂在用户手动点刷新时（见 GitPanel 的刷新按钮）。
  */
 import { domain } from '@/lib/server/state'
+import { remoteUnsupported } from '@/lib/server/remote-guard'
 import { workspaceRepoRoot } from '@/lib/workspace-repo'
 import { jsonError } from '@/app/api/_lib/auth'
 import { git, pruneRemoteRefs, type GitBranchesResult } from '@fizz/git'
@@ -18,6 +19,8 @@ export async function GET(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const denied = remoteUnsupported(workspace, 'Git 面板')
+  if (denied) return denied
   const root = await workspaceRepoRoot(workspace)
   if (!root) return jsonError(400, '这个工作区不是 git 仓库（也可能这台机器上没装 git）')
 

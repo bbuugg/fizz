@@ -1,5 +1,6 @@
 import { resolveInside } from '@fizz/contracts/workspace'
 import { domain } from '@/lib/server/state'
+import { remoteUnsupported } from '@/lib/server/remote-guard'
 import { mediaResponse, mimeOf } from '@/lib/server/lib/media'
 import { jsonError } from '@/app/api/_lib/auth'
 
@@ -24,6 +25,8 @@ async function handleMedia(
   const { id } = await paramsPromise
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const denied = remoteUnsupported(workspace, '媒体预览')
+  if (denied) return denied
   const url = new URL(request.url)
   const rel = url.searchParams.get('path') ?? ''
   let abs: string

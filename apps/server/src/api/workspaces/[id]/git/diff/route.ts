@@ -5,6 +5,7 @@
 import { promises as fs } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { domain } from '@/lib/server/state'
+import { remoteUnsupported } from '@/lib/server/remote-guard'
 import { workspaceRepoRoot } from '@/lib/workspace-repo'
 import { jsonError } from '@/app/api/_lib/auth'
 import { git, type GitDiffResult } from '@fizz/git'
@@ -50,6 +51,8 @@ export async function GET(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const denied = remoteUnsupported(workspace, 'Git 面板')
+  if (denied) return denied
   const root = await workspaceRepoRoot(workspace)
   if (!root) return jsonError(400, '这个工作区不是 git 仓库（也可能这台机器上没装 git）')
 

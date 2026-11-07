@@ -6,6 +6,7 @@
  * porcelain v2 解析器 —— 不用 simple-git 的 status()，原因见 git-panel.ts 头注释第 4 条。
  */
 import { domain } from '@/lib/server/state'
+import { remoteUnsupported } from '@/lib/server/remote-guard'
 import { workspaceRepoRoot } from '@/lib/workspace-repo'
 import { jsonError } from '@/app/api/_lib/auth'
 import {
@@ -134,6 +135,8 @@ export async function GET(
   const { id } = await params
   const workspace = domain.getWorkspace(id)
   if (!workspace) return jsonError(404, '工作区不存在')
+  const denied = remoteUnsupported(workspace, 'Git 面板')
+  if (denied) return denied
   // 临时工作区只认自己的仓库（否则会拿外层主目录仓库当自己的，status 要扫整个主目录
   // 才回来 —— 面板就一直停在「读取仓库状态…」）。判据与理由在 workspace-repo.ts
   const root = await workspaceRepoRoot(workspace)

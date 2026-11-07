@@ -10,7 +10,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { parseExpression } from 'cron-parser'
-import type { AgentWorkspace, TaskTrigger, TaskTriggerInput } from '@fizz/contracts/types'
+import { isRemoteWorkspace, type AgentWorkspace, type TaskTrigger, type TaskTriggerInput } from '@fizz/contracts/types'
 import type {
   TaskTriggerCreateInput,
   TaskTriggerCreateResult,
@@ -47,6 +47,10 @@ export function isValidCron(expr: string): boolean {
 export async function requireUsableTriggerWorkspace(workspaceId: string): Promise<AgentWorkspace> {
   const ws = domain.getWorkspace(workspaceId)
   if (!ws) throw new Error(`项目不存在:${workspaceId}`)
+  // 远端工作区首期不支持定时 / 触发（与调度器同一判据，错误必须在保存时就看得见）
+  if (isRemoteWorkspace(ws)) {
+    throw new Error('远端工作区首期不支持定时任务，请改用本机工作区或「每次运行自动创建」')
+  }
   // `path` 为空的虚拟工作区(「任务」/「项目助手」)没有目录概念,跳过
   if (ws.path && !(await domain.isWorkspaceDirAvailable(ws.path))) {
     throw new Error(

@@ -111,6 +111,8 @@ export interface SshTerminalOpenOptions {
   hostId: string
   cols: number
   rows: number
+  /** 打开后切换到的目录（远端 POSIX 绝对路径）；缺省 = 登录目录 */
+  cwd?: string
 }
 
 /**
