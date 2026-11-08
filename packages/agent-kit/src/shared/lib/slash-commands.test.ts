@@ -113,6 +113,21 @@ describe('/git-commit', () => {
     expect(prompt).toContain('不要 push')
   })
 
+  it('界面是英文时，命令文案与提交提示词都用英文', async () => {
+    setLanguage('en')
+    const { ctx, send } = makeContext()
+    const command = builtinSlashCommands(ctx).find((c) => c.name === 'git-commit')
+    expect(command?.displayName).toBe('Commit changes')
+
+    command?.run(ctx, '')
+    await flush()
+
+    expect(send).toHaveBeenCalledTimes(1)
+    const prompt = String(send.mock.calls[0]?.[0] ?? '')
+    expect(prompt).toContain('write the message in English')
+    expect(prompt).not.toContain('为当前工作区')
+  })
+
   it('没有磁盘目录时报错，不发消息', async () => {
     const { ctx, send, setError } = makeContext(false)
     const command = builtinSlashCommands(ctx).find((c) => c.name === 'git-commit')

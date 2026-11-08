@@ -11,7 +11,7 @@
  * 不再占一个斜线命令。整套解析 / 分发 / 浮层 / 补全保留：往数组里加命令即生效。
  */
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
-import { getLanguage } from '@fizz/i18n'
+import { getLanguage, t } from '@fizz/i18n'
 
 /** 命令执行时拿到的上下文：app 门面 + 会话是否在跑（可用性与行为都看它） */
 export interface SlashCommandContext {
@@ -170,8 +170,8 @@ export function builtinSlashCommands(ctx: SlashCommandContext): SlashCommand[] {
       // 小节」，用户敲完拿到的是还得自己填的骨架 —— 而这个文件的全部价值就在内容。
       // 现在改成把 `initPrompt()` 发给模型：它读一遍项目，写出一份**已经能生效**的文档。
       name: 'init',
-      displayName: '生成项目约束文档',
-      description: '读一遍这个项目后生成 AGENTS.md（下一轮对话会被全文注入系统提示词）',
+      displayName: t('生成项目约束文档'),
+      description: t('读一遍这个项目后生成 AGENTS.md（下一轮对话会被全文注入系统提示词）'),
       noArgs: true,
       available: needsWorkspace,
       run: (c) => {
@@ -182,8 +182,8 @@ export function builtinSlashCommands(ctx: SlashCommandContext): SlashCommand[] {
       // 提交信息一律由模型按改动生成：接受用户手写会多一套解析与「照抄还是润色」的
       // 争议，而这条命令要的只是「看一眼改动，写清楚，提交」。
       name: 'git-commit',
-      displayName: '提交改动',
-      description: '让模型看当前改动、生成提交信息并提交',
+      displayName: t('提交改动'),
+      description: t('让模型看当前改动、生成提交信息并提交'),
       noArgs: true,
       available: needsWorkspace,
       run: (c) => {
@@ -267,11 +267,11 @@ function initPrompt(): string {
 async function runInit(c: SlashCommandContext): Promise<void> {
   if (!c.app.activeWorkspace?.path) {
     // 正常走不到（`available` 已经拦过），兜住「命令表被别处复用」的情况
-    c.app.setError('先选一个有磁盘目录的项目（内置「任务」没有目录，写不了 AGENTS.md）')
+    c.app.setError(t('先选一个有磁盘目录的项目（内置「任务」没有目录，写不了 AGENTS.md）'))
     return
   }
   const ok = await c.app.send(initPrompt())
-  if (!ok) c.app.setError('没能发出 /init：这一下被拦住了（压缩上下文中 / 没有可用会话），稍后再试')
+  if (!ok) c.app.setError(t('没能发出 /init：这一下被拦住了（压缩上下文中 / 没有可用会话），稍后再试'))
 }
 
 /**
@@ -282,8 +282,11 @@ async function runInit(c: SlashCommandContext): Promise<void> {
  *
  * 边界同样写死：只提交这次改动相关的文件（无关文件 / 密钥 / 构建产物不碰）、
  * **不 push**（提交与推送是两个决定）、失败要贴 git 的原话而不是一句「提交失败」。
+ *
+ * 语言跟随界面：英文界面下整条提示词与生成的提交信息都用英文（仓库既有风格只决定
+ * 格式，如 Conventional Commits，不决定语言）。
  */
-const GIT_COMMIT_PROMPT = `为当前工作区做一次提交。
+const GIT_COMMIT_PROMPT_ZH = `为当前工作区做一次提交。
 
 先看 \`git status\`、\`git diff\`（必要时 \`--staged\`）和 \`git log --oneline -10\`，再动手。
 
@@ -291,6 +294,19 @@ const GIT_COMMIT_PROMPT = `为当前工作区做一次提交。
 - 只暂存这次改动相关的文件；无关文件、密钥、构建产物不要提交。
 - 不要 push；没有可提交的改动就直接说，不要造空提交。
 - 完成后告诉我提交 hash 与提交信息；失败就贴 git 原话。`
+
+const GIT_COMMIT_PROMPT_EN = `Make one commit for the current workspace.
+
+Read \`git status\`, \`git diff\` (and \`--staged\` when needed) and \`git log --oneline -10\` first.
+
+- Generate the commit message from the changes: one sentence on what changed and why. If the repository has a fixed style (e.g. Conventional Commits), follow its format but write the message in English.
+- Stage only files related to this change; do not commit unrelated files, secrets or build artifacts.
+- Do not push. If there is nothing to commit, just say so; do not create an empty commit.
+- When done, report the commit hash and message; on failure, paste git's original output.`
+
+function gitCommitPrompt(): string {
+  return getLanguage() === 'en' ? GIT_COMMIT_PROMPT_EN : GIT_COMMIT_PROMPT_ZH
+}
 
 /**
  * `/git-commit` 的执行：和 `/init` 同一条路 —— 发一条提示词，让模型自己在工作区里提交。
@@ -301,9 +317,9 @@ const GIT_COMMIT_PROMPT = `为当前工作区做一次提交。
  */
 async function runGitCommit(c: SlashCommandContext): Promise<void> {
   if (!c.app.activeWorkspace?.path) {
-    c.app.setError('先选一个有磁盘目录的项目（内置「任务」没有目录，提交不了）')
+    c.app.setError(t('先选一个有磁盘目录的项目（内置「任务」没有目录，提交不了）'))
     return
   }
-  const ok = await c.app.send(GIT_COMMIT_PROMPT)
-  if (!ok) c.app.setError('没能发出 /git-commit：这一下被拦住了（压缩上下文中 / 没有可用会话），稍后再试')
+  const ok = await c.app.send(gitCommitPrompt())
+  if (!ok) c.app.setError(t('没能发出 /git-commit：这一下被拦住了（压缩上下文中 / 没有可用会话），稍后再试'))
 }
