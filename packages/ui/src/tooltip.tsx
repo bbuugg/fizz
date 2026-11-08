@@ -45,10 +45,29 @@ function TooltipProvider({
   )
 }
 
+/**
+ * 气泡只做视觉提示，**不参与指针命中**：
+ *
+ * - `disableHoverableContent`：默认打开。关掉 Radix 的「grace area」——指针离开触发器后
+ *   不再为了能滑进气泡而把旧气泡多留一会儿。密集按钮行里气泡常压着隔壁按钮，留着
+ *   grace area 会表现为「旧提示挂着不走，隔壁按钮的提示同时冒出来」。
+ * - `pointer-events-none`（加在 `TooltipContent` 上）：气泡覆盖到哪个按钮，悬停 / 点击
+ *   就穿透到哪个按钮，不会再出现「提示挡住下一颗按钮、鼠标指不过去」。
+ *
+ * 代价是鼠标不能移进气泡（悬停即关闭）、气泡文字不可选中；本项目气泡全是一行标签，
+ * 没有可交互内容，所以是可以接受的取舍。
+ */
 function Tooltip({
+  disableHoverableContent = true,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
-  return <TooltipPrimitive.Root data-slot="tooltip" {...props} />
+  return (
+    <TooltipPrimitive.Root
+      data-slot="tooltip"
+      disableHoverableContent={disableHoverableContent}
+      {...props}
+    />
+  )
 }
 
 function TooltipTrigger({
@@ -88,7 +107,7 @@ function TooltipContent({
         sideOffset={sideOffset}
         collisionPadding={resolveCollisionPadding(props.collisionPadding)}
         className={cn(
-          "z-50 w-fit origin-(--radix-tooltip-content-transform-origin) animate-in rounded-md bg-foreground px-3 py-1.5 text-xs text-balance text-background fade-in-0 zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
+          "pointer-events-none z-50 w-fit origin-(--radix-tooltip-content-transform-origin) animate-in rounded-md bg-foreground px-3 py-1.5 text-xs text-balance text-background fade-in-0 zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
           className
         )}
         {...props}

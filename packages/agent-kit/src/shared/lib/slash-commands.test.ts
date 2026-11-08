@@ -13,13 +13,16 @@
  * 形状直接就跑（不能被「缺参数」拦下），且提示词里要有「看 status / diff / log」与
  * 「不 push」这些边界。
  */
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { setLanguage } from '@fizz/i18n'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import {
   builtinSlashCommands,
   resolveSlashDispatch,
   type SlashCommandContext
 } from './slash-commands'
+
+afterEach(() => setLanguage('zh'))
 
 /** 造一个只带命令用到的几块的 app：`send` / `setError` / `activeWorkspace` */
 function makeContext(hasWorkspace = true): {
@@ -60,6 +63,21 @@ describe('/init', () => {
     expect(prompt).toContain('先读，再动笔')
     // 关键：不再走脚手架
     expect(scaffold).not.toHaveBeenCalled()
+  })
+
+  it('界面是英文时，提示词与生成的文档都用英文', async () => {
+    setLanguage('en')
+    const { ctx, send } = makeContext()
+    const init = builtinSlashCommands(ctx).find((c) => c.name === 'init')
+
+    init?.run(ctx, '')
+    await flush()
+
+    expect(send).toHaveBeenCalledTimes(1)
+    const prompt = String(send.mock.calls[0]?.[0] ?? '')
+    expect(prompt).toContain('repository root')
+    expect(prompt).toContain('Write in English')
+    expect(prompt).not.toContain('项目根目录')
   })
 
   it('没有磁盘目录时报错，不发消息', async () => {

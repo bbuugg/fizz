@@ -11,6 +11,7 @@
  * 不再占一个斜线命令。整套解析 / 分发 / 浮层 / 补全保留：往数组里加命令即生效。
  */
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
+import { getLanguage } from '@fizz/i18n'
 
 /** 命令执行时拿到的上下文：app 门面 + 会话是否在跑（可用性与行为都看它） */
 export interface SlashCommandContext {
@@ -140,7 +141,7 @@ export function filterCommands(commands: SlashCommand[], token: string): SlashCo
  *
  * - `/init`：读项目、写 AGENTS.md。AGENTS.md 的价值全在正文（每轮全文注入的硬约束），
  *   一份「标题 + 空小节」的骨架等于让用户自己再写一遍 —— 早先就是这么做的，用户
- *   拿到手发现是空模板。所以它发一条提示词，让模型读项目、自己写（见 `INIT_PROMPT`）。
+ *   拿到手发现是空模板。所以它发一条提示词，让模型读项目、自己写（见 `initPrompt`）。
  * - `/git-commit`：把当前改动提交一次。提交信息由模型看 diff、照着仓库既有风格生成
  *   （见 `GIT_COMMIT_PROMPT`）—— 不接受用户手写的信息，免得两套入口。
  *
@@ -167,7 +168,7 @@ export function builtinSlashCommands(ctx: SlashCommandContext): SlashCommand[] {
       //
       // ⚠️ **不发模板**：早先走 `scaffoldFile({kind:'agents'})`，落一份「标题 + 四个空
       // 小节」，用户敲完拿到的是还得自己填的骨架 —— 而这个文件的全部价值就在内容。
-      // 现在改成把 `INIT_PROMPT` 发给模型：它读一遍项目，写出一份**已经能生效**的文档。
+      // 现在改成把 `initPrompt()` 发给模型：它读一遍项目，写出一份**已经能生效**的文档。
       name: 'init',
       displayName: '生成项目约束文档',
       description: '读一遍这个项目后生成 AGENTS.md（下一轮对话会被全文注入系统提示词）',
@@ -195,37 +196,63 @@ export function builtinSlashCommands(ctx: SlashCommandContext): SlashCommand[] {
 /**
  * `/init` 发给模型的提示词。
  *
- * 这几条必须在提示词里说死，否则模型很容易交出一份「项目介绍」：
+ * 结构对齐 [agents.md](https://agents.md/) 的官方写法：项目概览、构建与测试命令、
+ * 代码风格、测试说明、安全注意、其他约定；monorepo 另按子包放嵌套 AGENTS.md
+ *（Fizz 在读到子目录文件时会按需加载，越近的越优先，见 `readNestedProjectDocs`）。
  *
- * 1. **先读再写**（README / 依赖清单 / 目录结构 / 抽读入口文件），不许按框架名猜；
- * 2. **只写每轮都要在场的硬约束**，不写项目介绍、功能清单、目录树、安装教程 ——
- *    这份文件每轮全文注入，写多了就是每轮多付一次 token（上限见 `project-doc.ts`
- *    的 `MAX_PROJECT_DOC_CHARS`，超了会被截断）；
- * 3. **已存在就改、不重写**：那可能已经是用户手写过的资产，整份覆盖等于毁数据
- *    （与 scaffold 的「已存在 409」同一个立场）。
+ * 三条 Fizz 特有的约束仍要写死：
  *
- * 落点写死「项目根目录的 AGENTS.md」：`PROJECT_DOC_NAMES[0]` 就是它，模型建到子目录
- * 或改名成 CLAUDE.md 都读不到（根文档只读工作区根）。
+ * 1. **先读再写**（README / 依赖清单 / 目录结构 / CI 配置 / 抽读入口文件），不许按框架名猜；
+ * 2. **宁短勿长**：这份文件每轮全文注入，写多了就是每轮多付一次 token（上限见
+ *    `project-doc.ts` 的 `MAX_PROJECT_DOC_CHARS`，超了会被截断）；
+ * 3. **已存在就改、不重写**：那可能已经是用户手写过的资产，整份覆盖等于毁数据。
+ *
+ * 语言跟随界面：英文界面下提示词本身与生成的文档都用英文（`/init` 发出的提示词
+ * 会作为用户消息出现在对话里，中英混排同样会显得突兀）。
  */
-const INIT_PROMPT = `读一遍这个项目，然后在**项目根目录**生成 AGENTS.md（与 README、依赖清单同级；不要建在子目录，不要改名成 CLAUDE.md）。
+const INIT_PROMPT_ZH = `读一遍这个项目，在**项目根目录**创建 AGENTS.md（标准 Markdown，与 README、依赖清单同级；不要改名成 CLAUDE.md）。
 
-先读，再动笔：
-- 读 README / 依赖清单（package.json、pyproject.toml、Cargo.toml、go.mod 之类）/ 顶层目录结构；
-- 跳过 node_modules、dist、build、.git、vendor 这类产物或第三方目录；
-- 技术栈、构建命令、目录职责只写你在文件里**看到**的；不确定就抽读几个入口文件确认，别按框架名猜。
+先读，再动笔：读 README、依赖清单（package.json、pyproject.toml、Cargo.toml、go.mod 之类）、顶层目录结构和 CI 配置（.github/workflows 等），跳过 node_modules、dist、build、.git、vendor；技术栈、命令与目录职责只写文件里看到的，不确定就抽读入口文件，别按框架名猜。
 
-内容只写「每一轮对话都必须遵守」的硬约束，不要项目介绍、功能清单、目录树、安装教程。建议按这几节组织（用不上的删掉）：
-- 验证纪律：怎么算验证过了、哪些检查默认不跑
-- 架构：主要目录 / 模块各自的职责，新增代码该放哪
-- 硬约束：违反就会静默出错或破坏数据的规则（一条一行）
-- 环境速查：构建 / 测试命令、平台差异、已知的坑
+按下面的结构写，用不上的小节删掉：
+- 项目概览：一两句话说清这是什么、主要模块在哪；
+- 构建与测试：安装依赖、启动、构建、跑测试的实际命令；
+- 代码风格：格式化 / lint / 命名与写法约定，给能照抄的示例；
+- 测试说明：测试放在哪、怎么跑单个用例、提交前必须通过哪些检查；
+- 安全注意：密钥、权限、危险操作相关的坑；
+- 其他约定：提交信息 / PR 规范、部署步骤、大数据集等「会告诉新同事的内容」。
 
-每条都要具体到能照做（写清命令、路径、写法）；没有依据的宁可不写。
+这份文件每轮对话都会全文注入（上限约 16KB），所以每条都要具体到能照做，宁短勿长；空泛的项目介绍和目录树不要写。
 
-如果项目根已经有 AGENTS.md：先读它，在原内容上补充 / 修正，**不要整份重写**，已有的正确条目一律保留。
-如果根目录只有 CLAUDE.md（没有 AGENTS.md）：先读它，把里面的规则整理进新写的 AGENTS.md —— 两个文件同时存在时只读 AGENTS.md，留在 CLAUDE.md 里的东西会失效。
+monorepo：根 AGENTS.md 写通用规则，每个子包再放一份只写该包特有规则的 AGENTS.md —— agent 读到该目录时会自动加载，越近的越优先。
 
-写完告诉我：新增或改了哪些条目，以及哪些地方你还不确定、要我确认。`
+如果根目录已有 AGENTS.md：先读它，在原文上补充 / 修正，不要整份重写；如果只有 CLAUDE.md：先读它，把规则整理进新写的 AGENTS.md。
+
+**用中文写**。写完告诉我：新增或改了哪些条目，以及哪些地方你还不确定、要我确认。`
+
+const INIT_PROMPT_EN = `Read through this project, then create AGENTS.md at the **repository root** (standard Markdown, next to README and the dependency manifests; do not rename it to CLAUDE.md).
+
+Read first, then write: read the README, dependency manifests (package.json, pyproject.toml, Cargo.toml, go.mod, etc.), the top-level directory layout and CI config (.github/workflows and similar). Skip node_modules, dist, build, .git and vendor. State the stack, commands and directory responsibilities only as you actually see them in files; when unsure, skim the entry files instead of guessing from the framework name.
+
+Use this structure and drop sections that do not apply:
+- Project overview: one or two sentences on what this is and where the main modules live.
+- Build and test: the actual commands to install, start, build and test.
+- Code style: formatting / lint / naming and idiom conventions, with copyable examples.
+- Testing: where tests live, how to run a single test, which checks must pass before committing.
+- Security: pitfalls around secrets, permissions and dangerous operations.
+- Other conventions: commit message / PR rules, deployment steps, large datasets — anything you would tell a new teammate.
+
+This file is injected in full on every turn (about 16KB limit), so every item must be actionable and shorter is better; no vague project descriptions or directory trees.
+
+Monorepo: keep shared rules in the root AGENTS.md and add one AGENTS.md per package for package-specific rules — the agent loads the nearest one when reading files there, and the closest wins.
+
+If the root already has AGENTS.md: read it first, then amend / correct it in place; do not rewrite the whole file. If only CLAUDE.md exists: read it and fold its rules into the new AGENTS.md.
+
+**Write in English.** When done, tell me which entries you added or changed, and where you are unsure and need my confirmation.`
+
+function initPrompt(): string {
+  return getLanguage() === 'en' ? INIT_PROMPT_EN : INIT_PROMPT_ZH
+}
 
 /**
  * `/init` 的执行：发一条提示词，让模型自己读项目、写 AGENTS.md。
@@ -243,7 +270,7 @@ async function runInit(c: SlashCommandContext): Promise<void> {
     c.app.setError('先选一个有磁盘目录的项目（内置「任务」没有目录，写不了 AGENTS.md）')
     return
   }
-  const ok = await c.app.send(INIT_PROMPT)
+  const ok = await c.app.send(initPrompt())
   if (!ok) c.app.setError('没能发出 /init：这一下被拦住了（压缩上下文中 / 没有可用会话），稍后再试')
 }
 
@@ -258,16 +285,12 @@ async function runInit(c: SlashCommandContext): Promise<void> {
  */
 const GIT_COMMIT_PROMPT = `为当前工作区做一次提交。
 
-先看，再决定：
-- \`git status\` / \`git diff\`（必要时 \`git diff --staged\`）弄清楚改了哪些文件、改了什么；
-- \`git log --oneline -10\` 看一眼这个仓库的提交信息风格，照着写。
+先看 \`git status\`、\`git diff\`（必要时 \`--staged\`）和 \`git log --oneline -10\`，再动手。
 
-提交信息由你根据改动生成：一句话说清「做了什么、为什么」，具体到一眼能看懂；仓库已有固定风格（比如 Conventional Commits）就照它写，没有就别硬加前缀。
-
-只把这次改动相关的文件加入暂存区；无关文件、密钥、构建产物一律不要提交。
-不要 push —— 这条命令只做提交。
-如果工作区没有可提交的改动，直接告诉我，不要造空提交。
-完成后把提交 hash 与提交信息告诉我；失败就把 git 的原话贴出来。`
+- 提交信息由你根据改动生成：一句话说清做了什么、为什么；仓库已有固定风格就照它写，没有别硬加前缀。
+- 只暂存这次改动相关的文件；无关文件、密钥、构建产物不要提交。
+- 不要 push；没有可提交的改动就直接说，不要造空提交。
+- 完成后告诉我提交 hash 与提交信息；失败就贴 git 原话。`
 
 /**
  * `/git-commit` 的执行：和 `/init` 同一条路 —— 发一条提示词，让模型自己在工作区里提交。
