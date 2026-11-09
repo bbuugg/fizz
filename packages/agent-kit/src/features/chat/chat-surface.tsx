@@ -444,14 +444,20 @@ export function MessageList({
                         />
                       )}
                       {/*
-                        消息底部状态行（正在思考… / 第 N 次重试 / 正在重连）的**固定高度槽位**。
+                        消息底部状态行（正在思考… / 第 N 次重试 / 正在重连）。
 
                         ⚠️ 这行是**时有时无**的：尾段一落地就补上「正在思考…」，下一个 part 一开流
                         （正文 / 思考重新开始）又撤掉。直接放进内容流里，内容高度就在流式途中反复
-                        ±20px —— 贴底时 `use-stick-to-bottom` 每变一次尺寸都要重算滚动位置，
-                        眼睛看到的就是「列表被顶了一下」外加一次滚动（用户报的）。槽位高度恒等于
-                        一行 `text-sm` 的行高，行里有没有东西都不再改变内容高度；只有真正的正文
-                        变长才推动列表。
+                        ±一行 —— 贴底时 `use-stick-to-bottom` 每变一次尺寸都要重算滚动位置，
+                        眼睛看到的就是「列表被顶了一下」外加一次滚动（用户报的）。所以没什么可报
+                        的时候也要占住同样的一行高度。
+
+                        ⚠️ 但占位**不能写死像素**（原来这里是 `min-h-5`）：`h-5` 走的是
+                        `--spacing × --fizz-density`，而 `text-sm` 的行高走的是 `--fizz-text-scale`。
+                        内置主题几乎都让这两个倍率不相等（如 1.02× / 0.96×），于是行总比槽位高
+                        1~2px —— 这一行每次出现都把内容顶一下（用户报的「顶一点点」）。
+                        现在空着时渲染同一份 `ThinkingRow`（`placeholder` → `invisible`）：
+                        高度由真实的一行 `text-sm` 撑出来，与有字时逐像素一致，换字号 / 密度都不抖。
 
                         ⚠️ 槽位只挂在**最后一条助手消息**上（`isStreamingLast`）：历史消息后面
                         不能留一片空白。整轮结束时槽位跟着撤掉，那一下由下面的操作行接上。
@@ -460,15 +466,15 @@ export function MessageList({
                       message.role === 'assistant' &&
                       isStreamingLast &&
                       messageCompaction?.status !== 'streaming' ? (
-                        <div className="min-h-5">
-                          {/* 空 parts：只有「这一轮还什么都没吐」时才说正在思考 —— 已经挂了压缩卡
-                              的那种空 parts 属于「有内容但不在 parts 里」，别在这儿补一句干等 */}
-                          {(message.parts.length === 0
-                            ? !messageCompaction
-                            : isWaitingNextStep(message.parts)) ? (
-                            <StreamingStatusNotice retryNotice={retryNotice} reconnectNotice={reconnectNotice} />
-                          ) : null}
-                        </div>
+                        /* 空 parts：只有「这一轮还什么都没吐」时才说正在思考 —— 已经挂了压缩卡
+                           的那种空 parts 属于「有内容但不在 parts 里」，别在这儿补一句干等 */
+                        (message.parts.length === 0
+                          ? !messageCompaction
+                          : isWaitingNextStep(message.parts)) ? (
+                          <StreamingStatusNotice retryNotice={retryNotice} reconnectNotice={reconnectNotice} />
+                        ) : (
+                          <ThinkingRow placeholder />
+                        )
                       ) : null}
                     </MessageContent>
 

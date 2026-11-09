@@ -48,13 +48,23 @@ import type { AgentChatMessage } from '@fizz/contracts/agent-api'
  *
  * 文案用 `ShimmerLabel`（与分组抬头、思考条触发器同一份组件）：同一个「思考中」不能
  * 一会儿扫光、一会儿转圈，观感要一致。
+ *
+ * `placeholder`：给消息底部那个「状态行槽位」占位用（这时没什么可报，比如工具刚出结果、
+ * 模型还没开始下一步）。占位借的是**同一份排版**而不是写死高度 —— `text-sm` 的行高跟
+ * 字号倍率走，固定 `h-5` 跟界面密度走，两者不等时占位会和真行差 1~2px，这一行每次
+ * 出现 / 撤掉都会把内容顶一下。`invisible` 只藏绘制，布局照占；顺带别让扫光在空中白转。
  */
-export function ThinkingRow() {
+export function ThinkingRow({ placeholder = false }: { placeholder?: boolean }) {
   // 订阅语言：切成英文后这行字要跟着变（`useT()` 同时提供文案）
   const tr = useT()
   return (
-    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-      <ShimmerLabel>{tr('正在思考…')}</ShimmerLabel>
+    <div
+      className={cn(
+        'flex items-center gap-2 text-sm text-muted-foreground',
+        placeholder && 'invisible'
+      )}
+    >
+      <ShimmerLabel active={!placeholder}>{tr('正在思考…')}</ShimmerLabel>
     </div>
   )
 }
