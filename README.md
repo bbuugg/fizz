@@ -10,11 +10,9 @@
 
 **自托管的 AI Agent 工作台。**
 
-把 Fizz 部署在一台机器上，你或同事用浏览器打开对应网址就能和 AI 对话，让它读代码、改文件、跑命令、管 Git、连服务器——不需要在每台电脑上装客户端。
+把 Fizz 部署在一台机器上，你或同事用浏览器打开对应网址就能和 AI 对话，让它读代码、改文件、跑命令、管 Git、连服务器——不需要在每台电脑上装客户端。工作区可以在本机，也可以直接放在**已登记的 SSH 主机**上。
 
 所有能力跑在**一个 Node 进程**里：HTTP 接口、SSE 对话流、Web 页面、终端（PTY）、SSH / SFTP 全部同源提供，部署只需要一个端口。除网页版外还提供 **Electron 桌面端**（把同一个 server 装进进程内跑）和 **Capacitor 安卓端**。
-
-> **部署形态提示**：「容器型项目」需要 `docker run` 起新容器并挂宿主机真实路径，所以要求 server 跑在**宿主机**上。用主 Docker 容器跑「工作区 / 会话 / 终端 / 主机 / 后台任务」完全正常，容器型项目会如实显示「docker 不可用」，不影响其他功能。
 
 ---
 
@@ -38,7 +36,7 @@
 - **源代码管理**：分支切换 / 新建、改动树、逐文件 diff、暂存与还原、提交、推送、历史记录。回滚有策略保护。
 - **终端**：真正的 PTY 终端（`node-pty`），支持命令补全建议、ZMODEM 上传下载、手机端扩展键位。
 - **worktree**：在项目下按分支拉独立工作树（`<项目>/.worktree/<标识>`），登记成新项目，互不干扰。
-- **远端 SSH 工作区**：工作区目录可以放在一台已登记的 SSH 主机上（如 `/srv/app`）。Agent 的列目录 / 读写 / 编辑 / 搜索 / 执行命令都经 SFTP 与远端 shell 完成，会话、审批与历史仍保存在本机。终端、源码管理与文件面板都开在远端（源码管理的 git 命令经 SSH 在远端主机上执行；文件面板的列目录 / 读写 / 上传 / 打包下载 / 媒体预览走 SFTP）。首期**不支持** worktree、技能 / 项目规则注入、插件 / MCP / ACP 与后台命令。SSH 连接不做主机指纹校验（与既有 SSH 功能一致），请自行确保网络可信。
+- **远端 SSH 工作区**：工作区目录可以放在已登记的 SSH 主机上（如 `/srv/app`），Agent 的文件与命令操作全部在远端执行。详见下方「[远端 SSH 工作区](#远端-ssh-工作区)」。
 - **容器型项目**：每个项目一个独立容器，AI 的所有操作都在容器内；目录由服务端按随机 slug 生成。内置运行环境：Node.js 24、PHP 8.5、Go 1.27、Node + Vite/React/Tailwind、Node + Next.js/Tailwind。后两种 Web 栈镜像自带模板与自动启动，新建完打开就有页面。
 - **预览与对外发布**：容器内 dev server 的端口映射到本机预览面板；需要公网时把项目挂到 `*.<域名>` 下（独立监听端口 + 显式「对外发布」开关）。
 - **脚本**：把常用命令存成带分组、带描述的脚本，选一台主机或本地直接跑。
@@ -72,13 +70,19 @@
 - **界面自定义**：明暗模式、内置配色主题、自定义主题（逐项改色）、主题背景（图片或视频）、可拖拽排序的活动栏与面板分屏。
 - **中英双语**：中文为源文案与默认语言，英文缺失项自动回落，不会出现空白。
 
-### 安全
+---
 
-- **登录鉴权**：单用户密码（只存 scrypt 哈希）换服务端签发的 JWT（默认 30 分钟），HTTP 走 `Authorization: Bearer`，WS 走 `?token=`。配了 `FIZZ_JWT_SECRET` 才启用；不配就是开发态全放行。
-- **滑块验证码**：鉴权启用时默认开启，进程内现画拼图，答案只留内存，校验轨迹耗时。零外部依赖。
-- **登录限流**：按 IP 滑动窗口（默认 60 秒 10 次），超限返回 429 + `Retry-After`。
-- **密钥加密落盘**：API Key / 主机凭据用 AES-256-GCM（`SecretBox`）加密，主密钥来自 `FIZZ_SECRET_KEY` 或数据目录的 `secret.key`。
-- **视图不含明文**：模型配置对外只给 `hasApiKey`，容器 Agent 只给 `envKeys` 列表；主机导出包不带密码与私钥。
+## 远端 SSH 工作区
+
+工作区不必长在本机：把一台**已登记的 SSH 主机**上的目录接进来，就能像本地项目一样让 AI 读写与执行。
+
+1. **添加主机**：先在「主机」里登记 SSH 地址与凭据（密码 / 私钥 / 口令，加密保存）。
+2. **连接远端目录**：在「开始新对话」页的工作区下拉里选「连接远端服务器…」，选主机、填远端 POSIX 绝对路径（如 `/srv/app`）。路径是否存在由服务端经 SFTP 现探，失败原因就地提示；也可以直接浏览远端目录。
+3. **照常使用**：Agent 的列目录 / 读 / 写 / 编辑 / 搜索 / 执行命令经 SFTP 与远端 shell 完成；终端走 SSH 通道，文件面板走 SFTP，源码管理的 git 命令也在远端执行。
+
+会话、审批记录与对话历史**仍保存在本机**，远端只承载目录与命令执行。远端命令运行在 Linux 的 POSIX shell 中，路径是远端绝对路径。
+
+> **首期限制**：不支持 worktree、多智能体协作会话、外部 Agent（ACP）、技能 / 插件、项目规则（`AGENTS.md`）注入、浏览器工具与后台命令（`runInBackground`）；全局 MCP 与子任务（Subagent）照常可用。SSH 连接不做主机指纹校验（与既有 SSH 功能一致），请自行确保网络可信。
 
 ---
 
@@ -103,31 +107,31 @@
 
 ### 首页 · 会话与工作区
 
-左侧是「新对话 / 定时任务 / 任务 / 工作区」清单，中间直接下指令（`Enter` 发送，`Shift+Enter` 换行），右侧可以并排开终端、文件、源码管理等标签页——下图右边就是一个连着服务器的终端。底部状态栏实时显示服务端的 CPU 与内存占用。
+左侧是「新对话 / 定时任务 / 任务 / 工作区」清单，中间直接下指令（`Enter` 发送，`Shift+Enter` 换行），右侧可并排开终端、文件、源码管理等标签页。底部状态栏显示服务端资源占用。
 
 ![首页](screenshots/home.png)
 
 ### 工作区 · 文件
 
-点开工作区里的文件就能在 Monaco 里读写，图片 / SVG、音视频、Markdown、HTML 有内置预览。右侧面板与会话并排（可拖拽分屏），边聊边改；顶栏右侧那排按钮是快捷功能、终端、分屏、文件面板等入口。
+点开文件即可在 Monaco 里读写，图片 / SVG、音视频、Markdown、HTML 有内置预览。右侧面板与会话并排（可拖拽分屏），边聊边改。
 
 ![工作区文件面板](screenshots/desktop_filepanel.png)
 
 ### 工作区 · 源码管理
 
-分支切换、提交信息、改动文件树、逐文件暂存 / 还原、提交，全在浏览器里完成；顶部还有刷新、推送、回滚与「全部暂存」。下图是 53 个待提交改动的真实场景。
+分支切换、逐文件暂存 / 还原、提交、推送与历史记录都在浏览器里完成。下图是 53 个待提交改动的真实场景。
 
 ![工作区源码管理](screenshots/desktop_gitpanel.png)
 
 ### 设置
 
-设置按「基础 / 终端 / AI」分组：通用、外观、快捷键；模型、外部 Agent、MCP、技能、插件、运行环境、用量、历史会话都在这一层。下图是插件页——内置与用户级两个插件目录，每个插件有独立开关和「配置 N 项」。
+设置按「基础 / 终端 / AI」分组，模型、外部 Agent、MCP、技能、插件、运行环境、用量都在这一层。下图是插件页。
 
 ![设置 · 插件](screenshots/setting.png)
 
 ### 桌面端
 
-桌面端是 Electron 壳 + 进程内 server：自绘标题栏（右上角是窗口控制与设置入口），主题背景（图片 / 视频）会透到整个窗口，另外还有托盘常驻与会话浮窗。下图右侧是一个连着 SSH 主机的终端。
+Electron 壳 + 进程内 server：自绘标题栏、主题背景（图片 / 视频）透到整个窗口，另有托盘常驻与会话浮窗。
 
 ![桌面端](screenshots/desktop.png)
 
@@ -163,6 +167,12 @@ docker compose exec fizz git config --global user.name  "你的名字"
 ```
 
 > **鉴权**：单用户，没有用户名。至少要配 `FIZZ_JWT_SECRET` 才会启用登录；`FIZZ_AUTH_PASS` 留空即可，首次登录时输入的密码会哈希后写回 `.env`。
+>
+> **数据卷**：`fizz-data` → `/data`（配置 / 会话 / 加密后的 Key / Git 全局配置）；`fizz-home` → `/home/fizz/.fizz`（自建技能目录，不挂载则重启丢失）；`./workspace` → `/workspace`（AI 可读写目录）。注册工作区时填**容器内路径** `/workspace`。
+>
+> **文件属主**：`PUID` / `PGID` 填宿主机 `id -u` / `id -g`，容器内新建的文件在宿主机上就属于你本人；工作区目录也要 `chown` 成同一属主。Compose 另有 `FIZZ_WORKSPACE`（宿主机上给 AI 操作的目录）与 `FIZZ_SSH_DIR`（宿主机 `.ssh`，只读挂载）两个变量。
+>
+> **限制**：容器型项目需要 `docker run` 起新容器，要求 server 跑在宿主机上；主 Docker 容器里没有 docker CLI，该功能会显示「docker 不可用」，其他功能不受影响。
 
 ### 方式二：本地直接运行
 
@@ -193,29 +203,7 @@ npm run pack:desktop    # 免安装目录
 npm run dist:desktop    # 当前平台安装包（另有 dist:win / dist:mac / dist:linux）
 ```
 
-桌面端与网页版共用数据目录（`~/.fizz-server`，可用 `FIZZ_DATA_DIR` 覆盖）。
-`npm run dev:desktop` 例外：它用独立的 `Fizz Dev` userData（数据目录在
-`<userData>/server-data`），所以 **dev 版可以和安装好的客户端同时运行**，
-两边不会抢单实例锁，也不会互相覆盖存储。想让 dev 版连真实数据时显式设置
-`FIZZ_DATA_DIR`（此时别同时开另一个实例写同一份数据）。
-
-`FIZZ_DATA_DIR` 是原样使用的，**不做 `~` 展开**，各平台都要写绝对路径：
-
-```powershell
-# PowerShell：临时生效（当前窗口），然后从这个窗口启动 dev
-$env:FIZZ_DATA_DIR = "$env:USERPROFILE\.fizz-server"
-npm run dev:desktop
-
-# 永久生效（之后新启动的进程都能读到；需要重开终端 / 重启已开的客户端）
-setx FIZZ_DATA_DIR "$env:USERPROFILE\.fizz-server"
-```
-
-```bat
-:: cmd：临时生效
-set FIZZ_DATA_DIR=%USERPROFILE%\.fizz-server
-:: cmd：永久生效
-setx FIZZ_DATA_DIR "%USERPROFILE%\.fizz-server"
-```
+桌面端与网页版共用数据目录（`~/.fizz-server`，可用 `FIZZ_DATA_DIR` 覆盖）。`npm run dev:desktop` 例外：它用独立的 `Fizz Dev` userData（数据目录在 `<userData>/server-data`），所以 **dev 版可以和安装好的客户端同时运行**，两边不会抢单实例锁，也不会互相覆盖存储。想让 dev 版连真实数据时显式设置 `FIZZ_DATA_DIR`（此时别同时开另一个实例写同一份数据）。`FIZZ_DATA_DIR` 是原样使用的，**不做 `~` 展开**，各平台都要写绝对路径。
 
 ### 方式四：安卓端
 
@@ -227,166 +215,20 @@ npm run android:build                         # 出 release APK
 
 APK 首次登录必须填服务端绝对地址（页面 origin 是 `https://localhost`），填完存本机，换服务器不用重装。
 
-**签名（重要）**：`android/` 是 `cap add android` 的生成物，默认没有签名配置；CI 若用
-`assembleDebug` 会每台 runner 现场生成一把随机 debug keystore，**每次构建签名都不同**，
-覆盖安装时系统报「签名不一致」，只能卸载重装。所以发布包统一用固定 release keystore 签名。
+**签名（重要）**：`android/` 是 `cap add android` 的生成物，默认没有签名配置。发布包必须用**固定 release keystore** 签名——用 `assembleDebug` 会让每台机器现场生成随机 debug keystore，覆盖安装时报「签名不一致」，只能卸载重装。keystore 只需生成一次并长期复用，丢失后无法再覆盖安装已发布的版本。
 
-1. 生成一把（只需一次，之后一直复用；丢了就再也无法覆盖安装已发布的版本）：
-
-```bash
-keytool -genkeypair -v -keystore fizz-release.keystore \
-  -alias fizz -keyalg RSA -keysize 2048 -validity 10000 \
-  -storepass <store密码> -keypass <key密码>
-base64 -w0 fizz-release.keystore    # Windows: certutil -encode fizz-release.keystore tmp.b64
-```
-
-2. 在仓库 Secrets 里配置（Android job 缺任意一个都会直接失败，不会静默退回 debug 签名）：
-
-| Secret | 值 |
-| --- | --- |
-| `ANDROID_KEYSTORE_BASE64` | 上面 base64 的整行内容 |
-| `ANDROID_KEYSTORE_PASSWORD` | store 密码 |
-| `ANDROID_KEY_ALIAS` | 别名（上面是 `fizz`） |
-| `ANDROID_KEY_PASSWORD` | key 密码 |
-
-3. 本地出包时导出同名环境变量（`FIZZ_ANDROID_KEYSTORE` 指向 keystore 路径、
-   `FIZZ_ANDROID_KEYSTORE_PASSWORD` / `FIZZ_ANDROID_KEY_ALIAS` / `FIZZ_ANDROID_KEY_PASSWORD`），
-   `npm run android:build` 会用同一把签名；不导出则退回 debug 签名（仅供本地自测，不可覆盖安装）。
-   签名注入由 `apps/mobile/scripts/configure-android-signing.mjs` 在 `npm run sync` 时完成。
+签名注入由 `apps/mobile/scripts/configure-android-signing.mjs` 在 `npm run sync` 时完成：CI 读 `ANDROID_KEYSTORE_BASE64` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS` / `ANDROID_KEY_PASSWORD` 四个 Secret（缺任意一个直接失败，不会静默退回 debug 签名）；本地则导出对应的 `FIZZ_ANDROID_KEYSTORE`（路径）/ `FIZZ_ANDROID_KEYSTORE_PASSWORD` / `FIZZ_ANDROID_KEY_ALIAS` / `FIZZ_ANDROID_KEY_PASSWORD`。
 
 ---
 
 ## 基本使用
 
 1. **配模型**：设置 → AI → 模型，填 provider、API Key、模型名（OpenAI 兼容网关还要填 baseURL）。
-2. **建工作区**：侧栏「新建工作区」选一个目录（Docker 部署时填容器内路径 `/workspace`）。也可以从 Git 克隆、新建 worktree，或建一个容器型项目。
+2. **建工作区**：在「开始新对话」页的工作区下拉里选择目录（Docker 部署时填容器内路径 `/workspace`）；也可以从 Git 导入、连接远端 SSH 目录、新建 worktree 或容器型项目。
 3. **开聊**：直接描述要做的事，例如「帮我看看最近一次提交改了什么」「把这个函数的命名改规范」。需要动文件或跑命令时会弹确认卡片。
 4. **边聊边改**：右侧面板切「文件 / 源码管理 / 终端」，改完让 AI 复核，或直接让它提交。
 5. **调权限**：设置 → AI → 偏好，按信任程度在「只读 / 确认 / 完全访问」之间切。
 6. **固化习惯**：把项目规矩写进 `AGENTS.md`，把常用流程写成 `SKILL.md`，把重复任务挂成定时任务。
-
----
-
-## 快捷键
-
-全部可在「设置 → 快捷键」里改。macOS 上 `Ctrl/Cmd` 显示为 `⌘`。
-
-| 快捷键 | 作用 |
-| --- | --- |
-| `Ctrl/Cmd + Shift + P` | 命令面板 |
-| `Ctrl/Cmd + Alt + S` | 设置 |
-| `Ctrl/Cmd + Alt + B` | 打开 / 关闭侧边栏 |
-| `Ctrl/Cmd + Alt + N` | 新建会话 |
-| `Ctrl/Cmd + Alt + E` | 打开 / 关闭工作区文件 |
-| `Ctrl/Cmd + Alt + G` | 打开 / 关闭源代码管理 |
-| `` Ctrl/Cmd + Shift + ` `` | 打开 / 关闭终端 |
-| `Ctrl/Cmd + Alt + L` | 切换亮 / 暗主题 |
-| `Ctrl/Cmd + W` | 关闭当前标签（仅桌面端，浏览器会拦这个组合） |
-| `Ctrl/Cmd + Shift + Enter` | 推送（焦点在源代码管理面板时） |
-| `Ctrl/Cmd + S` | 保存当前文件（文件面板内） |
-| `Alt + V` | 语音输入（按住说话） |
-
----
-
-## 配置
-
-配置写在项目根目录的 `.env`（照 `.env.example` 抄）。server 启动时读一次：**真实环境变量优先**，`.env` 只补还没设的项——容器注入的值不会被文件里的旧值顶掉。
-
-### 鉴权与安全
-
-| 变量 | 说明 | 默认 |
-| --- | --- | --- |
-| `FIZZ_AUTH_PASS` | 登录密码的 **scrypt 哈希**；留空 = 首次登录时设置密码 | 空 |
-| `FIZZ_JWT_SECRET` | JWT 签名密钥，`openssl rand -base64 32` 生成；配了才启用登录 | 不设置则免登录 |
-| `FIZZ_TOKEN_TTL` | 登录令牌有效期（分钟） | `30` |
-| `FIZZ_AUTH_CAPTCHA` | 滑块验证码，鉴权启用时默认开；`0` 关闭 | 开 |
-| `FIZZ_RATE_LIMIT` | 登录限流；`0` 关闭 | 开 |
-| `FIZZ_LOGIN_RATE_MAX` / `FIZZ_LOGIN_RATE_WINDOW_SEC` | 限流阈值 | `10` 次 / `60` 秒 |
-| `FIZZ_SECRET_KEY` | 加密 API Key 的主密钥（32 字节 base64） | 自动生成到数据目录 |
-| `FIZZ_CAPTCHA_*` | 验证码尺寸、容差、有效期、签发限流等细项 | 见 `.env.example` |
-
-> 登录令牌**不绑定 IP**（IP 会随网络漂移造成无谓掉线），改为短有效期 + 服务端校验签名，换网络不用重新登录。
->
-> **修改密码**：桌面端「设置 → 通用 → 远程访问」里有「修改密码」（先用旧密码验证）；独立部署没有 UI 入口，忘记密码时把 `.env` 里的 `FIZZ_AUTH_PASS` 清空后重启（Docker 纯环境变量部署则删掉数据目录的 `auth-password`），下次登录输入什么就是新密码。
-
-### 服务与路径
-
-| 变量 | 说明 | 默认 |
-| --- | --- | --- |
-| `FIZZ_HOST` | 监听地址 | `127.0.0.1`（容器内需 `0.0.0.0`） |
-| `FIZZ_PORT` | 监听端口 | `7801` |
-| `FIZZ_DATA_DIR` | 配置 / 会话 / 密钥存放目录 | `~/.fizz-server` |
-| `FIZZ_CONFIG_DIR` | 全局规则目录（读其中的 `AGENTS.md` / `CLAUDE.md`） | `~/.config/fizz` |
-| `FIZZ_WEB_DIR` | 同源托管的网页产物目录 | `apps/web/dist` |
-| `FIZZ_CORS_ORIGINS` | 允许的跨域来源，逗号分隔（同源部署不需要） | 放行本地 5173 / 5175 / 5178 / 5180 与 Capacitor origin |
-| `FIZZ_PUBLIC_BASE_URL` | 给模型的附件 URL 对外前缀 | 取请求 origin |
-| `FIZZ_UPLOAD_BACKEND` | 附件存储后端 | `local` |
-| `FIZZ_SKIP_ENV_FILE` | 设为 `1` 时不读 `.env`（端到端验证用） | 不设置 |
-| `TZ` | 时区 | `Asia/Shanghai` |
-
-### 模型与任务
-
-| 变量 | 说明 | 默认 |
-| --- | --- | --- |
-| `FIZZ_CONTEXT_BUDGET` | 上下文兜底窗口（token），模型自己配了窗口的以模型为准 | `200000` |
-| `FIZZ_SUBAGENT_IDLE_TIMEOUT_MS` | 子任务空闲看门狗，超时中止本轮；`0` 关闭 | `120000` |
-| `FIZZ_CONTAINER_WAKE_TIMEOUT_MS` | 冷启动等容器内 Agent 就绪的上限 | `60000` |
-
-### 项目与容器
-
-| 变量 | 说明 | 默认 |
-| --- | --- | --- |
-| `FIZZ_PROJECTS_ROOT` | 「新建项目」弹窗的默认落点 | `<数据目录>/projects` |
-| `FIZZ_CONTAINER_PROJECTS_ROOT` | 容器型项目根（每个项目一个随机 slug 子目录） | `<数据目录>/containers` |
-| `FIZZ_CONTAINER_IMAGE_<ENV>` | 覆盖某个环境镜像 tag（`NODE` / `PHP` / `GOLANG` / `VITE` / `NEXTJS`） | 内置 `fizz/agent-*:latest` |
-| `FIZZ_PUBLIC_HTTP_PORT` | 容器预览的公网入口端口；不设 = 不对外 | 关闭 |
-| `FIZZ_PUBLIC_IP` | 设置页「解析到」显示的地址 | 本机第一个非回环 IPv4 |
-
-### Docker Compose 专用
-
-| 变量 | 说明 |
-| --- | --- |
-| `FIZZ_WORKSPACE` | 宿主机上给 AI 操作的目录，容器里挂成 `/workspace` |
-| `FIZZ_SSH_DIR` | 宿主机 `.ssh` 目录（只读挂载，用 SSH 形式的 git 远端时需要） |
-| `PUID` / `PGID` | 容器内运行身份，填宿主机 `id -u` / `id -g` |
-
-### Docker 数据卷
-
-- `fizz-data` → `/data`：配置、会话历史、加密后的 API Key、Git 全局配置
-- `fizz-home` → `/home/fizz/.fizz`：自己加的技能目录（不挂载则重启丢失）
-- `./workspace` → `/workspace`：AI 能读写的目录。**注册工作区时填容器内路径 `/workspace`**，不是宿主机路径——网页端的「选择文件夹」浏览的是 server 的文件系统
-
-### 用宿主机身份写文件（可选）
-
-设 `PUID` / `PGID` 后，容器里新建的文件在宿主机上属于你本人，Git 也不会再报 `dubious ownership`。记得把工作区目录也改成同一属主：
-
-```bash
-sudo chown -R $(id -u):$(id -g) /srv/my-project
-```
-
----
-
-## 项目结构
-
-`packages/*` 按能力拆分，`apps/*` 是各个端：
-
-| 路径 | 职责 |
-| --- | --- |
-| `packages/contracts` | 共享领域类型 + HTTP/SSE 契约 |
-| `packages/workspace` | 存储、会话真源、各领域业务逻辑 |
-| `packages/agent` | 模型解析、agent 循环、对话编排、子任务、协作运行时 |
-| `packages/tools` | Agent 工具集（文件 / 命令 / 抓取 / 截图 / 浏览器 / Git 只读） |
-| `packages/skills` / `plugin` / `mcp` / `acp` | 技能发现、插件框架、MCP、外部 Agent 客户端 |
-| `packages/git` / `shells` | worktree 操作、本机 shell 探测 |
-| `packages/agent-client` | 能力层：请求、传输、宿主契约（零 React） |
-| `packages/agent-kit` | 三端共用的界面外壳、功能区与业务面板（React） |
-| `packages/ui` / `ui-tokens` / `i18n` | 组件库、设计令牌、中英文案 |
-| `packages/agent-host` | server 直连 + PTY / SSE 桥（桌面端专用） |
-| `apps/server` | Hono 服务端：HTTP + SSE + WebSocket，同源托管网页 |
-| `apps/web` | 浏览器端 |
-| `apps/desktop` | Electron 壳：托盘、浮窗、自动更新、局域网远程访问 |
-| `apps/mobile` | Capacitor 安卓壳（独立 vite 工程） |
-| `docker/container-project` | 容器型项目的镜像定义与容器内 Agent 运行时 |
 
 ---
 

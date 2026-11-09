@@ -28,6 +28,7 @@
  */
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Ellipsis } from 'lucide-react'
+import { LiquidGlassButton } from '@fizz/ui/liquid-glass'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import type { TerminalAction } from '@fizz/agent-kit/features/terminal/terminal-actions'
@@ -300,7 +301,7 @@ export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
     if (!drag.moved) {
       if (Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return
       drag.moved = true
-      // 一开始拖就收起圆环：手指正在换位置，圆环跟着飘只会碍事；同时关掉磨砂与阴影
+      // 一开始拖就收起圆环：手指正在换位置，圆环跟着飘只会碍事；同时关掉磨砂（`frosted={false}`）
       setOpen(false)
       setDragging(true)
     }
@@ -411,7 +412,7 @@ export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
             这几颗 Radix Tooltip 包着的按钮、还要重排它们的 left/top —— 都是白白吃掉
             帧预算（按钮是收着的，用户根本看不见）。
 
-            每颗都是**和球同款的圆形按钮**（同样的大小、同样的中性灰 + 磨砂），沿环摆开；
+            每颗都是**和球同款的圆形按钮**（同样的大小、同样的液态玻璃），沿环摆开；
             图标用 `grid place-items-center` 居中 —— 不同图标的 svg 自带宽高 / 对齐方式
             略有差别，靠容器居中最稳，别指望 svg 自己是居中的。
           */}
@@ -421,8 +422,7 @@ export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
               if (!spot) return null
               return (
                 <IconTip key={action.key} label={action.label}>
-                  <button
-                    type="button"
+                  <LiquidGlassButton
                     aria-label={action.label}
                     // 不让按钮 / 终端抢焦点：移动端一点就弹软键盘。
                     onPointerDown={(e) => {
@@ -435,26 +435,21 @@ export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
                       action.onClick()
                     }}
                     style={{ left: spot.x, top: spot.y, width: ITEM, height: ITEM }}
-                    className={cn(
-                      'pointer-events-auto absolute grid place-items-center rounded-full shadow-lg shadow-black/25',
-                      'bg-neutral-500/70 text-white/90 backdrop-blur-md transition-colors hover:bg-neutral-500/85 active:bg-neutral-500/90',
-                      'animate-in fade-in-0 zoom-in-90 duration-150',
-                      action.active && 'bg-white/25 text-white'
-                    )}
+                    selected={action.active}
+                    className="pointer-events-auto absolute animate-in fade-in-0 zoom-in-90 duration-150"
                   >
                     <span className="grid size-4 place-items-center">{action.icon}</span>
-                  </button>
+                  </LiquidGlassButton>
                 </IconTip>
               )
             })}
 
-          {/* 球本体：小米悬浮球那种**中性灰 + 微透明**，颜色不随主题翻面（浅色下是深灰球，
-              暗色下也是同一颗灰球）；按下时球心缩一下（独立内层，避免位置 transform 与
-              缩放 transform 打架）。拖动期间还得降磨砂 —— 位置改动每帧重算 backdrop 是
-              「拖不跟手」的主因。 */}
-          <button
+          {/* 球本体：iOS 26 液态玻璃（`LiquidGlassButton`）。按下时**整颗球**一起缩；
+              拖动中按住但不缩，同时把磨砂关掉（渐变 / 高光 / 描边 / 投影都还在，
+              玻璃感保留，只是不跑 backdrop-filter）—— 外层的 transform 只跑位置
+              （拖动 / 贴边），玻璃层的缩放与描边、投影、图标都归内层管。 */}
+          <LiquidGlassButton
             ref={ballRef}
-            type="button"
             aria-label="终端操作"
             aria-expanded={open}
             title="点击展开 · 拖动后自动贴边"
@@ -462,6 +457,8 @@ export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerCancel}
+            frosted={!dragging}
+            pressed={pressed && !dragging}
             style={{
               transform: `translate3d(${pos.x}px, ${pos.y}px, 0)`,
               width: BALL,
@@ -473,22 +470,13 @@ export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
                 : 'transform 320ms cubic-bezier(0.16, 1, 0.3, 1), background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease'
             }}
             className={cn(
-              'pointer-events-auto absolute top-0 left-0 flex items-center justify-center overflow-hidden rounded-full shadow-lg shadow-black/25',
+              'pointer-events-auto absolute top-0 left-0',
               'cursor-grab active:cursor-grabbing',
               dragging && 'will-change-transform'
             )}
           >
-            <span
-              aria-hidden
-              className={cn(
-                // 缩放反馈放在内层：外层的 transform 只管位置（拖动/吸附），不掺缩放
-                'absolute inset-0 rounded-full transition-transform duration-150 ease-out',
-                dragging ? 'bg-neutral-500/85' : 'bg-neutral-500/70 backdrop-blur-md',
-                pressed ? 'scale-90' : 'scale-100'
-              )}
-            />
-            <Ellipsis className="relative size-4 text-white" />
-          </button>
+            <Ellipsis className="size-4 text-foreground" />
+          </LiquidGlassButton>
         </>
       ) : null}
     </div>
