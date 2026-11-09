@@ -18,6 +18,7 @@ import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import type {
   SettingsCommonProps,
   SettingsPlatform,
+  SettingsSelectionProps,
   SettingsTabId
 } from '@fizz/agent-kit/features/settings/types'
 import { buildSettingsGroups, resolveInitialTab } from '@fizz/agent-kit/features/settings/sections'
@@ -28,20 +29,29 @@ export function DesktopSettingsPanel({
   platform,
   className,
   initialTab,
+  tab: tabProp,
+  onTabChange,
   ...common
-}: SettingsCommonProps & {
-  /** 这台宿主是谁（菜单按它过滤，见 `sections.ts`） */
-  platform: SettingsPlatform
-  /** 宽高由调用方给：标签页铺满整个主区域（`SettingsTabContent`） */
-  className?: string
-  /** 打开时落在哪个分组（模型选择下拉的设置入口用）；只在挂载时生效一次 */
-  initialTab?: SettingsTabId
-}) {
+}: SettingsCommonProps &
+  SettingsSelectionProps & {
+    /** 这台宿主是谁（菜单按它过滤，见 `sections.ts`） */
+    platform: SettingsPlatform
+    /** 宽高由调用方给：标签页铺满整个主区域（`SettingsTabContent`） */
+    className?: string
+    /** 打开时落在哪个分组（模型选择下拉的设置入口用）；只在挂载时生效一次 */
+    initialTab?: SettingsTabId
+  }) {
   useLanguage()
   const groups = buildSettingsGroups(common.app, platform)
-  // 弹窗关闭时 Radix 会卸载内容，下次打开重新挂载 —— initialTab 只在挂载时生效一次。
-  // 指定的分组在这台宿主上没有时退回第一项（别渲染一个菜单里不存在的空白页）。
-  const [tab, setTab] = useState<string>(() => resolveInitialTab(groups, initialTab))
+  // 受控时以宿主为准（设置标签把它提在标签层，见 `SettingsSelectionProps`）；不受控时
+  // 自己管。两者都过一遍 `resolveInitialTab`：传进来的分组若在这台宿主上不存在
+  // （例如手机版被传了 `shortcuts`），退回第一项，别渲染菜单里没有的空白页。
+  const [ownTab, setOwnTab] = useState<string>(() => resolveInitialTab(groups, initialTab))
+  const tab = resolveInitialTab(groups, tabProp ?? ownTab)
+  const selectTab = (next: string): void => {
+    if (tabProp === undefined) setOwnTab(next)
+    onTabChange?.(next)
+  }
 
   return (
     <div className={cn('flex min-h-0 flex-1 gap-2 px-2 pb-2', className)}>
@@ -57,7 +67,7 @@ export function DesktopSettingsPanel({
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setTab(item.id)}
+                  onClick={() => selectTab(item.id)}
                   className={cn(
                     'mb-0.5 flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm transition-colors',
                     tab === item.id
@@ -73,7 +83,7 @@ export function DesktopSettingsPanel({
             </div>
           ))}
         </div>
-        <SettingsFooter onOpenGeneral={() => setTab('general')} />
+        <SettingsFooter onOpenGeneral={() => selectTab('general')} />
       </nav>
 
       <div className="flex min-w-0 flex-1 flex-col rounded-lg bg-background p-4">

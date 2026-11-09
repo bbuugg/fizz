@@ -55,6 +55,7 @@ import type {
   SettingsNavGroup,
   SettingsNavItem,
   SettingsPlatform,
+  SettingsSelectionProps,
   SettingsTabId
 } from '@fizz/agent-kit/features/settings/types'
 import { useLanguage, useT } from '@fizz/agent-kit/shared/lib/language'
@@ -76,39 +77,49 @@ export function MobileSettingsPanel({
   extraGroups,
   className,
   initialTab,
+  tab: tabProp,
+  onTabChange,
   animate = true,
   onDetailChange,
   ...common
-}: SettingsCommonProps & {
-  /** 这台宿主是谁（菜单按它过滤：手机版没有「快捷键」，见 `sections.ts`） */
-  platform: SettingsPlatform
-  /**
-   * 宿主扩展入口（手机版的「数据 / 退出」）：追加在内置分组之后（菜单列表底部）。
-   * 设置项进二级页；一次性动作就是列表最后单独一行，点一下直接执行。
-   */
-  extraGroups?: SettingsExtraGroup[]
-  className?: string
-  /** 打开时落在哪一项（模型选择下拉的设置入口用）；不给 = 从菜单起步 */
-  initialTab?: SettingsTabId
-  /**
-   * 菜单 ↔ 二级页是否播横滑转场（默认播）。
-   * `false` 时两块原地切换（并排铺开），给**屏幕够宽**的宿主（平板横屏 / 桌面浏览器里
-   * 调试手机壳）用 —— 那里两栏本来就放得下，再横滑一遍只是拖慢操作。
-   */
-  animate?: boolean
-  /**
-   * 二级页的标题 / 返回键交给宿主渲染（整页设置页把它放进自己的 header）。
-   * 不传则退回自绘：返回行画在内容区顶部（窄屏 web 的弹窗用）。
-   */
-  onDetailChange?: (detail: MobileSettingsDetail | null) => void
-}) {
+}: SettingsCommonProps &
+  SettingsSelectionProps & {
+    /** 这台宿主是谁（菜单按它过滤：手机版没有「快捷键」，见 `sections.ts`） */
+    platform: SettingsPlatform
+    /**
+     * 宿主扩展入口（手机版的「数据 / 退出」）：追加在内置分组之后（菜单列表底部）。
+     * 设置项进二级页；一次性动作就是列表最后单独一行，点一下直接执行。
+     */
+    extraGroups?: SettingsExtraGroup[]
+    className?: string
+    /** 打开时落在哪一项（模型选择下拉的设置入口用）；不给 = 从菜单起步 */
+    initialTab?: SettingsTabId
+    /**
+     * 菜单 ↔ 二级页是否播横滑转场（默认播）。
+     * `false` 时两块原地切换（并排铺开），给**屏幕够宽**的宿主（平板横屏 / 桌面浏览器里
+     * 调试手机壳）用 —— 那里两栏本来就放得下，再横滑一遍只是拖慢操作。
+     */
+    animate?: boolean
+    /**
+     * 二级页的标题 / 返回键交给宿主渲染（整页设置页把它放进自己的 header）。
+     * 不传则退回自绘：返回行画在内容区顶部（窄屏 web 的弹窗用）。
+     */
+    onDetailChange?: (detail: MobileSettingsDetail | null) => void
+  }) {
   // 订阅语言：分组标签由 sections.ts 用 t() 现算，切语言时要重渲染
   const tr = useT()
   /** 菜单模型：内置分组（按宿主过滤）+ 宿主扩展分组（后者追加在列表末尾） */
   const builtIn: SettingsNavGroup[] = buildSettingsGroups(common.app, platform)
   const groups: SettingsNavGroup[] = extraGroups?.length ? [...builtIn, ...extraGroups] : builtIn
   /** 选中值放宽成 string：扩展分组的 id 由宿主任意定，不进 `SettingsTabId` 联合 */
-  const [tab, setTab] = useState<string>(() => resolveInitialTab(groups, initialTab))
+  const [ownTab, setOwnTab] = useState<string>(() => resolveInitialTab(groups, initialTab))
+  // 受控时以宿主为准（设置标签把它提在标签层，见 `SettingsSelectionProps`）；不受控时
+  // 自己管。过 `resolveInitialTab` 的作用同桌面壳：分组不在这台宿主上就退回第一项。
+  const tab = resolveInitialTab(groups, tabProp ?? ownTab)
+  const selectTab = (next: string): void => {
+    if (tabProp === undefined) setOwnTab(next)
+    onTabChange?.(next)
+  }
   /**
    * 是否停在「菜单」这一层。选中项 `tab` **不跟着重置** —— 从某项退回来再进去，
    * 还停在原来那一项上。
@@ -153,7 +164,7 @@ export function MobileSettingsPanel({
       item.action()
       return
     }
-    setTab(item.id)
+    selectTab(item.id)
     setMenuOpen(false)
   }
 

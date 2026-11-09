@@ -100,3 +100,16 @@ export interface SettingsCommonProps {
   onSaveShortcuts: (shortcuts: AgentShortcutConfig[]) => void
   onShortcutRecordingChange: (recording: boolean) => void
 }
+
+/**
+ * 选中分组的受控入参。
+ *
+ * 设置**标签**把选中值提在标签层（`SettingsTabContent`）：两栏 / 两级是两个组件，
+ * `form` 一变就整块重挂（把标签拖窄 / 拖宽、切走再切回都会换），状态留在面板里会被
+ * 初始化回「通用」。手机整页设置不传这两项，面板自己管。
+ */
+export interface SettingsSelectionProps {
+  /** 受控的选中分组（扩展分组的 id 由宿主任意定，所以是 string） */
+  tab?: string
+  onTabChange?: (tab: string) => void
+}

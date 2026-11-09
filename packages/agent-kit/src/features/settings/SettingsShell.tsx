@@ -32,6 +32,7 @@ import type {
   SettingsExtraGroup,
   SettingsNavForm,
   SettingsPlatform,
+  SettingsSelectionProps,
   SettingsTabId
 } from '@fizz/agent-kit/features/settings/types'
 import type { MobileSettingsDetail } from '@fizz/agent-kit/features/settings/MobileSettingsPanel'
@@ -60,32 +61,37 @@ export function SettingsShell({
   form,
   className,
   initialTab,
+  tab,
+  onTabChange,
   extraGroups,
   animate,
   onDetailChange,
   ...common
-}: SettingsCommonProps & {
-  /** 这台宿主是谁 —— 决定菜单里有哪几项（`sections.ts` 的 `platforms` 白名单） */
-  platform: SettingsPlatform
-  /** 导航形态（用 `settingsNavForm()` 算，别手写常量） */
-  form: SettingsNavForm
-  /** 外层尺寸：两栏形态要定高（`h-[60dvh]` / `h-full`），两级形态吃父级剩高 */
-  className?: string
-  /** 打开时落在哪一项；在当前宿主上不存在时会自动退回第一项（`resolveInitialTab`） */
-  initialTab?: SettingsTabId
-  /** 宿主扩展入口（手机版的「数据 / 退出」）；只有两级形态接收 */
-  extraGroups?: SettingsExtraGroup[]
-  /** 两级形态要不要播横滑转场（手机版宽屏时关掉）；只有两级形态接收 */
-  animate?: boolean
-  /** 两级形态的标题 / 返回键交给宿主时上报（手机版整页设置用它改标题栏）；只有两级形态接收 */
-  onDetailChange?: (detail: MobileSettingsDetail | null) => void
-}) {
+}: SettingsCommonProps &
+  SettingsSelectionProps & {
+    /** 这台宿主是谁 —— 决定菜单里有哪几项（`sections.ts` 的 `platforms` 白名单） */
+    platform: SettingsPlatform
+    /** 导航形态（用 `settingsNavForm()` 算，别手写常量） */
+    form: SettingsNavForm
+    /** 外层尺寸：两栏形态要定高（`h-[60dvh]` / `h-full`），两级形态吃父级剩高 */
+    className?: string
+    /** 打开时落在哪一项；在当前宿主上不存在时会自动退回第一项（`resolveInitialTab`） */
+    initialTab?: SettingsTabId
+    /** 宿主扩展入口（手机版的「数据 / 退出」）；只有两级形态接收 */
+    extraGroups?: SettingsExtraGroup[]
+    /** 两级形态要不要播横滑转场（手机版宽屏时关掉）；只有两级形态接收 */
+    animate?: boolean
+    /** 两级形态的标题 / 返回键交给宿主时上报（手机版整页设置用它改标题栏）；只有两级形态接收 */
+    onDetailChange?: (detail: MobileSettingsDetail | null) => void
+  }) {
   if (form === 'two-level') {
     return (
       <MobileSettingsPanel
         platform={platform}
         className={className}
         initialTab={initialTab}
+        tab={tab}
+        onTabChange={onTabChange}
         extraGroups={extraGroups}
         animate={animate}
         onDetailChange={onDetailChange}
@@ -99,5 +105,14 @@ export function SettingsShell({
     （桌面没有宿主扩展项，也没有「二级页」可以退），所以不往下传 —— 传了 `DesktopSettingsPanel`
     也不接收，等于多一条没人读的参数。
   */
-  return <DesktopSettingsPanel platform={platform} className={className} initialTab={initialTab} {...common} />
+  return (
+    <DesktopSettingsPanel
+      platform={platform}
+      className={className}
+      initialTab={initialTab}
+      tab={tab}
+      onTabChange={onTabChange}
+      {...common}
+    />
+  )
 }

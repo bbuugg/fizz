@@ -25,6 +25,10 @@
  * 请求记在登记表的 `settingsTab` 上（见 `ToolTab.settingsTab`）。`openTab` 对已存在
  * 的 key 只做激活、不 emit，所以这里订阅登记表版本号重新读；再用 `key` 把外壳重挂
  * 一次 —— 与原 `SettingsWindow` 的 `key={`${tab}#${seq}`}` 是同一个手法。
+ *
+ * 但**选中的分组本身提在这一层**（`tab` / `onTabChange`）：两栏 / 两级是两个组件，
+ * `form` 一变就整块重挂（把标签拖窄 / 拖宽都会换），状态留在面板里会被初始化回
+ * 「通用」。显式请求（`settingsRequestSeq` 变了）仍然优先，见下面的 `selection`。
  */
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { getAgentHost } from '@fizz/agent-client/host'
@@ -59,7 +63,25 @@ export function SettingsTabContent() {
 
   const request = getToolTab(settingsTabKey())
   const initialTab = request?.settingsTab as SettingsTabId | undefined
+  const requestSeq = request?.settingsRequestSeq ?? 0
   const platform = getAgentHost().platform
+  /**
+   * 选中的分组**提在标签层**：两栏 / 两级是两个组件，`form` 一换就整块重挂（把标签拖窄 /
+   * 拖宽、切走再切回都可能换），状态留在面板里会被初始化回「通用」。
+   *
+   * `seq` 跟着登记表里的显式请求（模型下拉的齿轮 / ACP 指引）走：每次请求都 +1，
+   * 这里据此落到请求的那一页 —— 同一页连点两次也生效。普通入口（菜单 / 快捷键）不
+   * 改 `seq`，于是用户停在哪一页就还是哪一页。
+   */
+  const [selection, setSelection] = useState<{ seq: number; tab?: string }>(() => ({
+    seq: requestSeq,
+    tab: request?.settingsTab
+  }))
+  if (selection.seq !== requestSeq) {
+    // 渲染期同步（React 官方的「props 变了就调 state」写法）：显式请求到达就切过去，
+    // 不用等一帧 effect，避免先闪一下旧分组
+    setSelection({ seq: requestSeq, tab: request?.settingsTab })
+  }
   /**
    * 响应式判据是**标签容器**的实际宽度，不是 `window`：设置标签可能在主区域里被拖窄
    * 或与别的面板分栏，窗口本身仍是宽的；按视口判会一直停两栏，右侧内容被挤成一条。
@@ -71,6 +93,12 @@ export function SettingsTabContent() {
     const el = rootRef.current
     if (!el) return
     const observer = new ResizeObserver(([entry]) => {
+      /*
+       * 非活动标签是 `hidden`（display:none），这里会量到 0×0。**不能把它当成「窄」**：
+       * 那会在看不见的时候白白把面板换成另一套组件（整块重挂）。选中分组已经提在
+       * 标签层（见 `selection`），这里保持上一次判断、等真正露出来再量就够了。
+       */
+      if (entry.contentRect.width <= 0) return
       setNarrow(entry.contentRect.width < TWO_COLUMN_MIN_WIDTH)
     })
     observer.observe(el)
@@ -84,15 +112,17 @@ export function SettingsTabContent() {
   return (
     <div ref={rootRef} className="flex h-full min-h-0 flex-col">
       <SettingsShell
-        // 换分组要把外壳重挂（`DesktopSettingsPanel` 的 `initialTab` 只吃首帧）；
-        // 同分组连点两次靠 seq 区分，否则「模型齿轮」从别处再点一次不会有反应
-        key={`${request?.settingsTab ?? 'general'}#${request?.settingsRequestSeq ?? 0}`}
+        // 显式请求要重挂外壳：`MobileSettingsPanel` 的「直接进二级页」只在挂载时决定
+        // （同分组连点两次也靠 seq 区分）。
+        key={`${request?.settingsTab ?? 'general'}#${requestSeq}`}
         platform={platform}
         form={form}
         // 两栏形态要**定高**：它内部是 `min-h-0 flex-1` + `overflow-auto`，
         // 父级没确定高度的话右栏内容会把整个标签撑出可视区
         className={form === 'two-level' ? 'h-auto' : 'h-full'}
         initialTab={initialTab}
+        tab={selection.tab}
+        onTabChange={(next) => setSelection({ seq: requestSeq, tab: next })}
         app={app}
         shortcuts={shortcuts}
         onSaveShortcuts={setShortcuts}
