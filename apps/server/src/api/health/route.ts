@@ -12,7 +12,7 @@ export async function GET(_request: Request) {
   const skills = await listServerSkills(workspaces[0]?.path)
   return Response.json({
     name: 'fizz-server',
-    version: '0.0.22',
+    version: '0.0.23',
     hasModels: models.length > 0,
     workspaceCount: workspaces.length,
     conversationCount: conversations.length,
