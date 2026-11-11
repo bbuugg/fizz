@@ -51,7 +51,9 @@ export function ConfirmDeleteDialog({
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
-          <AlertDialogDescription>{description}</AlertDialogDescription>
+          {/* wrap-anywhere 不能省：描述里常带请求名 / 地址这类无空格的长英文，
+              不加的话它撑大 grid 轨道，底部 justify-end 的按钮会被推出弹窗 */}
+          <AlertDialogDescription className="wrap-anywhere">{description}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>取消</AlertDialogCancel>

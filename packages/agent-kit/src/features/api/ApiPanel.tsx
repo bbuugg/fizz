@@ -913,7 +913,8 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
           <DialogHeader>
             <DialogTitle>删除分组？</DialogTitle>
           </DialogHeader>
-          <p className="text-sm text-muted-foreground">
+          {/* wrap-anywhere：分组名可能是无空格的长英文，不加会把 grid 轨道撑宽、按钮推出弹窗 */}
+          <p className="text-sm wrap-anywhere text-muted-foreground">
             「{pendingGroupDelete?.name}」将被删除（连同所有子分组）
             {pendingSubtreeRequestCount > 0 ? `，其中共 ${pendingSubtreeRequestCount} 个请求。` : '。'}
           </p>
