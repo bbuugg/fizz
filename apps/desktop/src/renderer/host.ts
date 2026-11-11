@@ -479,11 +479,9 @@ let bridgeSeq = 0
  * ⚠️ 光有自增序号不够 —— 「唯一」这件事是在**主进程**那边判的。
  *
  * 序号是**渲染端上下文内**的模块变量，而主进程的 `wsStreams` 是**全进程一张表**，
- * 于是下面两种情形一定会撞号：
- * - **整页重载**（dev 的 HMR 全量刷新 / DevTools 的 Reload）：`bridgeSeq` 回到 0，
- *   可旧页开的连接还活着 —— 主进程只在 webContents `destroyed`（窗口关掉）时收它们，
- *   重载不算销毁（`transport-ipc.ts` 里另有一道 `did-start-navigation` 的收尾）；
- * - **多窗口**：主窗口 / 会话浮窗 / 设置窗口各是一份 JS 上下文，各自从 0 数。
+ * 于是整页重载（dev 的 HMR 全量刷新 / DevTools 的 Reload）一定会撞号：`bridgeSeq`
+ * 回到 0，可旧页开的连接还活着 —— 主进程只在 webContents `destroyed`（窗口关掉）时
+ * 收它们，重载不算销毁（`transport-ipc.ts` 里另有一道 `did-start-navigation` 的收尾）。
  *
  * 撞号后主进程的 `wsOpen` 直接回 `streamId 已存在`，渲染端把它当「连接已断开」的
  * reason 交给终端 —— 用户看到的就是「刚连上就报 streamId 已存在然后断开」。
@@ -867,18 +865,8 @@ export const desktopHost: AgentHost = {
   takePendingExternalFiles: () => window.fizzWindow.takePendingExternalFiles(),
   onExternalFileOpen: (cb) => window.fizzWindow.onExternalFileOpen(cb),
   /**
-   * 浮窗「在主窗口打开这个会话」的入口：主进程拉窗口 + 把会话 id 递过来（见
-   * `app/layout/use-deep-link.ts`）。同样是存量 + 增量，只是存量做成同步的。
+   * 外部打开 / 读写的入口见上；下面是宿主自己的窗口级能力。
    */
-  openInMainWindow: (conversationId) => window.fizzWindow.openInMainWindow(conversationId),
-  takePendingDeepLink: () => window.fizzWindow.takePendingDeepLink(),
-  onDeepLink: (cb) => window.fizzWindow.onDeepLink(cb),
-  /**
-   * 会话详情区「在浮窗中打开」：主进程管那个单例窗口（同一条就聚焦，换一条就带
-   * 新 id 重载渲染端，见 `main/index.ts` 的 `openConversationWindow`）。
-   */
-  openConversationWindow: (conversationId) =>
-    window.fizzWindow.openConversationWindow(conversationId),
   /** 脏标签计数推给主进程缓存 —— 退出拦截时主进程读它，不做往返询问（见 window.ts 的注释） */
   setDirtyTabCount: (count) => window.fizzWindow.setDirtyTabCount(count),
   /**

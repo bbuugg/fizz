@@ -10,9 +10,10 @@
  *    「新对话」= 不指定项目直接开会话；「定时任务」= **开主区域的定时任务管理标签页**
  *    （`triggers:list`，CRUD 全在那页，见 `features/tasks/TriggersPanel`）；
  * 2. 两块**可折叠的内容组**（`SidebarGroup`）：任务（临时会话）→ 工作区（项目树）。
- *    「任务」按内容高度、最多占一半（`size="half"`，内容少时不留空白、条数多时组内滚），
- *    「工作区」展开时吃剩余高度（`size="fill"`），两块都是组内自己滚；外层仍留一个滚动
- *    容器，只作窗口过矮时的兜底。
+ *    顺序固定、各自独立展开（与 VSCode 侧栏一致，展开不会重排）；展开组用
+ *    `size="fill"` 吃剩余高度，于是只展开上面那组时下面那组的标题被挤到底部；
+ *    两组都展开时按上次的位置分（没拖过就 1:1），交界处可拖动改比例。
+ *    组内自己滚，外层仍留一个滚动容器，只作窗口过矮时的兜底。
  *
  * 动作区与内容组这两个组件在 `shared/components/SidebarGroups`，**主机侧栏用的是同一份**
  * （那边是「新建主机 / 新建分组 / 隧道」+「主机与终端 / 脚本」）—— 改版式改那一份，
@@ -566,14 +567,36 @@ export function AgentSidebar({
   /** 「任务」组里有没有没看过的（那一组没有项目行，红点只能挂在组标签上） */
   const tasksHaveUnseen = scratchConversations.some((c) => c.unseen);
   /**
-   * 两块内容组的折叠态（任务 / 工作区），默认都展开。
+   * 两块内容组（任务 / 工作区）的展开态与高度。
+   *
+   * **顺序固定、各自独立展开**（与 VSCode 侧栏一致）：点哪组只切那组的展开态，
+   * 不会把组挪位置；两组可以同时展开，展开组都用 `size="fill"` 吃剩余高度，
+   * 于是只展开上面那组时，下面那组的标题自然被挤到底部。
+   *
+   * 两组都展开时：**还没拖过分隔条**就按 1:1 分；拖过任务组底部的分隔条之后，任务组
+   * 固定到拖出来的像素高度（`tasksHeight`），工作区自动吃掉剩余部分。
+   *
+   * **收起再展开另存的高度不变**：只剩任务组展开时高度值照传、由 `solo` 让它吃满
+   * （basis 仍是记住的像素）；工作区再展开回来，两组仍按上次的位置分（没拖过就是
+   * 1:1，不是「谁刚展开谁拿 3/4」）—— 且因为 basis 不变、只变 grow，展开动画单调，
+   * 不会先冲高再缩回。
    *
    * **只存内存、不落盘**：折叠态一旦持久化，改默认值或挪走内容之后老数据会把东西
    * 永久藏起来，而入口可能已经不在（`StackedSections` 文件头记着这个教训）。
-   * 刷新即回默认展开，是这里刻意接受的代价。
    */
   const [tasksOpen, setTasksOpen] = useState(true);
   const [workspacesOpen, setWorkspacesOpen] = useState(true);
+  const [tasksHeight, setTasksHeight] = useState<number | undefined>(undefined);
+  /** 只有两组都展开时，任务组才需要「固定高度 + 分隔条」（只剩它时吃满剩余高度） */
+  const tasksResizable = tasksOpen && workspacesOpen;
+
+  /** 点组标题：只切展开态 —— 拖出来的高度不清，再展开时要回到那个位置 */
+  const toggleTasks = (): void => {
+    setTasksOpen((v) => !v);
+  };
+  const toggleWorkspaces = (): void => {
+    setWorkspacesOpen((v) => !v);
+  };
 
   /** 待确认归档的会话 id：第一次点 = 进入确认态，再点 = 真归档，鼠标移开该行 = 反悔 */
   const [pendingArchiveId, setPendingArchiveId] = useState<string | null>(null);
@@ -754,9 +777,8 @@ export function AgentSidebar({
         )}
         title={statusText}
       >
-        {/* 行首图标槽（类型 + 运行态）与桌面会话浮窗**共用一份**，见 `ConversationRowIcon`：
-            会话分普通对话 / 多智能体协作 / 外部 ACP 三种，在跑 / 等确认 / 等回答时临时盖掉类型图标。
-            两边各写一套映射一定会漂（浮窗原来就恒画对话气泡）。 */}
+        {/* 行首图标槽（类型 + 运行态），见 `ConversationRowIcon`：
+            会话分普通对话 / 多智能体协作 / 外部 ACP 三种，在跑 / 等确认 / 等回答时临时盖掉类型图标。 */}
         <ConversationRowIcon
           backend={conversation.backend}
           kind={conversation.kind}
@@ -1619,6 +1641,103 @@ export function AgentSidebar({
     );
   };
 
+  /**
+   * 两块内容组按**固定顺序**渲染（任务在前、工作区在后）：展开 / 收起不会重排，
+   * 与 VSCode 侧栏一致。展开组吃剩余高度，所以只展开上面那组时，下面那组的标题
+   * 会被挤到底部；两组都展开时按上次的位置分（没拖过就 1:1，拖过按记住的像素
+   * 高度），任务组底部出现可拖的分隔条。
+   */
+
+  /**
+   * 任务（临时会话）：用户没选项目时发的消息，服务端为每条会话建了一个临时工作区
+   * （`<数据目录>/conversations/<会话 id>`）—— 有真实目录，只是不摆成项目行。
+   * 排在项目们上面：它们是「刚发生的」，而且没有项目行可以挂。
+   *
+   * 标签就叫「任务」（不再叫「临时任务」）：它与顶部那颗「新对话」是一对 ——
+   * 不在任何项目里开的对话落到这里，名字短一点才和下面的「工作区」同档。
+   *
+   * 空着也渲染（一句空态；数量为 0 时**不显示括号数字**，见 `SectionHeader`）：
+   * 否则点完「新对话」看不出东西落在哪儿。
+   */
+  const taskGroup = (
+    <SidebarGroup
+      title={t("任务")}
+      count={scratchConversations.length}
+      // 组收起时也得看得见「有一轮跑出来的还没看」
+      dot={tasksHaveUnseen}
+      alignIndent
+      open={tasksOpen}
+      onToggle={toggleTasks}
+      // 展开时吃满剩余高度；只展开这一组时下面那行标题自然沉到底部
+      size="fill"
+      // 记住的高度**一直传**（工作区收起时也不清）：`SidebarGroup` 在只剩本组时把它
+      // 当弹性基准（`1 1 Hpx`）继续长满，另一组再展开只改 grow、basis 恒为 H ——
+      // 展开动画单调，不会先冲高再缩回（见 `SidebarGroup` 的 `height` 注释）
+      height={tasksHeight}
+      // 工作区收起时本组是唯一展开的组：吃满剩余高度
+      solo={!tasksResizable}
+      onResizeHeight={tasksResizable ? setTasksHeight : undefined}
+      // 横向 padding 不在这里加：行自己带 `px-2`，容器也带 `px-2`，
+      // 这里再叠一层就把行推到 24px、和 16px 的标签文字错开（见下方容器注释）
+      className="pb-1"
+      // 加载中不传空态：清单没落地时任务数就是 0，摆「还没有任务」是一次闪屏
+      // （与「工作区」组同一条理由，骨架在 children 里）
+      empty={
+        app.conversationsLoaded || app.error ? t("还没有任务。") : undefined
+      }
+    >
+      {!app.conversationsLoaded && !app.error ? (
+        <SidebarRowsSkeleton rows={2} />
+      ) : (
+        <div className="flex flex-col gap-0.5">
+          {scratchConversations.map((conversation) =>
+            renderConversationRow(conversation, conversation.workspaceId),
+          )}
+        </div>
+      )}
+    </SidebarGroup>
+  );
+
+  /**
+   * 工作区（项目树）。展开一个项目会露出它的**项目子树**：会话排成一条列表
+   * （靠行首图标区分类型），worktree 子项目递归成下一级。
+   *
+   * ⚠️ 标签行右侧**没有任何图标**（加号 / 刷新都删了）：
+   * - 「添加项目」搬到了「开始新对话」页的工作区下拉（`ChatPanel` 的
+   *   `WorkspaceSelect`）—— 加项目要选目录 / 填仓库地址 / 起容器，那是新建
+   *   会话页面的活；侧栏只管**看现有项目**，两处都摆一份迟早会漂。
+   * - 「刷新列表」本来就没有：清单靠状态 WS 推送，而「重新拉一遍」的正路是
+   *   起始页（那页的模型下拉会重新加载配置与外部 Agent 清单），并且它就在用户
+   *   手边。侧栏再摆一颗同功能的图标，只是让几颗图标挤在 260px 宽的标签行里
+   *   （用户反馈「看不懂右边这三颗」）。
+   */
+  const workspaceGroup = (
+    <SidebarGroup
+      title={t("工作区")}
+      count={projects.length}
+      alignIndent
+      open={workspacesOpen}
+      onToggle={toggleWorkspaces}
+      // 展开时吃剩余高度、超出才在组内滚；任务组拖高度时由它吸收差额
+      size="fill"
+      className="pb-2"
+      // 加载中不传空态：列表请求还没落地，摆「还没有项目」就是一次闪屏
+      empty={
+        app.conversationsLoaded || app.error ? t("还没有项目。") : undefined
+      }
+    >
+      {/* 刷新后的加载窗口：列表请求还没落地 —— 上骨架屏，别闪「还没有项目」。
+          加载失败（app.error）时回退真实空态，错误信息另有横幅展示 */}
+      {!app.conversationsLoaded && !app.error ? (
+        <SidebarListSkeleton />
+      ) : (
+        <div className="flex flex-col gap-0.5">
+          {projects.map((workspace) => renderWorkspaceRow(workspace))}
+        </div>
+      )}
+    </SidebarGroup>
+  );
+
   return (
     <>
       {/*
@@ -1730,112 +1849,38 @@ export function AgentSidebar({
           <SectionContent>
             {/*
               **外层兜底滚动容器**：上面那两颗动作按钮固定，从这里往下滚。
-              它同时是两块内容组的**纵向 flex 容器**：任务组按内容、最多占一半
-              （`size="half"`，也是 `max-height: 50%` 的那个 100% 基准），只有工作区
-              展开时吃剩余高度（`size="fill"`），
-              于是空间够的时候外层根本滚不动、也不会有「下面空着、里面却已经滚」；
-              只有窗口极矮（两块的最小高度都放不下）时这层才兜底滚一次
+              它同时是两块内容组的**纵向 flex 容器**：两组**固定顺序、各自独立展开**，
+              展开的那组（`size="fill"`）吃剩余高度，所以只展开上面那组时，下面那组的
+              32px 标题会被挤到底部；两组都展开时按上次的位置分（没拖过就 1:1）、
+              交界处可拖。
+              空间够的时候外层根本滚不动、也不会有「下面空着、里面却已经滚」；
+              只有窗口极矮（展开组的最小高度都放不下）时这层才兜底滚一次
               （`docs/lessons/ui.md` §92 坑二讲的就是这个双层关系：内层必须有高度上限，
               否则两层都"能滚"就成了滚到一半卡住）。
 
-              横向 padding 由各块自己带（`px-2`）—— 组标签自带 `px-2`（见
-              `SectionHeader`），内容块再各自带，**别在容器上再叠一层**
-              （叠了就是 16px，和标签行错开 8px，见 §92）。
+              横向间距**只有容器这一层 `px-2`**（8px）：
+              - 组标签由 `SectionHeader` 自己带 `px-2`，文字落在 16px；
+              - 行（会话 / 项目 / 空态）也各自带 `px-2`，内容同样落在 16px。
 
-              顺序 = 「正在用的东西优先」：任务（刚发生的）→ 工作区（常驻项目）。
-              两块都可折叠，折叠态只在本组件内存里（刷新即回默认展开，不落盘 ——
-              落盘的折叠态会把内容永久藏起来）。
+              所以 `SidebarGroup` 的 `className` **只加纵向的 `pb-*`**，绝不能再加
+              `px-2` —— 叠上去行就到 24px，和 16px 的标签文字错开 8px，看起来就是
+              「下面的内容和栏标题没对齐」（主机侧栏同样是组不带横向 padding）。
+              这与 §92 的坑是同一类：横向缩进只该由一层负责，层数一多就漂。
+
+              默认两组都展开；展开态与拖出来的高度只在内存里（刷新回默认，不落盘 ——
+              落盘的折叠态会把内容永久藏起来）。拖出来的高度**不随折叠丢失**，
+              再展开回来会落回刚才拖到的位置。
             */}
             <div
               ref={listRef}
               className="flex min-h-0 flex-1 flex-col overflow-auto no-scrollbar px-2"
             >
               {/*
-                任务（临时会话）：用户没选项目时发的消息，服务端为每条会话建了一个临时工作区
-                （`<数据目录>/conversations/<会话 id>`）—— 有真实目录，只是不摆成项目行。
-                排在项目们上面：它们是「刚发生的」，而且没有项目行可以挂。
-
-                标签就叫「任务」（不再叫「临时任务」）：它与顶部那颗「新对话」是一对 ——
-                不在任何项目里开的对话落到这里，名字短一点才和下面的「工作区」同档。
-
-                空着也渲染（一句空态；数量为 0 时**不显示括号数字**，见 `SectionHeader`）：
-                否则点完「新对话」看不出东西落在哪儿。
+                固定顺序：任务 → 工作区（与 VSCode 侧栏一致，展开不重排）。
+                两个元素的内容与注释在 `return` 之前的 `taskGroup` / `workspaceGroup` 里。
               */}
-              <SidebarGroup
-                title={t("任务")}
-                count={scratchConversations.length}
-                // 组收起时也得看得见「有一轮跑出来的还没看」
-                dot={tasksHaveUnseen}
-                alignIndent
-                open={tasksOpen}
-                onToggle={() => setTasksOpen((v) => !v)}
-                // 按内容高度、最多占**一半**（高度策略见 `SidebarGroups`）：固定 160px 在
-                // 宽屏上只够看几行，而内容少时又不该留一块空白 —— 一半封顶，超出在组内滚。
-                // **不要**在工作区收起时改吃剩余高度：标签行还在它下面，`flex-1` 会把
-                // 「工作区」推到侧栏底部。
-                size="half"
-                className="px-2 pb-1"
-                // 加载中不传空态：清单没落地时任务数就是 0，摆「还没有任务」是一次闪屏
-                // （与下面「工作区」组同一条理由，骨架在 children 里）
-                empty={
-                  app.conversationsLoaded || app.error
-                    ? t("还没有任务。")
-                    : undefined
-                }
-              >
-                {!app.conversationsLoaded && !app.error ? (
-                  <SidebarRowsSkeleton rows={2} />
-                ) : (
-                  <div className="flex flex-col gap-0.5">
-                    {scratchConversations.map((conversation) =>
-                      renderConversationRow(
-                        conversation,
-                        conversation.workspaceId,
-                      ),
-                    )}
-                  </div>
-                )}
-              </SidebarGroup>
-
-              {/*
-                工作区（项目树）。展开一个项目会露出它的**项目子树**：会话排成
-                一条列表（靠行首图标区分类型），worktree 子项目递归成下一级。
-
-                ⚠️ 标签行右侧**没有任何图标**（加号 / 刷新都删了）：
-                - 「添加项目」搬到了「开始新对话」页的工作区下拉（`ChatPanel` 的
-                  `WorkspaceSelect`）—— 加项目要选目录 / 填仓库地址 / 起容器，那是新建
-                  会话页面的活；侧栏只管**看现有项目**，两处都摆一份迟早会漂。
-                - 「刷新列表」本来就没有：清单靠状态 WS 推送，而「重新拉一遍」的正路是
-                  起始页（那页的模型下拉会重新加载配置与外部 Agent 清单），并且它就在用户
-                  手边。侧栏再摆一颗同功能的图标，只是让几颗图标挤在 260px 宽的标签行里
-                  （用户反馈「看不懂右边这三颗」）。
-              */}
-              <SidebarGroup
-                title={t("工作区")}
-                count={projects.length}
-                alignIndent
-                open={workspacesOpen}
-                onToggle={() => setWorkspacesOpen((v) => !v)}
-                // 最后一块：吃剩余高度、超出才在组内滚（见 `SidebarGroups` 的高度策略）
-                size="fill"
-                className="px-2 pb-2"
-                // 加载中不传空态：列表请求还没落地，摆「还没有项目」就是一次闪屏
-                empty={
-                  app.conversationsLoaded || app.error ? t("还没有项目。") : undefined
-                }
-              >
-                {/* 刷新后的加载窗口：列表请求还没落地 —— 上骨架屏，别闪「还没有项目」。
-                    加载失败（app.error）时回退真实空态，错误信息另有横幅展示 */}
-                {!app.conversationsLoaded && !app.error ? (
-                  <SidebarListSkeleton />
-                ) : (
-                  <div className="flex flex-col gap-0.5">
-                    {projects.map((workspace) =>
-                      renderWorkspaceRow(workspace),
-                    )}
-                  </div>
-                )}
-              </SidebarGroup>
+              {taskGroup}
+              {workspaceGroup}
 
               {/*
                 ⚠️「定时任务」**不在侧栏的清单里了**：顶部那颗同名按钮改成直接开主区域的

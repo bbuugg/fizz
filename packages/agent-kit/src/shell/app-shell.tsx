@@ -573,8 +573,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           「品牌 + 手机上侧栏的唯一入口」，见 `WebTitleBar` 的文件头。
         */}
             {!isDesktopHost && <WebTitleBar />}
-            {/* 工作行：`min-h-0 flex-1` 才让里面的侧栏 / 主区各自滚动，不被内容撑高 */}
-            <div className="flex min-h-0 flex-1">
+            {/* 工作行：`min-h-0 flex-1` 才让里面的侧栏 / 主区各自滚动，不被内容撑高。
+            `relative` 是给手机端助手的浮层做定位基准：它只盖工作行，不盖顶栏
+            （`absolute inset-0` 而不是 `fixed`，见下面助手那段）。 */}
+            <div className="relative flex min-h-0 flex-1">
               {/*
           活动栏：最左的竖条图标（类 VS Code），点击切换功能区、拖拽重排。
           它**常驻**、不随侧边栏折叠消失 —— 否则收起侧边栏后就再没有入口切回别的功能区。
@@ -697,12 +699,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           清空走面板右上角的「清除对话」），见 AssistantPanel 文件头。
 
           - **桌面 / 宽屏**：右侧停靠（带左缘拖拽条改宽度）。面板 + 侧栏 + 对话三栏并排。
-          - **手机**：三栏挤不下，改为**整屏浮层**（`fixed inset-0`）—— 之前手机上整块不渲染，
+          - **手机**：三栏挤不下，改为**浮层**盖住工作行 —— 之前手机上整块不渲染，
             顶栏那颗助手键就点了没反应（死键）；浮层形态下它才真正可用。
+            ⚠️ 用 `absolute`（基准是工作行），**不要** `fixed`：`fixed inset-0` 会把顶栏
+            一起盖掉，品牌、侧栏开关、助手开关全都看不见，界面上像「整块换了」。
+            浮层盖不到顶栏，开 / 收都交给顶栏那颗开关；面板内**不再**另放收起键
+            （全局形态只有这一个入口，见 AssistantPanel 的顶栏注释）。
         */}
               {assistantOpen &&
                 (isMobile ? (
-                  <div className="fixed inset-0 z-50 flex flex-col bg-surface-1">
+                  <div className="absolute inset-0 z-50 flex flex-col bg-surface-1">
                     <AssistantPanel
                       className="flex min-h-0 flex-1 flex-col overflow-hidden"
                       scope="project"

@@ -37,6 +37,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactElement, type Reac
 import {
   ChevronRight,
   ChevronsDownUp,
+  CirclePlus,
   FilePlus2,
   FileText,
   Folder,
@@ -389,8 +390,9 @@ export function NotesSidebar({
             没有「全局新建」这回事 —— 入口留在根行与目录行的行尾（`FilePlus2`）。
           */}
           <SidebarActions>
+            {/* 与 AI Agent 的「新对话」同一颗 `CirclePlus`：同是「从无到有」的动作 */}
             <SidebarAction
-              icon={Plus}
+              icon={CirclePlus}
               label="添加笔记目录"
               title="选一个放 Markdown 的文件夹，登记为笔记目录"
               disabled={busy === 'add-root'}
@@ -462,7 +464,7 @@ export function NotesSidebar({
                             toggleNotesDir(row.root.id, '')
                           }
                         }}
-                        className="group relative flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 text-sm text-foreground transition-colors hover:bg-foreground/5"
+                        className="group relative flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 text-sm text-foreground transition-colors hover:bg-primary-soft"
                       >
                         {/* 行首**不再**留图标槽：箭头搬到名字右侧后那一格就空了，留着等于
                             整棵树比主机侧栏多缩进 20px（用户反馈「笔记文件夹和主机不左对齐」）。
@@ -565,7 +567,7 @@ export function NotesSidebar({
                             toggleNotesDir(row.root.id, row.entry.path)
                           }
                         }}
-                        className="group relative flex cursor-pointer items-center gap-1.5 rounded-md py-1.5 pr-1.5 text-sm text-foreground transition-colors hover:bg-foreground/5"
+                        className="group relative flex cursor-pointer items-center gap-1.5 rounded-md py-1.5 pr-1.5 text-sm text-foreground transition-colors hover:bg-primary-soft"
                         style={{ paddingLeft: treeIndent(row.depth) }}
                       >
                         <Folder className="size-4 shrink-0 text-muted-foreground" />
@@ -613,7 +615,7 @@ export function NotesSidebar({
                           openNote(row.root, row.entry)
                         }
                       }}
-                      className="group relative flex cursor-pointer items-center gap-1.5 rounded-md py-1.5 pr-1.5 text-sm text-foreground transition-colors hover:bg-foreground/5"
+                      className="group relative flex cursor-pointer items-center gap-1.5 rounded-md py-1.5 pr-1.5 text-sm text-foreground transition-colors hover:bg-primary-soft"
                       style={{ paddingLeft: treeIndent(row.depth) }}
                     >
                       {/* 与目录行同列：两边都不再垫「箭头槽」，文件图标与文件夹图标对齐 */}

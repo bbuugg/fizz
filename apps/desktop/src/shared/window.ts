@@ -32,34 +32,15 @@ export const WINDOW_IPC = {
     （`agent-kit` 的 `settings:list`），整个窗口生命周期的概念不存在了，
     两条通道随之删除 —— 别再按「宿主有 openSettingsWindow 就开窗口」的思路加回来。
   */
-  /**
-   * 把一条会话开到浮窗（单例窗口）。参数是**这条会话**的 id：已开着且是同一条只
-   * 聚焦，是另一条就带新 id 重载渲染端（一条会话一个窗口，见主进程的同名函数）。
-   */
-  openConversationWindow: 'agent-window:openConversationWindow',
-  /**
-   * 浮窗请求「在主窗口里打开这个会话」（浮窗右上角那颗按钮）。
-   *
-   * 主进程不认会话、也不碰列表：它只负责把主窗口拉到前台，外加把深链暂存下来
-   * （冷启动 / 主窗口已销毁时没人接）—— 打开会话的语义全在主窗口渲染端
-   * （`app/layout/use-deep-link.ts`，与 `takePendingExternalFiles` 同一套「先存后取」）。
-   */
-  openInMainWindow: 'agent-window:openInMainWindow',
-  /** 取走暂存的深链（sendSync：主窗口首帧就要把标签摆对，见 `DesktopWindowBridge`） */
-  takePendingDeepLink: 'agent-window:takePendingDeepLink',
-  /** 深链增量事件（main → 主窗口渲染端） */
-  deepLink: 'agent-window:deepLink',
   /*
-    `closeConversationWindow` / `conversationWindowChange` / `isConversationWindowOpen`
-    三条已于 2026-11 删除：它们只服务主窗口标题栏那颗「浮窗开关」（一个全局开关 +
-    开 / 关状态广播）。浮窗改成「一条会话一个窗口」后，入口下沉到会话详情区
-    （`openConversationWindow` 带 id），关闭由浮窗自己的标题栏按钮做 —— 不再有人需要
-    问「浮窗开着吗」，别再加回来（一个凭据两个真源的老问题）。
+    这里原有一整套「会话浮窗」通道（打开浮窗 / 在主窗口打开 / 深链投递 / 浮窗置顶）。
+    浮窗已于 2026-11 整体移除：单窗口应用不需要跨窗口投递。要恢复先想清楚
+    「第二个渲染进程 = 第二份 store 单例」这笔账（与当年的独立设置窗口同一个坑）。
   */
-  /** 切换本窗口置顶（作用于发起窗口；同时落盘为「新浮窗默认值」） */
-  setAlwaysOnTop: 'agent-window:setAlwaysOnTop',
-  /** 同步读置顶偏好（sendSync，首帧不闪） */
-  loadAlwaysOnTop: 'agent-window:loadAlwaysOnTop',
+  /** 主窗口置顶（标题栏图钉） */
+  setMainAlwaysOnTop: 'agent-window:setMainAlwaysOnTop',
+  /** 同步读主窗口置顶状态（sendSync，标题栏首帧就是正确的图钉状态） */
+  loadMainAlwaysOnTop: 'agent-window:loadMainAlwaysOnTop',
   /** 列出检测到的已安装 IDE（顶栏「打开」下拉用） */
   listIdes: 'agent-window:listIdes',
   /** 用系统文件管理器打开目录 */
@@ -243,32 +224,11 @@ export interface DesktopWindowBridge {
     不需要任何跨窗口协作（改完就在同一份 store 里），故一并删除。
   */
   /**
-   * 把这条会话开到浮窗里。
-   *
-   * 主进程持有唯一的那个浮窗：已经开着同一条就只恢复 / 聚焦；开着的是**另一条**
-   * 就带新 id 重载它的渲染端（渲染端因此不需要任何「跟随外部切换」的逻辑）。
+   * 切换窗口置顶（标题栏那颗图钉）。状态由主进程持有并落盘，重启后保持。
    */
-  openConversationWindow(conversationId: string): Promise<void>
-  /**
-   * 浮窗请求「在主窗口里打开这个会话」：把主窗口拉到前台并把链接交过去。
-   *
-   * 空 id 只是兜底（浮窗没有会话时那颗按钮是禁用的）：只把主窗口拉回前台。
-   */
-  openInMainWindow(conversationId?: string): Promise<void>
-  /**
-   * 取走暂存的深链（sendSync）。
-   *
-   * **同步**而不是 Promise：主窗口首帧就要把标签摆对（`main.tsx` 在渲染前调一次，
-   * `useDeepLink` 挂载时再调一次）。异步的话首帧必然先落「上一个会话」再跳，闪一下。
-   * 与 `takePendingExternalFiles` 同一套「先存后取」，只是这边不给异步的机会。
-   */
-  takePendingDeepLink(): string | null
-  /** 订阅后续的深链；返回退订函数 */
-  onDeepLink(cb: (conversationId: string) => void): () => void
-  /** 切换本窗口置顶（主进程落盘为新浮窗默认值，作用于发起窗口） */
-  setAlwaysOnTop(enabled: boolean): Promise<void>
-  /** 同步读置顶偏好（sendSync，与 loadCloseToTray 同一套路） */
-  loadAlwaysOnTop(): boolean
+  setMainAlwaysOnTop(enabled: boolean): Promise<void>
+  /** 同步读主窗口置顶状态（sendSync，标题栏首帧不闪） */
+  loadMainAlwaysOnTop(): boolean
   /** 检测到的已安装 IDE（顶栏「打开」下拉用；每次现探测） */
   listIdes(): Promise<IdeInfo[]>
   /** 用系统文件管理器打开目录 */
@@ -303,7 +263,7 @@ export interface DesktopWindowBridge {
   /**
    * 把主题模式推给主进程：主进程设 `nativeTheme.themeSource`，托盘右键菜单这类
    * **原生 UI** 的亮暗才会跟随应用主题（渲染端的 DOM 类名管不到它们）。
-   * 幂等：两个窗口都会在 useTheme 挂载时推一次当前值，值相同无副作用。
+   * 幂等：useTheme 挂载时推一次当前值，值相同无副作用。
    */
   setTheme(mode: DesktopThemeMode): Promise<void>
   /** 「关于」弹窗的应用信息（名称 / 版本 / 图标 URL）；**同步**读（sendSync，与 loadRemoteAccess 同一套路） */
@@ -337,9 +297,8 @@ export interface OpenResult {
 /**
  * preload 经 contextBridge 暴露到 `window.fizzWindow`。
  *
- * 声明放在这里（而不是各自的入口文件）：主窗口与浮窗是**两个渲染入口**、各自的 bundle，
- * 但共用同一份 preload —— 谁都能直接 `window.fizzWindow.xxx()`，不该靠「另一个入口文件
- * 顺手声明了一次」才编得过。
+ * 声明放在这里（而不是渲染端入口文件）：preload 与渲染端两边 tsconfig 都 include
+ * 这个纯类型文件，谁都能直接 `window.fizzWindow.xxx()`。
  */
 declare global {
   interface Window {

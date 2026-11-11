@@ -53,7 +53,7 @@
  * 2) `--app-titlebar-height: 2.75rem` —— 手机顶栏是 `MobileAppBar` 的 `h-11`
  *    （= 2.75rem，与 `h-11` 同一套 rem，跟着根字号一起变，不会错位）；
  * 3) `--status-bar-height: 0` —— 手机**不渲染**底部状态栏（见 `app-shell.tsx`），
- *    `fixed` 的抽屉不再为它空出 36px；
+ *    `fixed` 的抽屉不再为它空出一条高度；
  * 4) `--app-tabbar-height` 保持公共默认的 `0` —— 手机版**没有底部导航**
  *    （设置入口在抽屉头右上角，见 `layout/Sidebar.tsx`）。
  *
@@ -76,6 +76,11 @@
    * 不压暗不等于没分界：分界由抽屉右缘那条投影负责（见下面那段）。
    */
   --sidebar-scrim: transparent;
+  /*
+   * 模糊也关掉：共享默认给遮罩加 `backdrop-filter: blur(8px)`，那是「覆盖式抽屉压暗正文」
+   * 的语汇。本工程正文是被推走的，剩下露在右边的那条不许糊成毛玻璃。
+   */
+  --sidebar-scrim-blur: 0px;
   --app-titlebar-height: 2.75rem;
   /*
    * 抽屉连顶栏一起盖住（共享默认只盖到顶栏下沿）。

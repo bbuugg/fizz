@@ -16,8 +16,9 @@
  *
  * ## 手机上左边那颗「展开」
  *
- * 手机上这一条同时是**竖条 + 侧栏抽屉的唯一入口**，而且这两者**同进同出**：点一下 = 竖条
- * 回到占位 + 抽屉打开；再点一下 = 一起收掉。
+ * 手机上这一条里的开关是 **web 端**进入竖条 + 侧栏抽屉的入口；desktop 的自绘标题栏
+ * 挂的是同一颗组件（`MobileSidebarToggle`），两边语义只有一份。它俩**同进同出**：点一下 =
+ * 竖条回到占位 + 抽屉打开；再点一下 = 一起收掉。
  *
  * ⚠️ 不要把它们拆成两个开关。早先底部状态栏有颗「功能区栏」开关、抽屉入口又是功能区图标
  * 本身，于是出现「竖条没了、侧栏还开着」这种半截形态（手机上只剩内容区，用户连自己在哪个
@@ -31,50 +32,18 @@
  * 压在底栏角落顺手，且手机、桌面浏览器同一份顶栏、两端一致。「应用日志」则**下沉到底部
  * 状态栏最右端**（`LogsButton`）：它低频、且属于「全局工具」，交给状态栏的 `actions` 槽。
  */
-import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { AppBrand } from '@fizz/agent-kit/shared/components/AppBrand'
-import { Button } from '@fizz/ui/button'
-import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
-import { useActiveActivity } from '../activities'
 import { AiAssistantButton } from './AiAssistantButton'
-import {
-  setMobileSidebarOpen,
-  useMobileSidebarOpen
-} from '@fizz/agent-kit/shared/lib/mobile-sidebar'
+import { MobileSidebarToggle } from './MobileSidebarToggle'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 
 export function WebTitleBar({ className }: { className?: string }) {
-  const isMobile = useIsMobile()
-  const { activity } = useActiveActivity()
-  const open = useMobileSidebarOpen()
-
-  /**
-   * 当前功能区有没有侧边栏（整页界面没有）。没有侧栏时那颗按钮不画 —— 点了什么都不会发生。
-   */
-  const canOpenSidebar = Boolean(activity.sidebar)
-  /**
-   * 一件事 = 一个状态：抽屉开 → 竖条也在（由 `AppShell` 派生）；抽屉关 → 两个都没了。
-   * 这里**没有第二个开关可写**，所以两者不可能不同步。
-   */
-  const expanded = canOpenSidebar && open
-  const toggle = (): void => setMobileSidebarOpen(!expanded)
-
   return (
     <header
       className={cn('flex h-8 shrink-0 items-center gap-1 px-2', className)}
     >
-      {isMobile && canOpenSidebar && (
-        <Button
-          size="sm"
-          variant="ghost"
-          className="size-7! shrink-0 p-0! text-muted-foreground hover:text-foreground"
-          aria-label={expanded ? '收起侧栏' : '展开侧栏'}
-          aria-pressed={expanded}
-          onClick={toggle}
-        >
-          {expanded ? <PanelLeftClose className="size-4" /> : <PanelLeftOpen className="size-4" />}
-        </Button>
-      )}
+      {/* 手机入口：与 desktop 自绘标题栏共用同一颗（见 MobileSidebarToggle） */}
+      <MobileSidebarToggle />
       {/* 品牌区：`size-4.5` / `text-xs` 是给 36px 高的顶栏挑的（与 desktop 标题栏一致） */}
       <AppBrand iconClassName="size-4.5" nameClassName="text-xs" />
       {/*

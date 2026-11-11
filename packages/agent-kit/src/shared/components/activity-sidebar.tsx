@@ -165,14 +165,15 @@ export function ActivitySidebar({
         {children}
       </aside>
       {/* 手机抽屉的遮罩：点一下收起。底色读 `--sidebar-scrim`（默认 `foreground/30`，
-          安卓壳覆盖成 `transparent` —— 那边正文是被推走的，不需要压暗，见 token 处的注释）。
+          安卓壳覆盖成 `transparent` —— 那边正文是被推走的，不需要压暗，见 token 处的注释）；
+          高斯模糊读 `--sidebar-scrim-blur`（安卓壳覆盖成 `0`，理由同前）。
           **与抽屉同一条内缩**（见文件头）—— 不缩的话竖条虽然点得到，却被压暗，
           看起来仍像不可点。上沿也与抽屉同一个 token：不然顶栏右半截露在遮罩之外，
           点那颗按钮不会收起抽屉。 */}
       {isMobile && mobileOpen && (
         <div
           className={cn(
-            'fixed top-[var(--sidebar-drawer-top)] bottom-[calc(var(--safe-area-inset-bottom,0px)_+_var(--status-bar-height))] right-0 z-30 bg-[var(--sidebar-scrim)]',
+            'fixed top-[var(--sidebar-drawer-top)] bottom-[calc(var(--safe-area-inset-bottom,0px)_+_var(--status-bar-height))] right-0 z-30 bg-[var(--sidebar-scrim)] backdrop-blur-(--sidebar-scrim-blur)',
             mobileInset
           )}
           onClick={() => onMobileOpenChange(false)}

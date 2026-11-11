@@ -32,21 +32,10 @@ const windowBridge: DesktopWindowBridge = {
   loadCloseToTray: () => ipcRenderer.sendSync(WINDOW_IPC.loadCloseToTray) as boolean,
   setCloseToTray: (enabled: boolean) =>
     ipcRenderer.invoke(WINDOW_IPC.setCloseToTray, enabled) as Promise<void>,
-  openConversationWindow: (conversationId: string) =>
-    ipcRenderer.invoke(WINDOW_IPC.openConversationWindow, conversationId) as Promise<void>,
-  openInMainWindow: (conversationId?: string) =>
-    ipcRenderer.invoke(WINDOW_IPC.openInMainWindow, conversationId) as Promise<void>,
-  // sendSync：主窗口首帧就要把标签摆对，异步会先落旧会话再跳（与 loadAlwaysOnTop 同一套路）
-  takePendingDeepLink: () => ipcRenderer.sendSync(WINDOW_IPC.takePendingDeepLink) as string | null,
-  onDeepLink: (cb: (conversationId: string) => void) => {
-    const listener = (_e: unknown, conversationId: string): void => cb(conversationId)
-    ipcRenderer.on(WINDOW_IPC.deepLink, listener)
-    return () => ipcRenderer.off(WINDOW_IPC.deepLink, listener)
-  },
-  setAlwaysOnTop: (enabled: boolean) =>
-    ipcRenderer.invoke(WINDOW_IPC.setAlwaysOnTop, enabled) as Promise<void>,
-  // sendSync：浮窗首帧就要正确的图钉状态（与 loadCloseToTray 同一套路）
-  loadAlwaysOnTop: () => ipcRenderer.sendSync(WINDOW_IPC.loadAlwaysOnTop) as boolean,
+  setMainAlwaysOnTop: (enabled: boolean) =>
+    ipcRenderer.invoke(WINDOW_IPC.setMainAlwaysOnTop, enabled) as Promise<void>,
+  // sendSync：主窗口标题栏首帧就是正确的图钉状态
+  loadMainAlwaysOnTop: () => ipcRenderer.sendSync(WINDOW_IPC.loadMainAlwaysOnTop) as boolean,
   listIdes: () => ipcRenderer.invoke(WINDOW_IPC.listIdes) as Promise<IdeInfo[]>,
   openFileManager: (dir: string) =>
     ipcRenderer.invoke(WINDOW_IPC.openFileManager, dir) as Promise<OpenResult>,

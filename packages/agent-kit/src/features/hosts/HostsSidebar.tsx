@@ -90,6 +90,7 @@ import { useMemo, useState, type ReactElement, type ReactNode } from 'react'
 import { useDrag } from 'react-dnd'
 import {
   ChevronRight,
+  CirclePlus,
   Cloud,
   FileCode2,
   Folder,
@@ -619,7 +620,9 @@ export function HostsSidebar({
             把标签打开 —— 与「隧道」并列，因为两者都是「主机之外的那一类东西」。
           */}
           <SidebarActions>
-            <SidebarAction icon={Plus} label={t('新建主机')} onClick={() => openForm(null)} />
+            {/* 图标与 AI Agent 的「新对话」同一颗 `CirclePlus`：同是「从无到有」的
+                动作，行首图标一致，四条侧栏的动作区看起来才是一套 */}
+            <SidebarAction icon={CirclePlus} label={t('新建主机')} onClick={() => openForm(null)} />
             <SidebarAction icon={Network} label={t('隧道')} onClick={openTunnelPanel} />
             <SidebarAction icon={FileCode2} label={t('脚本')} onClick={() => openScriptsTab()} />
           </SidebarActions>
@@ -926,7 +929,7 @@ function GroupRow({
           ref={ref}
           onClick={onToggle}
           className={cn(
-            'group/grp relative flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 text-sm text-foreground transition-colors hover:bg-foreground/5',
+            'group/grp relative flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 text-sm text-foreground transition-colors hover:bg-primary-soft',
             isDragging && 'opacity-40',
             over && 'bg-primary/10'
           )}
@@ -1112,7 +1115,7 @@ function HostRow({
           onMouseLeave={(e) => resetTruncatedName(e.currentTarget)}
           title={title}
           className={cn(
-            'group relative flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 text-sm text-foreground transition-colors hover:bg-foreground/5',
+            'group relative flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 text-sm text-foreground transition-colors hover:bg-primary-soft',
             isDragging && 'opacity-40',
             over && 'bg-primary/10'
           )}

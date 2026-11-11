@@ -1,9 +1,5 @@
-"use client";
-
-import { ClientRoot as SharedClientRoot } from "@fizz/agent-kit/shell/client-root";
-import { useDeepLink } from "@/app/layout/use-deep-link";
+import { ClientRoot as SharedClientRoot } from '@fizz/agent-kit/shell/client-root'
 
 export function ClientRoot() {
-  useDeepLink();
-  return <SharedClientRoot />;
+  return <SharedClientRoot />
 }

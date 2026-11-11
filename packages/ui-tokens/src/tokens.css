@@ -111,11 +111,20 @@
    */
   --sidebar-scrim: color-mix(in oklab, var(--foreground) 30%, transparent);
   /*
+   * 遮罩的高斯模糊半径（`backdrop-filter: blur(...)`）：抽屉展开后，没被侧栏盖住的那块
+   * 正文整片糊掉，视觉焦点收进侧栏。`0` = 不糊。
+   *
+   * 与底色分开成两个 token：`apps/mobile` 的遮罩是**透明**的（推挤式抽屉，不需要压暗），
+   * 但也不能糊 —— 被推走的正文糊成一片毛玻璃很脏。那边只覆盖这一个值即可。
+   */
+  --sidebar-scrim-blur: 8px;
+  /*
    * 外壳常驻 chrome 的高度 —— 给 `fixed` 覆盖层（手机抽屉）算让位用。
    *
    * 为什么必须是 token：`fixed` 元素是相对视口定位的，拿不到外壳容器上的任何 padding /
    * flex 占位，只能自己把几条常驻边的高度算进去。而各端的高度不同 —— 桌面 / web 是
-   * `WebTitleBar` + `StatusBar` 两条 `h-9`；安卓壳换成了 `MobileAppBar`（`h-11`），
+   * `WebTitleBar` / desktop `TitleBar` + `StatusBar` 三条 `h-8`（= 2rem，跟根字号缩放）；
+   * 安卓壳换成了 `MobileAppBar`（`h-11`），
    * 且既不渲染状态栏也没有底部导航条（见 `apps/mobile` 的 `app-shell.tsx` /
    * `styles.css`）。
    * 各端覆盖这几个值，共享组件（`ActivitySidebar`）一行都不用动 ——
@@ -124,8 +133,13 @@
    * `--app-tabbar-height` 只有带底部导航的外壳才会给非零值（目前没有这样的外壳），
    * web / desktop / mobile 都保持 0：桌面那条底部是状态栏，不是导航条。
    */
-  --app-titlebar-height: 2.25rem;
-  --status-bar-height: 2.25rem;
+  /*
+   * 必须与外壳那几条横条的实际类名一致（都是 `h-8`）：早先写的是 2.25rem（旧 `h-9`），
+   * 条子缩成 `h-8` 后 token 没跟着改，手机上抽屉顶部与顶栏之间多出一条 4px 的缝
+   * （底部同理，抽屉悬在状态栏上方）。改那几条的高度时**这里一起改**。
+   */
+  --app-titlebar-height: 2rem;
+  --status-bar-height: 2rem;
   --app-tabbar-height: 0px;
   /*
    * 手机抽屉的上沿（下沿还是自己按 `--status-bar-height` 算）。

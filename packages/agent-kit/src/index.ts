@@ -10,7 +10,7 @@
  * `kit-no-upward` 会拦）。
  *
  * 下面这批导出是**给宿主用的公共 API**（不只是给 app-shell 内部用）：desktop 的自绘
- * 标题栏、浮窗都是独立的一棵 React 树，拿不到 app-shell 内部的东西，只能从这里取。
+ * 标题栏是独立的一棵 React 树，拿不到 app-shell 内部的东西，只能从这里取。
  */
 
 export { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'

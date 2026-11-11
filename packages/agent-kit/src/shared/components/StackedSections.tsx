@@ -290,7 +290,7 @@ export function SectionHeader({
         "group/header flex h-8 shrink-0 items-center gap-1.5 px-2",
         // 可折叠时整行是个按钮：圆角 + 悬停底色，视觉上才认得出「这里能点」
         collapsible &&
-          "cursor-pointer rounded-md transition-colors hover:bg-primary/5 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
+          "cursor-pointer rounded-md transition-colors hover:bg-primary-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
         className,
       )}
       // 用 div + role 而不是 <button>：`extra` 里就是按钮，button 套 button 是非法结构

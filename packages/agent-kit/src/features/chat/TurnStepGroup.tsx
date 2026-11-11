@@ -32,6 +32,13 @@
  * **进行中 + 展开**时扫光撤掉（竖条留着），名字直接换成「正在工作…」：细节就在下面
  * 一行不落地流着，抬头不需要再演示「还在跑」。折叠回去立刻恢复原样；一组落地后（不论开合）
  * 也退回纯文字 —— 历史消息里不会留一排还在跳的组，也不会留一排状态图标。
+ *
+ * **展开后的内容区限高**（与思考内容 `ReasoningContent` 同一档 `max-h-[20rem]`、内部滚动，
+ * 并且同样用 `useStickToBottom` 贴底）：一组过程可能压着十几张工具卡，全铺开比整屏还高，
+ * 抬头（含「正在工作…」）就被顶出视野。限高之后组本身高度有界，抬头始终留在组顶、
+ * 内容在框内自己滚；组在跑的时候新卡片会从底部冒出来，贴底跟随才能一直看到最新那一步
+ * （用户上滚即停跟、滚回底部自动恢复）。抬头本身**不吸顶** —— 免得多条历史消息各有一个
+ * 吸顶条互相叠。
  * 这句「正在工作」挂的是 `live` 而不是 `active`（差在「工具出结果 → 模型生成下一次调用」
  * 那几秒），否则这行字会在两种文案之间反复横跳。
  *
@@ -41,6 +48,7 @@
  * 展开 / 收起时同样要 holdScroll() 暂停自动贴底，否则视图会被拽走。
  */
 import { useState, type ReactNode } from 'react'
+import { useStickToBottom } from 'use-stick-to-bottom'
 import { Brain, ChevronRight, Square, Wrench } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@fizz/ui/tooltip'
@@ -134,6 +142,9 @@ export function TurnStepGroup({
   const [open, setOpen] = useState(false)
   // 消息区的滚动上下文（可能不在 Conversation 里，拿不到就退化成空操作）
   const conversation = useConversationOptional()
+  // 展开后的内容区限高滚动：与 `ReasoningContent` / `StreamingInputBlock` 同一套贴底
+  // （新工具卡从底部冒出来时自动跟到底；用户上滚即停跟，滚回底部恢复）
+  const { scrollRef, contentRef } = useStickToBottom({ initial: 'instant' })
 
   /*
    * 右格内容预览只给**收起**状态看。
@@ -307,7 +318,24 @@ export function TurnStepGroup({
         </div>
       </div>
       <CollapsibleContent className="pt-2">
-        <div className="flex flex-col gap-2">{children}</div>
+        {/* 限高 + 内部滚动（口径与 `ReasoningContent` 一致）：折叠组里可能有十几张工具卡，
+            全铺开会把抬头顶出视野；限高后抬头恒在组顶，内容在框内自己滚。
+            滚动位置交给 `useStickToBottom`：组还在跑时新卡从底部冒出来要自动跟到底
+            （`initial: 'instant'` 让展开那一刻就看见最新一步），用户上滚即停跟。
+            `overflow-anchor: none` 关掉 Chromium 的滚动锚定 —— 它会在卡片变高时「帮忙」
+            修位置，与贴底逻辑打架，造成偶发跳顶（与思考内容同一条）。
+            `no-scrollbar` 与思考内容同一处理，滚动条在这类"局部窗口"里太扎眼。
+            `border-l + pl-3`：组内内容往右缩进一档并挂一条竖线，与组外正文分开 ——
+            消息流里一眼能看出「这几张卡属于同一组」，与侧栏子列表同一做法。
+            `ml-2`：竖线从最左缘再让出半个图标宽（`size-4` 的一半，同走 `--spacing` 倍率），
+            正好落在抬头左侧那颗图标的中心线上。 */}
+        <div
+          ref={scrollRef}
+          className="max-h-[20rem] overflow-y-auto ml-2 border-l border-border pr-2 pl-3 no-scrollbar"
+          style={{ overflowAnchor: 'none' }}
+        >
+          <div ref={contentRef} className="flex flex-col gap-2">{children}</div>
+        </div>
       </CollapsibleContent>
     </Collapsible>
   )

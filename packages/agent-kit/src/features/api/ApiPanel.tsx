@@ -17,9 +17,10 @@
  * ## 版式与另外三条侧栏同构
  *
  * **一个分区、两块内容组**（请求 → 历史记录），与 AI Agent 侧栏的「任务 → 工作区」
- * 完全同构：顶部一排整行动作，下面两块可折叠的组共用同一个滚动区、不按权重分高度、
- * 中间没有可拖的边界。「请求」按内容高度、最多占一半（`size="half"`），「历史记录」
- * 吃剩余高度（`size="fill"`，最后一块）。
+ * 完全同构：顶部一排整行动作，下面两块可折叠的组共用同一个滚动区。两块组**顺序固定、
+ * 各自独立展开**（展开不重排，与 VSCode 侧栏一致）：展开组吃剩余高度，只展开「请求」
+ * 时「历史记录」的标题被挤到底部；两组都展开时按上次的位置分（没拖过就 1:1）、
+ * 交界处可拖动改比例。
  *
  * 新建类动作（新建请求 / 新建 WebSocket / 导入 cURL / 导入 OpenAPI）在 `SidebarActions`
  * 里平铺；「新建分组」是**分组**的操作，挂在「请求」组标题的 `extra` 上（与主机侧栏那颗
@@ -70,6 +71,8 @@ import { useDrag } from 'react-dnd'
 import {
   Cable,
   ChevronRight,
+  CirclePlus,
+  Eraser,
   FileJson,
   Folder,
   FolderInput,
@@ -115,6 +118,7 @@ import {
 } from '@fizz/ui/select'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { ConfirmDeleteDialog } from '@fizz/agent-kit/shared/components/ConfirmDeleteDialog'
+import { useConfirm } from '@fizz/agent-kit/shared/components/ConfirmProvider'
 import { SidebarScaffold } from '@fizz/agent-kit/shared/components/SidebarScaffold'
 import { SectionContent, SectionShell } from '@fizz/agent-kit/shared/components/StackedSections'
 // 内容组（请求）+ 顶部动作区：与 AI Agent / 主机 / 笔记侧栏共用同一份，见
@@ -229,8 +233,8 @@ export function ApiPanel({
     >
       {/*
         一个分区、两块内容组（请求 → 历史记录）—— 与 AI Agent 侧栏的「任务 → 工作区」
-        同构：两块共用一个滚动区、不按权重分高度、也没有中间那条可拖的边界。
-        高度只由「请求组按内容、最多一半 + 历史组吃剩余 + 外层兜底滚动」决定。
+        同构：两块共用一个滚动区，顺序固定、各自独立展开；两组都展开时按 `grow` 分
+        剩余高度（没拖过就 1:1），交界处可上下拖。
 
         ⚠️ 两块组在同一个 `SectionShell` 里，所以它们**必须**由同一个组件渲染出来
         （动作区的 4 个入口要用请求那块的状态）—— 历史那块的 UI 仍是独立组件，
@@ -250,9 +254,10 @@ type TreeRow =
  * 侧栏主体：**一个分区**装两块内容组 —— 请求（分组树）→ 历史记录。
  *
  * 与 AI Agent 侧栏的「任务 → 工作区」同构（见 `shared/components/SidebarGroups`）：
- * 顶部是一排整行动作，下面是两块可折叠的内容组，共用同一个滚动区、不按权重分高度。
- * 「请求」按内容高度、最多占一半（`size="half"`，条数少时不留空白、多了组内滚），
- * 「历史记录」吃剩余高度（`size="fill"`，最后一块）。
+ * 顶部是一排整行动作，下面是两块内容组，共用同一个滚动区。
+ * 两块组**顺序固定、各自独立展开**（展开不重排）：展开组吃剩余高度，只展开「请求」
+ * 时「历史记录」的标题被挤到底部；两组都展开时按上次的位置分（没拖过就 1:1）、
+ * 交界处可拖动改比例。
  *
  * 为什么两块组挤在同一个组件里：动作区那 4 个「新建 / 导入」入口要用请求这块的状态
  * （草稿、cURL 弹窗、OpenAPI 弹窗），而 `SidebarActions` 必须是 `SectionContent` 的
@@ -300,6 +305,28 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
 
   const groups = app.apiGroups
   const requests = app.apiRequests
+
+  /**
+   * 两块内容组（请求 / 历史记录）的展开态与高度：**顺序固定、各自独立展开**，
+   * 可以同时展开（与 VSCode 侧栏一致，展开不重排）。展开组用 `size="fill"` 吃剩余
+   * 高度，所以只展开「请求」时「历史记录」的标题被挤到底部；两组都展开时按上次的
+   * 位置分（没拖过就 1:1），交界处可拖动改比例（`requestsHeight`）。拖出来的高度
+   * **不被折叠清掉**：只剩请求组时高度值照传、由 `solo` 让它吃满（basis 仍是记住的
+   * 像素）；历史记录再展开回来仍落回上次的位置。折叠态与高度只存内存，刷新回默认。
+   */
+  const [requestsOpen, setRequestsOpen] = useState(true)
+  const [historyOpen, setHistoryOpen] = useState(true)
+  const [requestsHeight, setRequestsHeight] = useState<number | undefined>(undefined)
+  /** 只有两组都展开时「请求」组才需要「固定高度 + 分隔条」（只剩它时吃满剩余高度） */
+  const requestsResizable = requestsOpen && historyOpen
+
+  /** 点组标题：只切展开态 —— 拖出来的高度不清，再展开时要回到那个位置 */
+  const toggleRequests = (): void => {
+    setRequestsOpen((v) => !v)
+  }
+  const toggleHistory = (): void => {
+    setHistoryOpen((v) => !v)
+  }
 
   const groupTree = useMemo(() => buildGroupTree(groups, requests), [groups, requests])
   const ungrouped = useMemo(() => collectUngrouped(requests, groups), [requests, groups])
@@ -613,12 +640,137 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
   const isEmpty = requests.length === 0 && groups.length === 0
   const noMatch = searching && rows.length === 0
 
+  /**
+   * 两块内容组按**固定顺序**渲染（请求在前、历史记录在后）：展开 / 收起不会重排，
+   * 与 VSCode 侧栏一致。展开组吃剩余高度，所以只展开「请求」时「历史记录」的标题
+   * 会被挤到底部；两组都展开时按上次的位置分（没拖过就 1:1，拖过按记住的像素
+   * 高度），请求组底部出现可拖的分隔条。
+   */
+  const requestsGroup = (
+    <SidebarGroup
+      title="请求"
+      count={requests.length}
+      alignIndent
+      open={requestsOpen}
+      onToggle={toggleRequests}
+      // 展开时吃剩余高度；只展开这一组时下面那行标题自然沉到底部
+      size="fill"
+      // 记住的高度**一直传**（历史记录收起时也不清）：`SidebarGroup` 在只剩本组时把
+      // 它当弹性基准（`1 1 Hpx`）继续长满，另一组再展开只改 grow、basis 恒为 H ——
+      // 展开动画单调，不会先冲高再缩回（见 `SidebarGroup` 的 `height` 注释）
+      height={requestsHeight}
+      // 历史记录收起时本组是唯一展开的组：吃满剩余高度
+      solo={!requestsResizable}
+      onResizeHeight={requestsResizable ? setRequestsHeight : undefined}
+      // 搜索框常驻在组内、不跟着列表滚 —— 所以容器不滚，由 children 自己分：
+      // 「搜索框（shrink-0） + 列表（flex-1 自己滚）」，见 `SidebarGroup` 的 `scroll`
+      scroll={false}
+      // 只留底部内边距：横向的由外层容器统一给（见上面那段注释）
+      className="pb-1"
+      // 「新建分组」跟着**这一组**的标题走（它建的就是这里的一级分组），
+      // 与主机侧栏那颗同款：标题行只有 32px 高、标签是 12px 灰字，用大按钮会喧宾夺主
+      extra={
+        <IconTip label="新建分组">
+          <RowActionButton
+            aria-label="新建分组"
+            className="shrink-0"
+            onClick={() => setGroupEdit({ name: '' })}
+          >
+            <FolderPlus className="size-3.5" />
+          </RowActionButton>
+        </IconTip>
+      }
+      // 空态**不用** `empty`：那个属性会把组里的 children 整块换掉，搜索框跟着消失。
+      // 这里把空态卡片放进下面的列表区，搜索框始终在位（布局不跳）。
+    >
+      {/* 搜索框常驻在组内、**不跟着列表滚**（组容器 `scroll={false}`，见上）；
+          没有横向内边距：外框与行的高亮底色都从外层容器的 8px 起 */}
+      <div className="shrink-0 pb-1.5">
+        <Input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="搜索请求…"
+          className="h-8 text-sm"
+        />
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto no-scrollbar">
+        {isEmpty ? (
+          <div className="mx-1 mt-2 rounded-md border border-dashed border-border px-3 py-6 text-center text-xs leading-5">
+            还没有保存的请求。
+          </div>
+        ) : noMatch ? (
+          <div className="mx-1 mt-6 rounded-md px-3 py-6 text-center text-xs text-muted-foreground">
+            没有匹配「{search}」的请求。
+          </div>
+        ) : (
+          <div className="flex flex-col gap-0.5">
+            {rows.map((row) =>
+              row.kind === 'group' ? (
+                <GroupRow
+                  key={`g:${row.node.group.id}`}
+                  node={row.node}
+                  depth={row.depth}
+                  expanded={expanded.has(row.node.group.id)}
+                  searching={searching}
+                  onToggle={() => toggleExpand(row.node.group.id)}
+                  onNewRequest={() => openDraft()}
+                  onImportCurl={() => {
+                    setCurlGroupId(row.node.group.id)
+                    setCurlOpen(true)
+                  }}
+                  onNewSub={() => {
+                    setGroupEdit({ name: '', parentId: row.node.group.id })
+                    expandAncestors(row.node.group.id)
+                  }}
+                  onMove={() => {
+                    setMoveParent(row.node.group.parentId ?? TOP_GROUP)
+                    setMoveTarget(row.node.group)
+                  }}
+                  onRename={() =>
+                    setGroupEdit({ id: row.node.group.id, name: row.node.group.name })
+                  }
+                  onDelete={() => {
+                    setDeleteGroupRequests(false)
+                    setPendingGroupDelete(row.node.group)
+                  }}
+                  onDropRequest={dropRequest}
+                  onDropGroup={dropGroup}
+                />
+              ) : (
+                <RequestRow
+                  key={`r:${row.request.id}`}
+                  request={row.request}
+                  depth={row.depth}
+                  hasGroup={row.hasGroup}
+                  active={activeKey === `api:${row.request.id}`}
+                  onOpen={() => openRequest(row.request)}
+                  onEdit={() => openRequestMeta(row.request)}
+                  onMoveOut={() => moveOutOfGroup(row.request)}
+                  onDelete={() => setPendingDelete(row.request)}
+                  onDropRequest={dropRequest}
+                  onDropGroup={dropGroup}
+                />
+              )
+            )}
+          </div>
+        )}
+      </div>
+    </SidebarGroup>
+  )
+
+  /** 第二块：请求历史（与请求组同一个滚动区、同一套组标题与行样式，见 `HistorySection`） */
+  const historyGroup = (
+    <HistorySection app={app} open={historyOpen} onToggle={toggleHistory} />
+  )
+
   return (
     <SectionShell spec={API_REQUESTS_SECTION} minHeight={280}>
       {/*
         版式与 AI Agent / 主机 / 笔记侧栏**同构**（`shared/components/SidebarGroups`）：
         一个 `SectionShell` 里自上而下是「顶部动作 → 请求组 → 历史记录组」，两块组共用
-        一个滚动区、各自可折叠，外层只在窗口极矮时兜底滚一次。
+        一个滚动区、**顺序固定且各自独立展开**（与 VSCode 侧栏一致，展开不会重排）；
+        展开的组用 `size="fill"` 分剩余高度，两组都展开时交界处可拖动改比例。
+        外层只在窗口极矮时兜底滚一次。
 
         原先标题行右侧挤着两颗 28px 的 ghost 图标（「新建分组」「新建 / 导入」）—— 标题行
         只有 260px 宽，它们把「请求 (n)」压得只剩几个字，而且两颗图标大小一样、一个是
@@ -634,7 +786,9 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
         搜索框（48px）之后，下限还得留出「至少一行请求」。
       */}
       <SidebarActions>
-        <SidebarAction icon={Plus} label="新建请求" onClick={() => openDraft()} />
+        {/* 「新建请求」与 AI Agent 的「新对话」同一颗 `CirclePlus` —— 同为「从无到有」
+            的动作，行首图标一致，四条侧栏的动作区才是同一套语言 */}
+        <SidebarAction icon={CirclePlus} label="新建请求" onClick={() => openDraft()} />
         <SidebarAction icon={Cable} label="新建 WebSocket" onClick={() => openWsDraft()} />
         <SidebarAction
           icon={Terminal}
@@ -652,116 +806,18 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
       </SidebarActions>
 
       <SectionContent>
-        {/* **外层兜底滚动容器**（与另外三条侧栏同构）：两块组各自滚，这层只在窗口极矮、
+        {/* **外层兜底滚动容器**（与另外三条侧栏同构）：展开组自己滚，这层只在窗口极矮、
             组的 `minHeight` 放不下时才兜底滚一次。
 
             `px-2` 在**这一层**、不在组上（与主机侧栏一模一样）：组标签自带 `px-2`，
             所以标签落在 16px；行落在 8 + 6（`treeIndent` 的 6px 基准）= 14px。 */}
         <div className="flex min-h-0 flex-1 flex-col overflow-auto no-scrollbar px-2">
-          <SidebarGroup
-            title="请求"
-            count={requests.length}
-            alignIndent
-            // 上面那块：按内容高度、最多占一半（条数少时不留空白，多了组内滚）
-            size="half"
-            // 搜索框常驻在组内、不跟着列表滚 —— 所以容器不滚，由 children 自己分：
-            // 「搜索框（shrink-0） + 列表（flex-1 自己滚）」，见 `SidebarGroup` 的 `scroll`
-            scroll={false}
-            // 只留底部内边距：横向的由外层容器统一给（见上面那段注释）
-            className="pb-1"
-            // 「新建分组」跟着**这一组**的标题走（它建的就是这里的一级分组），
-            // 与主机侧栏那颗同款：标题行只有 32px 高、标签是 12px 灰字，用大按钮会喧宾夺主
-            extra={
-              <IconTip label="新建分组">
-                <RowActionButton
-                  aria-label="新建分组"
-                  className="shrink-0"
-                  onClick={() => setGroupEdit({ name: '' })}
-                >
-                  <FolderPlus className="size-3.5" />
-                </RowActionButton>
-              </IconTip>
-            }
-            // 空态**不用** `empty`：那个属性会把组里的 children 整块换掉，搜索框跟着消失。
-            // 这里把空态卡片放进下面的列表区，搜索框始终在位（布局不跳）。
-          >
-            {/* 搜索框常驻在组内、**不跟着列表滚**（组容器 `scroll={false}`，见上）；
-                没有横向内边距：外框与行的高亮底色都从外层容器的 8px 起 */}
-            <div className="shrink-0 pb-1.5">
-              <Input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="搜索请求…"
-                className="h-8 text-sm"
-              />
-            </div>
-            <div className="min-h-0 flex-1 overflow-auto no-scrollbar">
-              {isEmpty ? (
-                <div className="mx-1 mt-2 rounded-md border border-dashed border-border px-3 py-6 text-center text-xs leading-5">
-                  还没有保存的请求。
-                </div>
-              ) : noMatch ? (
-                <div className="mx-1 mt-6 rounded-md px-3 py-6 text-center text-xs text-muted-foreground">
-                  没有匹配「{search}」的请求。
-                </div>
-              ) : (
-                <div className="flex flex-col gap-0.5">
-                  {rows.map((row) =>
-                    row.kind === 'group' ? (
-                      <GroupRow
-                        key={`g:${row.node.group.id}`}
-                        node={row.node}
-                        depth={row.depth}
-                        expanded={expanded.has(row.node.group.id)}
-                        searching={searching}
-                        onToggle={() => toggleExpand(row.node.group.id)}
-                        onNewRequest={() => openDraft()}
-                        onImportCurl={() => {
-                          setCurlGroupId(row.node.group.id)
-                          setCurlOpen(true)
-                        }}
-                        onNewSub={() => {
-                          setGroupEdit({ name: '', parentId: row.node.group.id })
-                          expandAncestors(row.node.group.id)
-                        }}
-                        onMove={() => {
-                          setMoveParent(row.node.group.parentId ?? TOP_GROUP)
-                          setMoveTarget(row.node.group)
-                        }}
-                        onRename={() =>
-                          setGroupEdit({ id: row.node.group.id, name: row.node.group.name })
-                        }
-                        onDelete={() => {
-                          setDeleteGroupRequests(false)
-                          setPendingGroupDelete(row.node.group)
-                        }}
-                        onDropRequest={dropRequest}
-                        onDropGroup={dropGroup}
-                      />
-                    ) : (
-                      <RequestRow
-                        key={`r:${row.request.id}`}
-                        request={row.request}
-                        depth={row.depth}
-                        hasGroup={row.hasGroup}
-                        active={activeKey === `api:${row.request.id}`}
-                        onOpen={() => openRequest(row.request)}
-                        onEdit={() => openRequestMeta(row.request)}
-                        onMoveOut={() => moveOutOfGroup(row.request)}
-                        onDelete={() => setPendingDelete(row.request)}
-                        onDropRequest={dropRequest}
-                        onDropGroup={dropGroup}
-                      />
-                    )
-                  )}
-                </div>
-              )}
-            </div>
-          </SidebarGroup>
-
-          {/* 第二块内容组：请求历史（最后一块 → 吃剩余高度）。与请求组同一个滚动区、
-              同一套组标题与行样式，见 `HistorySection` */}
-          <HistorySection app={app} />
+          {/*
+            固定顺序：请求 → 历史记录（与 VSCode 侧栏一致，展开不重排）。
+            两个元素的内容与注释在 `return` 之前的 `requestsGroup` / `historyGroup` 里。
+          */}
+          {requestsGroup}
+          {historyGroup}
         </div>
       </SectionContent>
 
@@ -1092,7 +1148,7 @@ function GroupRow({
         <div
           ref={ref}
           className={cn(
-            'group/grow relative flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1.5 text-sm text-foreground transition-colors hover:bg-foreground/5',
+            'group/grow relative flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1.5 text-sm text-foreground transition-colors hover:bg-primary-soft',
             isDragging && 'opacity-40'
           )}
           style={{ paddingLeft: treeIndent(depth) }}
@@ -1247,7 +1303,7 @@ function RequestRow({
             isDragging && 'opacity-40',
             active
               ? 'bg-primary/15 text-foreground'
-              : 'text-foreground hover:bg-foreground/5'
+              : 'text-foreground hover:bg-primary-soft'
           )}
           style={{ paddingLeft: treeIndent(depth) }}
           onClick={onOpen}
@@ -1331,16 +1387,27 @@ function RequestRow({
 /**
  * 第二块内容组：请求历史（按天分桶）。点一行 = 载入成一个未保存草稿。
  *
- * 与「请求」组**同一个滚动区、同一套组标题与行样式**（`size="fill"`：它是最后一块，
- * 吃剩余高度）。原先它自己是一个 `SectionShell`、和「请求」之间还有一条可拖的边界 ——
+ * 与「请求」组**同一个滚动区、同一套组标题与行样式**（`size="fill"`：展开时吃剩余
+ * 高度；只展开请求组时本组只剩一行标题沉到底部 —— 两组固定顺序、独立展开）。
+ * 原先它自己是一个 `SectionShell`、和「请求」之间还有一条可拖的边界 ——
  * 那与 AI Agent 侧栏「一个分区 + 两块内容组」的形态不是一回事（用户要求「整体和
  * ai-agent 一样两栏」）。
  *
  * 日期（今天 / 昨天 / 某月某日）是**组内的小标签**，不是第二个分区 —— 它只负责给
  * 下面几行分组，不该有自己的标题栏和操作按钮。
  */
-function HistorySection({ app }: { app: AgentApp }) {
+function HistorySection({
+  app,
+  open,
+  onToggle
+}: {
+  app: AgentApp
+  /** 展开态由父组件控：两组固定顺序、各自独立展开 */
+  open: boolean
+  onToggle: () => void
+}) {
   const history = app.apiHistory
+  const confirm = useConfirm()
 
   const groups = useMemo(() => {
     const map = new Map<string, ApiHistoryEntry[]>()
@@ -1358,26 +1425,40 @@ function HistorySection({ app }: { app: AgentApp }) {
     openApiDraftTab()
   }
 
+  /** 清空是整条历史一起没，不可撤销 —— 与删单条请求一样先弹确认 */
+  const clearHistory = async (): Promise<void> => {
+    const ok = await confirm({
+      title: '清空请求历史？',
+      description: '全部历史记录都会被删除，无法恢复。保存的请求不受影响。',
+      confirmLabel: '清空',
+      destructive: true
+    })
+    if (ok) await app.clearApiHistory()
+  }
+
   return (
     <SidebarGroup
       title="历史记录"
       count={history.length}
       alignIndent
-      // 最后一块：吃剩余高度、超出才在组内滚
+      open={open}
+      onToggle={onToggle}
+      // 展开时吃剩余高度、超出才在组内滚（只展开请求组时本组只剩标题行）
       size="fill"
-      grow={1}
       className="pb-2"
       // 「清空历史」跟着**这一组**走：与「请求」组那颗「新建分组」同一个位置、同一种
-      // 小按钮（`RowActionButton`）—— 标题行只有 32px 高，28px 的 ghost Button 会喧宾夺主
+      // 小按钮（`RowActionButton`）—— 标题行只有 32px 高，28px 的 ghost Button 会喧宾夺主。
+      // 图标用 `Eraser`（「清掉这一堆」）而不是 `Trash2`：后者在侧栏里已经是「删除单个
+      // 请求 / 分组 / 会话」的图标，清空整段历史再用它就分不清点下去会删多少
       extra={
         <IconTip label="清空历史">
           <RowActionButton
             aria-label="清空历史"
             className="shrink-0 disabled:opacity-40"
             disabled={history.length === 0}
-            onClick={() => void app.clearApiHistory()}
+            onClick={() => void clearHistory()}
           >
-            <Trash2 className="size-3.5" />
+            <Eraser className="size-3.5" />
           </RowActionButton>
         </IconTip>
       }
@@ -1396,9 +1477,9 @@ function HistorySection({ app }: { app: AgentApp }) {
                 <div
                   key={entry.id || idx}
                   // 与 `RequestRow` 同一套行：`gap-1.5` / `px-1.5` / `py-1.5` /
-                  // `rounded-md` / `hover:bg-foreground/5`（原先这里是 `gap-2 py-1 rounded
+                  // `rounded-md` / `hover:bg-primary-soft`（原先这里是 `gap-2 py-1 rounded
                   // hover:bg-primary/5`，同一份清单里两种行高、两种悬停色）
-                  className="flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 text-sm transition-colors hover:bg-foreground/5"
+                  className="flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 text-sm transition-colors hover:bg-primary-soft"
                   title={`${formatFullTime(entry.at)} · 载入「${entry.method} ${entry.url}」到新建请求`}
                   onClick={() => loadDraft(entry)}
                 >

@@ -78,7 +78,7 @@ export function PluginsSidebar({
                   onClick={() => open(entry)}
                   // 说明被截断时，悬停能看全（没说明就退回插件名）
                   title={entry.description ?? entry.name}
-                  className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors hover:bg-secondary focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+                  className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors hover:bg-primary-soft focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
                 >
                   {/* 32px 图标位：图标与占位同尺寸，有图标 / 没图标的两行文字左边界才对得齐 */}
                   {entry.icon ? (

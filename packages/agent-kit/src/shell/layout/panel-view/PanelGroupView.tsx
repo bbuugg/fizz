@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDrag, useDrop } from 'react-dnd';
-import { Rows2, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Rows2, X } from 'lucide-react';
 import { Button } from '@fizz/ui/button'
 import {
   DropdownMenu,
@@ -44,6 +44,14 @@ export function PanelGroupView({ groupId }: { groupId: string }) {
   const bodyRef = useRef<HTMLDivElement | null>(null)
   /** 标签条的横向滚动容器（活动标签要能被滚进来，见下面的 effect） */
   const tabsRef = useRef<HTMLDivElement | null>(null)
+  /**
+   * 标签条的溢出状态：`overflow` = 内容比可视区宽（出现横向滚动），
+   * `left` / `right` = 该方向还能不能继续滚。
+   *
+   * 只有溢出了才渲染左右两颗箭头；到头的方向置灰（而不是让箭头消失）——
+   * 箭头本身占宽度，一出现一消失会让标签条跟着跳一下。
+   */
+  const [scrollEdges, setScrollEdges] = useState({ overflow: false, left: false, right: false })
   const [groupZone, setGroupZone] = useState<GroupDropZone | null>(null)
 
   const tabIds = group?.tabIds ?? []
@@ -61,6 +69,9 @@ export function PanelGroupView({ groupId }: { groupId: string }) {
    * 标签条是 `overflow-x-auto`（标签多了要横向滚），于是点侧栏某个会话时，它的标签很可能
    * 正好落在可视区之外 —— 界面看起来像「点了没反应」。这里在活动标签落定后把对应那颗滚进来；
    * `inline: 'nearest'` 保证已经在可视区里的标签不会被无谓地挪动一下。
+   *
+   * 依赖里带 `overflow`：左右滚动键出现时标签条可视宽度会缩一截，需要再对齐一次，
+   * 否则刚滚到右边缘的活动标签会被新出现的箭头挡住小半。
    */
   useEffect(() => {
     const container = tabsRef.current
@@ -69,7 +80,50 @@ export function PanelGroupView({ groupId }: { groupId: string }) {
       (node) => node.dataset.tabKey === activeKey
     )
     el?.scrollIntoView({ inline: 'nearest', block: 'nearest', behavior: 'smooth' })
-  }, [activeKey])
+  }, [activeKey, scrollEdges.overflow])
+
+  /** 重新量一次标签条的溢出 / 两端可达性（滚动、容器尺寸变化、标签增删后都要量） */
+  const syncScrollEdges = useCallback((): void => {
+    const el = tabsRef.current
+    if (!el) return
+    const max = el.scrollWidth - el.clientWidth
+    const next = {
+      overflow: max > 1,
+      left: el.scrollLeft > 1,
+      right: el.scrollLeft < max - 1
+    }
+    setScrollEdges((prev) =>
+      prev.overflow === next.overflow && prev.left === next.left && prev.right === next.right
+        ? prev
+        : next
+    )
+  }, [])
+
+  useEffect(() => {
+    const el = tabsRef.current
+    if (!el) return
+    // 容器宽度变化（窗口 / 分屏拖拽）：ResizeObserver。内容宽度变化不走它 ——
+    // 容器尺寸没变时它不触发，靠下面那个按标签数 / 活动标签重量的 effect 补。
+    const observer = new ResizeObserver(syncScrollEdges)
+    observer.observe(el)
+    el.addEventListener('scroll', syncScrollEdges, { passive: true })
+    syncScrollEdges()
+    return () => {
+      observer.disconnect()
+      el.removeEventListener('scroll', syncScrollEdges)
+    }
+  }, [syncScrollEdges])
+
+  useEffect(() => {
+    syncScrollEdges()
+  }, [syncScrollEdges, tabIds.length, activeKey])
+
+  /** 点箭头：按可视区八成宽度滚一屏（滚到底时浏览器自会截断） */
+  const scrollTabs = (direction: -1 | 1): void => {
+    const el = tabsRef.current
+    if (!el) return
+    el.scrollBy({ left: direction * Math.max(160, el.clientWidth * 0.8), behavior: 'smooth' })
+  }
 
   /**
    * 组车身落区：四边 = 分屏方向，中间 = 并入本组。
@@ -162,7 +216,7 @@ export function PanelGroupView({ groupId }: { groupId: string }) {
       onPointerDownCapture={() => focusGroup(groupId)}
     >
       {/*
-        标签条：各标签 + 「全部标签」溢出菜单 + 关闭整组。
+        标签条：左右滚动键（溢出时才有）+ 各标签 + 「全部标签」溢出菜单 + 关闭整组。
         ⚠️ `relative z-10` 是必需的：标签内容层是 PanelView 根部的 `absolute z-0`，
         按绘制顺序它会盖住所有**普通流内**的内容（见 `PanelContentLayer` 的注释）。
 
@@ -171,6 +225,23 @@ export function PanelGroupView({ groupId }: { groupId: string }) {
         与参考实现（dogi）一致：分组之后的整组退出入口在标签条上，而不是只藏在右键菜单里。
       */}
       <div className={cn('relative z-10 flex shrink-0 items-center gap-1 px-1', STRIP_H)}>
+        {/*
+          左右滚动键：标签多到标签条溢出时才出现（到头的方向置灰，见 `scrollEdges`）。
+          放在**滚动容器外面**：它们自己不该跟着滚走，也不吃「整组拖拽源」的拖拽。
+        */}
+        {scrollEdges.overflow && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-6 shrink-0 text-muted-foreground"
+            aria-label="向左滚动标签"
+            title="向左滚动标签"
+            disabled={!scrollEdges.left}
+            onClick={() => scrollTabs(-1)}
+          >
+            <ChevronLeft className="size-4" />
+          </Button>
+        )}
         {/*
           标签容器同时是**整组拖拽源**：按在标签上拖 = 拖那颗标签，按在标签之间的空白处拖 =
           拖整组（原生拖拽取离指针最近的可拖祖先，见上面 useDrag 的注释）。原先的显式抓手
@@ -195,6 +266,19 @@ export function PanelGroupView({ groupId }: { groupId: string }) {
             />
           ))}
         </div>
+        {scrollEdges.overflow && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-6 shrink-0 text-muted-foreground"
+            aria-label="向右滚动标签"
+            title="向右滚动标签"
+            disabled={!scrollEdges.right}
+            onClick={() => scrollTabs(1)}
+          >
+            <ChevronRight className="size-4" />
+          </Button>
+        )}
         {tabIds.length > 1 && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

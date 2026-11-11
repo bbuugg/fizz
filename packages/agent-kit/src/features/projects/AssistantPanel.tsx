@@ -90,7 +90,7 @@ export function AssistantPanel({
   scope,
   /** `scope === 'terminal'` 时：绑定的终端标签 key（取终端工具 + 工具默认目标） */
   boundTerminalTabKey,
-  /** 内嵌形态：收起面板（全局形态不传，收起走全局开关） */
+  /** 内嵌形态：收起面板（全局形态不传，收起走顶栏那颗全局开关） */
   onClose
 }: {
   className?: string
@@ -291,8 +291,9 @@ export function AssistantPanel({
   return (
     <div className={className}>
       {/* 顶栏：会话切换器（标题 + 历史会话 + 新建）+ 删除当前会话。
-          全局形态的收起键已去掉（顶栏右上角的 AI 助手开关就是它的收起入口）；
-          终端内嵌形态没有那颗全局开关，仍保留「收起助手面板」。 */}
+          全局形态（桌面停靠 / 手机浮层）的收起键统一在顶栏右上角的 AI 助手开关上 ——
+          手机浮层只盖工作行、盖不到顶栏，那颗键随时点得到，面板里不再重复放一颗；
+          终端内嵌形态没有那颗全局开关，才保留「收起助手面板」。 */}
       <div className="flex items-center gap-2 px-3 py-2">
         {embedded ? (
           <Terminal className="size-4 shrink-0 text-muted-foreground" />

@@ -31,7 +31,7 @@
  */
 import { useMemo, useState } from 'react'
 import { Archive, ArchiveRestore, Folder, Loader2, MessageSquare } from 'lucide-react'
-import { getAgentHost } from '@fizz/agent-client/host'
+import { useAgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { InlineDeleteButton } from '@fizz/agent-kit/shared/components/InlineDeleteButton'
@@ -114,19 +114,9 @@ export function HistoryTab({ app }: { app: AgentApp }) {
   }, [app.workspaces, byWorkspace])
 
   /**
-   * 打开一条归档会话。
-   *
-   * ⚠️ 桌面端的设置是**独立窗口**（`SettingsWindow`），它有自己的 `AppProvider` / store ——
-   * 在那边直接 `app.openConversation` 只会切换这份「设置窗口自己的」状态，用户什么都看不到。
-   * 有 `openInMainWindow`（桌面宿主提供）就走它：主进程把主窗口拉到前台 + 投递深链。
-   * web / mobile 的设置是应用内页面，宿主没有这个能力，就地打开即可。
+   * 打开一条归档会话：就地打开（设置是主区域的标签，与对话共享同一份 store）。
    */
   const openArchived = (conversationId: string): void => {
-    const host = getAgentHost()
-    if (host.openInMainWindow) {
-      void host.openInMainWindow(conversationId)
-      return
-    }
     void app.openConversation(conversationId)
   }
 

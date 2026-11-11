@@ -64,15 +64,6 @@ import {
 const APP_NAME = IS_DEV_INSTANCE ? 'Fizz Dev' : 'Fizz'
 
 let mainWindow: BrowserWindow | null = null
-/** 会话浮窗（**单例**）；关闭即置空。开关语义见 openConversationWindow */
-let conversationWindow: BrowserWindow | null = null
-/**
- * 浮窗当前载的是哪条会话（`?window=conversation&conversationId=`）。
- *
- * 只用来判「同一条就聚焦、换一条就重载」—— 窗口销毁时一并置空，别把上一条的 id
- * 留给下一个窗口（会静默不重载，浮窗停在旧会话）。
- */
-let conversationWindowConversationId: string | null = null
 /** 托盘常驻：关闭窗口后应用继续在后台跑（流式回复 / 正在跑的 Agent 都不受影响） */
 let tray: Tray | null = null
 /** 真正的退出流程（托盘菜单「退出」/ Cmd+Q / 安装器）：只有这时才放行 close */
@@ -188,15 +179,15 @@ interface WindowPrefs {
    * 没有用户名——这是单用户系统。
    */
   remoteAccess: { enabled: boolean; port: number; passwordHash?: string }
-  /** 会话浮窗是否置顶（默认 true）；图钉改的就是这份，新开的浮窗沿用 */
-  conversationAlwaysOnTop: boolean
+  /** 窗口是否置顶（默认 false）：标题栏那颗图钉改的就是这份，重启后保持 */
+  mainAlwaysOnTop: boolean
 }
 
 const DEFAULT_REMOTE_ACCESS = { enabled: false, port: 7801 }
 
 let windowPrefs: WindowPrefs = {
   closeToTray: true,
-  conversationAlwaysOnTop: true,
+  mainAlwaysOnTop: false,
   remoteAccess: { ...DEFAULT_REMOTE_ACCESS }
 }
 
@@ -207,7 +198,7 @@ function prefsPath(): string {
 function loadWindowPrefs(): WindowPrefs {
   const fallback: WindowPrefs = {
     closeToTray: true,
-    conversationAlwaysOnTop: true,
+    mainAlwaysOnTop: false,
     remoteAccess: { ...DEFAULT_REMOTE_ACCESS }
   }
   try {
@@ -219,7 +210,7 @@ function loadWindowPrefs(): WindowPrefs {
         : undefined
     return {
       closeToTray: parsed.closeToTray !== false,
-      conversationAlwaysOnTop: parsed.conversationAlwaysOnTop !== false,
+      mainAlwaysOnTop: parsed.mainAlwaysOnTop === true,
       ...(theme ? { theme } : {}),
       remoteAccess: {
         enabled: ra?.enabled === true,
@@ -480,32 +471,18 @@ function registerWindowIpc(): void {
   // ---------- 顶栏「打开」：文件管理器 / 已安装 IDE ----------
   // 设置已并回主区域的标签页（`agent-kit` 的 `settings:list`），主进程不再参与：
   // 原先是 `WINDOW_IPC.openSettings` 在这里 new 一个独立 BrowserWindow。
-  // 会话浮窗：**单例**且**一条会话一个窗口**，见 openConversationWindow（参数必填）
-  ipcMain.handle(WINDOW_IPC.openConversationWindow, (_e, conversationId?: unknown) => {
-    if (typeof conversationId !== 'string' || !conversationId) return
-    openConversationWindow(conversationId)
-  })
-  // 浮窗「在主窗口打开」：主进程只管拉窗口 + 递链接，会话怎么打开是渲染端的事
-  ipcMain.handle(WINDOW_IPC.openInMainWindow, (_e, conversationId?: unknown) => {
-    openInMainWindow(typeof conversationId === 'string' && conversationId ? conversationId : undefined)
-  })
-  // 同步读：主窗口首帧摆标签要用（异步会先落上一个会话再跳）
-  ipcMain.on(WINDOW_IPC.takePendingDeepLink, (event) => {
-    event.returnValue = pendingDeepLink
-    pendingDeepLink = null
-  })
-  // 置顶作用于**发起窗口**（浮窗自己），不是主窗口 —— 与 minimize / close 同一语义
-  ipcMain.handle(WINDOW_IPC.setAlwaysOnTop, (event, enabled: boolean) => {
-    const flag = enabled !== false
-    senderWindow(event)?.setAlwaysOnTop(flag)
-    if (windowPrefs.conversationAlwaysOnTop !== flag) {
-      windowPrefs = { ...windowPrefs, conversationAlwaysOnTop: flag }
+  // 窗口置顶（标题栏图钉）：状态由主进程持有并落盘，重启后保持
+  ipcMain.handle(WINDOW_IPC.setMainAlwaysOnTop, (_event, enabled: boolean) => {
+    const flag = enabled === true
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setAlwaysOnTop(flag)
+    if (windowPrefs.mainAlwaysOnTop !== flag) {
+      windowPrefs = { ...windowPrefs, mainAlwaysOnTop: flag }
       saveWindowPrefs()
     }
   })
-  // 同步读：浮窗首帧就要正确的图钉状态（与 loadCloseToTray 同一套路）
-  ipcMain.on(WINDOW_IPC.loadAlwaysOnTop, (event) => {
-    event.returnValue = windowPrefs.conversationAlwaysOnTop
+  // 同步读：标题栏首帧就是正确的图钉状态
+  ipcMain.on(WINDOW_IPC.loadMainAlwaysOnTop, (event) => {
+    event.returnValue = windowPrefs.mainAlwaysOnTop
   })
   ipcMain.handle(WINDOW_IPC.listIdes, () => listInstalledIdes())
   ipcMain.handle(WINDOW_IPC.openFileManager, (_e, dir: string) => openFileManagerAt(dir))
@@ -666,21 +643,17 @@ function sharedWebPreferences(): Electron.WebPreferences {
  * 期望值按「内容真的需要多宽」定：主窗口 = 侧栏 288 + 卡片内边距 + 对话列
  * `max-w-4xl`(768) ≈ 1110，给到 1180 留点余量。
  *
+ * 主窗口宽度下限**放到手机宽度 360**（原先 1024）：窗口可以一直拖进手机版排版
+ * （`<768px` 由 `useIsMobile` 切成覆盖抽屉那一套，和安卓端跑的是同一份渲染）。
+ * 再窄的话 360 已是手机设计的基准宽度，低于它连按钮 / 弹窗都摆不下。
+ *
  * （这里原先还有一项 `SETTINGS_WINDOW_SIZE`。设置已并回主区域的标签页，不再有独立
  * 设置窗口，那套「下限卡在布局断点 + 32px，防止拖动时 `useIsMobile()` 来回翻」的
  * 约束随之作废 —— 标签宽度由面板自己管。）
  */
 const MAIN_WINDOW_SIZE = {
   preferred: { width: 1080, height: 720 },
-  min: { width: 1024, height: 640 }
-}
-/**
- * 会话浮窗**故意**是窄的（贴在主窗口边上的小助手）：它一直在断点以下、按手机版排版渲染，
- * 「窄」不是 bug。别把下限抬到 768 —— 那会把它变成一个正常的大窗口。
- */
-const CONVERSATION_WINDOW_SIZE = {
-  preferred: { width: 380, height: 620 },
-  min: { width: 340, height: 460 }
+  min: { width: 360, height: 640 }
 }
 
 /**
@@ -870,6 +843,8 @@ function createWindow(): void {
     minHeight: MAIN_WINDOW_SIZE.min.height,
     show: false,
     autoHideMenuBar: true,
+    // 上次退出时的「窗口置顶」状态（标题栏那颗图钉写的，见 mainAlwaysOnTop）
+    alwaysOnTop: windowPrefs.mainAlwaysOnTop,
     // 自定义标题栏：Windows / Linux 隐藏整条；mac 用 hiddenInset 保留交通灯
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
     ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 12, y: 11 } } : {}),
@@ -905,118 +880,14 @@ function createWindow(): void {
   loadRenderer(mainWindow)
 }
 
-/** 渲染端入口（可带查询参数区分窗口：主界面 / `window=settings` 设置窗口） */
-function loadRenderer(window: BrowserWindow, query?: Record<string, string>): void {
+/** 渲染端入口（dev 走 vite，打包走 asar 里的 index.html） */
+function loadRenderer(window: BrowserWindow): void {
   const devUrl = process.env.VITE_DEV_SERVER_URL
   if (devUrl) {
-    const target = query ? `${devUrl}?${new URLSearchParams(query).toString()}` : devUrl
-    void window.loadURL(target)
+    void window.loadURL(devUrl)
     return
   }
-  const file = join(import.meta.dirname, '../renderer/index.html')
-  if (query) void window.loadFile(file, { query })
-  else void window.loadFile(file)
-}
-
-/**
- * 待交给主窗口渲染端的深链（浮窗点「在主窗口打开」时来的会话 id）。
- *
- * 主进程夹在中间只为一件事：**主窗口不在时这个请求得有地方放**。窗口可能在托盘里
- * （`hide` 只隐藏，`webContents` 还在，直接 send 就行），也可能彻底销毁了（用户选了
- * 「关闭 = 退出」，`createWindow` 重建要等 ready）—— 那时 send 出去没人听，会话就丢了。
- * 所以先存着，渲染端挂载后 `takePendingDeepLink` 取走；只在**被取走**或**被送达**后清空。
- */
-let pendingDeepLink: string | null = null
-
-/**
- * 把深链交给主窗口渲染端（没有就留着等它启动）。
- *
- * 用 `did-finish-load` 判「页面到底能不能收」而不是猜：窗口刚创建时 `webContents` 已存在、
- * `send` 不报错，但渲染端还没挂监听，消息就那么没了 —— 这类「有时灵」最难查。
- */
-function deliverDeepLink(conversationId: string): void {
-  const win = mainWindow
-  if (!win || win.isDestroyed()) {
-    pendingDeepLink = conversationId
-    return
-  }
-  const contents = win.webContents
-  if (contents.isLoading()) {
-    pendingDeepLink = conversationId
-    contents.once('did-finish-load', () => {
-      // 加载期间又来了新的就交新的；没有就什么都不做
-      const next = pendingDeepLink
-      pendingDeepLink = null
-      if (next && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send(WINDOW_IPC.deepLink, next)
-      }
-    })
-    return
-  }
-  pendingDeepLink = null
-  contents.send(WINDOW_IPC.deepLink, conversationId)
-}
-
-/** 浮窗「在主窗口打开这个会话」：拉回主窗口 + 交出链接（空 id = 只拉窗口） */
-function openInMainWindow(conversationId?: string): void {
-  showMainWindow()
-  if (conversationId) deliverDeepLink(conversationId)
-}
-
-/**
- * 会话浮窗：**单例**，且**一条会话一个窗口**。
- *
- * - 已开着且就是这一条：只恢复 / 聚焦 —— **不能重载**（重载会掐断正在跑的流、
- *   丢掉输入框里没发出去的内容）；
- * - 已开着的是**另一条**：带新 id 重新 `loadRenderer`。渲染端因此只认启动参数里的
- *   那一条 `conversationId`，不存在「窗内切换会话」这层状态（2026-11 改版：入口在
- *   会话详情区顶栏，见 `ConversationTab`）；
- * - 没开着：建窗口并载入这一条。
- *
- * `conversationId` **必填**：没有「无会话的草稿浮窗」这回事了（调用方只在真实会话上
- * 给入口），空 id 的一律由 IPC 那层挡掉。
- *
- * 与设置窗口同一套 webPreferences / 标题栏处理；**不**挂 close 拦截（关就是关）。
- */
-function openConversationWindow(conversationId: string): void {
-  if (conversationWindow && !conversationWindow.isDestroyed()) {
-    if (conversationWindow.isMinimized()) conversationWindow.restore()
-    conversationWindow.show()
-    conversationWindow.focus()
-    // 同一条会话：只聚焦。换了一条：让它按新 id 重新载入（见函数头）
-    if (conversationWindowConversationId !== conversationId) {
-      conversationWindowConversationId = conversationId
-      loadRenderer(conversationWindow, { window: 'conversation', conversationId })
-    }
-    return
-  }
-  const win = new BrowserWindow({
-    ...initialWindowSize(CONVERSATION_WINDOW_SIZE),
-    minWidth: CONVERSATION_WINDOW_SIZE.min.width,
-    minHeight: CONVERSATION_WINDOW_SIZE.min.height,
-    show: false,
-    autoHideMenuBar: true,
-    alwaysOnTop: windowPrefs.conversationAlwaysOnTop,
-    title: '会话',
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
-    ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 12, y: 11 } } : {}),
-    ...windowIconOption(),
-    webPreferences: sharedWebPreferences()
-  })
-  conversationWindow = win
-  conversationWindowConversationId = conversationId
-  win.on('ready-to-show', () => win.show())
-  win.on('closed', () => {
-    // 按**窗口身份**判：销毁与 closed 之间若已重开，别把新窗口的记录抹掉
-    if (conversationWindow === win) {
-      conversationWindow = null
-      conversationWindowConversationId = null
-    }
-  })
-  blockPageReload(win)
-  routeExternalLinks(win)
-  secureWebviews(win)
-  loadRenderer(win, { window: 'conversation', conversationId })
+  void window.loadFile(join(import.meta.dirname, '../renderer/index.html'))
 }
 
 /**

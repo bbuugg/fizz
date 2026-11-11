@@ -7,26 +7,26 @@
  * 左侧：品牌区（应用 logo + 名字，从 AI Agent 侧栏顶部搬过来的 —— 侧栏收起后整条会消失，
  * 品牌不该跟着没）。
  *
- * 右侧：**AI 助手**开关键（靠窗口控制键左侧）。助手是全局右侧停靠面板，入口放窗口级
- * chrome 上才哪儿都能点到；web 的 `WebTitleBar` 也是同一位置（右上角）。
+ * 右侧：**窗口置顶**图钉 + **AI 助手**开关键（都靠窗口控制键左侧）。助手是全局右侧
+ * 停靠面板，入口放窗口级 chrome 上才哪儿都能点到；web 的 `WebTitleBar` 也是同一位置
+ * （右上角）。置顶只有 desktop 有 —— web 里没有可置顶的窗口，那边不渲染这颗键。
  *
  * 「应用日志」入口**已从这里移走**，下沉到**底部状态栏最右端**（`LogsButton`）—— 它低频、
  * 属全局工具，交给状态栏的 `actions` 槽。
  *
- * 除此之外**刻意不再放别的功能入口**（侧边栏折叠 / 搜索 / Window / About 都已移除）：
+ * 窗口级工具只留「置顶图钉 + AI 助手」（窗口控制键除外）。除此之外**刻意不再放别的
+ * 功能入口**（侧边栏折叠 / 搜索 / Window / About 都已移除）：
  * 侧边栏折叠在各侧栏自己身上（AgentSidebar / HostsSidebar / ApiPanel 里那颗按钮），
  * 命令面板走快捷键 `CommandOrControl+Shift+P`，退出走系统窗口控制与菜单。
- * **会话浮窗也不在这里**：浮窗是「一条会话一个窗口」，入口在会话详情区顶栏
- * （`ConversationTab` 的「在浮窗中打开」，走 `host.openConversationWindow(conversationId)`），
- * 标题栏不该再有一颗「开 / 关浮窗」的全局开关 —— 那颗开关没有「哪条会话」可言。
  *
  * 与根应用的差别：平台判定用 navigator（desktop 的 preload 只暴露传输桥 + 窗口桥，
  * 没有 window.api.app.platform）。
  */
 import { useEffect, useState, type ReactNode } from 'react'
-import { Copy, Minus, Sparkles, Square, X } from 'lucide-react'
+import { Copy, Minus, Pin, Sparkles, Square, X } from 'lucide-react'
 import { AppBrand, setAssistantPanelOpen, useAssistantPanelOpen } from '@fizz/agent-kit'
-// `window.fizzWindow` 的全局声明在 `shared/window.ts`（主窗口与浮窗共用一份，别在这里再声明）
+import { MobileSidebarToggle } from '@fizz/agent-kit/shell/layout/MobileSidebarToggle'
+// `window.fizzWindow` 的全局声明在 `shared/window.ts`（纯类型文件，preload 与渲染端共用）
 
 /** 渲染端没有 process.platform：从 UA 判（macOS 的 UA 一定带 Mac） */
 const IS_MAC = /mac/i.test(navigator.platform || navigator.userAgent)
@@ -38,6 +38,11 @@ const IS_MAC = /mac/i.test(navigator.platform || navigator.userAgent)
 
 export function TitleBar() {
   const [maximized, setMaximized] = useState(false)
+  /**
+   * 窗口置顶状态：首帧同步取主进程那份偏好（与 loadCloseToTray 同一套路），
+   * 重启后仍是上次退出时的状态。
+   */
+  const [onTop, setOnTop] = useState(() => window.fizzWindow.loadMainAlwaysOnTop())
   // 助手开关：模块级单例状态，与 app-shell 里那份是同一个（同一份 bundle，见 index.ts 导出说明）
   const assistantOpen = useAssistantPanelOpen()
 
@@ -55,6 +60,15 @@ export function TitleBar() {
       {IS_MAC && <div className="w-[76px] shrink-0" />}
 
       {/*
+        手机形态（窗口缩到 <768px，渲染层切进手机版布局）下，活动栏竖条 + 侧栏抽屉的
+        **唯一入口**。web 顶栏挂的是同一颗组件（`MobileSidebarToggle`），desktop 标题栏
+        原先没有它 —— 窗口一拉窄，抽屉打不开、整个活动栏就再也回不来了（用户报过）。
+        非手机宽度 / 当前功能区没有侧栏时它自己渲染成 null，不占位。
+        `app-no-drag` 必须加：否则点它会变成拖窗口。
+      */}
+      <MobileSidebarToggle className="app-no-drag ml-1 self-center" />
+
+      {/*
         品牌区：应用 logo + 名字。原来在 AI Agent 侧栏顶部，搬到标题栏 —— 侧栏收起后
         整条会消失，品牌不该跟着没；web 宿主没有自绘标题栏，那边仍留在侧栏顶栏里
         （同一个 `AppBrand` 组件，名字与图片只有一份来源）。
@@ -69,6 +83,24 @@ export function TitleBar() {
 
       {/* 中间那段是空的拖拽区 */}
       <div className="flex min-w-0 flex-1 items-end" />
+
+      {/*
+        窗口置顶（图钉）：开启后主窗口浮在其它窗口之上，不随切走应用被盖住。
+        状态落在主进程的 `mainAlwaysOnTop`（重启保持）。
+      */}
+      <div className="app-no-drag flex items-stretch">
+        <TitleBarButton
+          title={onTop ? '取消窗口置顶' : '窗口置顶'}
+          active={onTop}
+          onClick={() => {
+            const next = !onTop
+            setOnTop(next)
+            void window.fizzWindow.setMainAlwaysOnTop(next)
+          }}
+        >
+          <Pin className="size-3.5" />
+        </TitleBarButton>
+      </div>
 
       {/*
         AI 助手（右上角，靠窗口控制键左侧）：全局右侧停靠面板的入口。桌面上直接调

@@ -180,7 +180,7 @@ function PluginBlockView({
                       // 早先是 text-xs / px-2 / gap-2 —— 同一个侧栏里两种字号与内边距，
                       // 插件的行看着就比会话行小一号、缩进也不齐。
                       'group relative flex items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-sm transition-colors',
-                      canClick && 'cursor-pointer hover:bg-foreground/5',
+                      canClick && 'cursor-pointer hover:bg-primary-soft',
                       TONE_CLASS[item.tone ?? 'normal']
                     )}
                   >
