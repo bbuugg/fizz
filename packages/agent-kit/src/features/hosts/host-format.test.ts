@@ -10,7 +10,7 @@
  * - 摘要也不许拼出 `undefined@127.0.0.1:5901` 这种给人看的假地址。
  */
 import { describe, expect, it } from 'vitest'
-import { hostPaletteFields, hostSummary } from './host-format'
+import { hostPaletteFields, hostSummary, parseKeepaliveInput, parsePortInput } from './host-format'
 import type { HostConfig } from '@fizz/contracts/types'
 
 function sshHost(overrides: Partial<Record<string, unknown>> = {}): HostConfig {
@@ -97,6 +97,45 @@ describe('hostPaletteFields', () => {
     expect(fields.label).toBe('未命名主机')
     expect(fields.subtitle).toBe('地址未填写')
     expect(allStrings(fields.keywords)).toBe(true)
+  })
+})
+
+describe('parseKeepaliveInput', () => {
+  // 回归：保存时用真值判断会把 0 丢掉，服务端于是「保留上一次的值」
+  it('0 是合法值（关闭保活），必须原样带出', () => {
+    expect(parseKeepaliveInput('0')).toBe(0)
+  })
+
+  it('留空 = undefined：提交时不带该字段，服务端保留原值', () => {
+    expect(parseKeepaliveInput('')).toBeUndefined()
+    expect(parseKeepaliveInput('   ')).toBeUndefined()
+  })
+
+  it('非数字 = undefined', () => {
+    expect(parseKeepaliveInput('abc')).toBeUndefined()
+  })
+
+  it('正常秒数原样解析（忽略首尾空白）', () => {
+    expect(parseKeepaliveInput(' 45 ')).toBe(45)
+  })
+})
+
+describe('parsePortInput', () => {
+  // 回归：省略 port 在服务端 = 保留旧值，清空端口改回 22 会静默失效
+  it('留空 = 默认 22', () => {
+    expect(parsePortInput('')).toBe(22)
+    expect(parsePortInput('   ')).toBe(22)
+  })
+
+  it('正常端口原样解析（忽略首尾空白）', () => {
+    expect(parsePortInput(' 8022 ')).toBe(8022)
+  })
+
+  it('非法 / 越界一律回默认 22（与服务端 normalizeSshPort 同口径）', () => {
+    expect(parsePortInput('abc')).toBe(22)
+    expect(parsePortInput('0')).toBe(22)
+    expect(parsePortInput('70000')).toBe(22)
+    expect(parsePortInput('22.5')).toBe(22)
   })
 })
 

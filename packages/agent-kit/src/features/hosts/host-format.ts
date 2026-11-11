@@ -27,6 +27,37 @@ export interface HostPaletteFields {
   keywords: string[]
 }
 
+/**
+ * 解析表单里「保活（秒）」输入框的文本：空串 / 非法数字 = undefined（提交时不带这个字段）。
+ *
+ * ⚠️ 返回的 **0 必须原样带出**：0 是「关闭保活」的合法取值，而提交时省略
+ * `keepaliveInterval` 在服务端语义是「保留上一次的值」（`input.x ?? prev.x`）。
+ * 用真值判断（`if (value)`）会把 0 当成没填，用户改成 0 保存后再编辑又变回旧值。
+ */
+export function parseKeepaliveInput(raw: string): number | undefined {
+  const text = raw.trim()
+  if (!text) return undefined
+  const value = Number(text)
+  return Number.isFinite(value) ? value : undefined
+}
+
+/** SSH 默认端口（表单 placeholder 与服务端 `normalizeSshPort` 同一口径） */
+export const DEFAULT_SSH_PORT = 22
+
+/**
+ * 解析表单里「端口」输入框的文本：留空 / 非法 = 默认 22。
+ *
+ * 端口没有「关掉」的含义，留空就是回到默认端口（placeholder 也写着 22）。
+ * 提交时**必须显式带 22**：省略在服务端是「保留上一次的值」，编辑时把端口清空
+ * 就等于什么都没做，下次打开还是老端口。
+ */
+export function parsePortInput(raw: string): number {
+  const text = raw.trim()
+  if (!text) return DEFAULT_SSH_PORT
+  const value = Number(text)
+  return Number.isInteger(value) && value > 0 && value <= 65535 ? value : DEFAULT_SSH_PORT
+}
+
 /** 只留非空字符串 —— cmdk 会对 keywords 逐个 `.trim()`，混进 undefined 就是整块面板白屏 */
 function textOnly(values: Array<string | undefined>): string[] {
   return values.filter((value): value is string => typeof value === 'string' && value.trim() !== '')

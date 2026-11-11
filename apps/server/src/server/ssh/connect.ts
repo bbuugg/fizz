@@ -24,9 +24,6 @@ const STAGE = 'ssh'
 /** 跳板链最大深度（含目标本身）；病态配置直接拒绝而不是无限展开 */
 const MAX_CHAIN_DEPTH = 8
 
-/** 未显式配置保活时的兜底（毫秒） */
-const DEFAULT_KEEPALIVE_MS = 30_000
-
 /** 单跳建连超时 */
 const READY_TIMEOUT_MS = 20_000
 
@@ -71,14 +68,14 @@ function resolveChain(host: ResolvedSshHost): ResolvedSshHost[] {
 }
 
 /** 单跳连接参数（凭据 + 可选 sock：上一跳开出的转发通道） */
-function buildHopConfig(hop: ResolvedSshHost, sock?: Duplex): ConnectConfig {
+export function buildHopConfig(hop: ResolvedSshHost, sock?: Duplex): ConnectConfig {
   const config: ConnectConfig = {
     host: hop.host,
     port: hop.port || 22,
     username: hop.username,
-    // ssh2 要毫秒；配 0 = 关闭保活
-    keepaliveInterval:
-      hop.keepaliveInterval > 0 ? hop.keepaliveInterval * 1000 : DEFAULT_KEEPALIVE_MS,
+    // ssh2 要毫秒。0 = 关闭保活，必须原样传 0 —— 这里再兜底 30 秒等于关不掉
+    // （配置层 `normalizeKeepalive` 已经保证缺省是 30，走到这里 0 只能是用户显式配的）
+    keepaliveInterval: hop.keepaliveInterval > 0 ? hop.keepaliveInterval * 1000 : 0,
     readyTimeout: READY_TIMEOUT_MS
   }
   if (hop.authType === 'privateKey' && hop.privateKey) {

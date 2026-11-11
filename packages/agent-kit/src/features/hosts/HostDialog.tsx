@@ -49,10 +49,14 @@ import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import type { HostConfig, HostKind, SshAuthType, SshCharset, SshHostConfig } from '@fizz/contracts/types'
-import { hostSummary } from '@fizz/agent-kit/features/hosts/host-format'
+import {
+  DEFAULT_SSH_PORT,
+  hostSummary,
+  parseKeepaliveInput,
+  parsePortInput
+} from '@fizz/agent-kit/features/hosts/host-format'
 
-/** 缺省端口 / 保活（与服务端归一化保持一致，表单留空时按它回填提示） */
-const DEFAULT_PORT = 22
+/** 缺省保活（与服务端归一化保持一致，表单留空时按它回填提示） */
 const DEFAULT_KEEPALIVE = 30
 
 /**
@@ -193,14 +197,16 @@ export function HostDialog({
   /** 保存 SSH 主机条目：凭据字段按需传（不填就不带，服务端保留原值） */
   const saveSsh = async (): Promise<void> => {
     if (!host.trim() || !username.trim()) return
-    const parsedPort = port.trim() ? Number(port) : undefined
-    const parsedKeepalive = keepalive.trim() ? Number(keepalive) : undefined
+    // 端口留空 = 默认 22，且**必须显式提交**：省略在服务端是「保留原值」，
+    // 编辑时把端口清空就永远清不掉
+    const parsedPort = parsePortInput(port)
+    const parsedKeepalive = parseKeepaliveInput(keepalive)
     const ok = await app.saveSshHost({
       ...(editing ? { id: editing.id } : {}),
       ...(editing || !defaultGroupId ? {} : { groupId: defaultGroupId }),
       name: name.trim(),
       host: host.trim(),
-      ...(parsedPort && Number.isFinite(parsedPort) ? { port: parsedPort } : {}),
+      port: parsedPort,
       username: username.trim(),
       authType,
       ...(authType === 'password'
@@ -214,9 +220,8 @@ export function HostDialog({
       // 空串 = 清掉跳板（服务端把空串归一成「不设跳板」）
       jumpHostId: jumpHostId,
       charset,
-      ...(parsedKeepalive && Number.isFinite(parsedKeepalive)
-        ? { keepaliveInterval: parsedKeepalive }
-        : {})
+      // 0 = 关闭保活，必须显式传：省略这个字段服务端会保留上一次的值
+      ...(parsedKeepalive !== undefined ? { keepaliveInterval: parsedKeepalive } : {})
     })
     if (ok) onOpenChange(false)
   }
@@ -383,7 +388,7 @@ export function HostDialog({
                 <div className="grid grid-cols-[minmax(5.5rem,1fr)_2fr] gap-3">
                   <Input
                     inputMode="numeric"
-                    placeholder={t('端口 {port}', { port: DEFAULT_PORT })}
+                    placeholder={t('端口 {port}', { port: DEFAULT_SSH_PORT })}
                     value={port}
                     onChange={(e) => setPort(e.target.value)}
                   />
