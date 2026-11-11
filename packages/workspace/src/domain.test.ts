@@ -131,3 +131,51 @@ describe('远端工作区登记', () => {
     }
   })
 })
+
+describe('MCP server 保存', () => {
+  // 回归：切到 http 再切回 stdio，原来那组字段不能被「当前方式」的输入清掉
+  it('切换传输方式后另一组字段仍在', () => {
+    const stdio = domain.saveMcpServer({
+      name: '本地工具',
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', 'some-mcp'],
+      env: { TOKEN: 'x' }
+    })
+    const http = domain.saveMcpServer({
+      id: stdio.id,
+      name: '本地工具',
+      transport: 'http',
+      url: 'http://127.0.0.1:3000/mcp'
+    })
+    expect(http.url).toBe('http://127.0.0.1:3000/mcp')
+    expect(http.command).toBe('npx')
+    expect(http.args).toEqual(['-y', 'some-mcp'])
+    expect(http.env).toEqual({ TOKEN: 'x' })
+
+    const back = domain.saveMcpServer({
+      id: stdio.id,
+      name: '本地工具',
+      transport: 'stdio',
+      command: 'npx'
+    })
+    expect(back.command).toBe('npx')
+    expect(back.url).toBe('http://127.0.0.1:3000/mcp')
+  })
+
+  it('当前方式那一组以输入为准：清空 env 能生效', () => {
+    const created = domain.saveMcpServer({
+      name: '本地工具',
+      transport: 'stdio',
+      command: 'npx',
+      env: { TOKEN: 'x' }
+    })
+    const cleared = domain.saveMcpServer({
+      id: created.id,
+      name: '本地工具',
+      transport: 'stdio',
+      command: 'npx'
+    })
+    expect(cleared.env).toBeUndefined()
+  })
+})

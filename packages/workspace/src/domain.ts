@@ -1716,11 +1716,12 @@ export class AgentDomain {
     if (!input.name?.trim()) throw new Error('缺少 MCP server 名称')
 
     // 传输方式决定「哪组字段才算填全」：stdio 看命令，http/sse 看地址。
-    // 不清空另一组 —— 用户切回上一种方式时原来的命令 / 地址还在，存量配置也不会丢字段。
     const transport = normalizeMcpTransport(input.transport)
+    const command = input.command?.trim() ?? ''
+    const url = input.url?.trim() ?? ''
     if (transport === 'stdio') {
-      if (!input.command?.trim()) throw new Error('缺少启动命令')
-    } else if (!input.url?.trim()) {
+      if (!command) throw new Error('缺少启动命令')
+    } else if (!url) {
       throw new Error('缺少服务地址')
     }
 
@@ -1728,11 +1729,30 @@ export class AgentDomain {
       id: prev?.id ?? newId(),
       name: input.name.trim(),
       transport,
-      ...(input.command ? { command: input.command.trim() } : {}),
-      args: input.args ?? [],
-      ...(input.env ? { env: input.env } : {}),
-      ...(input.url ? { url: input.url.trim() } : {}),
-      ...(input.headers && Object.keys(input.headers).length ? { headers: input.headers } : {})
+      /*
+        当前方式那一组以输入为准（缺 = 用户清空了，别拿旧值顶回去）；
+        **另一组**保留原值 —— 用户切到 http 再切回 stdio 时，原来的命令 / 参数 /
+        环境变量 / 地址 / 请求头还在，存量配置也不会丢字段。
+      */
+      ...(transport === 'stdio'
+        ? {
+            command,
+            args: input.args ?? [],
+            ...(input.env ? { env: input.env } : {}),
+            ...(prev?.url ? { url: prev.url } : {}),
+            ...(prev?.headers && Object.keys(prev.headers).length
+              ? { headers: prev.headers }
+              : {})
+          }
+        : {
+            ...(prev?.command ? { command: prev.command } : {}),
+            ...(prev?.args?.length ? { args: prev.args } : {}),
+            ...(prev?.env && Object.keys(prev.env).length ? { env: prev.env } : {}),
+            url,
+            ...(input.headers && Object.keys(input.headers).length
+              ? { headers: input.headers }
+              : {})
+          })
     }
     this.store.mutate((d) => {
       d.mcpServers = prev
