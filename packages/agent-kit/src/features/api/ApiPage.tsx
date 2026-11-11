@@ -234,9 +234,9 @@ export function ApiPage({ requestId }: { requestId: string }) {
   const [url, setUrl] = useState('')
   const [headers, setHeaders] = useState<ApiHeaderPair[]>([emptyHeader()])
   /**
-   * 查询参数表。URL 的查询串是它的唯一事实来源（不另存一份），
-   * 所以这里只是「查询串的可编辑视图」：改 URL 的查询 → 解析进本表；
-   * 改本表 → 序列化回 URL 的查询串（见 params 的同步 effect）。
+   * 查询参数表。URL 的查询串是它的唯一事实来源（落盘只存 URL），
+   * 所以这里只是「查询串的可编辑视图」：改 URL 的查询 → 解析进本表（`onUrlChange`）；
+   * 改本表 → 序列化回 URL 的查询串（`applyParams`，只在表格编辑时走）。
    */
   const [params, setParams] = useState<ApiHeaderPair[]>([emptyHeader()])
   const [body, setBody] = useState('')
@@ -411,21 +411,6 @@ export function ApiPage({ requestId }: { requestId: string }) {
     }
   }, [response])
 
-  /**
-   * 参数表 → URL 的同步（与 onUrlChange 形成双向）。
-   * 仅当参数表变化时触发：把整张表序列化回 URL 的查询串。
-   * 因为 onUrlChange 已经把「URL 改动」解析进了参数表，这里序列化回去得到的就是同源字符串，
-   * setUrl 会被 React 的同值跳过（除非确实存在差异，例如用户改了某个参数行的值），
-   * 所以不会和地址框输入形成回环。
-   */
-  useEffect(() => {
-    const candidate = withQuery(url, serializeParams(params))
-    if (candidate !== url) setUrl(candidate)
-    // 只依赖 params：本 effect 要的是「用当前 URL 替换其查询串」，
-    // 闭包里的 url 就是本次提交时的地址（已是上一次同步后的结果）。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params])
-
   // ---------- 请求头增删改 ----------
   // 没有「添加请求头」按钮：末行填了内容就自动补一个空槽位（见 tidyHeaderRows），
   // 所以表格最后一行永远是待填的那一行。
@@ -442,11 +427,24 @@ export function ApiPage({ requestId }: { requestId: string }) {
   }
 
   // ---------- 查询参数（与请求头同样的「末行空槽位」交互，但无补全） ----------
+  /**
+   * 参数表 → 地址栏。**只在表格编辑时调用**（`patchParam` / `removeParam`）。
+   *
+   * 以前这里是一个 `useEffect([params])`：地址栏每敲一个字符都会 `setParams`（解析查询串），
+   * effect 随即把整张表序列化回去 —— 于是刚敲的 `?`、末尾的 `&`、还没写完的 `a=`
+   * 都会被规范化掉，表现为「地址栏不让输查询串」。现在同步是显式的：地址栏输入只做
+   * URL → 表格（`onUrlChange`），表格输入才做表格 → URL，两边各自保持手打的原样。
+   */
+  const applyParams = (next: ApiHeaderPair[]): void => {
+    setParams(next)
+    const candidate = withQuery(url, serializeParams(next))
+    if (candidate !== url) setUrl(candidate)
+  }
   const patchParam = (idx: number, patch: Partial<ApiHeaderPair>): void => {
-    setParams((prev) => tidyHeaderRows(prev.map((p, i) => (i === idx ? { ...p, ...patch } : p))))
+    applyParams(tidyHeaderRows(params.map((p, i) => (i === idx ? { ...p, ...patch } : p))))
   }
   const removeParam = (idx: number): void => {
-    setParams((prev) => tidyHeaderRows(prev.filter((_, i) => i !== idx)))
+    applyParams(tidyHeaderRows(params.filter((_, i) => i !== idx)))
   }
 
   // ---------- 表单字段（x-www-form-urlencoded / form-data 各一张表） ----------
@@ -504,8 +502,11 @@ export function ApiPage({ requestId }: { requestId: string }) {
   }
 
   /**
-   * 地址框输入：直接把新 URL 落盘到草稿，同时把查询串解析进参数表
-   * （这是「URL → 表格」这一向的同步；「表格 → URL」由上面的 effect 负责）。
+   * 地址框输入：原样落进 `url`，同时把查询串解析进参数表（「URL → 表格」）。
+   *
+   * **这里绝不能反向序列化回地址栏**：手打 `?` / `&` / 半截 `a=` 时查询串本来就不完整，
+   * 立刻规范化会把用户刚敲的字符改掉（表现为输入被限制）。表格 → URL 只由表格编辑触发，
+   * 见 `applyParams`。
    */
   const onUrlChange = (e: ReactChangeEvent<HTMLInputElement>): void => {
     const raw = e.target.value
