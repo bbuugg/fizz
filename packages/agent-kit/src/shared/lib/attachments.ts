@@ -109,7 +109,10 @@ export function sendableAttachments(attachments: ChatAttachment[]): UploadFileRe
  */
 export function fileRefsOfParts(parts: AgentMessagePart[]): UploadFileRef[] {
   return parts.flatMap((p) =>
-    p.type === 'file'
+    // `data:` 的是**显示副本**而不是上传文件：ACP 回放里的图片（用户发的 / agent 回传的）
+    // 只剩 base64，没有可重发的 `/api/uploads/...` 地址。带上它去「编辑重发」会被
+    // 服务端当非法附件拒掉，所以这里直接排除。
+    p.type === 'file' && !p.url.startsWith('data:')
       ? [{ name: p.name, mediaType: p.mediaType, url: p.url, ...(p.provider ? { provider: p.provider } : {}) }]
       : []
   )

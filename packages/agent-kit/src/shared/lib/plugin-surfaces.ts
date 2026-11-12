@@ -109,10 +109,10 @@ export function refreshPluginSurfaces(app: AgentApp | null, workspaceId?: string
  * 取清单（首次渲染是空的，拉回来后自动更新）。
  *
  * ⚠️ **依赖里只能放 `app.api`，绝不能放 `app` 对象本身** —— 这是本文件最容易踩的坑：
- * `useAgentApp()` 每次调用都**新建一个字面量对象**（`agentAppFrom` 里 `return { … }`，
- * 没有 memo），而 `AppProvider` 订阅的是**整个 store**（`useAgentStore()` 不带选择器）
- * —— 于是流式期间每来一个 token、store 一变，Provider 就重渲染一次，`app` 就是**新引用**。
- * 把 `app` 放进 deps，effect 就每帧重跑一次，`loadPluginSurfaces` 每帧发一次
+ * `agentAppFrom` 每次调用都**新建一个字面量对象**（`return { … }`，没有 memo），
+ * `AppProvider` 又订阅了**整个 store**（`useAgentStore()` 不带选择器）—— 清单类状态
+ * 每变一次（会话标题、工作区、连接…），`app` 就是**新引用**。把 `app` 放进 deps，
+ * effect 就会跟着那些无关变化重跑，`loadPluginSurfaces` 反复发
  * `GET /api/plugins/surfaces`：控制台里刷屏的 `GET /api/plugins/surfaces → 200 2ms`
  * 以及它顺带触发的插件配置告警，都是这么来的（用户实测反馈「一轮还没结束就一直在刷」）。
  * `api` 本身是稳定的（`s.getApi()` 有缓存），拿它当依赖既准确又不会抖。

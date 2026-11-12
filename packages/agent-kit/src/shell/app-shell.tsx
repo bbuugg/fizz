@@ -132,10 +132,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   /**
    * `app` 的最新一份，给「只需要读它几个字段」的长期订阅用。
    *
-   * 为什么需要：`useAgentApp()` **每次渲染都新建一个对象**（`agentAppFrom` 里
-   * `return { … }`，没有 memo），而流式期间每个 token 都会让 `AppProvider` 重渲染 ——
-   * 任何把 `app` 写进 effect 依赖的地方都会每帧重跑。读字段的订阅（如下面那个
-   * `uiAction` 监听）改成读 ref：功能一模一样，但不再每帧摘挂一次监听器。
+   * 为什么需要：`useAgentApp()` 返回的是 `agentAppFrom` 现场造的字面量（没有 memo）——
+   * 清单类状态（会话标题 / 工作区 / 连接…）每变一次就是新引用。任何把 `app` 写进
+   * effect 依赖的地方都会跟着无关变化重跑。读字段的订阅（如下面那个 `uiAction` 监听）
+   * 改成读 ref：功能一模一样，但不再每变一次摘挂一次监听器。
    *
    * 同一套做法在 `GitPanel` / `ServerDirPicker` 里已经用过（那边注释写了「直接进依赖
    * 会死循环 / 每帧重拉」）。⚠️ 只在**事件回调、订阅体**里这样用；

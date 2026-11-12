@@ -41,6 +41,13 @@ services:
       # （openssl rand -base64 32）。换了它，已存的 API key 要重新填一次。
       FIZZ_SECRET_KEY: ${FIZZ_SECRET_KEY:-}
 
+      # 附件的公网基址：留空 = 用请求 origin，且**非公网时自动内联 base64**
+      # （容器里 origin 通常是 localhost / 局域网 IP，所以默认走内联，不需要配）。
+      # 只有在反代 / 隧道后面、想省请求体时才填，如 https://fizz.example.com。
+      FIZZ_PUBLIC_BASE_URL: ${FIZZ_PUBLIC_BASE_URL:-}
+      # auto / inline / url，见 .env.example
+      FIZZ_ATTACHMENT_DELIVERY: ${FIZZ_ATTACHMENT_DELIVERY:-auto}
+
       TZ: ${TZ:-Asia/Shanghai}
 
       # 容器内运行身份：填宿主机用户的 `id -u` / `id -g`，容器里新建的文件在宿主机上就属于你

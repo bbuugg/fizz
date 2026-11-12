@@ -92,8 +92,14 @@ export interface AcpModelChoices {
  */
 export interface AcpToolCallContent {
   type: string
-  /** type === 'content'：内容块（目前只消费 text） */
-  content?: { type?: string; text?: string }
+  /**
+   * type === 'content'：内容块，消费 `text` 与 `image` 两种。
+   *
+   * `image` 是**工具结果里的图**（读图 / 截图 / 渲染预览这类工具回的
+   * `ContentBlock::Image`）。前端拿 `data`(base64) + `mimeType` 拼 data URL 直接显示，
+   * 不落盘（ACP 消息真源在 agent 侧，本地快照只在内存）。
+   */
+  content?: { type?: string; text?: string; data?: string; mimeType?: string }
   /** type === 'diff'：文件路径与修改前后文本 */
   path?: string
   oldText?: string

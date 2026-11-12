@@ -130,3 +130,27 @@ describe('coalescePartFragments', () => {
     expect(originIndex).toEqual([0, 1, 2])
   })
 })
+
+describe('applyEvent：agent 回传图片', () => {
+  const image: AgentStreamEvent = {
+    type: 'file-part',
+    url: 'data:image/png;base64,AAAA',
+    mediaType: 'image/png',
+    name: 'image.png'
+  }
+
+  it('file-part 折成 file part（与用户附件同形）', () => {
+    expect(applyEvent([], image)).toEqual([
+      { type: 'file', name: 'image.png', mediaType: 'image/png', url: 'data:image/png;base64,AAAA' }
+    ])
+  })
+
+  it('图片之后的文本另起一段，不会并到图片前面', () => {
+    const parts = applyEvent(applyEvent([{ type: 'text', text: '截图：' }], image), {
+      type: 'text-delta',
+      delta: '看到了'
+    })
+    expect(parts.map((part) => part.type)).toEqual(['text', 'file', 'text'])
+    expect(parts[0]).toMatchObject({ type: 'text', text: '截图：' })
+  })
+})

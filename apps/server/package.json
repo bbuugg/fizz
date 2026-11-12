@@ -1,6 +1,6 @@
 {
   "name": "@fizz/server",
-  "version": "0.0.24",
+  "version": "0.0.25",
   "description": "Fizz 服务端：Hono + SSE + WebSocket，同时托管 web 产物（web / cli / desktop 进程内共用同一份应用）",
   "private": true,
   "type": "module",

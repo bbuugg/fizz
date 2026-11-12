@@ -35,14 +35,17 @@ import {
 } from '@fizz/plugin'
 import {
   MAX_STEPS,
+  attachmentParts,
   buildAgentSystemPrompt,
+  createInlineBudget,
   STEP_BUDGET_MARKER,
   stepBudgetHint,
   stepBudgetRemaining,
   stepBudgetReminder,
   stepBudgetWarnSteps,
   toModelMessages,
-  toolIntentHint
+  toolIntentHint,
+  type ResolveAttachment
 } from './prompt'
 import {
   fileToolsPlugin,
@@ -178,6 +181,15 @@ export interface RunAgentOptions {
    * 不传 = 原样使用（相对地址由 localhost base 兜底，见 model-messages.ts）。
    */
   resolveFileUrl?: (url: string) => string
+  /**
+   * 附件投递策略（`resolveFileUrl` 的上一级）：决定一条附件是**给 URL**、
+   * **内联字节**，还是**不发**（附一行说明）。
+   *
+   * server 端注入 `createAttachmentResolver`（`upload/attachments.ts`）：没有公网地址时
+   * 改为内联 base64，云端 provider 不必回连 `127.0.0.1`。不传 = 全部按 URL 直传，
+   * 行为与从前一致。
+   */
+  resolveAttachment?: ResolveAttachment
   /**
    * 额外注入的工具（工具名 → VercelTool），合并进 `buildAgentTools` 之上。
    * 用来挂 transport 无关但与用户交互挂钩的工具 —— 最典型的是
@@ -1125,6 +1137,12 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
        * 再压一遍只会把刚写好的摘要再摘要一次。唯一的例外是 context overflow 恢复
        * （`forceCompact`）—— 那条路明确要求重新压，调用处已经把断点清掉了。
        */
+      /**
+       * 内联附件（base64）的**整轮**预算：主历史的组装与运行中插话共用一份，
+       * 同一张图跨多次组装只扣一次（见 `createInlineBudget`）。
+       * 每次「尝试」各建一份 —— 重试是从全量历史重新起跑。
+       */
+      const inlineBudget = createInlineBudget()
       let messages: EngineMessages
       if (resumeMessages) {
         messages = resumeMessages
@@ -1168,6 +1186,8 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
         }
         messages = await toModelMessages(compacted.history, {
           resolveFileUrl: opts.resolveFileUrl,
+          resolveAttachment: opts.resolveAttachment,
+          inlineBudget,
           allowImages: modelSettings.imageInput
         })
       }
@@ -1428,12 +1448,20 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
             (steerFiles.length
               ? '（本条插话只带了附件，没有文字说明）'
               : '（本条插话没有可发送的内容）')
-          const steerContent: Array<Record<string, unknown>> = steerFiles.map((f) => {
-            const url = opts.resolveFileUrl ? opts.resolveFileUrl(f.url) : f.url
-            return f.mediaType.startsWith('image/')
-              ? { type: 'image', image: url, mediaType: f.mediaType }
-              : { type: 'file', data: url, mediaType: f.mediaType, filename: f.name }
+          /**
+           * 附件的投递与主历史同一套（`attachmentParts`）：没有公网地址时同样走内联字节，
+           * 预算与主历史共用一份 —— 插话带的大图不会绕过整轮上限。
+           */
+          const steerAttachments = await attachmentParts(steerFiles, {
+            resolveAttachment: opts.resolveAttachment,
+            resolveFileUrl: opts.resolveFileUrl,
+            budget: inlineBudget
           })
+          // 形状由 `attachmentParts` 统一产出（ImagePart / FilePart），这里只负责拼成一条消息
+          const steerContent: unknown[] = [...steerAttachments.parts]
+          for (const note of steerAttachments.notes) {
+            steerContent.push({ type: 'text', text: note })
+          }
           /**
            * ⚠️ 注入给模型的文本必须**带框**：插话是一条普通 user 消息，而模型天然把
            * 「最后一条 user 消息」当成当前任务 —— 原样发的话，用户一句问话就会把整轮

@@ -19,6 +19,7 @@
  * - 顶栏 / 右侧面板（终端、文件、git）：工作台那边标签只有两个，主会话三个；
  * - 输入框两侧的 pill：主会话是「工作区 + 权限 / 后端模型」，工作台是「权限 / 容器模型」；
  * - 输入框上方的卡片：主会话是「待发送队列」，工作台是「待答复权限 + 当前任务」；
+ * - 待答复的权限卡走 `cover`：直接顶替输入卡片（审批期间 agent 停着，输入框无用）；
  * - 消息级操作：主会话能编辑重发 / 删除；工作台与 acp 会话的历史改不了（只留复制）。
  *
  * 它们通过 `leading` / `trailing` / `header` / `above` / `renderActions` 这几个槽位进来。
@@ -683,13 +684,8 @@ export type ChatComposerVariant = 'page' | 'panel'
 export interface ChatComposerProps {
   value: string
   onChange: (value: string) => void
-  /** 发送（Enter 或点发送钮） */
+  /** 发送（Enter 或点发送钮）；本轮在跑时入队，等本轮结束按序自动发 */
   onSubmit: () => void
-  /**
-   * 插话（传了才会在「跑着 + 有字」时把发送钮换成「队列消息 / 插话」选择器）；
-   * 不传 = 无此能力。见 `Composer` 的 `onSteer`。
-   */
-  onSteer?: () => void
   /** 停止（点停止钮，或输入框里按 Esc） */
   onCancel: () => void
   streaming: boolean
@@ -720,10 +716,20 @@ export interface ChatComposerProps {
    */
   header?: ReactNode
   /**
-   * 输入框**上方**、卡片之外的内容：待答复的权限卡、当前任务卡之类。
+   * 输入框**上方**、卡片之外的内容：运行中的子任务、后台任务之类。
    * 与 `header` 的区别是它不带卡片底色与分隔线。
    */
   above?: ReactNode
+  /**
+   * 顶替输入卡片的内容（待答复的权限卡 / 待回答的提问卡）：位置、宽度与输入框完全一致。
+   *
+   * 审批 / 提问期间 agent 正停着等答复，输入框没有用处；让卡片**盖住输入框区域**
+   * 比把它摞在输入框上方更醒目，也不会把输入框越顶越高。
+   *
+   * ⚠️ 它同时顶掉 `above`（浏览器 / MCP 工具条、后台任务）：那两样在等答复期间既点不动、
+   * 也没有可操作的对象，留着就只是把卡片往下推。
+   */
+  cover?: ReactNode
   /**
    * 输入框**下方**、卡片之外的内容：常驻的「当前工作区」选择行。
    *
@@ -759,7 +765,6 @@ export function ChatComposer({
   value,
   onChange,
   onSubmit,
-  onSteer,
   onCancel,
   streaming,
   disabled,
@@ -772,6 +777,7 @@ export function ChatComposer({
   trailing,
   header,
   above,
+  cover,
   below,
   textareaRef,
   onAttachFiles,
@@ -807,30 +813,37 @@ export function ChatComposer({
               'mx-auto w-full max-w-3xl p-2 sm:px-6 sm:pb-4'
         }
       >
-        {above ? <div className="space-y-2 mb-1">{above}</div> : null}
-        <Composer
-          value={value}
-          onChange={onChange}
-          onSubmit={onSubmit}
-          onSteer={onSteer}
-          onCancel={onCancel}
-          streaming={streaming}
-          disabled={disabled}
-          sendDisabled={sendDisabled}
-          sendDisabledHint={sendDisabledHint}
-          allowEmptySend={allowEmptySend}
-          sending={sending}
-          placeholder={placeholder}
-          leading={leading}
-          trailing={trailing}
-          header={header}
-          textareaRef={textareaRef}
-          onAttachFiles={onAttachFiles}
-          slashCommands={slashCommands}
-          slashContext={slashContext}
-          mentionCandidates={mentionCandidates}
-          compact={compact}
-        />
+        {/*
+          `cover` 顶替的是**整块输入区**（工具条 + 卡片），不只是卡片本身。
+          提问 / 审批期间发不出消息：浏览器 / MCP 开关点不动、后台进程也只是「顺便看一眼」，
+          留在卡片上方只会把「现在必须答」的那张卡往下挤。所以 cover 一出现，above 整块让位
+          （两处调用方都不用各自判断，`AssistantPanel` 本来就没传 above）。
+        */}
+        {cover ? null : above ? <div className="space-y-2 mb-1">{above}</div> : null}
+        {cover ?? (
+          <Composer
+            value={value}
+            onChange={onChange}
+            onSubmit={onSubmit}
+            onCancel={onCancel}
+            streaming={streaming}
+            disabled={disabled}
+            sendDisabled={sendDisabled}
+            sendDisabledHint={sendDisabledHint}
+            allowEmptySend={allowEmptySend}
+            sending={sending}
+            placeholder={placeholder}
+            leading={leading}
+            trailing={trailing}
+            header={header}
+            textareaRef={textareaRef}
+            onAttachFiles={onAttachFiles}
+            slashCommands={slashCommands}
+            slashContext={slashContext}
+            mentionCandidates={mentionCandidates}
+            compact={compact}
+          />
+        )}
         {below ? <div className="flex min-w-0 items-center gap-2 px-1 bg-sidebar/60 rounded-b-lg mx-3">{below}</div> : null}
       </div>
     </div>

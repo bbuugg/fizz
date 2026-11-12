@@ -11,6 +11,11 @@
  *   的 `approvedCommands`,跟着项目走、跨会话共享,且每次审批前**现读盘** —— 手改这份
  *   文件删掉某条,下一次调用立刻恢复询问。落盘失败退回内存,重启清零是安全侧的失效。
  * - **始终拒绝**一律只记内存(同样按命令),重启清零 —— 拒绝被遗忘只是多问一次,安全。
+ *
+ * 挂起期间还会在 `run.commandStops` 里占一个位:工具卡头部的停止钮在「入参定型 + 没有
+ * 结果」时就会画出来,而这个状态正好包含「等审批」。不占位的话那颗钮点了是空的(服务端
+ * 查表查不到,回 `{ stopped: false }`);占位之后它的含义是「别跑了」= 按拒绝答复,与工具
+ * 真在跑时「只停这一条、整轮继续」的语义对齐。
  */
 import { randomUUID } from 'node:crypto'
 import type {
@@ -123,6 +128,19 @@ export function createConfirmGate(input: {
         settled = true
         if (timer) clearTimeout(timer)
         pendingConfirms.delete(id)
+        /*
+         * 撤销挂起期间占的那个「停止」位（见下面的 `stopWhilePending`），并把它盖掉的
+         * 原主放回去。只动自己的那份：批准之后工具会往同一个 toolCallId 上登记**真正的**
+         * 停止（杀进程树 / abort 抓取），别把它删掉。
+         *
+         * `prevStop` 存在容器一轮里：容器在发 `tool-call` 时就把转发器登记好了（审批帧
+         * 在那之后才来），不还原的话，用户批完再点停止就查不到表 —— 等于把原来能停的
+         * 命令弄成不能停。
+         */
+        if (req.toolCallId && run.commandStops.get(req.toolCallId) === stopWhilePending) {
+          if (prevStop) run.commandStops.set(req.toolCallId, prevStop)
+          else run.commandStops.delete(req.toolCallId)
+        }
         emit(run, {
           type: 'confirm-resolved',
           requestId: run.requestId,
@@ -145,6 +163,20 @@ export function createConfirmGate(input: {
         confirmTimeoutMs > 0
           ? setTimeout(() => settle({ approved: false }), confirmTimeoutMs)
           : null
+      /*
+       * 命令还没起跑，但工具卡头部的停止钮**已经在了**：`isStoppableToolRunning` 的判据是
+       * 「入参定型 + 还没有结果」（`packages/agent-kit/src/shared/lib/parts.ts`），挂起等审批
+       * 正好长这样。工具要等批复之后才登记自己的停止（杀进程树），不在这里占位的话
+       * `POST /api/chat/command/stop` 查表查不到、回 `{ stopped: false }`，用户看到的就是
+       * **「点了停止没反应」**。
+       *
+       * 停一条「还没跑的命令」的正确含义就是「别跑了」：按拒绝答复这一次审批，工具结果
+       * 收成回绝说明，整轮继续（与真在跑时「只停这一条」的语义一致，不动整轮）。
+       */
+      const stopWhilePending = (): void => settle({ approved: false })
+      // 容器一轮在 `tool-call` 就登记过转发器了：先收着，结案时放回去（见 settle）
+      const prevStop = req.toolCallId ? run.commandStops.get(req.toolCallId) : undefined
+      if (req.toolCallId) run.commandStops.set(req.toolCallId, stopWhilePending)
       pendingConfirms.set(id, { requestId: run.requestId, resolve: settle, ...(timer ? { timer } : {}) })
     })
   }

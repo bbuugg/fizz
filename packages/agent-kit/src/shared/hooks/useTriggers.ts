@@ -7,7 +7,7 @@
  * 数据更新：全局状态 WS 推送 `taskTriggers` 域；首次进来先拉一次全量，
  * 之后服务端改了就推，前端不再轮询。
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import type { TaskTrigger, TaskTriggerInput } from '@fizz/contracts/types'
 import type { AgentApi } from '@fizz/agent-client/api'
@@ -129,15 +129,22 @@ export function useTriggers(api: AgentApi | null): TriggersState {
     [api, run]
   )
 
-  return {
-    api,
-    list: triggers,
-    loading,
-    busy,
-    refresh,
-    saveTrigger,
-    deleteTrigger,
-    toggleTrigger,
-    runTrigger
-  }
+  /**
+   * 返回对象按字段记稳：它挂在 `AppContext` 的值上，现场造字面量会让**所有**消费
+   * `useAppContext()` 的组件跟着 `AppProvider` 每次重渲一起重渲（流式期间就是每帧）。
+   */
+  return useMemo(
+    () => ({
+      api,
+      list: triggers,
+      loading,
+      busy,
+      refresh,
+      saveTrigger,
+      deleteTrigger,
+      toggleTrigger,
+      runTrigger
+    }),
+    [api, triggers, loading, busy, refresh, saveTrigger, deleteTrigger, toggleTrigger, runTrigger]
+  )
 }

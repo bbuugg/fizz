@@ -5,7 +5,21 @@
 /** Agent 消息 / 历史转换已抽到独立文件（对 ai 只有 type-only import，可被验证脚本独立加载） */
 import type { AgentMessagePart } from './model-messages'
 export type { AgentMessagePart } from './model-messages'
-export { toModelMessages } from './model-messages'
+export {
+  attachmentParts,
+  attachmentsToParts,
+  createInlineBudget,
+  MAX_INLINE_TOTAL_BYTES,
+  planAttachments,
+  toModelMessages
+} from './model-messages'
+export type {
+  InlineBudget,
+  PlannedAttachment,
+  ResolvedAttachment,
+  ResolveAttachment,
+  UploadLikeFile
+} from './model-messages'
 import { buildAgentTools, type AgentPermissionMode, type AgentToolOptions, BROWSER_PROMPT_SECTION } from '@fizz/tools'
 import { buildSkillsPromptSection, type AgentSkill } from '@fizz/skills'
 import { buildProjectDocSection, type ProjectDoc } from './project-doc'

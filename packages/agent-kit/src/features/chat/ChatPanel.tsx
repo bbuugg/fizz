@@ -9,6 +9,7 @@
  * 别再往回堆：
  * - 空态 / 加载：`NewTaskView`（唯一的初始页）、`MessagesLoadError`；
  * - 输入区接线：`use-main-composer-props`（含两个编辑态类型）；
+ * - 待发送附件 + 上传源：`use-attachment-draft`（初始页 `NewTaskView` 也用同一份）；
  * - 编辑条：`EditMessageBar`、`SteerEditBar`；
  * - 待发送队列 / 插话：`QueuedMessages`、`QueuedRow`、`PendingSteers`、`SteerRow`、
  *   `RowIconButton`、`ExpandableRowText`、`queue-list`（两张列表共用的尺寸）；
@@ -18,9 +19,9 @@
  * - ACP 判定：`session-backend`；加项目后选中：`select-new-workspace`。
  *
  * 流式期间最后一条 assistant 消息会不断长大：每个 SSE 帧折进 parts，React 重渲染。
- * 跑起来时右下角那颗钮是「停止」（输入框空着才有），一输入字它就换成**发送方式选择器**
- * ——「队列消息」进待发送队列（本轮结束由泵自动接着发），「插话」插进当前这一轮的下一个
- * 工具步骤边界（进「插入中」列表）。切换逻辑在 `Composer` 的 `sendChooser`。
+ * 跑起来时右下角那颗钮是「停止」（输入框空着才有），一输入字它就换成发送 ——
+ * 发送在跑着时一律进待发送队列（本轮结束后由泵自动接着发）；想让某一条**立刻**插进
+ * 当前轮，点队列行上的 ➤ 就是插话（到下一个工具步骤边界生效）。
  *
  * 消息条 hover 会出现操作栏（复制 / 编辑并重发 / 删除从这里重新开始），与桌面端 Agent 对齐。
  * 编辑走「把文本灌进底部输入框 + 标记重发起点」，重发时先删掉该条及其后的全部消息再发；
@@ -28,7 +29,7 @@
  * （见 `EditMessageBar` 与 `MessageList` 的 `editingMessageId`）。
  */
 import { MessageSquare, Unplug } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ChatSurface, CopyOnlyActions } from "@fizz/agent-kit/features/chat/chat-surface";
 import { ConvertAcpDialog } from "@fizz/agent-kit/features/chat/ConvertAcpDialog";
@@ -43,21 +44,12 @@ import {
   usePromptInputController,
 } from "@fizz/agent-kit/shared/ai-elements/prompt-input";
 import { presentedDocsOf } from "@fizz/agent-kit/shared/lib/artifacts";
-import {
-  fileRefsOfParts,
-  nextAttachmentId,
-  readImagePreview,
-  sendableAttachments,
-  splitUploadable,
-  type ChatAttachment,
-} from "@fizz/agent-kit/shared/lib/attachments";
+import { fileRefsOfParts } from "@fizz/agent-kit/shared/lib/attachments";
 import { textOf } from "@fizz/agent-kit/shared/lib/parts";
 import { takePendingDraft } from "@fizz/agent-kit/shared/lib/pending-draft";
 import { buildQuotedText, type MessageQuote } from "@fizz/agent-kit/shared/lib/quotes";
-import type { UploadFileRef, UploadProviderView } from "@fizz/contracts/agent-api";
 import { useAppContext } from "@fizz/agent-kit/shared/hooks/use-app-context";
 import type { AgentApp } from "@fizz/agent-kit/shared/hooks/useAgentApp";
-import { useAgentStore } from "@fizz/agent-kit/shared/lib/stores/agent-store";
 import { useT } from "@fizz/agent-kit/shared/lib/language";
 import { type AgentChatMessage } from "@fizz/contracts/types";
 import { MessagesLoadError } from "@fizz/agent-kit/features/chat/MessagesLoadError";
@@ -70,12 +62,7 @@ import {
   type EditingMessage,
   type EditingSteer,
 } from "@fizz/agent-kit/features/chat/use-main-composer-props";
-
-/**
- * 「一个上传源都没有」的**共享空数组**：上传源清单是异步拉的，拉不到 / 还没拉到时用它。
- * 用同一个引用是为了让 `setState` 能 bail out（每次 `[]` 都是新引用，会白跑一轮渲染）。
- */
-const NO_UPLOAD_PROVIDERS: UploadProviderView[] = [];
+import { useAttachmentDraft } from "@fizz/agent-kit/features/chat/use-attachment-draft";
 
 // 供侧边栏「编辑并重发」在消息 hover 栏上复用：把消息文本灌进输入框并标记重发起点。
 // 通过 usePromptInputController 在 Provider 内取值，因此这里把逻辑拆到 ChatPanel 内层组件。
@@ -189,76 +176,23 @@ function ChatPanelInner({
    */
   const { showSideTabOf } = useAppContext();
 
-  // ---------- 附件（图片 / PDF）----------
   /**
-   * 待发送附件：占位（本地预览 + 进度）→ 上传完成（服务端 url）。**不落库** ——
-   * 刷新 / 切会话即清空（与 ainav 一致）；异步回调（进度 / 完成）读 ref 镜像，
-   * 不吃闭包旧值。编辑回显 / 队列回显也是往这里灌（uploaded: true 的服务端引用）。
+   * 待发送附件 + 上传源：整套状态与上传逻辑由 `useAttachmentDraft` 持有 —— 初始页
+   * （`NewTaskView`）用的是同一份，否则「新建会话时没有回形针」那种分叉会再犯。
    */
-  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
-  const attachmentsRef = useRef<ChatAttachment[]>([]);
-  const setBothAttachments = (next: ChatAttachment[]): void => {
-    attachmentsRef.current = next;
-    setAttachments(next);
-  };
-  /** 就地更新一条附件（进度 / 完成 / 失败） */
-  const updateAttachment = (
-    id: string,
-    patch: Partial<ChatAttachment>,
-  ): void => {
-    setBothAttachments(
-      attachmentsRef.current.map((a) => (a.id === id ? { ...a, ...patch } : a)),
-    );
-  };
-
-  // ---------- 上传源（内置存储 + 插件注册的）----------
-  /**
-   * 当前项目可用的上传源 + 这次用哪个。**按项目现拉**：插件目录是按项目扫的（项目级插件
-   * 也能提供上传源），所以换项目要重拉。拉不到就当「只有内置」—— 上传本身照常可用，
-   * 不值得为一份清单弹错打扰用户。
-   *
-   * 选择本身是用户偏好，**不随会话切换重置**（换到别的项目时下面会回落成缺省那个）。
-   */
-  const [uploadProviders, setUploadProviders] =
-    useState<UploadProviderView[]>(NO_UPLOAD_PROVIDERS);
-  const [uploadProviderId, setUploadProviderId] = useState<string | null>(null);
-  const uploadProvidersApi = app.api;
-  const uploadProvidersWorkspaceId = app.activeWorkspaceId;
-  /** 代次防护：晚到的旧项目响应不许覆盖当前项目的清单 */
-  const uploadProvidersGenRef = useRef(0);
-  /**
-   * 拉一遍可用上传源。**两个时机**：
-   * 1. 换项目时（清单跟着项目走，项目级插件也能提供上传源）；
-   * 2. **打开回形针菜单时** —— 这是「刚在设置里启用了上传插件，回到输入框要选文件」
-   *    那条路径的**唯一**刷新点。只在换项目时拉的话，用户会以为插件没生效
-   *    （菜单里根本没有那一项），而这恰恰是最容易踩的一步。
-   */
-  const loadUploadProviders = useCallback(async (): Promise<void> => {
-    if (!uploadProvidersApi || !uploadProvidersWorkspaceId) return;
-    const gen = ++uploadProvidersGenRef.current;
-    try {
-      const list = await uploadProvidersApi.listUploadProviders(
-        uploadProvidersWorkspaceId,
-      );
-      // 空数组用共享常量：引用不变 → React 直接 bail out，不白跑一轮渲染
-      if (gen === uploadProvidersGenRef.current) {
-        setUploadProviders(list.length ? list : NO_UPLOAD_PROVIDERS);
-      }
-    } catch {
-      /* 清单拿不到 = 只有内置那一个源，静默处理 */
-    }
-  }, [uploadProvidersApi, uploadProvidersWorkspaceId]);
-  useEffect(() => {
-    void loadUploadProviders();
-  }, [loadUploadProviders]);
-  /** 这次上传用哪个源：显式选的（还在清单里）→ 服务端缺省那个 → 第一个 */
-  const selectedUploadProvider = useMemo(
-    () =>
-      uploadProviders.find((p) => p.id === uploadProviderId) ??
-      uploadProviders.find((p) => p.isDefault) ??
-      uploadProviders[0],
-    [uploadProviders, uploadProviderId],
-  );
+  const {
+    attachments,
+    onPickFiles,
+    uploadProviders,
+    uploadProviderId,
+    setUploadProviderId,
+    loadUploadProviders,
+    removeAttachment,
+    restoreAttachments,
+    collectSendFiles,
+    hasUploadingAttachment,
+    clearAttachments,
+  } = useAttachmentDraft(app);
   // ---------- 引用（划选消息里的文字）----------
   /**
    * 挂在输入框上方的引用片。与附件同款：**不落库**、换会话即清空、发出即清空；
@@ -266,113 +200,12 @@ function ChatPanelInner({
    */
   const [quotes, setQuotes] = useState<MessageQuote[]>([]);
 
-  // 换会话清空：附件与引用都是「本会话没发出的草稿」，带到别的会话发出去只会发错地方
+  // 换会话清空：引用是「本会话没发出的草稿」，带到别的会话发出去只会发错地方
+  //（附件的同一份清理在 `useAttachmentDraft` 里，同样跟着会话走）
   const draftConversationId = app.activeConversationId;
   useEffect(() => {
-    attachmentsRef.current = [];
-    setAttachments([]);
     setQuotes([]);
   }, [draftConversationId]);
-
-  /**
-   * 上传入口选中文件：白名单外的 toast 警告，其余占位 + 上传（进度/失败就地更新）。
-   * 三个入口共用这一条链路：回形针选文件（`FileList`）、粘贴截图、拖拽文件（`File[]`）。
-   */
-  const onPickFiles = (picked: FileList | File[]): void => {
-    // 知道用哪个上传源时**只按它的 accept 判**（插件可以比契约宽，也可以更窄）；
-    // 清单还没拉到就退回契约口径，服务端那一关才是最终判据
-    const { ok: okFiles, rejected } = splitUploadable(
-      picked,
-      selectedUploadProvider
-        ? {
-            mime: selectedUploadProvider.acceptMime,
-            maxBytes: selectedUploadProvider.maxBytes,
-          }
-        : undefined,
-    );
-    for (const r of rejected) toast.warning(`${r.name}：${r.reason}`);
-    if (okFiles.length === 0) return;
-    const api = app.api;
-    if (!api) {
-      toast.error(t("未连接服务端，无法上传附件"));
-      return;
-    }
-    // 预览是异步的：选完文件到占位上屏之间用户可能已切会话 —— 以 store 的实时快照
-    // 判归属（闭包里的 app.activeConversationId 是渲染时旧值，判不了），不一致就丢弃
-    const pickedIn = app.activeConversationId;
-    // 上传源在**选中文件那一刻**定下来（整批一样）：之后用户改选别的源，不该把已经
-    // 在传的那几条挪走 —— 每条附件落到哪儿，是它自己带的信息（见 ChatAttachment.provider）
-    const providerAtPick = selectedUploadProvider?.id;
-    const workspaceAtPick = app.activeWorkspaceId ?? undefined;
-    for (const file of okFiles) {
-      const id = nextAttachmentId();
-      const placeholder: ChatAttachment = {
-        id,
-        name: file.name,
-        mediaType: file.type,
-        url: "",
-        uploaded: false,
-        progress: 0,
-        ...(providerAtPick ? { provider: providerAtPick } : {}),
-      };
-      // 图片先出本地预览（失败不致命——占位卡退回图标形态），随后立刻开传
-      const withPreview: Promise<ChatAttachment> = file.type.startsWith(
-        "image/",
-      )
-        ? readImagePreview(file)
-            .then((previewUrl) => ({ ...placeholder, previewUrl }))
-            .catch(() => placeholder)
-        : Promise.resolve(placeholder);
-      void withPreview.then((att) => {
-        // 会话已切走：占位不能追加进新会话（useEffect 刚清空的正是它）
-        if (useAgentStore.getState().activeConversationId !== pickedIn) return;
-        attachmentsRef.current = [...attachmentsRef.current, att];
-        setAttachments(attachmentsRef.current);
-        void api
-          .uploadFile(file, {
-            onProgress: (percent) =>
-              updateAttachment(id, { progress: percent }),
-            provider: providerAtPick,
-            workspaceId: workspaceAtPick,
-          })
-          .then((result) =>
-            updateAttachment(id, {
-              url: result.url,
-              uploaded: true,
-              progress: 100,
-              // 服务端回的就是它实际用的那个源，以它为准（缺省 / 回落都在那边发生）
-              provider: result.provider ?? providerAtPick,
-            }),
-          )
-          .catch((err: unknown) => {
-            const message = err instanceof Error ? err.message : t("上传失败");
-            updateAttachment(id, { error: message });
-            toast.error(`${file.name}：${message}`);
-          });
-      });
-    }
-  };
-  /** 发送时提交的附件：剥掉未完成 / 失败的（三处出口共用一份，见 lib/attachments） */
-  const collectSendFiles = (): UploadFileRef[] =>
-    sendableAttachments(attachments);
-  const hasUploadingAttachment = attachments.some(
-    (a) => !a.uploaded && !a.error,
-  );
-  /** 从消息 / 队列条目还原附件回显（uploaded: true 的服务端引用，图片预览走服务端 url） */
-  const restoreAttachments = (files: UploadFileRef[], seed: string): void => {
-    setBothAttachments(
-      files.map((f, i) => ({
-        id: `${seed}-${i}`,
-        name: f.name,
-        mediaType: f.mediaType,
-        url: f.url,
-        uploaded: true,
-        progress: 100,
-        // 回显保留它原来是哪个源传的（`undefined` = 该字段出现之前的老附件）
-        ...(f.provider ? { provider: f.provider } : {}),
-      })),
-    );
-  };
 
   // acp 会话的消息在 agent 侧：编辑 / 删除这类「本地历史」操作没有对象，只给「复制」
   const activeIsAcp = activeConversationIsAcp(app);
@@ -436,7 +269,7 @@ function ChatPanelInner({
   const cancelEdit = (): void => {
     setEditing(null);
     textInput.clear();
-    setBothAttachments([]);
+    clearAttachments();
     textareaRef.current?.focus();
   };
 
@@ -477,7 +310,7 @@ function ChatPanelInner({
    * 服务端）时，用户会发现自己不光消息没发出去，连刚拖进来的附件和挂的引用也没了。
    */
   const clearDraftArea = (): void => {
-    setBothAttachments([]);
+    clearAttachments();
     setQuotes([]);
   };
 
@@ -496,19 +329,10 @@ function ChatPanelInner({
     uploadProviderId,
     onSelectUploadProvider: setUploadProviderId,
     onRefreshUploadProviders: () => void loadUploadProviders(),
-    onRemoveAttachment: (id) =>
-      setBothAttachments(attachmentsRef.current.filter((a) => a.id !== id)),
+    onRemoveAttachment: removeAttachment,
     onRestoreQueueFiles: (files, seed) => restoreAttachments(files, seed),
     quotes,
     onRemoveQuote: (id) => setQuotes((prev) => prev.filter((q) => q.id !== id)),
-    // 发送钮选择器的「插话」：附件随插话一起注入当前轮（与队列同款）。
-    // 附件区与引用等**确认插进去了再清**（`clearDraftArea` 是 store 的 onStarted 回调）
-    // —— 被本地守卫拦下时这一轮什么都没发生，先清掉的话用户得把文件重传一遍。
-    onSteer: (text, files, onStarted) =>
-      app.steer(buildQuotedText(quotes, text), files, () => {
-        onStarted();
-        clearDraftArea();
-      }),
     onSubmit: (text, onStarted) => {
       const target = editing;
       const steerTarget = editingSteer;

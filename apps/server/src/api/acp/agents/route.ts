@@ -11,10 +11,12 @@ import type {
   DetectedAcpAgent
 } from '@fizz/contracts/agent-api'
 import { domain } from '@/lib/server/state'
+import { acpAgentViews } from '@/lib/server/acp-agent-views'
 import { describeError, jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 
 export async function GET() {
-  return Response.json(domain.listAcpAgents())
+  // 出口处补 `imageInput`（探测值不落盘），与 WS 快照共用同一份拼装
+  return Response.json(acpAgentViews(domain.listAcpAgents()))
 }
 
 export async function POST(request: Request) {

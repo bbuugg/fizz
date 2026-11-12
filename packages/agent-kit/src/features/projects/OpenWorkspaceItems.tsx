@@ -26,6 +26,7 @@ import {
   DropdownMenuSubTrigger
 } from '@fizz/ui/dropdown-menu'
 import { getAgentHostOrNull } from '@fizz/agent-client/host'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 
 /** 已探测到的 IDE（空数组 = 没探测到 / 还没探测完，此时只留「文件管理器」一项） */
 function useInstalledIdes(enabled: boolean): Array<{ id: string; name: string }> {
@@ -63,16 +64,17 @@ export function canOpenWorkspaceDir(): boolean {
 export function OpenWorkspaceItems({
   path,
   disabled,
-  label = '打开工作区目录'
+  label
 }: {
   path: string
   disabled?: boolean
   /**
-   * 子菜单标题。默认的「打开工作区目录」是项目行（工作区）的措辞；
+   * 子菜单标题。缺省「打开工作区目录」是项目行（工作区）的措辞；
    * 临时会话那一行打开的是**这条会话自己的目录**，叫「打开会话目录」才读得通。
    */
   label?: string
 }) {
+  const t = useT()
   const host = getAgentHostOrNull()
   // web 端（宿主没实现文件管理器能力）不画这组入口
   const available = !!host?.openFileManagerAt
@@ -82,21 +84,21 @@ export function OpenWorkspaceItems({
   const run = async (action: () => Promise<{ ok: boolean; error?: string }>, okText: string): Promise<void> => {
     const r = await action()
     if (r.ok) toast.success(okText)
-    else toast.error(r.error ?? '打开失败')
+    else toast.error(r.error ?? t('打开失败'))
   }
 
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger disabled={disabled}>
         <FolderOpen className="size-4" />
-        {label}
+        {label ?? t('打开工作区目录')}
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent className="w-48">
         <DropdownMenuItem
-          onSelect={() => void run(() => host.openFileManagerAt!(path), `已打开：${path}`)}
+          onSelect={() => void run(() => host.openFileManagerAt!(path), t('已打开：{path}', { path }))}
         >
           <FolderOpen className="size-3.5 shrink-0" />
-          用文件管理器打开
+          {t('用文件管理器打开')}
         </DropdownMenuItem>
         {ides.length > 0 && <DropdownMenuSeparator />}
         {ides.map((ide) => (
@@ -104,11 +106,11 @@ export function OpenWorkspaceItems({
             key={ide.id}
             onSelect={() => {
               if (!host.openIde) return
-              void run(() => host.openIde!(ide.id, path), `已用 ${ide.name} 打开：${path}`)
+              void run(() => host.openIde!(ide.id, path), t('已用 {name} 打开：{path}', { name: ide.name, path }))
             }}
           >
             <Code2 className="size-3.5 shrink-0" />
-            用 {ide.name} 打开
+            {t('用 {name} 打开', { name: ide.name })}
           </DropdownMenuItem>
         ))}
       </DropdownMenuSubContent>

@@ -56,6 +56,35 @@ import type { TerminalProcess } from '@fizz/agent-client/web-host'
 /** 面板实例自增 id：渲染 key 用它，草稿 → 首个会话迁移时 key 不变、组件不重挂 */
 let panelSeq = 0
 
+/**
+ * 浅比较的稳定对象：字段引用都没变就沿用上一份。
+ *
+ * `AppProvider` 每帧都会重渲染（`useAgentApp` 是整店订阅），`AppContext` 的值要是
+ * 现场造字面量，**所有** `useAppContext()` 消费者（外壳、侧栏、标签条、每个面板）
+ * 就跟着每帧全量重渲 —— 会话跑着时「整个软件都卡卡的」正是这么来的。这里逐字段
+ * 比引用：都没变就返回旧对象，context 的传播在比较这一步自然停住。
+ */
+function useStableShallow<T extends object>(value: T): T {
+  const ref = useRef(value)
+  const prev = ref.current
+  if (prev === value) return value
+  const keys = Object.keys(value)
+  if (keys.length === Object.keys(prev).length) {
+    const prevRecord = prev as Record<string, unknown>
+    const nextRecord = value as Record<string, unknown>
+    let same = true
+    for (const key of keys) {
+      if (!Object.is(nextRecord[key], prevRecord[key])) {
+        same = false
+        break
+      }
+    }
+    if (same) return prev
+  }
+  ref.current = value
+  return value
+}
+
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const app = useAgentApp()
   const { mode: themeMode, theme, setMode: setThemeMode } = useTheme()
@@ -393,7 +422,20 @@ const containerWorkspaceIdList = app.workspaces
   const gitWorkspaceId = app.activeWorkspaceId
   /** 没有目录的虚拟工作区没有仓库可查 */
   const gitWorkspacePath = app.activeWorkspace?.path ?? null
-  const chatStreaming = app.streaming
+  /**
+   * 是否正在跑：**直接从 store 选**，不从 `app` 读。
+   *
+   * `useAgentApp()` 的返回值在「只有切片变化」时保持旧引用（省掉流式期间整棵
+   * 应用树每帧重渲，见那边的投影缓存），`app.streaming` 会停在最后一次非切片
+   * 变更时的值。需要切片状态的组件一律按选择器订阅。
+   */
+  const activeGeneralConversationId = app.activeConversationId
+  const chatStreaming = useAgentStore(
+    (state) =>
+      (activeGeneralConversationId
+        ? state.slices[activeGeneralConversationId]?.streaming
+        : false) ?? false
+  )
   useEffect(() => {
     if (chatStreaming || !gitWorkspaceId || !gitWorkspacePath) return
     let cancelled = false
@@ -740,7 +782,7 @@ const containerWorkspaceIdList = app.workspaces
   const hasWorkspace = !!app.activeWorkspaceId
   const canTerminal = hasDirectory
 
-  const value: AppContextValue = {
+  const value = useStableShallow<AppContextValue>({
     app,
     themeMode,
     theme,
@@ -792,7 +834,7 @@ const containerWorkspaceIdList = app.workspaces
     hasDirectory,
     hasWorkspace,
     canTerminal
-  }
+  })
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
 }

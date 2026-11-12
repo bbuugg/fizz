@@ -132,6 +132,12 @@ export function applyEvent(parts: AgentMessagePart[], event: AgentStreamEvent): 
       appendPartDelta(next, 'reasoning', event.delta)
       return next
     }
+    case 'file-part': {
+      // agent 回传的图片（ACP 多模态输出）：整块追加，与用户附件同形，
+      // 渲染端复用 `FilePartView`（缩略图 / 点开大图 / 下载都白拿）
+      next.push({ type: 'file', name: event.name, mediaType: event.mediaType, url: event.url })
+      return next
+    }
     case 'tool-call-delta': {
       // 入参还在生成：卡片先建出来（工具名可能还没给），文本持续往里攒。
       // 完整 tool-call 到达时用 input 覆盖并丢掉 inputText（见下面的收口）。

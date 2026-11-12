@@ -37,11 +37,12 @@ import {
   resolveBrowserChannel,
   spawnBackgroundShell
 } from '@fizz/tools'
-import { runAcpAgent } from '@fizz/acp'
+import { getAcpImageSupport, runAcpAgent } from '@fizz/acp'
 import { discoverServerPlugins, withRuntimeConfig } from './plugin-roots'
 import { refreshPluginModels } from './plugin-models'
 import { serverSkillsForAgent } from './skill-roots'
-import { resolveUploadModelUrl, validateUploadFiles } from './upload/index'
+import { createAttachmentResolver, resolveUploadModelUrl, validateUploadFiles } from './upload/index'
+import { acpPromptAttachments } from './acp-attachments'
 import type {
   AgentChatMessage,
   AgentConversation,
@@ -911,6 +912,11 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
       // 附件 URL 绝对化 / 可取得化：内置存储拼绝对地址（FIZZ_PUBLIC_BASE_URL 优先，
       // 否则按请求 origin），插件上传源一般不实现（它交回来的就是公网绝对地址）→ 原样返回
       resolveFileUrl: (url) => resolveUploadModelUrl(url, opts?.origin ?? ''),
+      /**
+       * 附件投递：没有公网地址（桌面端 / 局域网 / 本地开发）时把文件读回来内联发送，
+       * 云端 provider 不再回连 `127.0.0.1`。判据与环境变量见 `upload/attachments.ts`。
+       */
+      resolveAttachment: createAttachmentResolver(opts?.origin ?? ''),
       // 单条命令停止表（POST /api/chat/command/stop 命中它；run 级，收尾时清空）
       commandStops: run.commandStops,
       /**
@@ -1025,6 +1031,29 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
     }
   }
 
+  /**
+   * ACP 的附件：`session/prompt` 收的是 `ContentBlock[]`，图片只能**内联 base64**
+   * （agent 是同机子进程，协议里没有「给我个 URL」这条路，`resource_link` 又要 agent 支持
+   * `embeddedContext`）。所以在这里就把字节读出来 —— 读的动作在 `acpPromptAttachments`。
+   *
+   * 能力闸：agent 明说 `promptCapabilities.image === false` 就当场拒。放它到协议层再报
+   * 一个 JSON-RPC invalid params，用户只会看到一句听不懂的话，也不知道是自己带了图。
+   * `undefined`（还没连过 / 老版本不广告）放行 —— 首次使用按「能发就发」处理。
+   */
+  let acpTurnAttachments: Awaited<ReturnType<typeof acpPromptAttachments>> | undefined
+  if (backend === 'acp' && acpAgent && files.length > 0) {
+    if (
+      getAcpImageSupport(acpAgent.id) === false &&
+      files.some((file) => file.mediaType.startsWith('image/'))
+    ) {
+      return rejectTurn(
+        400,
+        `「${acpAgent.name}」不支持图片输入，请改用文字描述，或把文件放进工作区让我用工具读`,
+      )
+    }
+    acpTurnAttachments = await acpPromptAttachments(files)
+  }
+
   const runner: Promise<RunAgentResult> =
     backend === 'acp' && acpAgent
       ? runAcpAgent({
@@ -1046,10 +1075,19 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
           // 会话绑定了 agent 侧 session（轮次被停过 / 服务重启过）→ 用 session/load
           // 恢复上下文，而不是 session/new —— acp 对话不再失忆
           ...(conversation.acpSessionId ? { loadSessionId: conversation.acpSessionId } : {}),
+          // 本轮随消息发的图片（缺省 = 纯文本，行为与之前一致）
+          ...(acpTurnAttachments?.attachments.length
+            ? { attachments: acpTurnAttachments.attachments }
+            : {}),
+          // 有附件没带上时给 agent 一句说明，别让它以为用户只发了文字
+          ...(acpTurnAttachments?.note ? { attachmentNote: acpTurnAttachments.note } : {}),
           // 会话就绪（session/new 建成 或 session/load 恢复）：绑定 sessionId + 回写广告的档位
           onSessionCreated: (info) => {
             domain.bindAcpSession(conversation.id, info.sessionId)
             refreshAcpSessionState(conversation.id, acpAgent.id)
+            // initialize 顺带探测到了「这个 agent 收不收图」→ 让 Agent 列表那份快照跟着更新，
+            // 前端的回形针闸门就靠它（见 ACP 列表 provider）
+            markDirty(['acpAgents'])
           }
         })
       : runAiSdkTurn()

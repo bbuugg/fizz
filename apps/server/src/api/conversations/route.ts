@@ -7,7 +7,7 @@
 import { randomUUID } from 'node:crypto'
 import { isRemoteWorkspace } from '@fizz/contracts/types'
 import { abortAcpTurn, createAcpSession } from '@fizz/acp'
-import { domain } from '@/lib/server/state'
+import { domain, markDirty } from '@/lib/server/state'
 import { ensurePiConfirmExtension } from '@/lib/server/acp-extension'
 import {
   conversationCreateFields,
@@ -121,6 +121,9 @@ export async function POST(request: Request) {
         ...(ready.modes ? { acpModes: ready.modes } : {}),
         ...(ready.thoughtLevel ? { acpThoughtLevel: ready.thoughtLevel } : {})
       })
+      // `session/new` 之前那次 initialize 已经探测到「这个 agent 收不收图」，推一次
+      // Agent 列表快照，输入区的回形针不用等下一轮对话就能按真实能力决定显不显示
+      markDirty(['acpAgents'])
       return Response.json({ ...conversation, messageCount: conversation.messages.length })
     } catch (err) {
       // 建会话失败 / 落库失败：把已 spawn 的 agent 进程收掉，别留孤儿进程

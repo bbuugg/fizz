@@ -16,7 +16,7 @@
  * ai-elements 期望的形状（`ToolUIPart['type']` / `['state']`）。
  */
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
-import { CheckCircle2, Circle, FileText, ImageOff, ListTree, Loader2 } from 'lucide-react'
+import { CheckCircle2, Circle, CircleQuestionMark, FileText, ImageOff, ListTree, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@fizz/ui/button'
 import { ImageViewer } from '@fizz/ui/image-viewer'
@@ -512,6 +512,30 @@ function renderAcpDirect(part: AgentMessagePart): DirectResult | null {
       )
     } else if (item?.type === 'content' && item.content?.type === 'text' && item.content.text) {
       nodes.push(<AcpTextBlock key={`text-${i}`} text={item.content.text} />)
+    } else if (
+      item?.type === 'content' &&
+      item.content?.type === 'image' &&
+      item.content.mimeType &&
+      item.content.data
+    ) {
+      /**
+       * 工具回传的图片（读图 / 截图 / 渲染预览这类工具）。走 `FilePartView` 而不是裸
+       * `<img>`：缩略尺寸、点开大图、下载三件事都白拿，与用户附件同一观感。
+       * 数据是 base64 内联的（ACP 没有 URL 这条路），拼成 data URL 即可 ——
+       * `loadMediaObjectUrl` 对 `data:` 直通，不做 fetch。
+       */
+      const { mimeType, data } = item.content
+      nodes.push(
+        <FilePartView
+          key={`image-${i}`}
+          part={{
+            type: 'file',
+            name: `image.${mimeType === 'image/jpeg' ? 'jpg' : mimeType.slice('image/'.length) || 'png'}`,
+            mediaType: mimeType,
+            url: data.startsWith('data:') ? data : `data:${mimeType};base64,${data}`
+          }}
+        />
+      )
     }
     // type === 'terminal' 只有 terminalId（输出在 rawOutput / 后续 content 里）：不单独渲染，
     // 交给下面的 execute 分支直显输出
@@ -681,7 +705,10 @@ export interface PartViewProps {
    * 就没了停止钮。所以这里用「整条消息在跑」这个更宽的信号。
    */
   turnLive?: boolean
-  /** 该 part 是否是在等的 ask_followup_question（决定渲染成可作答的卡片） */
+  /**
+   * 该 part 是否是在等的 ask_followup_question：是则**不在消息流里渲染表单**，
+   * 只留一条「请在输入框里作答」的指引（真正的表单在 `ChatComposer` 的 cover 槽位）。
+   */
   followupPending?: boolean
   /**
    * 该 part 是**已经结束那一轮**留下的、从没拿到答案的提问（应用退出 / 点了停止 /
@@ -703,7 +730,7 @@ function PartViewInner({
   // 停止动作（工具在飞时头部那颗停止钮用）。两个都是 store 上的稳定引用，
   // 不会因为它们在依赖里引发额外重渲染。
   // 订阅语言：本组件是 memo 的，不自己订阅的话切语言时工具卡标题 / 状态文案不会变
-  useT()
+  const tr = useT()
   const stopCommand = useAgentStore((s) => s.stopCommand)
   const stopTurn = useAgentStore((s) => s.stop)
   /** 工具卡是否显示「意图」（设置 → AI → 通用 → 工具意图） */
@@ -760,18 +787,27 @@ function PartViewInner({
     return <FilePartView part={part} />
   }
 
-  // ask_followup_question：渲染成可作答的提问卡（而不是普通折叠工具卡）
+  // ask_followup_question：正常待答时表单在**输入框槽位**里（`ChatComposer` 的 cover），
+  // 消息流这里只留一条指引，避免同一张表单出现两次；补答 / 已回答仍走卡片本身。
   if (part.toolName === ASK_FOLLOWUP_TOOL) {
     const { output, isError } = toolState(part)
     const live = !!followupPending && onResolveFollowup != null
-    const resumable = !live && !!followupResumable && onResolveFollowup != null
+    if (live) {
+      return (
+        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+          <CircleQuestionMark className="size-4 shrink-0" />
+          {tr('助手的提问（请在输入框里作答）')}
+        </p>
+      )
+    }
+    const resumable = !!followupResumable && onResolveFollowup != null
     return (
       <AskFollowupCard
         toolCallId={part.toolCallId}
         input={part.input}
         output={output}
         isError={isError}
-        pending={live}
+        pending={false}
         resumable={resumable}
         onResolve={onResolveFollowup ?? (() => undefined)}
       />

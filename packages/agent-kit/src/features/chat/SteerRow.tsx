@@ -1,10 +1,9 @@
 // 从 `ChatPanel.tsx` 抽出（原文件太大，按「一块视图一个文件」拆开）。
-import { Paperclip, Pencil, SendHorizontal, X } from "lucide-react";
+import { Loader2, Paperclip, Pencil, SendHorizontal, X } from "lucide-react";
 import { useCallback } from "react";
 import { useConfirm } from "@fizz/agent-kit/shared/components/ConfirmProvider";
 import { fileRefsOfParts } from "@fizz/agent-kit/shared/lib/attachments";
 import { textOf } from "@fizz/agent-kit/shared/lib/parts";
-import { cn } from "@fizz/agent-kit/shared/lib/utils";
 import { SortableRow } from "@fizz/agent-kit/shared/components/SortableRow";
 import type { AgentApp } from "@fizz/agent-kit/shared/hooks/useAgentApp";
 import { useT } from "@fizz/agent-kit/shared/lib/language";
@@ -19,12 +18,12 @@ import { RowIconButton } from "@fizz/agent-kit/features/chat/RowIconButton";
  */
 const STEER_ITEM_TYPE = "pending-steer";
 /**
- * 插话（「插入中」）列表的一条：排序与按钮都与队列行**同一套**（同一个 `SortableRow`、
- * 同一个 `RowIconButton`）—— ➀ 立刻发送（跑着时禁用，与队列同规则）、✎ 编辑写回输入框、
- * ✕ 移除。
+ * 插话（「插话中」）列表的一条：排序与按钮都与队列行**同一套**（同一个 `SortableRow`、
+ * 同一个 `RowIconButton`）—— 跑着时右侧转圈（等边界生效）/ 停下来后变成 ➤ 立刻发送、
+ * ✎ 编辑写回输入框、✕ 移除。
  *
- * ➤ 的用处是「本轮已经结束（停止 / 报错）时把这条当新一轮发出去」：跑着时它的去处是
- * 「下个边界生效」，没有「立刻」这回事，所以那时禁用。
+ * 转圈就是「插话的 loading」：从投递进收件箱一直转到 agent 在下一个工具步骤边界消费它。
+ * 本轮结束时仍没被消费（停止 / 报错 / 断线）才换成 ➤，把这条当新一轮发出去。
  *
  * 附件标识：插话也带附件（见 `SteerInput.files`），只有附件、没写文字的插话否则会显示成一句空话。
  */
@@ -38,7 +37,7 @@ export function SteerRow({
   item: AgentChatMessage;
   /** 触屏设备：HTML5 拖拽起不动，改由把手自己扛 */
   canTouch: boolean;
-  /** 本轮是否在跑（➤ 立刻发送只在停下来的那一轮才有意义） */
+  /** 本轮是否在跑（跑着 = 等边界生效，显示 loading；停下来才给 ➤ 立刻发送） */
   running: boolean;
   app: AgentApp;
   onEdit?: (item: AgentChatMessage) => void;
@@ -76,26 +75,28 @@ export function SteerRow({
           {fileCount}
         </span>
       ) : null}
-      {/* ➤ 立刻发送：与队列同一颗钮、同一套禁用规则 —— 跑着时禁用（跑着时它的去处是
-                「下个边界生效」，没有「立刻」这回事），停下来了才轮到它把这条当新一轮发出去 */}
-      <RowIconButton
-        onClick={() => app.sendSteer(item.id)}
-        disabled={running}
-        tip={
-          running
-            ? t("对话进行中：会在下个工具步骤边界注入当前轮")
-            : t("立刻发送这一条（作为新一轮的普通消息）")
-        }
-        label={t("立刻发送这一条")}
-        className={cn(
-          "shrink-0 rounded p-1 transition-colors",
-          running
-            ? "cursor-not-allowed text-muted-foreground/50"
-            : "text-muted-foreground hover:bg-foreground/10 hover:text-foreground",
-        )}
-      >
-        <SendHorizontal className="size-3.5" />
-      </RowIconButton>
+      {/* 跑着 = 已插话、等下一个工具步骤边界生效：这里转圈（这正是「插话的 loading」）；
+          本轮已结束（停止 / 报错 / 断线）才轮到 ➤ 把这条当新一轮的普通消息发出去 */}
+      {running ? (
+        <RowIconButton
+          onClick={() => {}}
+          disabled
+          tip={t("已插话，等下一个工具步骤边界生效")}
+          label={t("等待边界生效")}
+          className="shrink-0 cursor-not-allowed rounded p-1 text-muted-foreground/60"
+        >
+          <Loader2 className="size-3.5 animate-spin" />
+        </RowIconButton>
+      ) : (
+        <RowIconButton
+          onClick={() => app.sendSteer(item.id)}
+          tip={t("立刻发送这一条（作为新一轮的普通消息）")}
+          label={t("立刻发送这一条")}
+          className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+        >
+          <SendHorizontal className="size-3.5" />
+        </RowIconButton>
+      )}
       {onEdit ? (
         <RowIconButton
           onClick={() => onEdit(item)}

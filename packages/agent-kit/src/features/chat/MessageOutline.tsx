@@ -42,7 +42,7 @@
  * - **仍是 `<button>`**：保留键盘 Tab + Enter，视觉简化了，无障碍入口不能跟着没。
  */
 import type { AgentChatMessage } from '@fizz/contracts/agent-api'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { textOf } from '@fizz/agent-kit/shared/lib/parts'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
@@ -90,42 +90,108 @@ export function MessageOutline({
   const pointerKind = useRef<string>('mouse')
 
   const tr = useT()
-  const items = useMemo(
-    () =>
-      messages
-        .filter((message) => message.role === 'user')
-        .map((message) => ({
-          id: message.id,
-          /** 可能为空（只发了图 / 只点了回车）：渲染时兜底，别把译好的文案冻进 memo */
-          text: textOf(message)
-        })),
-    [messages]
+  /**
+   * 摘要文字按**消息引用**缓存：`messages` 每来一帧就是新数组，但流式只改末条，
+   * 前面那些用户消息的引用一直不变。没有这层缓存，流式期间每帧都要对所有用户消息
+   * 重跑一遍 `textOf`（拼接全部文本 part）—— 长会话里是白烧的主线程时间。
+   */
+  const textCacheRef = useRef(new Map<string, { message: AgentChatMessage; text: string }>())
+  const items = useMemo(() => {
+    const cache = textCacheRef.current
+    const next = messages
+      .filter((message) => message.role === 'user')
+      .map((message) => {
+        const cached = cache.get(message.id)
+        if (cached?.message === message) return { id: message.id, text: cached.text }
+        /** 可能为空（只发了图 / 只点了回车）：渲染时兜底，别把译好的文案冻进 memo */
+        const text = textOf(message)
+        cache.set(message.id, { message, text })
+        return { id: message.id, text }
+      })
+    // 删掉的消息不该留在缓存里（消息 id 不复用，留着只会慢慢涨）
+    if (cache.size > next.length) {
+      const alive = new Set(next.map((item) => item.id))
+      for (const id of cache.keys()) if (!alive.has(id)) cache.delete(id)
+    }
+    return next
+  }, [messages])
+
+  /**
+   * 横杠的交互回调保持**稳定引用**：`onJump` 是 `MessageList` 里的内联函数、每次渲染
+   * 都是新引用，直接进依赖会让 memo 的横杠全部失效。
+   */
+  const onJumpRef = useRef(onJump)
+  onJumpRef.current = onJump
+  const select = useCallback(
+    (id: string) => {
+      // 手指第一下只展开：得先看清摘要才知道要点哪条
+      if (!open) {
+        setOpen(true)
+        return
+      }
+      onJumpRef.current(id)
+      // 触屏跳完收起，别挡着刚滚过去的那一轮；鼠标还停在横杠上，交给 pointerleave
+      if (pointerKind.current === 'touch') setOpen(false)
+    },
+    [open]
   )
+  const rememberPointerKind = useCallback((kind: string) => {
+    pointerKind.current = kind
+  }, [])
 
   /**
    * 滚动跟随（scroll-spy）。
    *
-   * 依赖的是**消息 id 串**而不是 `items` 数组：流式期间 `messages` 每来一帧就是一个新数组，
-   * 按数组依赖会让这个 effect 每帧重挂一次 scroll 监听（旧版按 `items` 依赖也吃这个亏）。
-   * 只有「轮次增删 / 顺序变了」才需要重挂。
+   * 依赖的是**消息 id 串**而不是 `messages` 数组：流式期间 `messages` 每来一帧就是一个
+   * 新数组，按数组依赖会让这个 effect 每帧重挂一次 scroll 监听。只有「消息增删 / 顺序
+   * 变了」才需要重建。
+   *
+   * ⚠️ 这里必须用**全部消息**的 id，不能像旧版那样只拼用户消息的 id —— 读线判定遍历的是
+   * 所有 `[data-message-id]`（助手消息也在其中，正文很长时读线往往停在助手消息里），
+   * 缓存少了助手消息就会高亮错一条。
    */
-  const idsKey = items.map((item) => item.id).join('|')
+  const allIdsKey = messages.map((message) => message.id).join('|')
   useEffect(() => {
     const panel = panelRef.current
     if (!panel) return
     const scroller = findScroller(panel)
     if (!scroller) return
+    /**
+     * 消息元素**缓存**：旧实现每帧都 `querySelectorAll` + 从第一条开始逐条量 rect，
+     * 一直量到读线 —— 滚在长会话底部时每帧要量**全部**消息（几百上千次 rect 读取
+     * 加一次全量子树查询），是滚动发卡的一截。DOM 顺序 = 消息顺序、`top` 单调递增，
+     * 判定「最后一条起始位置已过读线的消息」因此可以用二分：每帧只读 log2(N) 个 rect。
+     *
+     * 元素只在 id 串变化时重扫（React 按 key 复用 DOM，流式帧不会换元素引用）。
+     * 另留一道 `isConnected` 兜底：整块列表被替换过（错误态 / 重挂）时缓存会指向
+     * 已摘除的节点（rect 全 0，二分直接失效），这时就地重建一次 —— `isConnected`
+     * 是纯属性读取，不触发布局。
+     */
+    let els = Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]'))
     let raf = 0
     const update = (): void => {
       raf = 0
-      const line = scroller.getBoundingClientRect().bottom - SPY_LINE_INSET
-      let current: string | null = null
-      // DOM 顺序 = 消息顺序：第一条越过读线的，后面必然也都越过了，直接收到最后
-      for (const el of scroller.querySelectorAll<HTMLElement>('[data-message-id]')) {
-        if (el.getBoundingClientRect().top > line) break
-        current = el.dataset.messageId ?? current
+      if (els.length > 0 && (!els[0].isConnected || !els[els.length - 1].isConnected)) {
+        els = Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]'))
       }
-      setActiveId(current)
+      if (els.length === 0) {
+        setActiveId(null)
+        return
+      }
+      const line = scroller.getBoundingClientRect().bottom - SPY_LINE_INSET
+      let lo = 0
+      let hi = els.length - 1
+      let found = -1
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1
+        if (els[mid].getBoundingClientRect().top <= line) {
+          found = mid
+          lo = mid + 1
+        } else {
+          hi = mid - 1
+        }
+      }
+      setActiveId(found >= 0 ? (els[found].dataset.messageId ?? null) : null)
     }
     const onScroll = (): void => {
       if (!raf) raf = requestAnimationFrame(update)
@@ -140,7 +206,7 @@ export function MessageOutline({
       ro.disconnect()
       if (raf) cancelAnimationFrame(raf)
     }
-  }, [idsKey])
+  }, [allIdsKey])
 
   /**
    * 「点别处收起」——**只服务手指**：鼠标有 pointerleave，触屏展开后没有任何「移开」动作，
@@ -217,62 +283,88 @@ export function MessageOutline({
           if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false)
         }}
       >
-        {items.map((item) => {
-          const isActive = item.id === activeId
-          return (
-            <button
-              key={item.id}
-              type="button"
-              onPointerDown={(event) => {
-                pointerKind.current = event.pointerType
-              }}
-              onClick={() => {
-                // 手指第一下只展开：得先看清摘要才知道要点哪条
-                if (!open) {
-                  setOpen(true)
-                  return
-                }
-                onJump(item.id)
-                // 触屏跳完收起，别挡着刚滚过去的那一轮；鼠标还停在横杠上，交给 pointerleave
-                if (pointerKind.current === 'touch') setOpen(false)
-              }}
-              aria-label={item.text || tr('（这条消息没有文字）')}
-              aria-current={isActive ? 'true' : undefined}
-              className={cn(
-                // `justify-end`：未展开时文字宽 0，横杠得靠右贴住容器右缘（否则会缩到左端）
-                'flex w-full min-w-0 shrink-0 items-center justify-end rounded-md text-left',
-                // 行高跟着 `open` 走（而不是两态都 `h-6`），高度也进过渡，跟宽度动画同步
-                'transition-[height,color,background-color,border-color] duration-200 ease-out',
-                // 展开态：24px 是给 12px 摘要文字 + 上下留白 + 点击热区留的，塞不下更矮；
-                // 收起态：行内只有一根 2px 横杠，14px 就够。
-                // 横杠的视觉间距 = 行高 + 容器 gap(6px) - 横杠高(2px)：
-                // 两态都用 h-6 时是 28px（稀），收起收紧到 h-3.5 后是 18px。
-                open ? 'h-6 px-1 hover:bg-accent' : 'h-3.5'
-              )}
-            >
-              {/* 摘要：收起时透明（不是 `hidden`）—— 宽度动画里它得在场，靠透明度渐显 */}
-              <span
-                className={cn(
-                  'min-w-0 flex-1 truncate text-xs transition-opacity duration-150',
-                  open ? 'opacity-100' : 'opacity-0',
-                  isActive ? 'text-primary' : open ? 'text-foreground' : 'text-muted-foreground'
-                )}
-              >
-                {item.text || tr('（这条消息没有文字）')}
-              </span>
-              {/* 横杠本体：常驻，永远是这一列里唯一看得见的东西。`ml-3` 只在展开时给缝，
-                  未展开时 20px 的槽位里就是这一根 16px 的横杠（贴右） */}
-              <span
-                className={cn(
-                  'h-[2px] w-4 shrink-0 rounded-full transition-colors',
-                  open && 'ml-3',
-                  isActive ? 'bg-primary' : open ? 'bg-muted-foreground/60' : 'bg-muted-foreground/40'
-                )}
-              />
-            </button>
-          )
-        })}
+        {items.map((item) => (
+          <OutlineBar
+            key={item.id}
+            id={item.id}
+            text={item.text}
+            active={item.id === activeId}
+            open={open}
+            onSelect={select}
+            onPointerType={rememberPointerKind}
+          />
+        ))}
       </div>
     </div>
   )
 }
+
+/**
+ * 一列横杠里的一条（**带 memo**）。
+ *
+ * ⚠️ 为什么必须 memo：滚动跟随每跨过一条消息就 `setActiveId` 一次，父组件随之重渲；
+ * 长会话的目录有几百上千条（每条还带一整段摘要文字），全部重建的话一次就是几毫秒 ——
+ * 恰好在快速滚动时连续发生，看起来就是「滚起来一卡一卡」。memo 之后每次只重渲
+ * 「刚失去高亮的那条 + 刚拿到高亮的那条」。
+ *
+ * ⚠️ props 只收**字符串 / 布尔 / 稳定回调**，不收 `item` 对象：流式期间 `items` 每帧
+ * 都是新数组、每个条目的对象也是新的，传对象会让 memo 每帧失效（摘要文字本身是字符串，
+ * 按值比较，旧消息的文案不会变）。
+ */
+const OutlineBar = memo(function OutlineBar({
+  id,
+  text,
+  active,
+  open,
+  onSelect,
+  onPointerType
+}: {
+  id: string
+  text: string
+  active: boolean
+  open: boolean
+  onSelect: (id: string) => void
+  onPointerType: (kind: string) => void
+}) {
+  const tr = useT()
+  return (
+    <button
+      type="button"
+      onPointerDown={(event) => onPointerType(event.pointerType)}
+      onClick={() => onSelect(id)}
+      aria-label={text || tr('（这条消息没有文字）')}
+      aria-current={active ? 'true' : undefined}
+      className={cn(
+        // `justify-end`：未展开时文字宽 0，横杠得靠右贴住容器右缘（否则会缩到左端）
+        'flex w-full min-w-0 shrink-0 items-center justify-end rounded-md text-left',
+        // 行高跟着 `open` 走（而不是两态都 `h-6`），高度也进过渡，跟宽度动画同步
+        'transition-[height,color,background-color,border-color] duration-200 ease-out',
+        // 展开态：24px 是给 12px 摘要文字 + 上下留白 + 点击热区留的，塞不下更矮；
+        // 收起态：行内只有一根 2px 横杠，14px 就够。
+        // 横杠的视觉间距 = 行高 + 容器 gap(6px) - 横杠高(2px)：
+        // 两态都用 h-6 时是 28px（稀），收起收紧到 h-3.5 后是 18px。
+        open ? 'h-6 px-1 hover:bg-accent' : 'h-3.5'
+      )}
+    >
+      {/* 摘要：收起时透明（不是 `hidden`）—— 宽度动画里它得在场，靠透明度渐显 */}
+      <span
+        className={cn(
+          'min-w-0 flex-1 truncate text-xs transition-opacity duration-150',
+          open ? 'opacity-100' : 'opacity-0',
+          active ? 'text-primary' : open ? 'text-foreground' : 'text-muted-foreground'
+        )}
+      >
+        {text || tr('（这条消息没有文字）')}
+      </span>
+      {/* 横杠本体：常驻，永远是这一列里唯一看得见的东西。`ml-3` 只在展开时给缝，
+          未展开时 20px 的槽位里就是这一根 16px 的横杠（贴右） */}
+      <span
+        className={cn(
+          'h-[2px] w-4 shrink-0 rounded-full transition-colors',
+          open && 'ml-3',
+          active ? 'bg-primary' : open ? 'bg-muted-foreground/60' : 'bg-muted-foreground/40'
+        )}
+      />
+    </button>
+  )
+})

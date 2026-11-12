@@ -5,6 +5,9 @@
  *
  * 原始文件名**不参与存储路径**（只进消息历史的 file part 当展示名），扩展名由白名单
  * MIME 反推 —— 契约白名单（isUploadAllowedMime）是第一道闸，这里是第二道。
+ *
+ * `get()` 是「内联投递」的读回口：没有公网地址时（桌面端 / 局域网），provider 拉不到
+ * `/api/uploads/...`，server 会把字节读出来塞进请求体（见 `attachments.ts`）。
  */
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'

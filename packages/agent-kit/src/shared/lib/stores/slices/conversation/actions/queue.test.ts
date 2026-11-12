@@ -29,7 +29,16 @@ const OTHER = 'conv-b'
 function makeStore() {
   const api = {
     setConversationQueue: vi.fn(async () => ({ ok: true })),
-    setConversationTarget: vi.fn(async () => ({ ok: true }))
+    setConversationTarget: vi.fn(async () => ({ ok: true })),
+    // 运行中「点队列发送」= 插话：投进服务端收件箱，回一条带 id 的消息
+    steer: vi.fn(async (_id: string, text: string) => ({
+      message: {
+        id: 'steer-1',
+        role: 'user' as const,
+        parts: [{ type: 'text' as const, text }],
+        createdAt: 1
+      }
+    }))
   }
   const conversations = [
     { id: FOCUS, backend: 'builtin', workspaceId: 'ws-1', title: 'A' },
@@ -80,6 +89,7 @@ function makeStore() {
 
   const readSlice = slice.readSlice as (id: string | null) => {
     queuedMessages: { id: string; text: string; files: [] }[]
+    pendingSteers: { id: string }[]
     queuePausedReason: string | null
   }
   const writeSlice = slice.writeSlice as (
@@ -110,7 +120,7 @@ function makeStore() {
     sendQueuedMessage: slice.sendQueuedMessage as (
       id: string,
       scope?: string | null
-    ) => void
+    ) => Promise<boolean>
   }
 }
 
@@ -160,16 +170,33 @@ describe('pump：队列不看焦点', () => {
 })
 
 describe('sendQueuedMessage：作用域', () => {
-  it('在非焦点标签点「立刻发」：发的是本标签那条，不是焦点会话的', () => {
+  it('在非焦点标签点「立刻发」：发的是本标签那条，不是焦点会话的', async () => {
     const { runRound, readSlice, queueIn, sendQueuedMessage } = makeStore()
     queueIn(FOCUS, ['A 的消息'])
     queueIn(OTHER, ['B 的消息'])
 
-    sendQueuedMessage('conv-b-q0', OTHER)
+    await sendQueuedMessage('conv-b-q0', OTHER)
 
     expect(runRound.mock.calls[0][0]).toBe('B 的消息')
     expect(runRound.mock.calls[0][3]).toBe(OTHER)
     // A 的队列原封不动
     expect(readSlice(FOCUS).queuedMessages.map((m) => m.text)).toEqual(['A 的消息'])
+  })
+})
+
+describe('sendQueuedMessage：跑着时 = 插话', () => {
+  it('投进当前轮收件箱：成功后从队列移入插话列表，不另起新一轮', async () => {
+    const { state, api, runRound, readSlice, queueIn, sendQueuedMessage } =
+      makeStore()
+    queueIn(FOCUS, ['插话的内容'])
+    state.runningConversations = { [FOCUS]: true }
+
+    const started = await sendQueuedMessage('conv-a-q0', FOCUS)
+
+    expect(started).toBe(true)
+    expect(api.steer).toHaveBeenCalledWith(FOCUS, '插话的内容', [])
+    expect(runRound).not.toHaveBeenCalled()
+    expect(readSlice(FOCUS).queuedMessages).toEqual([])
+    expect(readSlice(FOCUS).pendingSteers.map((m) => m.id)).toEqual(['steer-1'])
   })
 })

@@ -10,11 +10,12 @@
  * - `useAgentAppView(id)`：绑定指定会话，**不挂副作用** —— 主区域每个对话标签一份，
  *   这样多个标签能各自显示自己那条会话的消息与流式状态（见 `agentAppFrom` 的说明）。
  *
- * 订阅方式是**整店订阅**（`useAgentStore()` 无 selector）—— 语义与旧 hook 一致：
- * 任何状态变化都重渲染。后续要省渲染的话，让具体组件改用 selector
- * （如 `useAgentStore(s => s.activeWorkspaceId)`）即可，store 这层不用再动。
+ * 订阅方式是**整店订阅**（`useAgentStore()` 无 selector）：hook 本身随任何状态变化重渲，
+ * 但 `useAgentApp()` 的返回值在「只有切片变化」时保持旧引用（流式期间不再把整个应用
+ * 树按帧拖下水，见它末尾的投影缓存）；`useAgentAppView(id)` 不缓存，始终是最新现场。
+ * 只需要其中一两个字段的组件仍可改用 selector（如 `useAgentStore(s => s.activeWorkspaceId)`）。
  */
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { setUnauthorizedHandler } from "@fizz/agent-client/api";
 import {
@@ -304,7 +305,7 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     /** 队列 ↑↓ 按钮微调（触屏用）：-1 = 上移更早发出，1 = 下移；越界不动 */
     moveQueuedMessageBy: (id: string, delta: number) =>
       s.moveQueuedMessageBy(id, delta, conversationId),
-    /** 队列里挑一条立刻发（会话进行中忽略；其余的等本轮结束后按顺序续上） */
+    /** 发送队列里的一条：本轮在跑 = 插话（到下一个边界生效）；没在跑 = 立刻开新一轮 */
     sendQueuedMessage: (id: string) =>
       s.sendQueuedMessage(id, conversationId),
     /** 清空待发送队列（失败暂停后的一键清空） */
@@ -727,8 +728,10 @@ function announceSessionExpired(): void {
  * 补接断线、自动恢复上次会话，都只在这里挂一次。`useAgentAppView` 刻意不碰它们：
  * 每个对话标签各挂一份全局副作用会重复订阅、重复对账。
  *
- * 整店订阅（`useAgentStore()` 无 selector）：返回形状与旧实现逐字段对齐，
- * 任何状态变化触发重渲染（同旧语义）。要省渲染的话，让具体组件改用 selector 即可。
+ * 整店订阅（`useAgentStore()` 无 selector）：本 hook 仍会随任何状态变化重渲染，
+ * 但**返回值在「只有切片变化」时保持旧引用**（见函数末尾的投影缓存）。外壳 / 侧栏 /
+ * 面板骨架读的都是非切片状态，冻结它换来的是「流式期间整个应用不再每帧重渲」；
+ * 会话正文那一路走 `useAgentAppView(id)`，始终是最新现场。
  */
 export function useAgentApp(): AgentApp {
   const s = useAgentStore();
@@ -871,7 +874,47 @@ export function useAgentApp(): AgentApp {
     openConversation,
   ]);
 
-  return agentAppFrom(s, s.activeConversationId);
+  /**
+   * shell 投影缓存：`slices` **以外**的根字段引用不变时，沿用上一份 `app`。
+   *
+   * ## 为什么必须冻结
+   *
+   * 流式期间每一批帧都会 `writeSlice()`（消息正文在变），store 根对象随之换引用，
+   * 本 hook 每帧重渲。而 `agentAppFrom` 每次调用都返回**新对象**，这个 `app` 挂在
+   * `AppContext` 上 → 所有 `useAppContext()` 消费者（外壳、侧栏、每个面板）跟着
+   * 每帧重渲。加上 `AppProvider` 里 `value` 字面量也是每帧新建、`useTriggers` 的
+   * 返回值同样如此，整棵应用树在会话跑着时被按帧全量重渲 —— 用户观感就是
+   * 「整个软件都卡卡的」（连 ViewPanel 标签条滚动都受影响）。
+   *
+   * 外壳层实际读的全是**清单类**状态（连接 / 工作区 / 会话清单 / 模型 / 终端…），
+   * 没有一个读正在流式的正文；正文那一路由每个对话标签自己的 `useAgentAppView(id)`
+   * 提供，它不缓存、每帧都是最新现场。
+   *
+   * ## 新增字段时的约束
+   *
+   * 若将来有**外壳层**组件要读某个切片字段（`app.streaming` / `app.messages` …），
+   * 不能直接信这里返回的旧值：要么改用 `useAgentStore` 选择器按需订阅（见
+   * `app-provider.tsx` 里 `chatStreaming` 的写法），要么把该字段加进 `shellKeys`。
+   */
+  const shellCacheRef = useRef<{ keys: readonly unknown[]; app: AgentApp } | null>(
+    null
+  );
+  const shellKeys: unknown[] = [];
+  for (const [key, value] of Object.entries(s)) {
+    // 流式正文在 slices 里，其余根字段（连接 / 清单 / 动作）都是外壳关心的
+    if (key !== "slices") shellKeys.push(value);
+  }
+  const shellCache = shellCacheRef.current;
+  if (
+    shellCache &&
+    shellCache.keys.length === shellKeys.length &&
+    shellCache.keys.every((prev, i) => Object.is(prev, shellKeys[i]))
+  ) {
+    return shellCache.app;
+  }
+  const shellApp = agentAppFrom(s, s.activeConversationId);
+  shellCacheRef.current = { keys: shellKeys, app: shellApp };
+  return shellApp;
 }
 
 /**

@@ -30,6 +30,7 @@ export function excerptOf(parts: AgentChatMessage['parts'], max = 120): string |
  * 把一条流事件折叠进 parts 数组(原地修改)。
  *
  * - delta 类:合并进本步内最近的一条同类型 part(见 `appendPartDelta`),没有就新建;
+ * - file-part:agent 回传的图片(ACP 多模态输出),**整块追加**成 `file`,不参与文本合并;
  * - tool-call:按 toolCallId 更新或追加;
  * - tool-result:按 toolCallId 回填输出;
  * - tool-call-delta:只喂流式渲染,不进落盘形状(落盘以完整 tool-call 的 input 为准);
@@ -43,6 +44,10 @@ export function foldEventIntoParts(parts: AgentMessagePart[], event: AgentStream
     // 合并口径见 `appendPartDelta`：思考与正文交替流（ACP 常见）时也必须各自收成一条，
     // 否则一段正文会被拆成十几条 part，渲染端每段思考都单独成一个「思考过程」分组。
     appendPartDelta(parts, event.type === 'text-delta' ? 'text' : 'reasoning', event.delta)
+  } else if (event.type === 'file-part') {
+    // agent 回传的图片（ACP 多模态输出）：与用户附件同一个 part 形状，渲染端复用
+    // `FilePartView`。`url` 是 data URL（见 `AgentStreamEvent.file-part` 的注释）。
+    parts.push({ type: 'file', name: event.name, mediaType: event.mediaType, url: event.url })
   } else if (event.type === 'tool-call') {
     const index = parts.findIndex((p) => p.type === 'tool-call' && p.toolCallId === event.toolCallId)
     if (index >= 0) {

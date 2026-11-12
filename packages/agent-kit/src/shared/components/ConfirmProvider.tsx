@@ -40,6 +40,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle
 } from '@fizz/ui/alert-dialog'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 
 export interface ConfirmOptions {
   /** 标题（一句话说清在问什么） */
@@ -78,6 +79,7 @@ export function useConfirm(): ConfirmFn {
 }
 
 export function ConfirmProvider({ children }: { children: ReactNode }) {
+  const t = useT()
   const [current, setCurrent] = useState<PendingConfirm | null>(null)
   /** 待显示队列（`current` 恒等于队首） */
   const queueRef = useRef<PendingConfirm[]>([])
@@ -123,7 +125,8 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
             )}
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>{options?.cancelLabel ?? '取消'}</AlertDialogCancel>
+            {/* 默认文案也要走翻译：英文界面下这里以前回落成硬编码中文（用户反馈） */}
+            <AlertDialogCancel>{options?.cancelLabel ?? t('取消')}</AlertDialogCancel>
             <AlertDialogAction
               variant={options?.destructive ? 'destructive' : 'default'}
               onClick={(e) => {
@@ -131,7 +134,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
                 if (current) close(current, true)
               }}
             >
-              {options?.confirmLabel ?? '确定'}
+              {options?.confirmLabel ?? t('确定')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

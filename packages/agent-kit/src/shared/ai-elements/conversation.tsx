@@ -40,6 +40,7 @@ import {
   useContext,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -515,10 +516,22 @@ export const Conversation = ({
     scrollToBottom();
   }, [scrollToBottom]);
 
+  /**
+   * context 值**按依赖记稳**，不要每次渲染现场造字面量。
+   *
+   * 流式期间 `Conversation` 每帧都在重渲染（`ChatPanel` 拿到新的 `app` 就重渲）。
+   * 现场造对象会让所有 `useConversation()` 消费者（正文里每个工具卡 / 思考条 /
+   * 折叠组 / 提问卡…）跟着每帧重渲 —— context 的传播**不受 `memo` 拦截**，
+   * `MessageParts` 的 memo 在这里等于白加，历史消息子树（含 Shiki 高亮产物）每帧
+   * 全量重渲一遍。这正是「会话跑着时整个软件都卡」的一大半。
+   */
+  const ctxValue = useMemo(
+    () => ({ isAtBottom, scrollToBottom: resumeAndScrollToBottom, holdScroll }),
+    [isAtBottom, resumeAndScrollToBottom, holdScroll]
+  );
+
   return (
-    <ConversationContext.Provider
-      value={{ isAtBottom, scrollToBottom: resumeAndScrollToBottom, holdScroll }}
-    >
+    <ConversationContext.Provider value={ctxValue}>
       <div
         ref={attachScroll}
         /*
@@ -650,8 +663,10 @@ export const ConversationScrollButton = ({
           // outline 变体在暗色下是 `dark:bg-input/30`、悬停 `dark:hover:bg-input/50`，而 `--input`
           // 本身就是 15% 透明的白，浮在消息上看不清；这里换成不透明的 popover / accent 背景，
           // 保留边框与阴影。
+          // 背景本来就是不透明的（bg-background / dark:bg-popover），别再叠 backdrop-blur：
+          // 磨砂对纯色底毫无视觉贡献，却让这颗按钮在**上滚浏览时**每帧多做一次背景采样。
           className={cn(
-            "pointer-events-auto rounded-full bg-background text-foreground shadow-lg hover:bg-accent dark:bg-popover dark:hover:bg-accent backdrop-blur-2xl",
+            "pointer-events-auto rounded-full bg-background text-foreground shadow-lg hover:bg-accent dark:bg-popover dark:hover:bg-accent",
             className
           )}
           onClick={scrollToBottom}

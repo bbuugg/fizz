@@ -60,6 +60,33 @@ function lastUserText(history: AgentChatMessage[]): string {
   return "";
 }
 
+/**
+ * 把「附件说明 + 图片 + 正文」组装成 `session/prompt` 的内容块。
+ *
+ * 顺序：说明 → 图片 → 正文。与内置会话的 `buildUserParts`（附件在前、文本在后）同序，
+ * 也让「哪张图没带上」的那句提示成为 agent 读到的第一句。
+ *
+ * 这里**不校验** agent 收不收图：能力判定在调用方（`getAcpImageSupport`），
+ * 传进来就发 —— agent 若真不收，`session/prompt` 会以 JSON-RPC error 收场并照常上抛。
+ */
+export function buildPromptBlocks(
+  opts: Pick<RunAcpAgentOptions, "attachments" | "attachmentNote">,
+  text: string,
+): acp.ContentBlock[] {
+  const blocks: acp.ContentBlock[] = [];
+  const note = opts.attachmentNote?.trim();
+  if (note) blocks.push({ type: "text", text: note });
+  for (const file of opts.attachments ?? []) {
+    blocks.push({
+      type: "image",
+      mimeType: file.mediaType,
+      data: Buffer.from(file.data).toString("base64"),
+    });
+  }
+  if (text.trim()) blocks.push({ type: "text", text });
+  return blocks;
+}
+
 /** 同一个 toolCallId 上累积起来的展示信息（跨多次 update 合并 / 变更检测） */
 export interface AcpToolCallMemory {
   input: Record<string, unknown>;
@@ -93,6 +120,29 @@ function normalizeAcpContent(value: unknown): AcpToolCallContent[] | undefined {
     if (!isRecord(raw) || typeof raw.type !== "string") continue;
     if (raw.type === "content") {
       const block = isRecord(raw.content) ? raw.content : undefined;
+      /**
+       * 工具结果里的图片（读图 / 截图这类工具回的是 `ContentBlock::Image`）。
+       *
+       * ⚠️ 上限比正文图片更严：工具调用**每次 update 都重发全量 content**，同一个
+       * base64 会在整轮执行里被反复推给所有客户端（SSE 帧 × N）。超限就换成一句说明，
+       * 否则一张 6MB 的图能把界面卡住。正文那路的 `acpImageEvent` 只到一次，可以放宽。
+       */
+      if (block?.type === "image") {
+        const mimeType = typeof block.mimeType === "string" ? block.mimeType : "";
+        const data = typeof block.data === "string" ? block.data : "";
+        if (!mimeType.startsWith("image/") || !data) continue;
+        out.push({
+          type: "content",
+          content:
+            data.length > MAX_TOOL_IMAGE_CHARS
+              ? {
+                  type: "text",
+                  text: `（工具回传了一张 ${mimeType} 图片，超过内联上限，已省略）`,
+                }
+              : { type: "image", mimeType, data },
+        });
+        continue;
+      }
       out.push({
         type: "content",
         ...(block && typeof block.type === "string"
@@ -178,6 +228,62 @@ function mergeAcpInput(
 }
 
 /**
+ * agent 回传图片的体积上限（按 **base64 字符数**算，约 6MB 原图）。
+ *
+ * 为什么这里和「用户发的图」用两套口径：用户那张是**已经落盘的文件 + 一个小 URL**，
+ * 而这张要经 SSE 一帧推给所有打开的客户端、还要常驻服务端快照（内存）。再大就只能
+ * 让 agent 把文件写进工作区、由它自己用文件工具读。
+ */
+const MAX_INLINE_IMAGE_CHARS = 8 * 1024 * 1024;
+
+/**
+ * 工具结果图片的内联上限（base64 字符数，约 3MB 原图）——比正文那路更严。
+ *
+ * 原因在 `normalizeAcpContent` 的注释里：工具调用每次 update 都重发**全量 content**，
+ * 同一张图的 base64 会在整轮执行里被反复推给所有客户端。
+ */
+const MAX_TOOL_IMAGE_CHARS = 4 * 1024 * 1024;
+
+/** `image/jpeg` → `jpg`；认不出来的一律 png（只用于下载时的文件名） */
+const imageExt = (mimeType: string): string =>
+  mimeType === "image/jpeg" ? "jpg" : mimeType.slice("image/".length) || "png";
+
+/**
+ * `ContentBlock::Image` → 一条 `file-part` 事件（agent 回传的多模态输出）。
+ *
+ * 图片在协议里是**整块**到达的（不像文本那样分片），所以一条 block 就是一张图，
+ * 折叠成一条 `file` part 正好与用户附件同形 —— 渲染端一个 `FilePartView` 通吃。
+ *
+ * 认不出的形态（没有 mimeType / data 不是字符串 / 不是 image/*）一律丢弃：
+ * 硬塞一条坏图只会让消息流里出现一块「图片加载失败」。
+ */
+function acpImageEvent(content: {
+  type?: string;
+  data?: unknown;
+  mimeType?: unknown;
+}): AgentStreamEvent | undefined {
+  if (content.type !== "image") return undefined;
+  const mimeType = typeof content.mimeType === "string" ? content.mimeType : "";
+  const data = typeof content.data === "string" ? content.data : "";
+  if (!mimeType.startsWith("image/") || !data) return undefined;
+  if (data.length > MAX_INLINE_IMAGE_CHARS) {
+    // 说清楚「少看到了什么」，别让它无声消失（与附件超限同一条口径）
+    return {
+      type: "text-delta",
+      delta: `\n\n（agent 回传了一张 ${mimeType} 图片，超过内联上限，已省略）\n\n`,
+    };
+  }
+  // 少数 agent 会把 `data:` 前缀一起塞进 data（协议只要求裸 base64），两种都认
+  const url = data.startsWith("data:") ? data : `data:${mimeType};base64,${data}`;
+  return {
+    type: "file-part",
+    url,
+    mediaType: mimeType,
+    name: `image.${imageExt(mimeType)}`,
+  };
+}
+
+/**
  * ACP 的 session/update → AgentStreamEvent**列表**（一条 update 可能产出多条事件：
  * 例如「补全入参」+「工具结果」要分两条发，前者按 toolCallId 合并进已有工具卡）。
  *
@@ -192,9 +298,16 @@ export function toAcpStreamEvent(
   switch (update.sessionUpdate) {
     case "agent_message_chunk": {
       const content = update.content as
-        { type?: string; text?: string } | undefined;
+        | { type?: string; text?: string; data?: unknown; mimeType?: unknown }
+        | undefined;
       if (content?.type === "text" && typeof content.text === "string") {
         return [{ type: "text-delta", delta: content.text }];
+      }
+      // 多模态输出：agent 在正文流里回传的图片（截图工具 / 生成图）。丢弃它就是
+      // 「agent 说『图在下面』但下面什么都没有」，这是用户报的那条。
+      if (content?.type === "image") {
+        const image = acpImageEvent(content);
+        return image ? [image] : [];
       }
       return [];
     }
@@ -374,6 +487,14 @@ interface AcpSessionEntry {
    * 打开会话 / 轮次前恢复上下文都走它；teardown 时随 entry 一起消失。
    */
   loadedSource: LoadedTurnSource | null;
+  /**
+   * agent 在 `initialize` 里广告的**输入形态能力**（`promptCapabilities`）。
+   *
+   * `image: true` 才代表它收 `ContentBlock::Image`；缺省 / 未广告 = **不保证**收，
+   * 所以界面上的回形针按「不广告就不显示」处理（见 `getAcpImageSupport`）。
+   * null = 这条连接还没 initialize 完。
+   */
+  promptCapabilities: acp.PromptCapabilities | null;
   /** 同一会话的轮次串行链 */
   chain: Promise<unknown>;
   /** 当前轮次的审批上下文（requestPermission 时要用） */
@@ -404,6 +525,26 @@ interface AgentPermissionReply {
 
 /** agentId::conversationId → 常驻会话 */
 const sessions = new Map<string, AcpSessionEntry>();
+
+/**
+ * agentId → 是否收 `ContentBlock::Image`（`initialize` 里探测，**不过期**）。
+ *
+ * 单独一份而不是从 `sessions` 里翻：会话会被 teardown（停止 / 进程崩溃 / 空闲回收），
+ * 但「这个 agent 吃不吃图」是**工艺参数**，不该跟着某条会话的生死反复探测。
+ * 未探测过的 agent 没有条目（`getAcpImageSupport` 返回 undefined）。
+ */
+const imageSupportByAgent = new Map<string, boolean>();
+
+/**
+ * 某个 ACP agent 是否收图片输入：`true` / `false` = agent 明确广告过，
+ * `undefined` = 还没连过（或连接没走完 initialize）。
+ *
+ * 调用方（服务端列表 / 发送校验）按三态处理：**未知 ≠ 不支持** —— 界面可以乐观显示，
+ * 发送时再按 agent 的真实回应收场。
+ */
+export function getAcpImageSupport(agentId: string): boolean | undefined {
+  return imageSupportByAgent.get(agentId);
+}
 
 /** 某个会话上「可选的模型 + 当前值」（内部形态：configId 一定存在） */
 interface AcpModelSelector {
@@ -743,14 +884,22 @@ class LoadedTurnSource {
     return response ?? {};
   }
 
-  /** 与 ActiveSession.prompt 同语义：整轮结束才 resolve；stop 消息由这里入队 */
-  async prompt(text: string): Promise<void> {
+  /**
+   * 与 `ActiveSession.prompt` 同语义：整轮结束才 resolve；stop 消息由这里入队。
+   *
+   * 入参与 SDK 那个一致地接受**内容块数组**（图片附件就是靠它进来的）：
+   * `session/prompt` 的 `prompt` 字段本来就是 `ContentBlock[]`，不是字符串。
+   */
+  async prompt(prompt: string | acp.ContentBlock[]): Promise<void> {
     // 新一轮开始：丢掉上一轮残留的错误（同 ActiveSession.prompt 的 clearErrors）
     this.failure = null;
     try {
       const response = await this.cx.request(acp.methods.agent.session.prompt, {
         sessionId: this.sessionId,
-        prompt: [{ type: "text", text }],
+        prompt:
+          typeof prompt === "string"
+            ? [{ type: "text", text: prompt }]
+            : prompt,
       });
       this.push({ kind: "stop", stopReason: response.stopReason });
     } catch (err) {
@@ -815,13 +964,26 @@ async function connectEntry(
         acp.ndJsonStream(input, output),
         async (ctx: acp.ClientContext) => {
           try {
-            await ctx.request(acp.methods.agent.initialize, {
+            const init = await ctx.request(acp.methods.agent.initialize, {
               protocolVersion: acp.PROTOCOL_VERSION,
               // session.configOptions：声明我们支持会话配置项（模型选择器就挂在它上面）。
               // 协议里「不声明」= 不支持任何配置项扩展，有的 agent 会因此干脆不广告模型清单。
               clientCapabilities: { session: { configOptions: {} } },
               clientInfo: { name: "Fizz Server", version: "0.1.0" },
             });
+            /**
+             * 输入形态能力：**只认 agent 明说支持的那几项**。
+             *
+             * SDK 的 schema 给 `promptCapabilities.image` 带了 `default(false)`，所以
+             * 「没广告」读出来就是 false —— 协议也确实是这个语义（"The Client MUST adapt
+             * its interface according to PromptCapabilities"）。界面据此决定给不给回形针，
+             * 别靠 `backend === 'acp'` 一刀切（见前端的 `acpImagesSupported`）。
+             */
+            entry.promptCapabilities = init.agentCapabilities?.promptCapabilities ?? null;
+            const imageSupport = entry.promptCapabilities?.image;
+            if (typeof imageSupport === "boolean") {
+              imageSupportByAgent.set(entry.agentId, imageSupport);
+            }
             resolveCx(ctx);
           } catch (err) {
             rejectCx(err instanceof Error ? err : new Error(String(err)));
@@ -1725,12 +1887,40 @@ export async function createAcpSession(opts: {
   return { sessionId: session.sessionId, ...snapshotOf(entry) };
 }
 
+/**
+ * 随这一轮一起发的图片（客户端已读成字节）。
+ *
+ * 只支持图片而不是「任意文件」：ACP 里非文本内容有三种块，只有 `image` 是各家
+ * agent 普遍实现的（PDF / 文档要靠 `resource` + `embeddedContext`，得 agent 明说支持，
+ * 见 `PromptCapabilities`）。其余类型让 agent 用工作区里的文件工具自己读。
+ */
+export interface AcpPromptAttachment {
+  /** MIME（`image/png` / `image/jpeg` …） */
+  mediaType: string;
+  /** 原始字节；base64 在本包内编，调用方不用碰协议细节 */
+  data: Uint8Array;
+  /** 原始文件名（只进日志 / 说明，协议里不强制） */
+  name?: string;
+}
+
 export interface RunAcpAgentOptions {
   workspace: AgentWorkspace;
   history: AgentChatMessage[];
   agent: AcpAgentConfig;
   conversationId: string;
   requestId: string;
+  /**
+   * 本轮附带的图片（用户随消息发的）。缺省 = 纯文本，行为与之前逐字节一致。
+   *
+   * 是否允许发由调用方按 `getAcpImageSupport(agent.id)` 判：这里**不拦** ——
+   * 传进来就发，agent 若不收会自己报错，错误照常走事件流上去。
+   */
+  attachments?: AcpPromptAttachment[];
+  /**
+   * 附件说明（例如「某张图超过上限未发送」）：作为**最前面的文本块**发给 agent，
+   * 让它知道自己少看到了什么，而不是静默少一张图。
+   */
+  attachmentNote?: string;
   /** 审批超时（毫秒）；0 = 不超时。缺省 10 分钟 */
   confirmTimeoutMs?: number;
   /** 会话记住的模型（agent 广告的 configOptions 里的一项值）；空 = 用它的默认 */
@@ -1803,6 +1993,7 @@ function getOrCreateEntry(opts: {
     modeOptionSelector: null,
     closeConnection: null,
     loadedSource: null,
+    promptCapabilities: null,
     chain: Promise.resolve(),
     turn: null,
   };
@@ -1847,7 +2038,10 @@ export async function runAcpAgent(
     workspacePath: opts.workspace.path,
   });
   const text = lastUserText(opts.history);
-  if (!text) {
+  const prompt = buildPromptBlocks(opts, text);
+  // ⚠️ 判「空」要连图片一起算：只发一张截图、不写字的场景是合法的（内置会话早支持，
+  // 这里只认 text 会把它拦成「没有要发送的内容」）。
+  if (prompt.length === 0) {
     emit({ type: "error", message: "没有要发送的内容" });
     emit({ type: "finish", finishReason: "error" });
     return { finishReason: "error", error: "没有要发送的内容" };
@@ -1968,7 +2162,7 @@ export async function runAcpAgent(
        * 而 `session/load` 那条手写通道靠 `LoadedTurnSource.fail`（prompt 的 catch 里调）。
        * 少了它，下面那句 `await ... nextUpdate()` 会永远挂着 —— 界面一直「思考中」。
        */
-      void source.prompt(text).catch(() => undefined);
+      void source.prompt(prompt).catch(() => undefined);
       for (;;) {
         if (opts.signal?.aborted) break;
         const message = await Promise.race([source.nextUpdate(), abortGate]);
@@ -2042,7 +2236,14 @@ function appendDeltaPart(
   for (let index = next.length - 1; index >= 0; index -= 1) {
     const part = next[index];
     if (!part) continue;
-    if (part.type === "tool-call" || part.type === "tool-result") break;
+    // file 也是位置性内容：跨过它合并把后文塞进前面的段落，图片位置会整体前移
+    if (
+      part.type === "tool-call" ||
+      part.type === "tool-result" ||
+      part.type === "file"
+    ) {
+      break;
+    }
     if (part.type !== type) continue;
     next[index] = { type, text: part.text + delta };
     return next;
@@ -2105,6 +2306,18 @@ function foldReplayPart(
         ...(event.acpKind ? { acpKind: event.acpKind } : {}),
         ...(event.acpContent ? { acpContent: event.acpContent } : {}),
         ...(event.title ? { title: event.title } : {}),
+      },
+    ];
+  }
+  // agent 回传的图片（见 `acpImageEvent`）：整块追加，不参与文本合并
+  if (event.type === "file-part") {
+    return [
+      ...parts,
+      {
+        type: "file",
+        name: event.name,
+        mediaType: event.mediaType,
+        url: event.url,
       },
     ];
   }
@@ -2230,22 +2443,49 @@ async function replayAcpSessionOnce(opts: {
     const mid = typeof raw.messageId === "string" ? raw.messageId : null;
     if (raw.sessionUpdate === "user_message_chunk") {
       const content = raw.content as
-        { type?: string; text?: string } | undefined;
-      if (content?.type !== "text" || typeof content.text !== "string")
-        continue;
+        | { type?: string; text?: string; data?: unknown; mimeType?: unknown }
+        | undefined;
+      /**
+       * 用户消息里也认图片：本地那条带 `/api/uploads/...` 的记录会被这份回放**整体替换**，
+       * 只接文本的话，纯图片的那条用户消息直接消失、图文混合的只剩文字。
+       * 折成 `file` 后 URL 是 data URL（回放里拿不到原始上传地址），仅仅用于显示 ——
+       * 编辑重发那条路径会把 data URL 排除掉（`fileRefsOfParts`）。
+       */
+      let part: AgentMessagePart | null = null;
+      if (content?.type === "image") {
+        const image = acpImageEvent(content);
+        if (image?.type === "file-part") {
+          part = {
+            type: "file",
+            name: image.name,
+            mediaType: image.mediaType,
+            url: image.url,
+          };
+        }
+      } else if (content?.type === "text" && typeof content.text === "string") {
+        part = { type: "text", text: content.text };
+      }
+      if (!part) continue;
       const last = messages[messages.length - 1];
       const sameGroup =
         last?.role === "user" &&
         (mid === null ? userMid === null : userMid === mid);
       if (sameGroup) {
-        const part = last.parts[last.parts.length - 1];
-        if (part?.type === "text") part.text += content.text;
-        else last.parts.push({ type: "text", text: content.text });
+        const tail = last.parts[last.parts.length - 1];
+        // 相邻文本合并（历史里别把一句话拆成十几段）；图片整块 push，不参与合并
+        if (part.type === "text" && tail?.type === "text") {
+          last.parts[last.parts.length - 1] = {
+            type: "text",
+            text: tail.text + part.text,
+          };
+        } else {
+          last.parts.push(part);
+        }
       } else {
         messages.push({
           id: `u-replay-${++seq}`,
           role: "user",
-          parts: [{ type: "text", text: content.text }],
+          parts: [part],
           createdAt: now,
         });
         userMid = mid;

@@ -2415,8 +2415,17 @@ export type AcpAgentInput = {
   models?: AcpModelOption[];
 };
 
-/** 列表返回：与配置同形（历史上的 isDefault 已随「默认」概念移除） */
-export type AcpAgentView = AcpAgentConfig;
+/**
+ * 列表返回：与配置同形（历史上的 isDefault 已随「默认」概念移除）+ 一条**运行时探测值**。
+ *
+ * `imageInput`：这个 agent 收不收图片输入（`initialize` 里的
+ * `agentCapabilities.promptCapabilities.image`）。它是**探测出来的、不落盘**，所以三态：
+ * - `true` / `false` = 连过，agent 明确广告过；
+ * - `undefined` = 还没连过（或用旧版本连的），前端的回形针按「乐观显示」处理。
+ */
+export type AcpAgentView = AcpAgentConfig & {
+  imageInput?: boolean;
+};
 
 /**
  * ACP agent 的身份判据：**命令 + 参数**。

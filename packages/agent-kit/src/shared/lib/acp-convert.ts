@@ -46,8 +46,14 @@ function toBuiltinPart(part: AgentMessagePart): AgentMessagePart | null {
     case 'text':
     case 'reasoning':
     case 'tool-result':
-    case 'file':
       return part
+    case 'file':
+      /**
+       * `data:` 的 file part 是 ACP 回放出来的图（用户发的 / agent 回传的，都只剩 base64）。
+       * 内置会话的历史是**落盘**的，搬过去等于把几 MB base64 写进会话 JSON ——
+       * 之后每次读会话都要全量解析，长会话会明显卡。只搬真正的上传文件引用。
+       */
+      return part.url.startsWith('data:') ? null : part
     default:
       // 将来新增的 part 类型：内置侧不认，宁可丢掉也别塞进历史（塞错会静默丢 / 报错）
       return null

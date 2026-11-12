@@ -12,7 +12,6 @@ import { ReasoningEffortSelect } from "@fizz/agent-kit/features/chat/ReasoningEf
 import { QuotePreviewRow } from "@fizz/agent-kit/features/chat/quotes";
 import { usePromptInputController } from "@fizz/agent-kit/shared/ai-elements/prompt-input";
 import {
-  sendableAttachments,
   type ChatAttachment,
 } from "@fizz/agent-kit/shared/lib/attachments";
 import { shouldClearChatDraft } from "@fizz/agent-kit/shared/lib/chat-draft";
@@ -37,11 +36,14 @@ import { AcpThoughtLevelSelect } from "@fizz/agent-kit/features/chat/AcpThoughtL
 import { ContextRing } from "@fizz/agent-kit/features/chat/ContextRing";
 import { EditMessageBar } from "@fizz/agent-kit/features/chat/EditMessageBar";
 import { McpSelect } from "@fizz/agent-kit/features/chat/McpSelect";
-import { PendingSteers } from "@fizz/agent-kit/features/chat/PendingSteers";
 import { QueuedMessages } from "@fizz/agent-kit/features/chat/QueuedMessages";
 import { SteerEditBar } from "@fizz/agent-kit/features/chat/SteerEditBar";
 import { WorkspaceSelect } from "@fizz/agent-kit/features/chat/WorkspaceSelect";
-import { turnIsAcp } from "@fizz/agent-kit/features/chat/session-backend";
+import {
+  attachmentsSupported,
+  turnIsAcp,
+} from "@fizz/agent-kit/features/chat/session-backend";
+import { AskFollowupPanel } from "@fizz/agent-kit/shared/ai-elements/followup-card";
 
 /**
  * 主会话输入区的接线：草稿（`PromptInputProvider`）/ 发送 / 停止 / 两侧 pill。
@@ -64,16 +66,6 @@ export function useMainComposerProps(
      * 写的内容吃掉。`onStarted` 恰好是「会话已建好、消息已落本地」那一刻。
      */
     onSubmit: (text: string, onStarted: () => void) => void | boolean | Promise<boolean>;
-    /**
-     * 插话：跑一轮时发送钮选「插话」后调用（文本已 trim，`files` 是本次要带走的
-     * 可发附件）。不传（初始页）/ ACP 会话 / 编辑态下都不暴露这颗钮的能力 ——
-     * 那时「跑着 + 有内容」仍只给普通发送。`onStarted` 语义同 `onSubmit`。
-     */
-    onSteer?: (
-      text: string,
-      files: UploadFileRef[],
-      onStarted: () => void,
-    ) => void | boolean | Promise<boolean>;
     /** 暴露 textarea 引用（编辑队列消息写回输入框后聚焦用）；不传则内部自建 */
     textareaRef?: RefObject<HTMLTextAreaElement | null>;
     /** 正在编辑重发的那条消息（非空时输入框卡片内显示「编辑消息」条）；初始页没有 */
@@ -133,12 +125,12 @@ export function useMainComposerProps(
   const { streaming, activeWorkspace } = app;
   const isAcp = turnIsAcp(app);
   const running = streaming;
-  const slashContext: SlashCommandContext = { app, running };
   /**
-   * 插话能力：只给 **内置后端的已打开会话** —— steer 依赖服务端把消息注入
-   * 内置 循环，ACP 会话的协议给不了；初始页（还没有会话）也没有「当前这一轮」可插。
+   * 正在等用户回答的提问（`ask_followup_question`）。服务端一次只挂一个；真有多条就
+   * 先答当前这条，答复后下一条自然顶上来。
    */
-  const canSteer = !!app.activeConversationId && !isAcp;
+  const pendingFollowup = Object.values(app.followupRequests)[0] ?? null;
+  const slashContext: SlashCommandContext = { app, running };
   /**
    * 命令分发（submit 路径）：浮层只在「前缀输入阶段」开着，带了参数后 Enter 走的
    * 就是这里 —— 例如 `/{命令} 参数` 若不在这里接住会被当正文发出去。
@@ -209,27 +201,6 @@ export function useMainComposerProps(
       }
       opts.onSubmit(trimmed, () => clearDraftAfterStarted(trimmed));
     },
-    // 插话（发送钮选择器的一项）：只在「已打开会话 + 非 ACP + 非编辑态」时暴露给
-    // Composer，否则发送钮保持普通发送。草稿与附件的读取、清空在这里统一处理，
-    // 调用方（ChatPanelInner）只管把文本 + 附件送进收件箱。
-    ...(canSteer && opts.onSteer && !opts.editing && !opts.editingSteer
-      ? {
-          onSteer: () => {
-            const trimmed = textInput.value.trim();
-            const files = sendableAttachments(opts.attachments ?? []);
-            // 空草稿 + 无附件 + 无引用 = 没有要插的内容；只带附件 / 只带引用都合法
-            if (
-              !trimmed &&
-              files.length === 0 &&
-              (opts.quotes ?? []).length === 0
-            )
-              return;
-            // 手动压缩进行中禁发（与 onSubmit 同一道守卫）
-            if (app.contextCompressing) return;
-            opts.onSteer?.(trimmed, files, () => clearDraftAfterStarted(trimmed));
-          },
-        }
-      : {}),
     onCancel: () => void app.stop(),
     streaming,
     // 没有工作区也能聊（无项目会话）：不再按 `!activeWorkspace` 整体禁用输入框
@@ -259,15 +230,15 @@ export function useMainComposerProps(
     placeholder: activeWorkspace
       ? t("交给 Agent 做点什么…（Enter 发送，Shift+Enter 换行）")
       : t("有什么想问的？…（不指定项目，会话存在服务端）"),
-    // 输入框卡片内（`header`）从上到下三块：编辑条（正在改哪条历史）/ 编辑插话条
-    // （正在改哪条未生效插话）/ 插入中列表 + 待发送队列，都与输入框浑然一体
+    // 输入框卡片内（`header`）从上到下：引用 / 附件预览 / 编辑条（正在改哪条历史）/
+    // 编辑插话条（正在改哪条未生效插话）/ 统一的待发送列表（插话 + 队列），都与输入框浑然一体
     //（各自自带底部分隔线）
     //
     // ⚠️ 这里**刻意不再挂 `DndProvider`**：整个应用的唯一 manager 由 `app-shell`
     // 的根 provider 提供（它传了自定义 `context`，见那里的 `DND_CONTEXT` 注释）。
     // 之前在这里再挂一个，StrictMode 把单例槽清空后它就会**再造一个 HTML5 后端** ——
     // 队列 / 插话列表挂到新后端、标签页落区还挂在旧后端上，表现为「拖拽落区永远不响应」。
-    // 直接用 Fragment 包住即可，队列与插话两张列表照样共用同一个 manager。
+    // 直接用 Fragment 包住即可，插话与队列两组行照样共用同一个 manager。
     header: (
       <>
         {(opts.quotes ?? []).length > 0 && opts.onRemoveQuote ? (
@@ -294,7 +265,7 @@ export function useMainComposerProps(
             onCancel={opts.onCancelEditSteer}
           />
         ) : null}
-        <PendingSteers app={app} onEdit={opts.onEditSteer} />
+        {/* 待发送：队列与「插话中」合并成一张列表（顺序：插话在前，队列在后） */}
         <QueuedMessages
           app={app}
           onEdit={(item) => {
@@ -304,12 +275,14 @@ export function useMainComposerProps(
             opts.onRestoreQueueFiles?.(item.files ?? [], `queue-${item.id}`);
             requestAnimationFrame(() => textareaRef.current?.focus());
           }}
+          onEditSteer={opts.onEditSteer}
         />
       </>
     ),
-    // 输入框卡片上方：工具条（能力开关，常驻）+ confirm 模式待答复的审批
-    //（工具卡默认折叠，折起来就等于没提示，所以审批卡也要放这儿）。
-    // 工具条排在审批卡之上：它常驻、位置固定，审批卡插在它与输入框之间
+    // 输入框卡片上方：工具条（能力开关，常驻）+ 会话自己的后台进程。
+    // ⚠️ 这一整块在 `cover`（审批卡 / 提问卡）出现时**整块让位**（见 `ChatComposer`）：
+    // 等答复期间发不出消息，工具条点不动，后台进程也只是「顺便看一眼」，
+    // 留着只会把「现在必须答」的那张卡往下挤。
     above: (
       <>
         {/* 浏览器 / MCP 开关只在 内置（本地）链路生效：browser_* 工具与提示词里的浏览器
@@ -343,14 +316,31 @@ export function useMainComposerProps(
         {app.activeConversationId && !isAcp && (
           <BackgroundTaskDock app={app} conversationId={app.activeConversationId} />
         )}
-        {app.pendingConfirms.length > 0 && (
-          <ConfirmQueue
-            confirms={app.pendingConfirms}
-            onResolve={app.resolveConfirm}
-          />
-        )}
       </>
     ),
+    /**
+     * 待答复的审批 / 待回答的提问：**顶替输入卡片**（见 `ChatComposer` 的 `cover`）。
+     *
+     * 审批期间 agent 停着等答复，输入框没用；权限卡落在输入框的位置上比摞在它上方醒目，
+     * 选项一多也不会把输入框越顶越高。选项在卡内整宽一行一个（见 `ConfirmCard`）。
+     *
+     * 优先级：审批 > 提问。两者都要求用户先答复，但审批是工具执行前的硬闸；把它排在
+     * 前面，答复完这一项，提问会自动接上来（`followupRequests` 那时还在）。
+     */
+    cover:
+      app.pendingConfirms.length > 0 ? (
+        <ConfirmQueue
+          confirms={app.pendingConfirms}
+          onResolve={app.resolveConfirm}
+        />
+      ) : pendingFollowup ? (
+        <AskFollowupPanel
+          request={pendingFollowup}
+          onResolve={(answer) =>
+            void app.resolveFollowup(pendingFollowup.toolCallId, answer)
+          }
+        />
+      ) : null,
     /*
      * 输入卡片**下方**：工作区选择行（含「未指定工作区」）——**只在空会话时**出现。
      *
@@ -361,10 +351,15 @@ export function useMainComposerProps(
     below: app.activeConversationId ? null : <WorkspaceSelect app={app} />,
     leading: (
       <>
-        {/* 上传附件：内置会话专属（ACP 链路只发纯文本）——排在最左，与 ainav 的回形针一致 */}
-        {!isAcp && opts.onPickFiles && (
+        {/* 上传附件：排在最左，与 ainav 的回形针一致。
+            ⚠️ 闸门是 `attachmentsSupported`（内置 = 恒可；ACP = 看 agent 广告的
+            `promptCapabilities.image`），**不是**「是不是 ACP」——ACP 里图片走
+            `ContentBlock::Image` 同样能发（见 runAcpAgent 的 attachments）。
+            也不是「选没选工作区」：初始页常常还没选项目（「未指定工作区」），而上传
+            本身不要求工作区（内置存储是全局的，插件源按选中那一刻的 workspaceId 走）。 */}
+        {attachmentsSupported(app) && opts.onPickFiles && (
           <AttachmentUploadButton
-            disabled={!activeWorkspace}
+            disabled={!app.api}
             onPick={opts.onPickFiles}
             providers={opts.uploadProviders}
             providerId={opts.uploadProviderId}

@@ -3,9 +3,10 @@
  * 内部助手一律从 ctx 拿，internals 不会反过来依赖它。
  */
 import type { QueuedMessage } from "@fizz/contracts/types";
+import { ApiError } from "@fizz/agent-client/api";
 import { textOf } from "@fizz/agent-kit/shared/lib/parts";
 import { fileRefsOfParts } from "@fizz/agent-kit/shared/lib/attachments";
-import { nextLocalId } from "@fizz/agent-kit/shared/lib/stores/shared";
+import { errorMessage, nextLocalId } from "@fizz/agent-kit/shared/lib/stores/shared";
 import type { ConvInternals } from "../internals/context";
 import type { ConversationSlice } from "../types";
 
@@ -101,29 +102,94 @@ export function createQueueActions(
       next.splice(to, 0, moved);
       patchQueue(conversationId, next);
     },
-    sendQueuedMessage: (id, scope) => {
+    /**
+     * 发送队列里的一条：
+     * - **本轮在跑** → 当插话递给服务端收件箱（下一个工具步骤边界停下当前步骤后注入，
+     *   行上转圈直到生效）；成功后才把它移出队列、转进 `pendingSteers`；
+     * - **本轮没跑** → 直接开新一轮（同以前的「立刻发送」）。失败时把它放回队尾。
+     *
+     * 返 `true` = 已经提交（入了收件箱或开了新一轮）；`false` = 被拦下（没连上 /
+     * 服务端不接受），调用方据此收掉行上的转圈。
+     */
+    sendQueuedMessage: async (id, scope) => {
       const conversationId = resolveConvId(scope);
-      if (!conversationId || get().runningConversations[conversationId]) return;
+      if (!conversationId) return false;
       const queue = readSlice(conversationId).queuedMessages;
       const item = queue.find((m) => m.id === id);
-      if (!item) return;
+      if (!item) return false;
       // 手动拍板要发：失败暂停的标记解除
       writeSlice(conversationId, (s) => ({ ...s, queuePausedReason: null }));
+
+      /**
+       * 跑着 → 插话。**先等投递结果再出队**：这样行上的转圈能一直转到收件箱确认，
+       * 失败时条目原样留在队列里（用户不会看见「点了一下就没了」）。
+       */
+      if (get().runningConversations[conversationId]) {
+        const api = get().getApi();
+        if (!api) return false;
+        try {
+          const { message } = await api.steer(
+            conversationId,
+            item.text,
+            item.files ?? [],
+          );
+          patchQueue(
+            conversationId,
+            readSlice(conversationId).queuedMessages.filter((m) => m.id !== id),
+          );
+          writeSlice(conversationId, (s) => ({
+            ...s,
+            pendingSteers: [...s.pendingSteers, message],
+          }));
+          return true;
+        } catch (err) {
+          // 409：投递到一半这一轮刚好结束。与 `steer` 同款回落，但先看队列泵有没有
+          // 已经顶上别的消息 —— 有就让它继续留在队列里按序发，别再并发开一轮。
+          if (err instanceof ApiError && err.status === 409) {
+            if (get().runningConversations[conversationId]) return true;
+            if (
+              !readSlice(conversationId).queuedMessages.some((m) => m.id === id)
+            )
+              return true;
+            patchQueue(
+              conversationId,
+              readSlice(conversationId).queuedMessages.filter((m) => m.id !== id),
+            );
+            void get()
+              .runRound(item.text, item.files, undefined, conversationId)
+              .then((started) => {
+                if (!started) {
+                  patchQueue(conversationId, [
+                    ...readSlice(conversationId).queuedMessages,
+                    item,
+                  ]);
+                }
+              });
+            return true;
+          }
+          get().setError(errorMessage(err));
+          return false;
+        }
+      }
+
+      // 没在跑：立刻开新一轮（先出队，失败再放回队尾）
       patchQueue(
         conversationId,
         queue.filter((m) => m.id !== id),
       );
-      void get()
-        .runRound(item.text, item.files, undefined, conversationId)
-        .then((started) => {
-          // 没能开跑（没选模型 / 没连上…）：这条不能就这么没了 —— 放回队列末尾
-          if (!started) {
-            patchQueue(conversationId, [
-              ...readSlice(conversationId).queuedMessages,
-              item,
-            ]);
-          }
-        });
+      const started = await get().runRound(
+        item.text,
+        item.files,
+        undefined,
+        conversationId,
+      );
+      if (!started) {
+        patchQueue(conversationId, [
+          ...readSlice(conversationId).queuedMessages,
+          item,
+        ]);
+      }
+      return started;
     },
     /**
      * 立刻发送一条还没发出去的插话（行的 ➤）：与 `sendQueuedMessage` 同款 ——

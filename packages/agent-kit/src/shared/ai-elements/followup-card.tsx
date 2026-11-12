@@ -2,26 +2,30 @@
  * `ask_followup_question` 工具在对话流里的卡片（web 版，样式与桌面端同构）。
  *
  * 三种状态：
- * - **待回答**：一张真卡片 —— 标题（可选）+ 题目 + 底部「提交 / 跳过」；
- *   非「是/否」型题目在选项末尾追加一项「其他」，选中后展开输入框，允许用户不选预设项
- *   而是自己写内容（答案经 `other` 字段回传给模型）。这一项**恒由界面追加**：模型自己写的
- *   「其他」「其他（请说明）」在归一化时就被剔除了（理由见 `ask-followup.ts` 的
- *   `NormalizedQuestion.otherRequested`）。
+ * - **待回答**：一张真卡片 —— 标题（可选）+ 带题号徽标的题干 + **带序号的选择行**
+ *   + 底部「‹ ● ● ● › 提交 / 跳过」（见 `FollowupForm` 文件头）；
+ *   非「是/否」型题目在选项末尾追加一行「其他补充…」（铅笔图标），点开就地变成输入框，
+ *   允许用户不选预设项而是自己写内容（答案经 `other` 字段回传给模型）。这一项**恒由界面
+ *   追加**：模型自己写的「其他」「其他（请说明）」在归一化时就被剔除了（理由见
+ *   `ask-followup.ts` 的 `NormalizedQuestion.otherRequested`）。
  *   **多题时一题一屏、底部左右切换**（不再把题目竖着摞成一条长卡，见 `FollowupForm` 文件头）；
+ *   ⚠️ **正常待答时这张表单渲染在输入框槽位**（`ChatComposer` 的 cover，见 `AskFollowupPanel`），
+ *   消息流里的 part 只留一条指引 —— 下面这三态描述的是 `AskFollowupCard` 自身；
  * - **已回答**：收成一条**与工具调用卡同构**的折叠条（图标 / 标题 / 状态徽章 / 箭头），
  *   看每题选了什么，不给对话流留大卡片；
  * - **退回兜底**：出错 / 已中止 / 入参解析不出题 → 普通一行说明。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  ArrowRight,
+  Check,
   ChevronLeft,
   ChevronRight,
-  Circle,
   CircleCheck,
   CircleQuestionMark,
   CircleSlash,
-  Square,
-  SquareCheck,
+  Pencil,
+  X,
   XCircle
 } from 'lucide-react'
 import { Badge } from '@fizz/ui/badge'
@@ -44,7 +48,7 @@ import {
   markFollowupResumed,
   type NormalizedQuestion
 } from '@fizz/agent-kit/shared/lib/ask-followup'
-import type { AskFollowupAnswer } from '@fizz/contracts/types'
+import type { AskFollowupAnswer, AskFollowupRequest } from '@fizz/contracts/types'
 
 export function AskFollowupCard({
   toolCallId,
@@ -135,7 +139,23 @@ import { useT } from '@fizz/agent-kit/shared/lib/language'
 /**
  * 待回答的表单。
  *
- * ## 多题 = **一题一屏 + 左右切换**（不再把题目竖着摞成一条长卡）
+ * ## 选项行 = **序号 + 正文**（不是一串纯文字，也不是勾选框）
+ *
+ * 一行一条：左侧一颗白色序号章（1 / 2 / 3…），右侧在被选中时出现一个 `→`（多选时是勾）。
+ * 序号是**局部的第几个选项**，不是模型的题号；行与行之间**不留缝**（`gap-0`）、也不画分隔线 ——
+ * 行高本身就是分组，多一道缝只会把少数几个选项拉成一长条。
+ * 这样「有几个选项、选了第几个」一眼可见 —— 纯文字列表的选中态只靠一层近乎无感的底色，
+ * 用户经常不知道自己点中了没有；而方形 / 圆形勾选框太抢戏，还把选项挤成「表单」。
+ *
+ * ⚠️ 勾选框去掉之后，**多选必须显式标出**（题干行那个「多选」小标），否则用户不知道能选多个。
+ *
+ * 「其他补充…」**单独一行**（铅笔图标代替序号）而不是混进序号序列：
+ * 它不是模型给的第 5 个选项，而是「以上都不合适」的出口。点开这一行就地变成输入框
+ * （同一个位置、同一行高），不再在列表下方多长出一块。
+ * **这一行常态没有底色**，只在 hover 时浮一点；底色跟着输入框的焦点走（`focus-within:`）——
+ * 底色的含义是「已选中 / 正在输入」，给一条还没被选中的出口项常驻灰底会被误读成「选上了」。
+ *
+ * ## 多题 = **一题一屏 + 底部左右切换**（不再把题目竖着摞成一条长卡）
  *
  * 模型一次问 3~5 道题时，竖排会把卡片拉成一长条：对话流被这一张卡占满，后面的消息全被
  * 推到屏幕外；而且看到第 3 题时，用户根本不知道「一共几题、还差几题、提交要满足什么」。
@@ -150,21 +170,15 @@ import { useT } from '@fizz/agent-kit/shared/lib/language'
  * 若只剩当前这题没答就顺移一题，保证点了有反馈），全部答完才变回「提交」。
  * 单题没有这个状态，仍是「没答 = 禁用提交」。
  *
- * ⚠️ 多题时卡片**宽度钉成固定值**（`w-[min(100%,26rem)]`），高度只给**下限**
- * （`min-h-[18rem]`）：卡片原本宽是 `w-fit`、高随内容 —— 一题一屏之后宽度跟着当前题的
- * 长短变，翻页时卡片左右来回跳，所以宽度钉死；高度留一个下限让短题不至于把导航条顶到
- * 卡片中间，**超过下限就跟着内容长**。
- *
- * ⚠️ **选项区不滚动**（原来的 `overflow-y-auto` + 固定 `h-[18rem]` 已撤）：带滚动条时
- * 最后一两个选项只露半行，而选项正是这张卡的全部内容 —— 用户要的是「一眼看全、直接点」，
- * 不是「先滚一下」。选项再多也让卡片长高，高过一屏时由**消息区**自己滚（卡片在正常文档流
- * 里，不会撑破布局）。单题那个 `max-h-[18rem]` 同理，一并去掉。
+ * ⚠️ **卡片高度有上限**（`max-h-[min(70vh,36rem)]`）：选项多到超过上限时，**只有选项区
+ * 内部滚动**（标题、题干与底部按钮固定不动）。放进输入框槽位时，卡片不会一路长高把消息区
+ * 挤没；消息流里的补答卡同样受这个上限约束。
  * （用 `grow` 而非 `flex-1`：`flex-basis: auto` 才能让「高度 auto + min-height」的容器
  * 正确按内容做内在尺寸计算，`flex-1` 的 `0%` 基准在嵌套 flex 里容易把中间层压成 0 高。）
  *
- * ⚠️ 「其他」那个自由输入框的焦点：**只有刚勾上「其他」的那一刻才聚焦**。原来靠 `autoFocus`，
- * 但输入框现在是随当前题挂载 / 卸载的，翻页回到这一题会再抢一次焦点（用户正在点 `‹ ›`
- * 翻页，焦点却被拽进输入框，接着按 ← → 就变成在输入框里移光标而不是翻页）。
+ * ⚠️ 「其他」那个自由输入框的焦点：**只有刚点开「其他补充…」的那一刻才聚焦**。原来靠
+ * `autoFocus`，但输入框是随当前题挂载 / 卸载的，翻页回到这一题会再抢一次焦点（用户正在点
+ * `‹ ›` 翻页，焦点却被拽进输入框，接着按 ← → 就变成在输入框里移光标而不是翻页）。
  * 所以改用「待聚焦的题 id」记一次、在 effect 里消费掉。
  *
  * 键盘：卡片内按 ← / → 翻页（焦点在输入框里时让位给光标移动）。
@@ -173,12 +187,15 @@ function FollowupForm({
   title,
   questions,
   note,
+  fill,
   onResolve
 }: {
   title: string
   questions: NormalizedQuestion[]
   /** 卡片顶部的一句提示（补答时说明「答案会作为新消息发出」）；不传就不占位置 */
   note?: string
+  /** 撑满容器宽度（放进输入框槽位时用；消息流里的卡片仍是内容宽） */
+  fill?: boolean
   onResolve: (answer: AskFollowupAnswer | null) => void
 }) {
   const tr = useT()
@@ -263,7 +280,10 @@ function FollowupForm({
     onResolve({
       answers: questions.map((q) => {
         const sel = selected[q.id] ?? []
-        const other = (otherText[q.id] ?? '').trim()
+        // 「其他」被取消（点了输入框右边那颗 ✕）就**不带**这段文字：
+        // 输入框里的内容还留在 state 里（用户可能只是想换回预设项），
+        // 但只要哨兵不在 `selected` 里，它就不是这次作答的一部分。
+        const other = sel.includes(OTHER_LABEL) ? (otherText[q.id] ?? '').trim() : ''
         return {
           id: q.id,
           question: q.question,
@@ -276,20 +296,21 @@ function FollowupForm({
   }
 
   // 是/否题不加「其他」（模型明确要过则是/否题除外，判据在 needsOtherOption 里）；
-  // 模型自己写的「其他」类项已经在归一化时剔除，所以这里加上去的那一个恒是唯一的哨兵，
-  // `otherSelected` 也就只可能对应它
-  const shownOptions = needsOtherOption(current)
-    ? [...current.options, { label: OTHER_LABEL, description: tr('自己输入') }]
-    : current.options
+  // 模型自己写的「其他」类项已经在归一化时剔除，所以这里那一个恒是唯一的哨兵，
+  // `otherSelected` 也就只可能对应它。
+  // 它**不进 `current.options`**：序号行是「模型给的选项」，自由输入是另一类出口，
+  // 混在一起会让「第 5 个选项」这个位置看着像模型也给了它。
+  const wantOther = needsOtherOption(current)
   const otherSelected = (selected[current.id] ?? []).includes(OTHER_LABEL)
 
   return (
     <div
       className={cn(
-        'flex flex-col rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5',
-        // 多题：宽度钉死（翻页时卡片左右不跳），高度只给下限 —— 选项多了跟着长，
-        // 不再固定 18rem + 内部滚动（见文件头「选项区不滚动」）
-        multiple ? 'min-h-[18rem] w-[min(100%,26rem)]' : 'w-fit max-w-full'
+        'flex max-h-[min(70vh,36rem)] flex-col rounded-xl border border-border bg-card/70 py-2.5',
+        // 多题：高度只给下限 —— 选项多了跟着长，但整体高度有上限（见下）
+        multiple && 'min-h-[18rem]',
+        // 宽度：输入框槽位里撑满；消息流里多题钉死（翻页不左右跳）、单题随内容
+        fill ? 'w-full max-w-full' : multiple ? 'w-[min(100%,26rem)]' : 'w-fit max-w-full'
       )}
       onKeyDown={(e) => {
         if (!multiple) return
@@ -311,7 +332,7 @@ function FollowupForm({
           描述**换行不截断**（`break-words`）：它就是用户要读的那句话，截掉半截没法看。
           只有多题（`multiple`）才显示计数。 */}
       {(title || multiple) && (
-        <div className="mb-2 flex shrink-0 items-start gap-2">
+        <div className="mb-2 flex shrink-0 items-start gap-2 px-3">
           {title && (
             <p className="min-w-0 grow break-words text-sm font-medium text-foreground">{title}</p>
           )}
@@ -325,11 +346,11 @@ function FollowupForm({
 
       {/* 补答提示（只有「这一轮已经结束」时才有）：说清按下去会发生什么，
           不然用户会以为还在给原来那一轮作答 */}
-      {note && <p className="mb-2 shrink-0 text-xs text-muted-foreground">{note}</p>}
+      {note && <p className="mb-2 shrink-0 px-3 text-xs text-muted-foreground">{note}</p>}
 
       {/* 当前这一题。`key` 跟着题走 —— 换题 = 重挂载，滑入动画才会重放。
-          题面（题号徽标 + 题干）与选项区都**不设高度上限**：选项全量铺开、不滚，
-          内容高过一屏时由消息区滚（见文件头「选项区不滚动」）。 */}
+          题面固定、**选项区自身滚动**：整卡有 `max-h`，选项再多也不会把标题与底部按钮撑走
+          （见文件头「卡片高度有上限」）。 */}
       <div
         key={current.id}
         className={cn(
@@ -338,25 +359,28 @@ function FollowupForm({
           multiple && (dir === 'next' ? 'slide-in-from-right-2' : 'slide-in-from-left-2')
         )}
       >
-        <div className="flex shrink-0 items-start gap-1.5">
+        <div className="flex shrink-0 items-start gap-1.5 px-3">
           <span className="mt-0.5 shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">
             {current.header}
           </span>
+          {/* 多选提示：选项行不再有方形 / 圆形图标，必须显式标出来，否则用户不知道能选多个 */}
+          {current.multiSelect && (
+            <span className="mt-0.5 shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+              {tr('多选')}
+            </span>
+          )}
           {/* 题干**换行不截断**：这是用户真正要读的内容，截断等于把问题吃掉一半 */}
           <span className="min-w-0 grow break-words text-sm text-foreground">{current.question}</span>
         </div>
-        <div className="flex grow flex-col gap-0.5 pl-0.5">
-          {shownOptions.map((opt, i) => {
+        {/* `px-1` + 行内 `px-2` = 与题面那一行的 `px-3` 同一条左边界 */}
+        <div className="flex min-h-0 grow flex-col overflow-y-auto overscroll-contain overflow-x-hidden px-1">
+          {current.options.map((opt, i) => {
             const checked = (selected[current.id] ?? []).includes(opt.label)
-            const Icon = current.multiSelect
-              ? checked
-                ? SquareCheck
-                : Square
-              : checked
-                ? CircleCheck
-                : Circle
             return (
               /*
+               * 一行 = 序号 + 正文 +（选中时的）箭头。序号是**局部的第几个选项**，不是模型的题号；
+               * `aria-pressed` 才是给读屏的真实选中态。
+               *
                * key 里带上序号：label 在归一化时已经去过重（见 `normalizeFollowup`），
                * 这里再兜一层 —— 万一还有别处的数据绕过了归一化，也只是渲染顺序稳定，
                * 不会让 React 报「two children with the same key」。
@@ -364,39 +388,77 @@ function FollowupForm({
               <button
                 key={`${opt.label}-${i}`}
                 type="button"
+                aria-pressed={checked}
                 onClick={() => toggle(current, opt.label)}
                 className={cn(
-                  'flex w-full items-start gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors',
-                  checked ? 'bg-primary/10 text-foreground' : 'text-foreground/80 hover:bg-foreground/10'
+                  'flex w-full shrink-0 items-center gap-2.5 rounded-lg px-2 py-2 text-left text-sm transition-colors',
+                  checked ? 'bg-foreground/[0.07] text-foreground' : 'text-foreground hover:bg-foreground/5'
                 )}
               >
-                <Icon
-                  className={cn('mt-0.5 size-4 shrink-0', checked ? 'text-primary' : 'text-muted-foreground')}
-                />
-                <span className="min-w-0">
-                  <span className="block break-words">{opt.label === OTHER_LABEL ? tr(OTHER_LABEL) : opt.label}</span>
+                <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-background text-xs font-medium text-muted-foreground">
+                  {i + 1}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block break-words">{opt.label}</span>
                   {opt.description && (
-                    <span className="block text-xs text-muted-foreground">{opt.description}</span>
+                    <span className="mt-0.5 block text-xs text-muted-foreground">{opt.description}</span>
                   )}
                 </span>
+                {/* 选中标记：单选给「继续 →」的暗示，多选给勾（箭头会被读成「跳转」） */}
+                {checked &&
+                  (current.multiSelect ? (
+                    <Check className="size-4 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <ArrowRight className="size-4 shrink-0 text-muted-foreground" />
+                  ))}
               </button>
             )
           })}
-          {/* 选中「其他」后展开自由输入：单选时它就是唯一答案，多选时可与预设项并存 */}
-          {otherSelected && (
-            <Input
-              ref={otherInputRef}
-              value={otherText[current.id] ?? ''}
-              onChange={(e) => setOtherText((prev) => ({ ...prev, [current.id]: e.target.value }))}
-              placeholder={tr('补充你的回答…')}
-              aria-label={tr('其他（自由输入）')}
-              className="mt-1 h-8 text-[0.8125rem]"
-            />
-          )}
+          {/* 「其他补充…」：自由输入的出口，**单独一行**（铅笔代替序号），不混进序号序列 ——
+              它不是模型给的第 5 个选项，而是「以上都不合适」的出口。
+              常态没有底色（与上面的选项行一样透明，只在 hover 时浮一点底）：底色的含义是
+              「已选中 / 正在输入」，给一条还没被选中的出口项常驻灰底会被误读成「已经选上了」。
+              点开后就地变成输入框（同一位置、同一行高），底色跟着输入框的焦点走。 */}
+          {wantOther &&
+            (otherSelected ? (
+              <div className="flex shrink-0 items-center gap-2.5 rounded-lg px-2 py-1 transition-colors focus-within:bg-foreground/10">
+                <span className="flex size-6 shrink-0 items-center justify-center text-muted-foreground">
+                  <Pencil className="size-3.5" />
+                </span>
+                <Input
+                  ref={otherInputRef}
+                  value={otherText[current.id] ?? ''}
+                  onChange={(e) => setOtherText((prev) => ({ ...prev, [current.id]: e.target.value }))}
+                  placeholder={tr('其他补充…')}
+                  aria-label={tr('其他（自由输入）')}
+                  className="h-8 min-w-0 flex-1 rounded-none border-0 bg-transparent px-0 text-sm shadow-none dark:bg-transparent"
+                />
+                <button
+                  type="button"
+                  aria-label={tr('取消')}
+                  title={tr('取消')}
+                  onClick={() => toggle(current, OTHER_LABEL)}
+                  className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+                >
+                  <X className="size-3.5" />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => toggle(current, OTHER_LABEL)}
+                className="flex w-full shrink-0 items-center gap-2.5 rounded-lg px-2 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+              >
+                <span className="flex size-6 shrink-0 items-center justify-center">
+                  <Pencil className="size-3.5" />
+                </span>
+                <span className="min-w-0 flex-1">{tr('其他补充…')}</span>
+              </button>
+            ))}
         </div>
       </div>
 
-      <div className="mt-2.5 flex shrink-0 items-center gap-2">
+      <div className="mt-2.5 flex shrink-0 items-center gap-2 px-3">
         {multiple && (
           <div className="flex shrink-0 items-center gap-1">
             <Button
@@ -469,6 +531,36 @@ function FollowupForm({
         </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * 输入框槽位里的提问表单：与消息流里的 `AskFollowupCard` 是**同一个表单**，
+ * 只是由 `ChatComposer` 的 `cover` 槽位顶替输入卡片渲染（用户要求把待回答的提问
+ * 放到输入框那里）。宽度撑满，其余交互（一题一屏、提交 / 跳过）完全一致。
+ *
+ * 数据来自 store 的 `followupRequests`（服务端推来的活跃请求），不走消息 part。
+ */
+export function AskFollowupPanel({
+  request,
+  onResolve
+}: {
+  request: AskFollowupRequest
+  onResolve: (answer: AskFollowupAnswer | null) => void
+}) {
+  // 活跃请求的题已是 `FollowupQuestion` 形态（与 NormalizedQuestion 同构，只缺
+  // `otherRequested`）。补成 false：是/否题是否额外给「其他」由 `needsOtherOption` 判。
+  const questions: NormalizedQuestion[] = request.questions.map((q) => ({
+    ...q,
+    otherRequested: false
+  }))
+  return (
+    <FollowupForm
+      title={request.title ?? ''}
+      questions={questions}
+      fill
+      onResolve={onResolve}
+    />
   )
 }
 

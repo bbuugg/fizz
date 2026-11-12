@@ -6,8 +6,8 @@
  * 忘一处就漂。这里把**真正共用的那部分**收成一个组件：
  * - 外壳：圆角卡片 + 恒定描边 + 无边框 textarea（Enter 发送 / Shift+Enter 换行）；
  * - 发送 / 停止圆钮：**同一个位置只放一颗钮**。没在跑 = 发送（空草稿时禁用占位）；
- *   跑着 + 空草稿 = 停止；跑着 + 有草稿 = 发送 / 发送方式选择器（队列消息 / 插话，
- *   仅调用方传了 `onSteer` 时）。停止快捷键仍是 Esc。
+ *   跑着 + 空草稿 = 停止；跑着 + 有草稿 = 发送（入队，本轮结束后按序自动发）。
+ *   停止快捷键仍是 Esc。
  * - 操作行布局：左 `leading`、右 `trailing`，发送 / 停止钮永远在最右。
  *
  * **刻意不共用**的是两侧 pill 里的东西：主会话那边是「工作区 / 后端模型（二级菜单）」，
@@ -24,19 +24,11 @@ import type { SlashCommand, SlashCommandContext } from '@fizz/agent-kit/shared/l
 import { filterCommands, parseSlashInput } from '@fizz/agent-kit/shared/lib/slash-commands'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { useVoiceSilenceTimeout } from '@fizz/agent-kit/shared/lib/voice-prefs'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger
-} from '@fizz/ui/dropdown-menu'
 import { Popover, PopoverAnchor, PopoverContent } from '@fizz/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@fizz/ui/select'
 import type { AiPermissionMode } from '@fizz/contracts/types'
 import {
   AtSign,
-  ChevronDown,
-  Clock,
   Eye,
   ImagePlus,
   Loader2,
@@ -45,8 +37,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Square,
-  Terminal,
-  Zap
+  Terminal
 } from 'lucide-react'
 import type { DragEvent as ReactDragEvent, ReactNode, RefObject } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -99,16 +90,8 @@ export const CHAT_ICON_PILL =
 interface ComposerProps {
   value: string
   onChange: (value: string) => void
-  /** 发送（Enter 或点发送钮） */
+  /** 发送（Enter 或点发送钮）；本轮在跑时进待发送队列 */
   onSubmit: () => void
-  /**
-   * 插话：把草稿插进**正在跑的这一轮**，在下一个工具步骤边界生效（不算新一轮）。
-   *
-   * 不传 = 没有这个能力（初始页 / ACP 会话 / 容器工作台）—— 此时「跑着 + 有字」仍只给
-   * 普通发送钮（主会话会入队）。传了才会把「跑着 + 有字」的发送钮换成
-   * 「队列消息 / 插话」选择器（见 `sendChooser`）。
-   */
-  onSteer?: () => void
   /** 停止（点停止钮，或输入框里按 Esc） */
   onCancel: () => void
   streaming: boolean
@@ -195,7 +178,6 @@ export function Composer({
   value,
   onChange,
   onSubmit,
-  onSteer,
   onCancel,
   streaming,
   disabled,
@@ -366,11 +348,7 @@ export function Composer({
    * 按钮只表达**点了会发生什么**，所以按「此刻能做的事」挑：
    * - 没在跑 → 发送（空草稿时禁用占位）；
    * - 跑着 + 空草稿 → 停止；
-   * - 跑着 + 有草稿 → 发送：
-   *   - 支持插话（传了 `onSteer`）→ **发送方式选择器**：队列消息（本轮结束后按序自动发）
-   *     还是插话（插进当前这一轮，下个工具步骤边界生效）；
-   *   - 不支持插话 → 普通发送（主会话 `send` 会在跑时入队、本轮结束由泵自动发走，
-   *     所以「正在跑」从来不是不能发的理由）。
+   * - 跑着 + 有草稿 → 发送（入队，本轮结束后由泵按序自动发）。
    *
    * 同一位置只保留一颗钮（用户明确要求）。有草稿时若想中止本轮，清空草稿或按 Esc。
    */
@@ -380,20 +358,18 @@ export function Composer({
    * 附件本身就是有效内容，只发附件不打字是允许的）。
    *
    * 这两颗钮只表达「此刻能做什么」，所以判据必须是**内容**而不是「文字」：
-   * 只认文字的话，「流式中 + 只有附件」会掉到停止钮那支上 —— 内容备好了却发不出去，
-   * 插话（sendChooser）同样出不来。
+   * 只认文字的话，「流式中 + 只有附件」会掉到停止钮那支上 —— 内容备好了却发不出去。
    */
   const hasContent = hasDraft || !!allowEmptySend
   /**
    * 提交后到开跑前的空窗（`sending`）：这个位置换成一个转圈的假按钮。
    *
-   * 只抢**发送钮**这个位置，不动停止钮 / 入队选择器 —— 空窗里 `streaming` 还是 false，
+   * 只抢**发送钮**这个位置，不动停止钮 / 入队 —— 空窗里 `streaming` 还是 false，
    * 那两支本来就出不来。`sending` 期间草稿**仍在输入框里**（建 ACP 会话失败时要还给
    * 用户，见 ChatPanel 的 `onStarted`），`hasContent` 仍为真，所以必须显式参与分支判断，
    * 否则会掉到「发送钮」那一支，点了就是重复提交。
    */
   const showSending = !!sending
-  const sendChooser = !showSending && streaming && hasContent && !!onSteer
   const showSend = !showSending && (hasContent || !streaming)
   /** 停止钮只在没有草稿时占这个位置；有草稿时让给发送，见上面那段 */
   const showStop = !showSending && streaming && !hasContent
@@ -684,50 +660,6 @@ export function Composer({
                     <Loader2 className="size-4 animate-spin" />
                   </button>
                 </IconTip>
-              ) : sendChooser ? (
-                /*
-                  发送方式选择器（跑着 + 有字 + 支持插话）：点开发送钮选「队列消息」还是「插话」。
-                  两种去向都有现成落点 —— 队列 → onSubmit（主会话 send 会入队，进「待发送」列表）；
-                  插话 → onSteer（进「插入中」列表，下个工具步骤边界生效）。
-                  图标加一个小箭头，明示这颗钮是「先选再发」而不是直接发。
-                */
-                <DropdownMenu>
-                  <IconTip
-                    label={
-                      sendDisabled ? (sendDisabledHint ?? tr('上下文压缩中，稍后再发')) : tr('选择发送方式：队列消息 / 插话')
-                    }
-                  >
-                    <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
-                        aria-label={tr('选择发送方式：队列消息或插话')}
-                        disabled={disabled || sendDisabled || !hasContent}
-                        className="flex h-8 shrink-0 items-center gap-1 rounded-full bg-primary px-2.5 text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        <Send className="size-4" />
-                        <ChevronDown className="size-3 opacity-80" />
-                      </button>
-                    </DropdownMenuTrigger>
-                  </IconTip>
-                  <DropdownMenuContent side="top" align="end" sideOffset={6} className="min-w-64">
-                    <DropdownMenuItem onSelect={onSubmit}>
-                      <Clock className="size-3.5" />
-                      <span className="flex min-w-0 flex-col gap-0.5">
-                        <span>{tr('队列消息')}</span>
-                        <span className="text-xs text-muted-foreground">{tr('本轮结束后按顺序自动发送')}</span>
-                      </span>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onSelect={() => onSteer?.()}>
-                      <Zap className="size-3.5" />
-                      <span className="flex min-w-0 flex-col gap-0.5">
-                        <span>{tr('插话')}</span>
-                        <span className="text-xs text-muted-foreground">
-                          {tr('插入当前轮，下一个工具步骤边界生效')}
-                        </span>
-                      </span>
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
               ) : showSend ? (
                 // 发送：主色圆钮，空草稿禁用（空草稿 + 跑着时这个位置是停止钮，见 showStop）；
                 // sendDisabled（压缩进行中）只灰发送钮，不影响打字

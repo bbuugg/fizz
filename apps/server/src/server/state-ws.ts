@@ -45,6 +45,7 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import type { GitStatus } from '@fizz/git'
 import type { ServerEvent } from '@fizz/contracts/types'
 import { listServerSkills } from './skill-roots'
+import { acpAgentViews } from './acp-agent-views'
 import { domain, eventBus, markDirty, stateBus, triggerDomain } from './state'
 import { rejectSocket } from './lib/ws'
 import { verifyWsToken } from './auth'
@@ -99,7 +100,8 @@ type GlobalKey = (typeof GLOBAL_KEYS)[number]
 const GLOBAL_PROVIDERS: Record<GlobalKey, () => Promise<unknown>> = {
   health: buildHealth,
   models: async () => domain.listModels(),
-  acpAgents: async () => domain.listAcpAgents(),
+  // 与 GET /api/acp/agents 同源：出口处补运行时探测的 `imageInput`（前端回形针闸门靠它）
+  acpAgents: async () => acpAgentViews(domain.listAcpAgents()),
   mcpServers: async () => domain.listMcpServers(),
   sshHosts: async () => domain.listSshHosts(),
   /**
@@ -163,7 +165,7 @@ async function buildHealth(): Promise<{
   const skills = await listServerSkills(workspaces[0]?.path)
   return {
     name: 'fizz-server',
-    version: '0.0.24',
+    version: '0.0.25',
     hasModels: models.length > 0,
     workspaceCount: workspaces.length,
     conversationCount: conversations.length,

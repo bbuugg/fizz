@@ -596,7 +596,14 @@ export interface ConversationSlice {
   ) => void;
   /** ↑↓ 按钮微调：`id` 这一条在队列里相对挪 `delta` 位（-1 = 更早发出） */
   moveQueuedMessageBy: (id: string, delta: number, scope?: string | null) => void;
-  sendQueuedMessage: (id: string, scope?: string | null) => void;
+  /**
+   * 发送队列里的一条（行上的 ➤）：**本轮在跑 = 插话**（递服务端收件箱，下一个工具
+   * 步骤边界停下当前步骤后生效，成功后才移出队列）；没在跑 = 直接开新一轮。
+   *
+   * 返 `true` = 已提交（入了收件箱或开了新一轮）；`false` = 被拦下（没连上 / 服务端
+   * 不接受），条目留在队列里，行上的转圈随之收掉。
+   */
+  sendQueuedMessage: (id: string, scope?: string | null) => Promise<boolean>;
   /** 清空待发送队列（含解除失败暂停标记） */
   clearQueuedMessages: (scope?: string | null) => void;
   /**

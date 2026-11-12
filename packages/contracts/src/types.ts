@@ -1528,7 +1528,9 @@ export function appendPartDelta(
   for (let index = parts.length - 1; index >= 0; index -= 1) {
     const part = parts[index]
     if (!part) continue
-    if (part.type === 'tool-call' || part.type === 'tool-result') break
+    // file 也是「位置性」内容：跨过它把后文并进它前面那段，图片在时间线上的位置
+    // 就整体往前挪了（表现为「先说完话，图又跑到开头」）。遇到就收手，另起一段。
+    if (part.type === 'tool-call' || part.type === 'tool-result' || part.type === 'file') break
     // 错误块不接增量（见上面注释）；判据与渲染端的 `isErrorText` 同一口径
     if (part.type === 'text' && part.text.trimStart().startsWith(ERROR_TEXT_PREFIX)) break
     if (part.type !== type) continue
@@ -2034,6 +2036,18 @@ export type DelegationStreamEvent =
 export type AgentStreamEvent =
   | { type: 'text-delta'; delta: string }
   | { type: 'reasoning-delta'; delta: string }
+  /**
+   * 多模态输出：**agent 回传的图片**（外部 agent 截图 / 生成图这类）。
+   *
+   * 与「用户发的附件」是同一个落点 —— 折叠成 `file` part，渲染端复用同一个 `FilePartView`
+   * （缩略图 + 点开大图 + 下载），不必为助手侧再造一套图片展示。
+   *
+   * `url` 走 `data:` URL：图片是 agent 在协议里 base64 内联回来的，我们**不为它落盘**
+   * ——ACP 的消息真源在 agent 侧、本地快照只在内存（见 `acp-transcripts.ts`），
+   * 落盘反而会留下「用户删了会话、图还躺在数据目录」的垃圾，且回放一次写一份。
+   * `loadMediaObjectUrl` 对 `data:` 是直通，不需要走 fetch。
+   */
+  | { type: 'file-part'; url: string; mediaType: string; name: string }
   /**
    * 子任务（subagent）**开跑**：父侧派活卡（`toolCallId` = 那次 `agent-<id>` 调用）
    * 从这一刻有了完整过程记录。

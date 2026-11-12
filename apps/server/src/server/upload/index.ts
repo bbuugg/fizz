@@ -13,6 +13,8 @@ import { issuedUploadRef } from './trust'
 
 export type { UploadAdapter } from './types'
 export { adapterFor, resolveUploadAdapter } from './adapters'
+/** 附件「URL 直传 还是 内联字节」的判据（见 `attachments.ts` 文件头） */
+export { createAttachmentResolver, isPubliclyFetchable } from './attachments'
 export {
   BUILTIN_UPLOAD_PROVIDER_ID,
   getUploadProviders,

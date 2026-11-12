@@ -502,20 +502,16 @@ export function AssistantPanel({
               emptyTitle="未选时由服务端取第一份可用模型（下一轮生效）"
             />
           ),
-          above: (
-            <>
-              {/* 待答复的审批:与主会话同一张卡、同一个答复端点 */}
-              {session && session.pendingConfirms.length > 0 && (
-                <ConfirmQueue
-                  confirms={session.pendingConfirms}
-                  onResolve={(id, approved, optionId) => {
-                    const api = useAgentStore.getState().getApi()
-                    void api?.resolveConfirm(id, approved, optionId)
-                  }}
-                />
-              )}
-            </>
-          )
+          // 待答复的审批：与主会话同一张卡、同一个答复端点；**顶替输入卡片**（同主会话）
+          cover: session && session.pendingConfirms.length > 0 ? (
+            <ConfirmQueue
+              confirms={session.pendingConfirms}
+              onResolve={(id, approved, optionId) => {
+                const api = useAgentStore.getState().getApi()
+                void api?.resolveConfirm(id, approved, optionId)
+              }}
+            />
+          ) : null
         }}
       />
     </div>
