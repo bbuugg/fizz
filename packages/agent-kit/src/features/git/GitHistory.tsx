@@ -189,7 +189,6 @@ export function GitHistory({
         >
           {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
           {t('历史提交')}
-          <span className="text-muted-foreground">{commits.length}</span>
         </button>
       </div>
       {open && (

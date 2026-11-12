@@ -1576,7 +1576,6 @@ export function GitPanel({
                     <ChevronRight className="size-3.5 shrink-0" />
                   )}
                   {t('贮藏')}
-                  <span className="text-muted-foreground">{stashes.length}</span>
                 </button>
                 {/* 贮藏入口：只留图标（与「更多」菜单里那一条同一个 Archive 图标），文案挪到 tooltip */}
                 <IconTip label={t('贮藏当前更改（git stash）：工作区清空，改动收进贮藏栈')}>
