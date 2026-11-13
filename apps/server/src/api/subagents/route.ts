@@ -11,7 +11,11 @@
  */
 import { domain } from '@/lib/server/state'
 import { parseJsonBody } from '@/app/api/_lib/auth'
-import { normalizeSubagentSettings, type SubagentId } from '@fizz/contracts/types'
+import {
+  normalizeSubagentSettings,
+  type SubagentDefinition,
+  type SubagentId
+} from '@fizz/contracts/types'
 
 export async function GET() {
   return Response.json({ subagents: domain.getSubagentSettings() })
@@ -20,6 +24,8 @@ export async function GET() {
 export async function POST(request: Request) {
   const body = await parseJsonBody<{
     enabled?: SubagentId[]
+    /** 自定义子智能体：**整份替换**（增删改都由前端算好新数组再传） */
+    definitions?: SubagentDefinition[]
     modelConfigId?: string | null
     modelId?: string | null
     maxSteps?: Partial<Record<SubagentId, number>>
@@ -33,7 +39,9 @@ export async function POST(request: Request) {
     ...('modelId' in (body ?? {}) ? { modelId: normalized.modelId ?? null } : {}),
     // 步数**整体替换**（与 enabled 同口径）：传 `{}` 就是全部回到默认值。
     // 这里给原值而不是 normalized：`{}` 经归一化会变成 undefined，会被下游当成「保留」。
-    ...(body?.maxSteps !== undefined ? { maxSteps: body.maxSteps } : {})
+    ...(body?.maxSteps !== undefined ? { maxSteps: body.maxSteps } : {}),
+    // 定义同样整份替换；归一化里的 id / 工具 / 长度校验不通过时那一条会被丢掉
+    ...(body?.definitions !== undefined ? { definitions: body.definitions } : {})
   }
   const subagents = domain.saveSubagentSettings(patch)
   return Response.json({ subagents })

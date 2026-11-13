@@ -151,6 +151,7 @@ import type {
   NotesWriteInput,
   SshTunnelInput,
   SshTunnelsSnapshot,
+  SubagentDefinition,
   SubagentId,
   TaskTrigger,
   TaskTriggerInput,
@@ -1991,6 +1992,8 @@ export function createApi(
      */
     saveSubagents: (patch: {
       enabled?: SubagentId[];
+      /** 自定义子智能体：**整份替换**（增删改都由调用方算好新数组） */
+      definitions?: SubagentDefinition[];
       modelConfigId?: string | null;
       modelId?: string | null;
       maxSteps?: Partial<Record<SubagentId, number>>;

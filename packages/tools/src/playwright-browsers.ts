@@ -1,5 +1,5 @@
 /**
- * Playwright 浏览器的运行时保障：web_fetch 的 `engine="browser"`、screenshot 工具
+ * Playwright 浏览器的运行时保障：web_fetch 的 `engine="browser"`
  * 与**内置浏览器面板 / `browser_*` 工具**都跑无头 Chromium，而安装包**不再随包分发
  * 浏览器**（原 extraResources 方案光一个 headless shell 就 271MB，占了安装包近一半），
  * 改为**首次使用时在线下载** `chromium-headless-shell`（约 150MB），落到 playwright
@@ -42,11 +42,11 @@
  * launch 兜底（`browser/engine.ts` 的 `ensureChromiumReady()`）还会在缺失时自愈 —— 那是
  * 「装配闸放过了、但运行时事后没了」的最后一道，正常路径走不到。
  *
- * 依赖这里的**三个工具面**都在装配期按 `browserRuntimeInfo().installed` 先挡一道，没装就
+ * 依赖这里的**两个工具面**都在装配期按 `browserRuntimeInfo().installed` 先挡一道，没装就
  * 不给模型看见，避免「每次调用都只回一句去设置里装」：
  * - `browser_*` 工具集与浏览器面板：`chat-turn.ts` / `browser-ws.ts` 挡；
- * - `screenshot`：`webToolsPlugin` 直接不挂；
  * - `web_fetch`：照挂，但 schema 里没有 `engine` 入参（只有 fetch 引擎）。
+ * （`screenshot` 工具已移除，历史消息仍按 `TOOL_LABELS` 的旧条目渲染。）
  * 剩下的 `BrowserRuntimeMissingError` / `playwright 未安装` 那几句只兜「装配之后运行时被
  * 卸掉」这种赛况。
  */

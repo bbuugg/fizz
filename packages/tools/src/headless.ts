@@ -1,7 +1,7 @@
 /**
- * 无头 chromium 的启动保障：**web_fetch（engine="browser"）与 screenshot 共用**。
+ * 无头 chromium 的启动保障：**web_fetch（engine="browser"）与 browser_* 工具共用**。
  *
- * 抽成公共模块的理由：这两个工具的浏览器路径各写过一份 launch，各有各的毛病 ——
+ * 抽成公共模块的理由：这两处的浏览器路径各写过一份 launch，各有各的毛病 ——
  * `chromium.launch()` 不吃 timeout 选项，浏览器二进制起不来时（缺依赖 / 沙箱被拒）会
  * **永久挂住**，那一轮对话跟着卡死；渲染后的固定等待也不接中止，用户点「停止」得干等满。
  * 见 `docs/lessons/desktop.md`「打包体积」一条。

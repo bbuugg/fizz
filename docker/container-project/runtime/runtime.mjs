@@ -5,20 +5,14 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createDeepSeek } from "@ai-sdk/deepseek";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, promises, readdirSync, statSync } from "node:fs";
-import { basename, delimiter, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { z } from "zod";
+import { accessSync, constants, existsSync, lstatSync, promises, readdirSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { randomBytes, randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
-import "@modelcontextprotocol/sdk/client/index.js";
-import "@modelcontextprotocol/sdk/client/stdio.js";
-import "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import "@modelcontextprotocol/sdk/client/sse.js";
-import { EventEmitter } from "node:events";
-import "dotenv";
+import { basename, delimiter, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { randomBytes } from "node:crypto";
 import { simpleGit } from "simple-git";
+import { rm } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { chromium } from "playwright";
 // packages/contracts/src/types.ts
 /** 按模型 id 找清单里的那一条（找不到返回 undefined，不回退到第一个） */
@@ -113,18 +107,17 @@ function resolveContextWindow(models, modelId, fallback = DEFAULT_CONTEXT_WINDOW
 * `mcp__*`、以及 `project-tools.ts` 的全部工具（它们的作业面在宿主、不在容器里）。
 */
 var CONTAINER_AGENT_TOOL_KEYS = [
-	"list_files",
-	"read_file",
-	"write_file",
-	"edit_file",
-	"search_files",
-	"find_files",
-	"execute_command",
-	"delete_file",
+	"read",
+	"write",
+	"edit",
+	"glob",
+	"grep",
+	"bash",
 	"todo_write",
 	"read_skill",
 	"web_fetch",
-	"ask_followup_question"
+	"ask_followup_question",
+	"str_replace_editor"
 ];
 /**
 * 容器内运行时协议的版本号。
@@ -139,8 +132,10 @@ var CONTAINER_PROTOCOL_VERSION = 1;
 * 给 UI 用的展示元数据（名称 + 一句话说明）。
 *
 * ⚠️ 刻意**放在 contracts** 而不是 `packages/agent`：渲染端（web / desktop 共用
-* `@fizz/agent-kit`）不能依赖 `@fizz/agent` —— 那会 引擎 + 整条 provider
+* `@fizz/agent-kit`）不能依赖 `@fizz/agent` —— 那会把引擎 + 整条 provider
 * 依赖链进浏览器产物。agent 侧的真源是 `SUBAGENT_SPECS`，两边新增时同步改。
+*
+* 只含**内置**两项；自定义子智能体的名称在 `SubagentSettings.definitions` 里。
 */
 var SUBAGENT_META = {
 	explorer: {
@@ -412,46 +407,182 @@ function toToolOutput(output, isError) {
 	};
 }
 /**
+* 一轮请求里内联附件的**总字节**上限（按 URL 去重后累加）。
+*
+* 15MB 的原始字节在请求体里会膨胀成约 20MB（base64 ×4/3）—— 给 Anthropic 的 32MB
+* body 上限留出正文与工具结果的余量。超过就从**最旧**的附件开始降级成一行说明：
+* 用户刚发的图更可能被追问，老图看一眼就够。
+*
+* ⚠️ 这不是「省 token」的闸：token 由像素决定，跟内联与否无关（见 `toModelMessages`
+* 的说明）；它挡的是**每轮重发**把请求体顶爆。
+*/
+var MAX_INLINE_TOTAL_BYTES = 15728640;
+function createInlineBudget(maxBytes = MAX_INLINE_TOTAL_BYTES) {
+	return {
+		remainingBytes: maxBytes,
+		counted: /* @__PURE__ */ new Set()
+	};
+}
+async function resolveOne(file, resolve) {
+	if (!resolve) return {
+		kind: "url",
+		url: file.url
+	};
+	try {
+		return await resolve(file) ?? {
+			kind: "url",
+			url: file.url
+		};
+	} catch {
+		return {
+			kind: "omit",
+			note: `（附件「${file.name}」读取失败，未随本轮发送）`
+		};
+	}
+}
+/**
+* 把一批附件解析成「URL / 内联 / 省略」，并扣一遍总字节预算。
+*
+* 预算**从后往前**分配（`files` 的调用方按「旧 → 新」排列）：超限时先牺牲最旧的，
+* 而不是先到先得把最新的挤掉。
+*/
+async function planAttachments(files, opts) {
+	const planned = await Promise.all(files.map(async (file) => ({
+		file,
+		resolved: await resolveOne(file, opts?.resolveAttachment)
+	})));
+	const budget = opts?.budget;
+	if (!budget) return planned;
+	for (let i = planned.length - 1; i >= 0; i--) {
+		const item = planned[i];
+		if (item.resolved.kind !== "inline") continue;
+		if (budget.counted.has(item.file.url)) continue;
+		const size = item.resolved.bytes.byteLength;
+		if (size > budget.remainingBytes) {
+			item.resolved = {
+				kind: "omit",
+				note: `（附件「${item.file.name}」超出本轮附件体积上限，未随本轮发送）`
+			};
+			continue;
+		}
+		budget.counted.add(item.file.url);
+		budget.remainingBytes -= size;
+	}
+	return planned;
+}
+/**
+* 规划好的附件 -> 模型 part（+ 需要附在正文里的说明）。
+*
+* 形状写错**不会报错**，附件会被静默丢掉，所以这里集中一处产出、两条路
+* （历史组装 / 运行中插话）都调它。
+*/
+function attachmentsToParts(planned, opts) {
+	const parts = [];
+	const notes = [];
+	for (const { file, resolved } of planned) {
+		if (resolved.kind === "omit") {
+			notes.push(resolved.note ?? `（附件「${file.name}」未随本轮发送）`);
+			continue;
+		}
+		if (resolved.kind === "inline") {
+			parts.push(file.mediaType.startsWith("image/") ? {
+				type: "image",
+				image: resolved.bytes,
+				mediaType: file.mediaType
+			} : {
+				type: "file",
+				data: resolved.bytes,
+				mediaType: file.mediaType,
+				filename: file.name
+			});
+			continue;
+		}
+		const url = new URL(opts?.resolveFileUrl ? opts.resolveFileUrl(resolved.url) : resolved.url, "http://localhost");
+		parts.push(file.mediaType.startsWith("image/") ? {
+			type: "image",
+			image: url,
+			mediaType: file.mediaType
+		} : {
+			type: "file",
+			data: url,
+			mediaType: file.mediaType,
+			filename: file.name
+		});
+	}
+	return {
+		parts,
+		notes
+	};
+}
+/** 单批附件的快捷入口（运行中插话用：一条消息，不存在跨消息的预算排序） */
+async function attachmentParts(files, opts) {
+	return attachmentsToParts(await planAttachments(files, opts), opts);
+}
+/**
 * 渲染端对话历史 -> 模型消息。
 *
 * `resolveFileUrl`：附件 URL 的绝对化策略由调用方注入（server 端经 UploadAdapter
 * 拼 `FIZZ_PUBLIC_BASE_URL ?? origin`）—— 本文件零存储知识。未传时用 localhost
 * base 兜底：`new URL('/api/...')` 会抛错，不能让一条附件把整轮炸掉。
 *
-* 附件提交形态（用户拍板）：**URL 直传** —— 图片走 ImagePart、PDF 走 FilePart，
-* 不读文件、不转 base64、不做文本抽取。
+* `resolveAttachment`：更进一步的投递策略（URL / 内联字节）。不传 = 全部按 URL
+* 直传，行为与从前逐字节一致。
+*
+* ⚠️ **内联 base64 不占额外 token**：图片 token 由 provider 按**像素**计，传 URL 还是
+* 传字节算出来是同一个数；变的只是请求体大小（×4/3，且每轮重发）。所以真正的闸是
+* `MAX_INLINE_TOTAL_BYTES`（每轮总量），不是单条消息。
 */
 async function toModelMessages(history, opts) {
+	/**
+	* 先一次性规划**整段历史**的附件：预算要按「整轮、从新到旧」分配，
+	* 逐条消息各规划一次会变成按时间先到先得 —— 最旧的图反而挤掉最新的。
+	*/
+	const perMessage = /* @__PURE__ */ new Map();
+	const flat = [];
+	for (let i = 0; i < history.length; i++) {
+		const msg = history[i];
+		if (msg.role !== "user") continue;
+		const allFiles = msg.parts.filter((p) => p.type === "file");
+		const kept = opts?.allowImages === false ? allFiles.filter((f) => !f.mediaType.startsWith("image/")) : allFiles;
+		perMessage.set(i, {
+			kept,
+			omittedImages: allFiles.length - kept.length
+		});
+		flat.push(...kept);
+	}
+	const planned = await planAttachments(flat, {
+		resolveAttachment: opts?.resolveAttachment,
+		budget: opts?.inlineBudget
+	});
+	const plannedByMessage = /* @__PURE__ */ new Map();
+	{
+		let cursor = 0;
+		for (const [index, entry] of perMessage) {
+			plannedByMessage.set(index, planned.slice(cursor, cursor + entry.kept.length));
+			cursor += entry.kept.length;
+		}
+	}
 	const messages = [];
-	for (const msg of history) {
+	for (let i = 0; i < history.length; i++) {
+		const msg = history[i];
 		if (msg.role === "user") {
 			const text = msg.parts.map((p) => p.type === "text" ? p.text : "").join("").trim();
-			const allFiles = msg.parts.filter((p) => p.type === "file");
-			const files = opts?.allowImages === false ? allFiles.filter((f) => !f.mediaType.startsWith("image/")) : allFiles;
-			const omittedImages = allFiles.length - files.length;
+			const omittedImages = perMessage.get(i)?.omittedImages ?? 0;
 			const omittedNote = omittedImages > 0 ? `（用户发送了 ${omittedImages} 张图片，但当前模型未开启图片输入，这些图片已省略）` : "";
-			if (files.length === 0) {
-				const body = [text, omittedNote].filter(Boolean).join("\n");
+			const { parts, notes } = attachmentsToParts(plannedByMessage.get(i) ?? [], { ...opts?.resolveFileUrl ? { resolveFileUrl: opts.resolveFileUrl } : {} });
+			if (parts.length === 0) {
+				const body = [
+					text,
+					omittedNote,
+					...notes
+				].filter(Boolean).join("\n");
 				if (body) messages.push({
 					role: "user",
 					content: body
 				});
 				continue;
 			}
-			const content = files.map((f) => {
-				const url = new URL(opts?.resolveFileUrl ? opts.resolveFileUrl(f.url) : f.url, "http://localhost");
-				if (f.mediaType.startsWith("image/")) return {
-					type: "image",
-					image: url,
-					mediaType: f.mediaType
-				};
-				return {
-					type: "file",
-					data: url,
-					mediaType: f.mediaType,
-					filename: f.name
-				};
-			});
+			const content = [...parts];
 			if (text) content.push({
 				type: "text",
 				text
@@ -459,6 +590,10 @@ async function toModelMessages(history, opts) {
 			if (omittedNote) content.push({
 				type: "text",
 				text: omittedNote
+			});
+			for (const note of notes) content.push({
+				type: "text",
+				text: note
 			});
 			messages.push({
 				role: "user",
@@ -897,10 +1032,10 @@ function extractModelFileOps(messages, ops) {
 		for (const raw of content) {
 			const part = raw;
 			if (part.type !== "tool-call") continue;
-			const path = typeof part.input?.path === "string" ? part.input.path : void 0;
+			const path = inputPathOf(part.input);
 			if (!path) continue;
-			if (part.toolName === "read_file") ops.read.add(path);
-			else if (part.toolName === "write_file" || part.toolName === "edit_file") ops.modified.add(path);
+			if (part.toolName === "read" || part.toolName === "read_file") ops.read.add(path);
+			else if (WRITE_TOOL_NAMES.has(part.toolName ?? "")) ops.modified.add(path);
 		}
 	}
 }
@@ -1134,15 +1269,27 @@ function createFileOps() {
 		modified: /* @__PURE__ */ new Set()
 	};
 }
-/** fizz 的工具名：`read_file` / `write_file` / `edit_file`（入参都是 `path`） */
+/** 会改文件的工具名：新名（dsh 对齐后的 `write` / `edit`）与历史里的旧名都认 */
+var WRITE_TOOL_NAMES = /* @__PURE__ */ new Set([
+	"write",
+	"edit",
+	"write_file",
+	"edit_file"
+]);
+/** 工具入参里的路径：新 schema 叫 `file_path`，旧历史里叫 `path` */
+function inputPathOf(input) {
+	const value = input?.file_path ?? input?.path;
+	return typeof value === "string" ? value : void 0;
+}
+/** fizz 的工具名：`read` / `write` / `edit`（旧历史里是 `read_file` 等） */
 function extractFileOps(history, ops) {
 	for (const m of history) for (const part of m.parts) {
 		if (part.type !== "tool-call") continue;
 		const call = part;
-		const path = typeof call.input?.path === "string" ? call.input.path : void 0;
+		const path = inputPathOf(call.input);
 		if (!path) continue;
-		if (call.toolName === "read_file") ops.read.add(path);
-		else if (call.toolName === "write_file" || call.toolName === "edit_file") ops.modified.add(path);
+		if (call.toolName === "read" || call.toolName === "read_file") ops.read.add(path);
+		else if (WRITE_TOOL_NAMES.has(call.toolName ?? "")) ops.modified.add(path);
 	}
 }
 /**
@@ -1743,9 +1890,11 @@ async function loadIgnoreRules(root) {
 * 创建忽略判定函数。relPath 用 '/' 分隔（相对工作区根）；
 * 判定时对路径的每个前缀逐段检查（目录命中即整棵子树被忽略），
 * 后匹配的规则胜出（支持 ! 重新纳入）。
+*
+* 与 `createIgnoreChecker` 分开：远端后端从 SFTP 读 `.gitignore` 后要复用同一套
+* 匹配语义，只是规则来源不同。
 */
-async function createIgnoreChecker(root) {
-	const rules = await loadIgnoreRules(root);
+function createIgnoreMatcher(rules) {
 	return (rel, isDir) => {
 		const segs = rel.split("/").filter(Boolean);
 		if (segs.length === 0) return false;
@@ -1763,9 +1912,37 @@ async function createIgnoreChecker(root) {
 		return ignored;
 	};
 }
+/** 创建忽略判定函数（本地：规则从 `<root>/.gitignore` 读） */
+async function createIgnoreChecker(root) {
+	return createIgnoreMatcher(await loadIgnoreRules(root));
+}
 /** 规范化相对路径展示（统一 '/' 分隔） */
 function relPathOf(root, abs) {
 	return relative(root, abs).split(sep).join("/");
+}
+/**
+* 把 glob 编译成 RegExp：`**` 跨目录，`*` / `?` 不跨 `/`。
+* 不含 `/` 的 glob（如 `*.ts`）自动补 `**` + `/` 前缀，让它能匹配任意层级 —— 符合直觉。
+*/
+function globToRegExp(glob) {
+	const raw = glob.trim();
+	const pat = raw.includes("/") ? raw : `**/${raw}`;
+	let re = "";
+	for (let i = 0; i < pat.length; i++) {
+		const ch = pat[i];
+		if (ch === "*") {
+			if (pat[i + 1] === "*") {
+				i++;
+				if (pat[i + 1] === "/") {
+					i++;
+					re += "(?:.*/)?";
+				} else re += ".*";
+			} else re += "[^/]*";
+		} else if (ch === "?") re += "[^/]";
+		else if ("\\^$.|+()[]{}".includes(ch)) re += `\\${ch}`;
+		else re += ch;
+	}
+	return new RegExp(`^${re}$`);
 }
 /**
 * 取生效的「模型请求重试次数上限」。
@@ -1838,6 +2015,2070 @@ function browserUserAgent(mode, actualDesktopUa) {
 }
 /** 手机 UA 对应的 `navigator.platform`（桌面不覆盖，保持宿主原样） */
 var MOBILE_PLATFORM = "Linux armv8l";
+// packages/i18n/src/dict/common.ts
+/**
+* 通用模块英文文案：基础动作与状态、应用外壳、通知与更新、登录、快捷键、命令面板等全局文案。
+*
+* key = 中文原文；未翻译的条目自动回落到中文。
+*/
+var COMMON = {
+	"设置": "Settings",
+	"关闭": "Close",
+	"取消": "Cancel",
+	"保存": "Save",
+	"保存中…": "Saving…",
+	"删除": "Delete",
+	"编辑": "Edit",
+	"确定": "OK",
+	"确认": "Confirm",
+	"返回": "Back",
+	"复制": "Copy",
+	"已复制": "Copied",
+	"刷新": "Refresh",
+	"重试": "Retry",
+	"加载中…": "Loading…",
+	"未命名": "Untitled",
+	"未知原因": "Unknown reason",
+	"保存失败：{reason}": "Save failed: {reason}",
+	"操作失败：{reason}": "Operation failed: {reason}",
+	"已开启": "On",
+	"已关闭": "Off",
+	"开启": "On",
+	"关闭中…": "Turning off…",
+	"启用": "Enable",
+	"停用": "Disable",
+	"启用中…": "Enabling…",
+	"停用中…": "Disabling…",
+	"默认": "Default",
+	"自定义": "Custom",
+	"全部": "All",
+	"无": "None",
+	"更多": "More",
+	"搜索": "Search",
+	"名称": "Name",
+	"路径": "Path",
+	"状态": "Status",
+	"操作": "Actions",
+	"类型": "Type",
+	"描述": "Description",
+	"语言": "Language",
+	"界面语言": "Interface language",
+	"文A": "A",
+	"中文": "中文",
+	"英文": "English",
+	"新建对话": "New chat",
+	"新对话": "New chat",
+	"对话": "Chat",
+	"任务": "Tasks",
+	"文件": "Files",
+	"终端助手": "Terminal assistant",
+	"项目助手": "Project assistant",
+	"工作区": "Workspace",
+	"项目": "Project",
+	"连接中…": "Connecting…",
+	"未连接": "Not connected",
+	"设置…": "Settings…",
+	"退出": "Quit",
+	"登录": "Sign in",
+	"密码": "Password",
+	"服务器地址": "Server address",
+	"点击验证": "Verify",
+	"拖动滑块完成拼图": "Drag the slider to complete the puzzle",
+	"验证通过": "Verified",
+	"验证失败，请重试": "Verification failed, try again",
+	"登录失败：{reason}": "Sign-in failed: {reason}",
+	"验证码": "Verification",
+	"取消验证": "Cancel verification",
+	"发送": "Send",
+	"停止": "Stop",
+	"输入消息…": "Type a message…",
+	"输入消息，Enter 发送，Shift+Enter 换行": "Type a message. Enter to send, Shift+Enter for a new line",
+	"附件": "Attach",
+	"语音输入": "Voice input",
+	"工具": "Tools",
+	"权限": "Permission",
+	"完全访问": "Full access",
+	"需要确认": "Ask before changes",
+	"只读": "Read-only",
+	"重命名": "Rename",
+	"归档": "Archive",
+	"取消归档": "Unarchive",
+	"置顶": "Pin",
+	"取消置顶": "Unpin",
+	"删除会话": "Delete chat",
+	"还没有会话": "No chats yet",
+	"开始一个新对话": "Start a new chat",
+	"搜索会话": "Search chats",
+	"消息": "Messages",
+	"日志": "Logs",
+	"技能": "Skills",
+	"预览": "Preview",
+	"浏览器": "Browser",
+	"确认删除": "Confirm deletion",
+	"删除后无法恢复。": "This cannot be undone.",
+	"删除「{name}」？": "Delete “{name}”?",
+	"正在删除…": "Deleting…",
+	"已删除": "Deleted",
+	"已保存": "Saved",
+	"已归档": "Archived",
+	"已取消归档": "Unarchived",
+	"操作成功": "Done",
+	"操作失败": "Operation failed",
+	"网络错误": "Network error",
+	"服务端未连接": "Server not connected",
+	"服务端": "Server",
+	"本机": "Local",
+	"文件夹": "Folder",
+	"选择文件夹": "Choose folder",
+	"选择文件": "Choose file",
+	"上传": "Upload",
+	"下载": "Download",
+	"打开": "Open",
+	"在新窗口打开": "Open in new window",
+	"在浏览器中打开": "Open in browser",
+	"版本": "Version",
+	"当前版本": "Current version",
+	"检查更新": "Check for updates",
+	"发现新版本": "Update available",
+	"下载更新": "Download update",
+	"正在下载…": "Downloading…",
+	"重启安装": "Restart to install",
+	"已是最新版本": "You are up to date",
+	"检查失败：{reason}": "Check failed: {reason}",
+	"软件更新": "Software update",
+	"更新": "Update",
+	"有更新时提醒我": "Notify me about updates",
+	"有新版本时，状态栏会出现一条指示、应用内也会弹一条提示。": "When a new version is available, a status bar indicator appears and an in-app prompt pops up.",
+	"已关闭：状态栏与应用内都不再提醒，有新版本只在这里显示。": "Off: no status bar or in-app reminders — new versions show up only here.",
+	"登录 Fizz": "Sign in to Fizz",
+	"自托管的 AI Agent 工作台": "Self-hosted AI agent workspace",
+	"输入密码": "Enter password",
+	"请输入密码": "Enter password",
+	"登录中…": "Signing in…",
+	"正在加载验证码…": "Loading captcha…",
+	"换一张": "Refresh",
+	"换一张验证码": "Refresh captcha",
+	"安全验证": "Security check",
+	"拖动下方滑块，把拼图块移到缺口处。": "Drag the slider below to move the puzzle piece into the gap.",
+	"向右拖动滑块完成拼图": "Drag the slider to the right to complete the puzzle",
+	"松开完成验证": "Release to verify",
+	"正在校验…": "Verifying…",
+	"网络异常，请重试": "Network error, please try again",
+	"加载失败，点右侧按钮重试": "Failed to load, tap the button on the right to retry",
+	"当前未启用验证码": "Captcha is not enabled",
+	"开始新对话": "Start a new chat",
+	"交给 Agent 做点什么…（Enter 发送，Shift+Enter 换行）": "Ask the agent to do something… (Enter to send, Shift+Enter for a new line)",
+	"有什么想问的？…（不指定项目，会话存在服务端）": "What would you like to ask?… (No project attached; the conversation is stored on the server)",
+	"附件上传中，等上传完成后再发": "Uploading attachments — please wait until they finish",
+	"新对话（初始页）": "New chat (start page)",
+	"还没有任务。": "No tasks yet.",
+	"还没有项目。": "No projects yet.",
+	"新建会话": "New conversation",
+	"会话": "Chats",
+	"运行脚本": "Run script",
+	"在所有会话中搜索「{query}」": "Search all chats for “{query}”",
+	"输入关键词，按标题与消息内容搜索全部会话": "Type a keyword to search all chats by title and message content",
+	"没有匹配「{keyword}」的会话": "No chats match “{keyword}”",
+	"未命名会话": "Untitled chat",
+	"搜索中": "Searching",
+	"搜索中…": "Searching…",
+	"我：": "Me: ",
+	"更多操作": "More actions",
+	"收起项目": "Collapse project",
+	"展开项目": "Expand project",
+	"打开定时任务管理（增删改、跨项目）": "Open scheduled task management (create, edit, delete across projects)",
+	"定时任务": "Scheduled tasks",
+	"命令面板": "Command palette",
+	"搜索并执行命令": "Search and run commands",
+	"按标题与消息内容搜索全部会话": "Search all conversations by title and message content",
+	"输入命令名称…": "Type a command…",
+	"没有匹配的命令。": "No matching commands.",
+	"打开设置": "Open settings",
+	"切换主题（当前{theme}）": "Toggle theme (currently {theme})",
+	"返回命令列表": "Back to command list",
+	"未分组": "Ungrouped",
+	"搜索会话…": "Search conversations…",
+	"更多功能区": "More activities",
+	"更多（右键图标可收进这里）": "More (right-click an icon to move it here)",
+	"收起来的功能区": "Hidden activities",
+	"收进「更多」": "Move to “More”",
+	"把「{name}」移回主栏": "Move “{name}” back to the bar",
+	"功能区": "Activities",
+	"正在下载新版本": "Downloading a new version",
+	"正在下载新版本，点开看进度": "Downloading a new version; open to see progress",
+	"下载中 {percent}%": "Downloading {percent}%",
+	"新版本已下载": "New version downloaded",
+	"新版本已下载，重启后生效": "New version downloaded; restart to apply",
+	"重启更新": "Restart to update",
+	"发现新版本{v}，不会自动下载，点开查看": "New version{v} available; it will not download automatically — open to view",
+	"有新版本": "Update available",
+	"查看版本与更新": "Version and updates",
+	"发现新版本 v{v}，去「通用」里下载": "Version v{v} available — open General to download",
+	"已下载 v{v}，去「通用」里重启安装": "v{v} downloaded — open General to restart and install",
+	"正在下载新版本 v{v}": "Downloading v{v}",
+	"在 GitHub 上查看项目": "View the project on GitHub",
+	"语音输入静音超时": "Voice input silence timeout",
+	"连续静音多久后停止语音输入。0 = 不自动停止。": "Stop voice input after this much continuous silence. 0 = do not stop automatically.",
+	"秒": " seconds",
+	"（不自动停）": " (do not auto-stop)",
+	"结束通知": "Completion notifications",
+	"任务结束、出错、被中断或对话回复完成时提醒一次；后台走系统通知，前台走应用内提示。": "Notify once when a task finishes, fails, is interrupted, or a reply completes. Background uses system notifications; foreground uses in-app toasts.",
+	" 安卓端为本地通知，App 被系统清理后收不到。": " On Android these are local notifications; they cannot arrive after the app is killed by the system.",
+	"已开启（前台为应用内提示）": "Enabled (foreground shows in-app prompts)",
+	"系统通知权限已被关闭，页面无法再次申请。请到 系统设置 → 应用 → Fizz → 通知 里允许，回到 App 后这里会自动更新。在此之前：前台的右上角提示仍然会用，只有切到后台（含锁屏）时的系统提醒发不出去。": "System notification permission is off and the page cannot ask again. Allow it in System settings → Apps → Fizz → Notifications; this page updates when you return. Until then, foreground toasts still work; only background (including lock screen) system alerts are lost.",
+	"通知权限已被浏览器拒绝，且无法由页面再次申请。请在地址栏的站点设置里把「通知」改为允许，刷新本页后即可开启。在此之前：前台的右上角提示仍然会用，只有切到后台时的系统提醒发不出去。": "Notification permission was denied by the browser and cannot be requested again from the page. Allow “Notifications” in the site settings from the address bar and reload. Until then, foreground toasts still work; only background system alerts are lost.",
+	"再试一次": "Try again",
+	"开启系统通知": "Enable system notifications",
+	"授权浏览器通知": "Allow browser notifications",
+	"授权弹窗一直没弹出来 —— 多半被浏览器的「安静模式」拦截了（以前关过几次弹窗的站点会这样）。点地址栏左侧的小图标，或到 浏览器设置 → 网站设置 → 通知 里把本站改为「允许」，刷新后再试。": "The permission prompt never appeared — likely blocked by the browser’s quiet UI (common on sites where prompts were dismissed before). Click the icon at the left of the address bar, or allow this site under Browser settings → Site settings → Notifications, then reload and try again.",
+	"未开启系统通知，点此授权；后台提醒需要它，前台提示不需要。": "System notifications are off; click to authorize. Background alerts need them; foreground prompts do not.",
+	"未授权通知，点此在浏览器中允许；后台提醒需要它。": "Notifications are not authorized; click to allow them in the browser. Background alerts need this.",
+	"当前浏览器不支持系统通知（部分环境在非 HTTPS 下也会禁用）：切到后台时发不出提醒，但前台的右上角提示仍然会用。": "This browser does not support system notifications (some environments also disable them outside HTTPS). Background alerts cannot be sent, but foreground toasts still work.",
+	"屏幕常亮": "Keep screen awake",
+	"有任务运行时保持屏幕常亮；跑完自动释放，切到后台也会释放，回来后按需重新获取。": "Keep the screen awake while tasks run; release automatically when done or when the page goes to the background, and reacquire as needed when you return.",
+	"不申请屏幕唤醒锁": "Do not request a screen wake lock",
+	"会话进行中": "While a conversation runs",
+	"只在有会话正在跑（含后台会话）时保持屏幕常亮，跑完立刻释放": "Keep the screen awake only while a conversation is running (including background ones); release immediately when done",
+	"始终": "Always",
+	"页面在前台就保持屏幕常亮（旧版开关的行为）": "Keep the screen awake whenever the page is in the foreground (old toggle behavior)",
+	"会话进行中，已保持常亮": "A conversation is running; screen is kept awake",
+	"始终保持常亮": "Screen is always kept awake",
+	"没能拿到锁": "Could not acquire the lock",
+	"正在申请锁…": "Requesting the wake lock…",
+	"会话进行中时自动开启（当前没有任务）": "Turns on automatically while a conversation runs (currently idle)",
+	"浏览器没把锁给下来（系统省电策略、或页面刚从后台回来还没拿到前台权限时会这样）。点「再试一次」；仍不行就手动锁一次屏再解锁。": "The browser refused the wake lock (power-saving policy, or the page just returned from the background without foreground permission yet). Click “Try again”; if that fails, lock and unlock the screen manually.",
+	"当前浏览器不支持屏幕唤醒锁（iOS Safari 与部分桌面浏览器尚未实现），页面里没有这个开关能开的替代方案 —— 需要的话改用系统的「屏幕常亮」设置。": "This browser does not support the screen wake lock (not implemented in iOS Safari and some desktop browsers). There is no in-page alternative — use the system’s “keep screen awake” setting instead.",
+	"新建工作区": "New workspace",
+	"管理工作区": "Manage workspaces",
+	"菜单": "Menu",
+	"导入 / 导出": "Import / export",
+	"导出数据…": "Export data…",
+	"导入数据…": "Import data…",
+	"断开连接": "Disconnect",
+	"拖动调整高度": "Drag to resize",
+	"有未查看的内容": "Has unseen content",
+	"返回设置": "Back to settings",
+	"关闭设置": "Close settings",
+	"数据": "Data",
+	"把三类数据（接口请求 / 主机 / 脚本）打包导出成文件带走，或在别的设备上导回。导入会按名称合并同名项，不会先清空现有数据。": "Package the three kinds of data (API requests / hosts / scripts) into a file to take elsewhere, or import it back on another device. Importing merges items by name and does not clear existing data first.",
+	"导出数据": "Export data",
+	"导入数据": "Import data",
+	"文件管理": "Files",
+	"SSH 隧道 · 本地转发 / 远程转发 / SOCKS5 动态代理": "SSH tunnel · Local / remote forwarding and SOCKS5 dynamic proxy",
+	"文件管理 · 服务端这台机器上的文件（整盘，可上传 / 下载 / 压缩 / 回收站）": "Files · Files on the server machine (full disk; upload / download / compress / recycle bin)",
+	"系统监控 · 服务端这台机器的 CPU / 内存 / 磁盘，以及任务管理器（可结束进程）": "System monitor · CPU / memory / disk on the server machine, plus task manager (end processes)",
+	"应用日志 · 全部业务事件记录（按命名空间分组）": "App logs · All business event records (grouped by namespace)",
+	"定时任务 · 到点自动起一轮会话（可绑工作区，也可每次自动新建）": "Scheduled tasks · Start a chat on schedule (bind a workspace or create one each time)",
+	"脚本 · 管理可复用的命令（按分组整理，选任意主机运行）": "Scripts · Manage reusable commands (grouped; run on any host)",
+	"设置 · 模型 / 智能体 / 工具与技能 / 外观 / 快捷键": "Settings · Models / Agents / Tools & skills / Appearance / Shortcuts"
+};
+// packages/i18n/src/dict/settings.ts
+/**
+* 设置模块英文文案：设置导航与通用页、外观主题、远程访问、用量、历史会话、内置浏览器与网站数据。
+*
+* key = 中文原文；未翻译的条目自动回落到中文。
+*/
+var SETTINGS = {
+	"基础": "Basics",
+	"通用": "General",
+	"外观": "Appearance",
+	"快捷键": "Shortcuts",
+	"终端": "Terminal",
+	"远端终端": "Remote terminal",
+	"偏好": "Preferences",
+	"AI": "AI",
+	"模型 ({count})": "Models ({count})",
+	"ACP agent ({count})": "ACP agents ({count})",
+	"MCP ({count})": "MCP ({count})",
+	"技能 ({count})": "Skills ({count})",
+	"插件": "Plugins",
+	"还没有可用的插件。在「设置 → 插件」里启用后，它会出现在这里。": "No plugins yet. Enable one in Settings → Plugins and it will show up here.",
+	"运行环境": "Runtime",
+	"用量": "Usage",
+	"历史会话": "Archived chats",
+	"历史会话 ({count})": "Archived chats ({count})",
+	"系统监控": "System monitor",
+	"状态栏左侧的服务器性能监控。关闭后服务端停止采样，状态栏也不再显示。默认开启。": "Server performance monitor on the left of the status bar. When disabled, the server stops sampling and the status bar hides it. Enabled by default.",
+	"已关闭（后台不再采集性能数据）": "Off (no background sampling)",
+	"当前系统语言": "System language",
+	"跟随系统": "System",
+	"浅色": "Light",
+	"深色": "Dark",
+	"明暗": "Color mode",
+	"跟随系统时会自动切换明暗；每套配色都包含亮暗两份。": "Follows the system appearance. Every color theme includes light and dark variants.",
+	"配色主题": "Color theme",
+	"同时更换配色、字体、圆角与背景；明暗独立。可在卡片右上角「微调」或「背景」。": "Changes colors, typography, radii, and background together. Light/dark is independent. Use the card actions to fine-tune or set a background.",
+	"使用中": "In use",
+	"背景": "Background",
+	"微调": "Fine-tune",
+	"新建主题": "New theme",
+	"正在保存…": "Saving…",
+	"新建": "New",
+	"远程访问（局域网）": "Remote access (LAN)",
+	"把这台机器的 Agent 后端开放到局域网，其他设备用浏览器即可访问完整工作台。": "Expose this machine’s agent backend on the LAN so other devices can open the full workspace in a browser.",
+	"开启端口监听": "Enable port listening",
+	"端口": "Port",
+	"监听端口": "Listening port",
+	"应用中…": "Applying…",
+	"访问地址": "Access URL",
+	"在系统浏览器里打开": "Open in system browser",
+	"没找到对外网卡，只能在本机用": "No external network interface found; only local access is available.",
+	"登录密码": "Login password",
+	"凭据改过了：点右边应用（会重启监听，已连接的页面需要重新登录）": "Credentials changed: click apply on the right (restarts listening; connected pages must sign in again)",
+	"首次用浏览器打开登录页时设置密码（只保存哈希），之后用这个密码登录。": "Set a password the first time you open the login page in a browser (only its hash is stored); use it from then on.",
+	"修改密码": "Change password",
+	"修改远程访问密码": "Change remote access password",
+	"先输入当前密码，再设置新密码。新密码只保存哈希。": "Enter the current password, then set a new one. Only its hash is stored.",
+	"当前密码": "Current password",
+	"新密码": "New password",
+	"确认新密码": "Confirm new password",
+	"新密码不能为空": "New password cannot be empty",
+	"两次输入的新密码不一致": "The new passwords do not match",
+	"密码已更新": "Password updated",
+	"修改密码失败": "Failed to change password",
+	"应用新凭据（重启监听）": "Apply new credentials (restart listening)",
+	"应用新凭据": "Apply new credentials",
+	"没找到 web 产物": "Web build not found",
+	"浏览器打开只有接口、没有界面。先在仓库根跑一次": "Opening it in a browser exposes only APIs, no UI. Run once at the repo root:",
+	"再开关一次这里。": "then toggle this off and on again.",
+	"复制{label}": "Copy {label}",
+	"已复制{label}": "Copied {label}",
+	"复制失败，请手动选中": "Copy failed; please select manually",
+	"远程访问设置失败": "Failed to update remote access settings",
+	"远程访问没能开启": "Remote access could not be enabled",
+	"端口 {port} 已被占用：换一个端口，或先关掉占用它的程序": "Port {port} is already in use: pick another port, or stop the program using it",
+	"没有权限监听端口 {port}（1024 以下是特权端口）": "No permission to listen on port {port} (ports below 1024 are privileged)",
+	"新建自定义主题": "New custom theme",
+	"「{name}」的背景": "Background for “{name}”",
+	"背景属于这套主题：换到别的主题就看不到它，切回来还在。图片与视频都只存在本机。": "The background belongs to this theme: it is hidden on other themes and returns when you switch back. Images and videos stay on this machine.",
+	"完成": "Done",
+	"这套自定义配色和它自己的背景（图片 / 视频）会从本机移除，不可撤销。内置主题不受影响。": "This custom color theme and its background (image / video) will be removed from this machine. This cannot be undone. Built-in themes are unaffected.",
+	"存不下：本地存储已满，试试删掉几套自定义主题或换张小一点的背景图。": "Could not save: local storage is full. Try deleting a few custom themes or using a smaller background image.",
+	"打开命令面板": "Open command palette",
+	"打开 / 关闭侧边栏": "Toggle sidebar",
+	"打开 / 关闭终端": "Toggle terminal",
+	"打开 / 关闭工作区文件": "Toggle workspace files",
+	"打开 / 关闭源代码管理": "Toggle source control",
+	"推送（源代码管理）": "Push (source control)",
+	"切换亮 / 暗主题": "Toggle light / dark theme",
+	"关闭当前标签": "Close current tab",
+	"语音输入（按住说话）": "Voice input (hold to talk)",
+	"请至少带上 Ctrl 或 Alt（F1–F12 这类功能键可以单独使用）": "Include at least Ctrl or Alt (function keys F1–F12 may be used alone)",
+	"仅应用在前台时生效，": "Only active while the app is in the foreground; ",
+	"不占用系统级热键": "does not register system-wide hotkeys",
+	"。": ".",
+	"在 Mac 为 ⌘、其他平台为 Ctrl；Esc 取消录制，Backspace / Delete 清除。": "On Mac this is ⌘; elsewhere Ctrl. Esc cancels recording; Backspace / Delete clears it.",
+	"存在冲突的快捷键（同一组合被多个动作占用，仅其中一个会生效）：": "Conflicting shortcuts (one combination is used by several actions; only one takes effect):",
+	"按下按键组合…（Esc 取消）": "Press a key combination… (Esc to cancel)",
+	"该组合与其它动作冲突": "This combination conflicts with another action",
+	"应用内生效（窗口在前台时）": "Active in-app while the window is in the foreground",
+	"未绑定：该动作被禁用": "Unbound: this action is disabled",
+	"点击设置": "Click to set",
+	"恢复默认": "Restore defaults",
+	"恢复默认快捷键": "Restore default shortcuts",
+	"确认修改快捷键": "Confirm shortcut change",
+	"将所有快捷键恢复为默认值？": "Restore all shortcuts to their defaults?",
+	"将「{action}」的快捷键设置为「{key}」？": "Set the shortcut for “{action}” to “{key}”?",
+	"清除「{action}」的快捷键？该动作将被禁用。": "Clear the shortcut for “{action}”? The action will be disabled.",
+	"启动后自动检查新版本": "Checks for updates automatically on launch; ",
+	"当前不是安装包启动，自动更新不可用。": "Auto-update is unavailable because this is not a packaged build.",
+	"再检查一次": "Check again",
+	"正在检查…": "Checking…",
+	"新版本": "New version",
+	"已下载，重启后生效": "downloaded; restart to apply",
+	"重启并安装": "Restart and install",
+	"正在后台下载，可继续使用。": "Downloading in the background; you can keep using the app.",
+	"会退出应用，安装完成后自动打开。": "The app will quit and reopen automatically when installation finishes.",
+	"关于 {name}": "About {name}",
+	"应用信息": "App information",
+	"面向多工作区的 AI 编码助手：在一个窗口里管理项目、会话、终端与源代码管理。": "A multi-workspace AI coding assistant: manage projects, conversations, terminals and source control in one window.",
+	"尚未连接到服务端": "Not connected to the server yet",
+	"Token 用量。数据来自每轮结束时随消息落盘的 usage": "Token usage. Data comes from usage recorded with each completed turn.",
+	"重新统计": "Recalculate",
+	"统计失败：{error}": "Failed to load usage: {error}",
+	"输入": "Input",
+	"输出": "Output",
+	"思考": "Reasoning",
+	"思考强度": "Reasoning effort",
+	"思考强度：{name}（下一轮生效；模型不支持时由服务商降级）": "Reasoning effort: {name} (applies next turn; unsupported levels are downgraded by the provider)",
+	"最小": "Minimal",
+	"低": "Low",
+	"中": "Medium",
+	"高": "High",
+	"极高": "Extra high",
+	"最高": "Max",
+	"缓存": "Cached",
+	"跨 {count} 个会话": "Across {count} conversations",
+	"每日消耗": "Daily usage",
+	"近 {days} 天每日 token 用量，最高 {peak}": "Daily token usage over the last {days} days; peak {peak}",
+	"今天": "Today",
+	"{count} 个会话": "{count} conversations",
+	"最费的会话": "Most expensive conversations",
+	"总 token": "Total tokens",
+	"这段时间还没有跑完的轮次。跑一轮对话后回来刷新。": "No completed turns in this period. Run a conversation and come back to refresh.",
+	"存不下：本地存储已满，换张小一点的图。": "Could not save: local storage is full. Try a smaller image.",
+	"这张图读不了，换一张试试。": "This image cannot be read. Try another one.",
+	"存不下：本地存储已满，换一段小一点的视频。": "Could not save: local storage is full. Try a shorter video.",
+	"这段视频读不了，换一段试试。": "This video cannot be read. Try another one.",
+	"只支持图片或视频文件。": "Only image or video files are supported.",
+	"只作用于「{name}」，新素材会替换旧素材；视频建议短小，持续解码较费电。": "Applies only to “{name}”; new media replaces the old one. Keep videos short — continuous decoding drains the battery.",
+	"当前主题的背景图": "Current theme background image",
+	"图片": "Image",
+	"更换": "Replace",
+	"移除": "Remove",
+	"显示": "Fit",
+	"背景显示方式": "Background fit",
+	"遮罩": "Mask",
+	"模糊": "Blur",
+	"「铺满」裁掉多出来的部分；「完整显示」整幅都看得见，留出的边用主题底色填。遮罩越高，背景越淡、文字越清楚；拉到最高基本就看不见背景了。": "“Cover” crops the overflow; “Contain” shows the whole image with theme color filling the edges. Higher mask fades the background and improves text clarity; at maximum the background is practically invisible.",
+	"正在读取视频…": "Reading video…",
+	"选择图片或视频（都存在本机）": "Choose an image or video (stored locally)",
+	"读不到视频": "Video unavailable",
+	"当前主题的背景视频": "Current theme background video",
+	"铺满": "Cover",
+	"完整显示": "Contain",
+	"自定义主题": "Custom theme",
+	"存不下：本地存储已满，试试删掉几套自定义主题。": "Could not save: local storage is full. Try deleting a few custom themes.",
+	"编辑主题": "Edit theme",
+	"主题名称": "Theme name",
+	"亮色": "Light",
+	"暗色": "Dark",
+	"颜色": "Colors",
+	"字体": "Fonts",
+	"尺度": "Scale",
+	"质感": "Texture",
+	"代码": "Code",
+	"留空 = 跟随默认字体": "Leave blank to use the default font",
+	"正文 Aa 你好": "Body Aa Hello",
+	"标题 Aa 你好": "Heading Aa Hello",
+	"字体栈按 CSS 写法填（逗号分隔，可带引号）。留空回落到默认：正文系统无衬线、标题跟随正文、等宽用系统等宽字体。": "Enter font stacks in CSS syntax (comma-separated, quotes allowed). Empty falls back to defaults: system sans-serif for body, body font for headings, system monospace for code.",
+	"字号倍率": "Text scale",
+	"界面密度": "UI density",
+	"圆角": "Corner radius",
+	"字号倍率只覆盖正文的 9 档字号（xs…5xl）；密度调的是全局间距基准。": "Text scale affects the nine body font sizes (xs…5xl); density adjusts the global spacing baseline.",
+	"阴影强度": "Shadow strength",
+	"阴影预览": "Shadow preview",
+	"背景质感": "Background texture",
+	"纹理画在整个窗口的底色上，纯 CSS、不耗素材。配了背景图 / 视频的主题会以媒体为准，纹理自动让位。": "Textures are painted on the window background in pure CSS without media assets. Themes with a background image / video use the media instead and the texture steps aside.",
+	"这 8 个颜色驱动代码块（Shiki）与 Monaco 编辑器；保存后已打开的编辑器也会跟着刷新。": "These 8 colors drive code blocks (Shiki) and the Monaco editor; open editors refresh after saving.",
+	"背景改动即时生效（素材选中就要落盘，没法当草稿回滚），点「取消」不会撤回。": "Background changes take effect immediately (media is persisted on selection and cannot be rolled back as a draft); “Cancel” will not undo them.",
+	"清除背景": "Clear background",
+	"标题：一套设计语法": "Heading: a design language",
+	"正文预览：字号、间距与配色都由当前草稿决定。": "Body preview: size, spacing and colors come from the current draft.",
+	"主按钮": "Primary",
+	"强调色": "Accent",
+	"卡片与弹层": "Cards & popovers",
+	"次级与悬停": "Secondary & hover",
+	"边框": "Borders",
+	"侧栏": "Sidebar",
+	"字号与密度": "Text & density",
+	"代码配色": "Code colors",
+	"卡片底": "Card background",
+	"正文": "Text",
+	"强调色文字": "Accent text",
+	"卡片文字": "Card text",
+	"弹层底": "Popover background",
+	"弹层文字": "Popover text",
+	"次级底": "Secondary background",
+	"次级文字": "Secondary text",
+	"弱化底": "Muted background",
+	"弱化文字": "Muted text",
+	"悬停底": "Hover background",
+	"悬停文字": "Hover text",
+	"输入框描边": "Input border",
+	"侧栏底": "Sidebar background",
+	"侧栏文字": "Sidebar text",
+	"侧栏悬停": "Sidebar hover",
+	"侧栏悬停文字": "Sidebar hover text",
+	"侧栏分隔": "Sidebar divider",
+	"正文字体": "Body font",
+	"标题字体": "Heading font",
+	"等宽字体": "Monospace font",
+	"关键字": "Keyword",
+	"字符串": "String",
+	"数字与常量": "Number & constant",
+	"注释": "Comment",
+	"函数": "Function",
+	"变量": "Variable",
+	"标点": "Punctuation",
+	"纯色": "Solid",
+	"最干净的底色": "Cleanest background",
+	"纸纹": "Paper",
+	"细横纹，像打印纸": "Fine horizontal lines, like printer paper",
+	"点阵": "Dots",
+	"16px 网格上的小点": "Small dots on a 16px grid",
+	"扫描线": "Scanlines",
+	"终端屏幕的横向条纹": "Horizontal stripes like a CRT screen",
+	"裁掉多出来的部分，不留边": "Crop the overflow with no edges",
+	"整幅都看得见，留出边": "Show the whole image with edges",
+	"内置浏览器": "Built-in browser",
+	"Playwright 自带的 Chromium（headless shell），约 150MB，不随安装包分发。浏览器工具、网页抓取（JS 渲染）与网页截图共用这一份 —— 没装时聊天工具条上不会出现浏览器开关。": "Playwright’s bundled Chromium (headless shell), about 150MB, not shipped with the installer. Browser tools, JS-rendered web fetches and page screenshots all share this copy — until it is installed, the browser toggle does not appear above the composer.",
+	"检测中…": "Checking…",
+	"已安装": "Installed",
+	"未安装": "Not installed",
+	"版本 {rev}": "Build {rev}",
+	"安装": "Install",
+	"下载在后台进行，关掉设置页不会中断": "The download runs in the background; closing settings will not stop it",
+	"安装失败": "Installation failed",
+	"也可以用 playwright MCP": "Or use playwright MCP",
+	"不想装这份运行时，可以在「MCP」页加一条 Playwright 官方 MCP（npx @playwright/mcp@latest）。会话里挂了带同名工具的 MCP 时，内置浏览器工具会自动让位，不需要手动关。注意两点：MCP 用自己的浏览器实例，右侧「浏览器」面板看不到它的画面；没装这份运行时，浏览器工具不会挂出来，网页抓取也只剩不需要浏览器的 fetch 引擎。": "If you would rather not install this runtime, add the official Playwright MCP (npx @playwright/mcp@latest) on the MCP page. When a session has an MCP that exposes the same tool names, the built-in browser tools step aside automatically — no need to turn them off. Two caveats: the MCP drives its own browser instance, so the browser panel shows nothing of it; and without this runtime the browser tools are not mounted at all and web fetching only offers the plain fetch engine.",
+	"卸载内置浏览器？": "Uninstall the built-in browser?",
+	"会删掉这份 headless shell（约 150MB）。卸载期间先关掉所有浏览器会话；之后浏览器工具（含截图）不再挂出来，网页抓取只剩不需要浏览器的 fetch 引擎，想再用需要重新下载。": "This deletes the headless shell (about 150MB). All browser sessions are closed first; afterwards browser tools (screenshots included) are no longer mounted and web fetching only offers the plain fetch engine. Download it again to get them back.",
+	"网站数据": "Site data",
+	"每个会话各存一份独立的浏览数据（Cookie、登录状态、本地存储与缓存），互不共享 —— 所以才会「这个会话登着、那个会话没登」。删除会话时会一并清掉；只想换账号请到右侧「浏览器」面板里清那一个会话，这里只做兜底。": "Each conversation keeps its own browsing data (cookies, sign-in state, local storage and cache) — nothing is shared, which is why one conversation can be signed in while another is not. Deleting a conversation clears its copy too; to switch accounts, clear just that conversation from the browser panel on the right. This section is only a fallback.",
+	"统计中…": "Measuring…",
+	"暂无网站数据": "No site data",
+	"{count} 份浏览数据": "{count} profiles",
+	"清除全部网站数据": "Clear all site data",
+	"清除全部网站数据？": "Clear all site data?",
+	"会先关掉所有正在运行的浏览器，再删除每个会话的 Cookie、登录状态、本地存储与缓存。会话与聊天记录不受影响；之后每个会话再打开浏览器都需要重新登录。": "Every running browser is closed first, then each conversation’s cookies, sign-in state, local storage and cache are deleted. Conversations and chat history are untouched; each one will need to sign in again the next time its browser starts.",
+	"已清除全部网站数据": "Cleared all site data",
+	"清除网站数据": "Clear site data",
+	"清除这个会话的网站数据？": "Clear this conversation’s site data?",
+	"会关掉浏览器，并删除这个会话的 Cookie、登录状态、本地存储与缓存。会话与聊天记录不受影响；下次启动浏览器需要重新登录。": "This closes the browser and deletes this conversation’s cookies, sign-in state, local storage and cache. The conversation and its chat history are untouched; the next browser start will need a fresh sign-in.",
+	"已清除这个会话的网站数据": "Cleared this conversation’s site data"
+};
+// packages/i18n/src/dict/agent.ts
+/**
+* AI Agent 模块英文文案：模型配置、MCP、ACP、技能、插件、子任务、工具权限、思考档与多智能体协作。
+*
+* key = 中文原文；未翻译的条目自动回落到中文。
+*/
+var AGENT = {
+	"内置": "Built-in",
+	"重新扫描磁盘上的技能目录（新装的技能点这里）": "Rescan skill directories on disk (use this after installing a skill)",
+	"扫描中…": "Scanning…",
+	"技能发现位置": "Skill discovery locations",
+	"这些目录下的": "Under these directories,",
+	"会被扫到": "will be scanned",
+	"添加一个额外的技能发现目录（服务端上的绝对路径）": "Add an extra skill discovery directory (absolute path on the server)",
+	"{count} 个": "{count}",
+	"目录不存在": "Directory not found",
+	"移除发现目录 {dir}": "Remove discovery directory {dir}",
+	"移除这个额外目录": "Remove this extra directory",
+	"搜索技能（名字 / 描述 / 路径）…": "Search skills (name / description / path)…",
+	"搜索技能": "Search skills",
+	"停用技能 {name}": "Disable skill {name}",
+	"启用技能 {name}": "Enable skill {name}",
+	"没扫到技能。在任一位置放入": "No skills found. Put a SKILL.md under any location",
+	"后点「刷新」。": "then click “Refresh”.",
+	"没有匹配「{keyword}」的技能。": "No skills match “{keyword}”.",
+	"内置 + 用户级，所有项目共用": "Built-in + user-level, shared by all projects",
+	"暂无插件": "No plugins yet",
+	"项目插件": "Project plugins",
+	"只在这个项目里生效": "Only active in this project",
+	"这里只列这个项目自己的插件": "Only this project’s own plugins are listed here",
+	"用户级": "User-level",
+	"{name}：{error}": "{name}: {error}",
+	"未设置": "Not set",
+	"{name}：要填一个数字": "{name}: must be a number",
+	"已设置（留空不改）": "Set (leave blank to keep)",
+	"清掉已保存的值": "Clear the saved value",
+	"清除": "Clear",
+	"还没有连接到服务端": "Not connected to the server yet",
+	"还没选择项目": "No project selected",
+	"读取插件失败：{error}": "Failed to load plugins: {error}",
+	"保存失败：{error}": "Failed to save: {error}",
+	"这个目录里没有可安装的文件": "This directory has no installable files",
+	"已安装「{name}」": "Installed “{name}”",
+	"安装失败：{error}": "Install failed: {error}",
+	"已卸载「{name}」": "Uninstalled “{name}”",
+	"卸载失败：{error}": "Uninstall failed: {error}",
+	"未连接服务端": "Not connected to the server",
+	"已复制{what}": "Copied {what}",
+	"复制失败：剪贴板不可用（可手动选中路径复制）": "Copy failed: clipboard unavailable (select the path and copy manually)",
+	"浏览器里打不开本机路径：{dir}": "Cannot open local paths in a browser: {dir}",
+	"打开目录失败：{error}": "Failed to open directory: {error}",
+	"从本地选一个插件目录（含 plugin.json）装进用户级的插件目录": "Choose a local plugin directory (with plugin.json) to install into user-level plugins",
+	"从本地选一个插件目录（含 plugin.json）装进这个项目的插件目录": "Choose a local plugin directory (with plugin.json) to install into this project’s plugins",
+	"安装中…": "Installing…",
+	"安装插件": "Install plugin",
+	"重新扫描磁盘上的插件目录（手放进去的文件点这里）": "Rescan plugin directories on disk (use this for manually copied files)",
+	"空": "Empty",
+	"复制目录 {dir}": "Copy directory {dir}",
+	"复制这个目录路径": "Copy this directory path",
+	"目录路径": "directory path",
+	"打开目录 {dir}": "Open directory {dir}",
+	"用系统默认程序打开这个目录（桌面端）": "Open this directory with the default app (desktop)",
+	"{count} 个插件没通过加载 / 校验，当前不会生效": "{count} plugin(s) failed to load / validate and will not take effect",
+	"搜索插件（名字 / 路径）…": "Search plugins (name / path)…",
+	"搜索插件": "Search plugins",
+	"这个插件在 plugins.yml 里被 enabled: false 停用，改这里没用": "This plugin is disabled by enabled: false in plugins.yml; changing it here has no effect",
+	"plugins.yml 停用": "Disabled by plugins.yml",
+	"复制插件路径 {name}": "Copy plugin path {name}",
+	"复制插件目录路径": "Copy plugin directory path",
+	"插件路径": "plugin path",
+	"接受：{list}": "Accepts: {list}",
+	"接受：内置白名单（图片 + PDF）": "Accepts: built-in allowlist (images + PDF)",
+	"上传源：": "Upload source: ",
+	"附件菜单": "Attachment menu",
+	"面板": "Panel",
+	"停用插件 {name}": "Disable plugin {name}",
+	"启用插件 {name}": "Enable plugin {name}",
+	"编辑这个插件的设置项": "Edit this plugin’s settings",
+	"配置": "Configure",
+	"（{count} 项）": "({count} items)",
+	"删掉 {name}？": "Delete {name}?",
+	"卸载（把它的文件从磁盘删掉）": "Uninstall (delete its files from disk)",
+	"卸载插件 {name}": "Uninstall plugin {name}",
+	"没有匹配「{keyword}」的插件。": "No plugins match “{keyword}”.",
+	"安装依赖": "Install dependencies",
+	"把插件声明的 npm 依赖装进这个作用域的插件目录（手工拷进来的插件点这里）": "Install the npm dependencies declared by plugins into this scope’s plugin directory (use this for plugins copied in by hand)",
+	"这个作用域里没有插件声明 npm 依赖，什么都没做": "No plugin in this scope declares npm dependencies; nothing to do",
+	"插件依赖已安装（{root}）": "Plugin dependencies installed ({root})",
+	"依赖安装失败：{error}": "Dependency installation failed: {error}",
+	"{name}@{range}（装在这个插件根的共享 node_modules 里）": "{name}@{range} (installed into the plugin root’s shared node_modules)",
+	"这个界面由插件自带的前端 bundle 渲染（不是服务端吐的 UiBlock）": "This surface is rendered by the plugin’s own frontend bundle (not server-produced UiBlocks)",
+	"已保存子任务模型": "Subagent model saved",
+	"子任务已改为沿用父会话模型": "Subagent now uses the parent conversation model",
+	"工具权限": "Tool permissions",
+	"控制 Agent 能修改或执行哪些操作；查看与搜索始终允许。下一轮对话生效。": "Control what the agent may modify or execute; viewing and searching are always allowed. Takes effect next turn.",
+	"确认模式": "Confirm mode",
+	"改动前先询问；拒绝后不会重试。": "Ask before changes; rejected actions are not retried.",
+	"只读模式": "Read-only mode",
+	"只看不改，写入与执行都会被拒绝。": "View only; writes and execution are rejected.",
+	"不问直接执行，请谨慎使用。": "Execute without asking — use with care.",
+	"工具调用并发": "Tool call concurrency",
+	"同一批工具调用最多并行几个；多出的排队。1 = 串行，默认": "How many tool calls in a batch may run in parallel; extras are queued. 1 = serial, default",
+	"，上限 10。": ", max 10.",
+	"个": "",
+	"工具调用最大步数": "Max tool steps",
+	"一轮对话里最多连续调用工具多少次（1 步 = 一次模型请求 + 一轮工具执行）。达到上限后即使还有没跑完的工具调用也会停下这一轮。默认": "Maximum tool steps in one turn (1 step = one model request plus one round of tool execution). The turn stops at the limit even if tool calls are still pending. Default",
+	"，上限": ", max",
+	"；调大能跑更长的任务，代价是每步都要重发全量上下文，成本随步数累加。": "; raising it allows longer tasks, but every step resends the full context, so cost grows with the step count.",
+	"步": " steps",
+	"本轮已用满 {n} 步工具上限，自动停止": "Stopped after using the full {n}-step tool budget",
+	"本轮已用满工具步数上限，自动停止": "Stopped after using the full tool-step budget",
+	"继续": "Continue",
+	"子任务（subagent）": "Subagents",
+	"把只读、产出长的任务交给子 Agent，减少主对话上下文占用。子任务": "Hand read-only, long-output tasks to subagents to save main-conversation context. Subagents",
+	"不能修改文件或执行命令": "cannot modify files or run commands",
+	"停用子任务 {name}": "Disable subagent {name}",
+	"启用子任务 {name}": "Enable subagent {name}",
+	"已停用「{name}」子任务": "Disabled “{name}” subagent",
+	"已启用「{name}」子任务": "Enabled “{name}” subagent",
+	"是否派活由主 Agent 自己判断，简单的活它通常自己干": "The main agent decides when to delegate; it usually handles simple work itself",
+	"子任务模型": "Subagent model",
+	"沿用父会话模型": "Use parent conversation model",
+	"子任务通常只读文件并汇总，选快 / 便宜的模型即可；模型不可用时自动退回父会话模型。": "Subagents usually only read files and summarize, so a fast / cheap model is enough; unavailable models fall back to the parent conversation model.",
+	" 原模型已不可用。": " The previous model is no longer available.",
+	"默认关闭；是否派活由主 Agent 判断。": "Off by default; the main agent decides when to delegate.",
+	"自定义子智能体": "Custom subagents",
+	"自己起名字、写用途、挑工具。建完同样要勾上才会派活。": "Name it, describe when to use it, and pick its tools. It still has to be enabled before it can be used.",
+	"还没有自定义子智能体。": "No custom subagents yet.",
+	"编辑 {name}": "Edit {name}",
+	"删除 {name}": "Delete {name}",
+	"编辑子智能体": "Edit subagent",
+	"新建子智能体": "New subagent",
+	"子智能体在只读模式下运行：它拿到的是任务原文，看不到主对话历史。": "Subagents run read-only: they receive only the task text, not the main conversation history.",
+	"用途": "Purpose",
+	"例如：文档核对": "e.g. Doc consistency check",
+	"写清「什么活派给它」。这段就是派活工具的描述，模型靠它决定何时调用。": "Describe when this subagent should be used. This text becomes the delegation tool description the model reads.",
+	"指令（可选）": "Instructions (optional)",
+	"给这个子智能体的额外要求：关注什么、输出什么格式。只读、不许提问这些硬约束仍然生效。": "Extra requirements for this subagent: what to focus on, how to format the result. Read-only and no-questions rules still apply.",
+	"可用工具（只读）": "Available tools (read-only)",
+	"子智能体不能改文件、不能执行命令，所以这里只给只读工具。": "Subagents cannot modify files or run commands, so only read-only tools are offered.",
+	"步数上限": "Max steps",
+	"默认 80": "Default 80",
+	"模型": "Model",
+	"沿用子任务模型": "Use subagent model",
+	"请填写名称": "Name is required",
+	"请填写用途（模型据此决定要不要派活给它）": "Purpose is required (the model uses it to decide when to delegate)",
+	"步数需为 {min}–{max} 的整数": "Steps must be an integer between {min} and {max}",
+	"填写有误": "Please check the form",
+	"删除子智能体？": "Delete subagent?",
+	"「{name}」会从设置里移除，并从启用清单里摘掉；历史消息里仍显示它当时的名字。": "“{name}” will be removed from settings and from the enabled list; past messages still show its original name.",
+	"命令审批超时": "Approval timeout",
+	"等待审批的最长时间，超时按拒绝处理。0 = 一直等待。": "Longest wait for approval; timeouts are treated as rejection. 0 = wait forever.",
+	"分钟": "min",
+	"（不超时）": " (no timeout)",
+	"模型请求重试": "Model request retries",
+	"请求失败后的自动重试次数。已跑完工具步骤的轮次会从断点继续，不会重跑已完成的工具。0 = 不限，默认 2。": "Automatic retries after a failed request. Turns that already finished tool steps resume from the breakpoint instead of re-running those tools. 0 = unlimited, default 2.",
+	"次": "",
+	"（不限制）": " (unlimited)",
+	"需为 1–10 的整数，离开输入框会夹到最近的边界": "Must be an integer from 1 to 10; leaving the field clamps it to the nearest bound",
+	"需为 {min}–{max} 的整数，离开输入框会夹到最近的边界": "Must be an integer from {min} to {max}; leaving the field clamps it to the nearest bound",
+	"需为不小于 0 的整数（0 = 一直等待）": "Must be an integer ≥ 0 (0 = wait forever)",
+	"需为不小于 0 的整数（0 = 不限）": "Must be an integer ≥ 0 (0 = unlimited)",
+	"需为 0–3600 的整数秒，离开输入框会夹到最近的边界": "Must be an integer number of seconds from 0 to 3600; leaving the field clamps it to the nearest bound",
+	"端口需为 1–65535 的整数，离开输入框会夹到最近的边界": "Must be an integer from 1 to 65535; leaving the field clamps it to the nearest bound",
+	"留空 = 默认（{value}）": "Leave empty for the default ({value})",
+	"传输方式": "Transport",
+	"MCP 给 Agent 外接工具，支持 stdio / http / sse；每个会话在输入框上方工具条选择启用项。": "MCP connects external tools to the agent; supports stdio / http / sse. Pick which ones to enable per conversation from the toolbar above the composer.",
+	"看 {name} 提供了哪些工具": "See which tools {name} provides",
+	"编辑 MCP server {name}": "Edit MCP server {name}",
+	"删除 MCP server {name}": "Delete MCP server {name}",
+	"还没有 MCP server。加一个之后，Agent 就能用它的工具。": "No MCP servers yet. Add one and the agent can use its tools.",
+	"添加 MCP server": "Add MCP server",
+	"列出外部 Agent": "List external agents",
+	"探测外部 Agent": "Detect external agents",
+	"探测 Agent 模型": "Probe agent models",
+	"添加外部 Agent": "Add external agent",
+	"修改外部 Agent": "Edit external agent",
+	"删除外部 Agent": "Delete external agent",
+	"编辑 MCP server": "Edit MCP server",
+	"stdio（本地子进程）：命令在服务端执行，填服务端上跑得起来的 stdio 服务（npx / uvx / 绝对路径都行）。": "stdio (local subprocess): the command runs on the server; fill in a stdio service that runs there (npx / uvx / absolute paths all work).",
+	"http（Streamable HTTP）：由服务端发起 HTTP 请求，填远端 MCP 的地址，需要鉴权就把请求头也带上。": "http (Streamable HTTP): the server makes the HTTP requests; fill in the remote MCP URL and add headers if authentication is needed.",
+	"sse（旧版 HTTP + SSE）：同上，只是走旧版 SSE 端点，地址与请求头填法一样。": "sse (legacy HTTP + SSE): same as above but through the legacy SSE endpoint; URL and headers work the same way.",
+	"改完保存即生效，启停状态保持原样。": "Saving takes effect immediately and keeps the current enabled state.",
+	"名称，如 filesystem": "Name, e.g. filesystem",
+	"启动命令，如 npx": "Command, e.g. npx",
+	"启动参数（空格分隔，可留空）": "Arguments (space-separated, optional)",
+	"环境变量（K=V 每行一个，可留空）": "Environment variables (one K=V per line, optional)",
+	"服务地址，如 https://example.com/mcp": "Server URL, e.g. https://example.com/mcp",
+	"请求头（K=V 每行一个，可留空）": "Headers (one K=V per line, optional)",
+	"{name} 的工具": "{name} tools",
+	"连上该 server，列出它提供的工具（列完服务端就断开它）。": "Connect to the server and list its tools (the server disconnects afterwards).",
+	"正在连它、列工具…": "Connecting and listing tools…",
+	"它没有提供任何工具。": "It provides no tools.",
+	"重新读取": "Reload",
+	"删除 MCP server？": "Delete MCP server?",
+	"「{name}」（{summary}）会从列表里移除，它的工具从下一轮对话起不再注入。删掉就得重新添加。": "“{name}” ({summary}) will be removed from the list and its tools will stop being injected next turn. You will need to add it again.",
+	"ACP 会话由外部 agent 进程运行；模型、技能与提示词由它自己管理。命令在服务端执行。": "ACP conversations run in an external agent process; models, skills and prompts are managed by it. Commands run on the server.",
+	"挑 {name} 的模型": "Choose models for {name}",
+	"挑 {name} 的模型（已选 {count} 个）": "Choose models for {name} ({count} selected)",
+	"编辑 ACP agent {name}": "Edit ACP agent {name}",
+	"删除 ACP agent {name}": "Delete ACP agent {name}",
+	"移除模型 {name}": "Remove model {name}",
+	"检测已安装": "Detect installed",
+	"添加 ACP agent": "Add ACP agent",
+	"编辑 ACP agent": "Edit ACP agent",
+	"命令在服务端上执行，工作目录是会话所属工作区。": "Commands run on the server, with the conversation workspace as the working directory.",
+	"改完保存即可，已挑好的模型清单不受影响。": "Just save; the selected model list is unaffected.",
+	"同一个命令（含参数）只能添加一次。": "The same command (including arguments) can only be added once.",
+	"名称，如 Codex CLI": "Name, e.g. Codex CLI",
+	"启动命令，如 codex-acp": "Command, e.g. codex-acp",
+	"类型（决定会话里的模式 UI：opencode → 权限档，pi → 思考档，通用 → 不显示）": "Type (controls the mode UI in conversations: opencode → permission levels, pi → thinking levels, generic → hidden)",
+	"通用（不显示模式 UI）": "Generic (no mode UI)",
+	"opencode（Session Modes 当权限档）": "opencode (Session Modes as permission levels)",
+	"pi（thought_level 当思考档）": "pi (thought_level as thinking levels)",
+	"「完全放行」时的答复：缺省「仅允许一次」（下次仍会询问）；选「永久记住」后由 agent 自己记着不再问，届时切回「确认」也要不回询问": "Reply for “allow all”: defaults to “allow once” (asks again next time); with “remember forever” the agent stops asking and switching back to “confirm” will not restore prompts",
+	"仅允许一次（推荐，下次仍会询问）": "Allow once (recommended; asks again next time)",
+	"允许并永久记住（agent 侧不再询问）": "Allow and remember forever (agent stops asking)",
+	"这个命令（含参数）已经被别的条目占了，换个命令或参数。": "This command (including arguments) is already used by another entry; change the command or arguments.",
+	"检测已安装的 ACP agent": "Detected ACP agents",
+	"这些是服务端 PATH 上找到的命令。勾选要添加的条目，点「添加」一次写进去；已经添加过的会自动勾上并标注。": "These commands were found on the server PATH. Check the ones to add and click “Add”; already-added ones are checked and marked.",
+	"探测失败：{error}": "Detection failed: {error}",
+	"服务端 PATH 上没有找到可用的 ACP agent。可以点「添加 ACP agent」手动填启动命令。": "No usable ACP agent found on the server PATH. Click “Add ACP agent” to enter a command manually.",
+	"已添加": "Added",
+	"（{count} 个）": "({count})",
+	"删除 ACP agent？": "Delete ACP agent?",
+	"「{name}」（{command}）会从列表里移除，为它挑好的模型清单也一起丢掉。删掉就得重新添加。": "“{name}” ({command}) will be removed along with its selected model list. You will need to add it again.",
+	"移除模型？": "Remove model?",
+	"「{model}」会从「{agent}」的模型白名单里移除；之后可以再点「模型」把它加回来。": "“{model}” will be removed from the model list of “{agent}”; you can add it back via “Models”.",
+	"选择 {name} 的模型": "Choose models for {name}",
+	"选择你需要的模型。": "Select the models you need.",
+	"正在问它要模型清单…": "Requesting its model list…",
+	"读取失败：{error}": "Failed to load: {error}",
+	"这个 agent 没有广告可选模型（或它不支持 ACP 的会话配置项）。": "This agent advertises no selectable models (or does not support ACP session config options).",
+	" 下方仍是已添加的模型，取消勾选即可移出。": " Added models are still listed below; uncheck to remove them.",
+	"也可以在下面手动填模型 id。": "You can also enter a model id manually below.",
+	"搜索模型…": "Search models…",
+	"没有匹配「{keyword}」的模型。": "No models match “{keyword}”.",
+	"手动添加：填模型 id（必填），展示名留空则直接用 id。": "Manual add: enter a model id (required); leave the display name empty to use the id.",
+	"模型 id，如 anthropic/claude-sonnet-4": "Model id, e.g. anthropic/claude-sonnet-4",
+	"展示名（可选）": "Display name (optional)",
+	"添加": "Add",
+	"全选": "Select all",
+	"清空": "Clear",
+	"保存（{count} 个）": "Save ({count})",
+	"OpenAI 兼容": "OpenAI compatible",
+	"输出 {value}": "Output {value}",
+	"无工具": "No tools",
+	"无图": "No images",
+	"思考关": "Reasoning off",
+	"模型 id 不能为空": "Model id cannot be empty",
+	"「{id}」已经在这份配置里了": "“{id}” is already in this config",
+	"上下文窗口要填正整数（token），留空 = 默认": "Context window must be a positive integer (tokens); leave blank for default",
+	"最大输出 token 要填正整数（留空 = 不限制）": "Max output tokens must be a positive integer (blank = unlimited)",
+	"「{id}」会从「{name}」这份配置里移除；网关地址与 API key 不受影响，之后还能再加回来。": "“{id}” will be removed from “{name}”; the gateway URL and API key are unaffected and you can add it back later.",
+	"「{name}」会从列表里移除{models}、网关地址与 API key 也一起丢掉，删掉就得重新填。": "“{name}” will be removed{models}, along with its gateway URL and API key. You will need to re-enter them.",
+	"，它下面的 {count} 个模型 id": ", along with its {count} model ids",
+	"窗口为输入 + 输出的总上限；点 ✎ 修改模型设置。用满": "The window is the combined input + output limit; click ✎ to edit model settings. At",
+	"% 自动摘要旧对话；「默认」=": "% of it the old conversation is summarized automatically; “default” =",
+	"由插件「{name}」注册：在插件里修改": "Registered by plugin “{name}”: edit it in the plugin",
+	"由插件注册：在插件里修改": "Registered by a plugin: edit it in the plugin",
+	" · 有 API key": " · has API key",
+	" · 无 API key": " · no API key",
+	"从远端拉取 {name} 的模型": "Fetch models for {name} from upstream",
+	"从远端拉取模型": "Fetch models from upstream",
+	"编辑 {name} 的网关设置": "Edit gateway settings for {name}",
+	"编辑网关设置": "Edit gateway settings",
+	"删除模型配置 {name}": "Delete model config {name}",
+	"未单独配置，按 {value} 兜底": "Not set separately; falls back to {value}",
+	"上下文窗口 {size} token（用满 {trigger} 会自动摘要旧对话）": "Context window {size} tokens (at {trigger} the old conversation is summarized automatically)",
+	"编辑模型 {id}": "Edit model {id}",
+	"编辑模型 id / 上下文窗口 / 输出上限 / 能力开关 / 接口风格": "Edit model id / context window / output limit / capabilities / API style",
+	"移除模型 {id}": "Remove model {id}",
+	"还没有模型：点下面「添加模型」，或右上角从上游拉取（这个配置暂时不能用于对话）。": "No models yet: click “Add model” below or fetch from upstream at the top right (this config cannot be used for chat yet).",
+	"添加模型": "Add model",
+	"还没有模型配置。加了模型 Agent 才能说话。": "No model configs yet. Add a model before the agent can talk.",
+	"添加模型配置": "Add model config",
+	"编辑模型配置": "Edit model config",
+	"名称（可选）": "Name (optional)",
+	"Base URL（OpenAI 兼容网关才需要），如 http://127.0.0.1:7919/v1": "Base URL (required only for OpenAI-compatible gateways), e.g. http://127.0.0.1:7919/v1",
+	"API Key（留空保留原密钥）": "API Key (leave blank to keep the current key)",
+	"API Key（服务端会加密存）": "API Key (encrypted on the server)",
+	"模型不在这里加：保存后到列表里用「添加模型」或「从上游拉取」。": "Models are not added here: after saving, use “Add model” or “Fetch from upstream” in the list.",
+	"编辑模型": "Edit model",
+	"模型 id": "Model id",
+	"如 gpt-4o-mini、openrouter/anthropic/claude-3-haiku": "e.g. gpt-4o-mini, openrouter/anthropic/claude-3-haiku",
+	"上下文窗口（输入 + 输出共用的总上限，决定圆环分母与自动压缩阈值）": "Context window (combined input + output limit; sets the usage-ring denominator and auto-compaction threshold)",
+	"要填正整数（token），留空 = 默认": "Must be a positive integer (tokens); blank = default",
+	"「默认」= 输入框留空、走 {value} 兜底。token 是按个计数的单位，k = 1000（不是 1024）：20k = 20,000 token。OpenAI 协议没有单独的输入上限：输入可用空间 = 窗口 − 最大输出。": "“Default” = leave the field blank to fall back to {value}. Tokens are counted in thousands: k = 1000 (not 1024), so 20k = 20,000 tokens. The OpenAI protocol has no separate input limit: available input = window − max output.",
+	"最大输出 token（单次回复上限）": "Max output tokens (per-reply limit)",
+	"留空 = 不限制（如 4000、64000）": "Blank = unlimited (e.g. 4000, 64000)",
+	"不限": "Unlimited",
+	"要填正整数（留空 = 不限制）": "Must be a positive integer (blank = unlimited)",
+	"对应 OpenAI 的 max_output_tokens；开启思考的模型里推理 token 也算在这里。自动摘要按窗口的 {percent}% 预留输出，输出上限特别大时建议把窗口一起调小。": "Maps to OpenAI’s max_output_tokens; reasoning tokens also count toward it for thinking models. Auto-compaction reserves {percent}% of the window for output; if the output limit is very large, consider reducing the window as well.",
+	"能力": "Capabilities",
+	"工具调用": "Tool calls",
+	"关掉后不向这个模型下发任何工具（含子任务派活），只做纯对话。": "When off, no tools are sent to this model (including subagent delegation); it only chats.",
+	"图片输入": "Image input",
+	"关掉后发送图片会被拒绝；历史里的图片在发给模型时按一行说明省略，PDF 不受影响。": "When off, sending images is rejected; images in history are omitted as a one-line note when sent to the model. PDFs are unaffected.",
+	"思考内容": "Reasoning",
+	"关掉后不显示也不落盘模型的思考过程（不影响它内部推理，只影响透传）。": "When off, the model’s reasoning is neither shown nor saved (internal reasoning still happens; only passthrough is affected).",
+	"接口风格（OpenAI 协议）": "API style (OpenAI protocol)",
+	"跟随配置（{style}）": "Follow config ({style})",
+	"网关只实现其中一种时在这里按模型钉死，别让它跟随配置走错接口。": "If the gateway implements only one style, pin it per model here so it does not inherit the wrong endpoint.",
+	"从上游拉取模型": "Fetch models from upstream",
+	"正在向上游要模型清单…": "Requesting model list from upstream…",
+	"筛选模型…": "Filter models…",
+	"{id}（已在列表中，取消勾选 = 保存后移出）": "{id} (already in list; uncheck to remove on save)",
+	"已在列表": "Already in list",
+	"保存后移出": "Removed on save",
+	"取消选择 {id}": "Deselect {id}",
+	"取消选择": "Deselect",
+	"上游没有返回任何模型。": "Upstream returned no models.",
+	"全选筛选结果": "Select all filtered",
+	"清空选择": "Clear selection",
+	"重新拉取": "Fetch again",
+	"确认添加": "Confirm",
+	"删除模型配置？": "Delete model config?",
+	"这个标签的数据已失效，关闭后重新打开即可。": "This tab’s data is no longer valid; close and reopen it.",
+	"没有可显示的内容": "Nothing to show",
+	"这个插件的界面是一个「标签页」（不是侧栏内容）。": "This plugin’s UI is a tab, not sidebar content.",
+	"在主视图打开「{title}」": "Open “{title}” in the main view",
+	"这个插件没有声明可显示的内容（它只注册了图标栏那一颗）。": "This plugin declares no displayable content (it only adds an activity bar icon).",
+	"插件界面": "Plugin interface",
+	"重新读取这一面": "Reload this surface",
+	"重新读取（插件的 render 会在服务端再跑一次）": "Reload (the plugin render runs again on the server)",
+	"读取中…": "Loading…",
+	"插件界面加载失败": "Failed to load the plugin UI",
+	"插件界面崩了": "The plugin UI crashed",
+	"还没连上服务端": "Not connected to the server yet",
+	"插件方法「{method}」调用失败": "Plugin method “{method}” failed",
+	"选择 MCP（已选 {count} 个）": "Select MCP ({count} selected)",
+	"选择 MCP": "Select MCP",
+	"多智能体协作": "Multi-agent",
+	"协作智能体": "Collaboration agents",
+	"@ 点名由该智能体处理；不点名时全体判断是否需要接手": "@mention goes to that agent; without @ every agent decides whether the message is theirs",
+	"添加智能体": "Add agent",
+	"还没有智能体，先添加一个": "No agents yet — add one first",
+	"协作设置": "Collaboration settings",
+	"控制同一时刻并行跑几个 Agent，以及单轮最多触发多少次运行（含 SendMessage 唤醒）。": "Limits how many agents run in parallel and how many runs a single turn may trigger (including SendMessage wake-ups).",
+	"并行上限": "Parallel limit",
+	"单轮运行上限": "Runs per turn",
+	"正在执行": "Running",
+	"正在回复": "Replying",
+	"协作记录": "Collaboration log",
+	"用户点名、Agent 之间的 SendMessage 投递与每条回复的摘要。": "User mentions, SendMessage deliveries between agents, and a summary of each reply.",
+	"还没有协作记录": "No collaboration log yet",
+	"删除这个智能体？": "Delete this agent?",
+	"删除后它不再接收 @ 点名或广播；已开始的运行会被取消，历史消息保留。": "It will no longer receive @mentions or broadcasts; running tasks are cancelled and history is kept.",
+	"空闲": "Idle",
+	"排队": "Queued",
+	"等回答": "Waiting for answer",
+	"用户": "User",
+	"点名智能体": "Mention an agent",
+	"从 ACP agent 侧拉取 {name} 下的既有会话，可多选；绑定后直接继续对话（历史保存在 agent 侧）。": "Pull existing sessions from the ACP agent under {name}; multi-select, then continue chatting right away (history stays on the agent side).",
+	"当前项目": "current project",
+	"选择 ACP Agent": "Choose an ACP agent",
+	"选择 Agent…": "Choose an agent…",
+	"还没有配置 ACP Agent": "No ACP agent configured yet",
+	"已选 {count} 条": "{count} selected",
+	"该 Agent 在这个项目下的会话": "Sessions of this agent in this project",
+	"会话清单": "Sessions",
+	"先在上面选一个 ACP Agent": "Pick an ACP agent above first",
+	"正在拉取会话清单…": "Loading sessions…",
+	"已导入": "Imported",
+	"没有找到会话": "No sessions found",
+	"这个 Agent 不支持会话清单": "This agent does not support listing sessions",
+	"它在当前项目下还没有可导入的会话": "It has no importable sessions in this project yet",
+	"需要在 Agent 侧开启 session/list 能力": "Enable the session/list capability on the agent side",
+	"导入中 {done}/{total}": "Importing {done}/{total}",
+	"第 {index} / {total} 项": "{index} / {total}",
+	"是否允许执行这次操作？": "Allow this operation?",
+	"工具意图": "Tool intent",
+	"让模型为每次工具调用写一句「这一步要干什么」，显示成工具卡的标题（「修复类型错误」而不是「编辑文件」）。关掉后工具卡立刻回到工具名，模型也不再被要求填这句（下一轮生效）。": "Ask the model to write one line per tool call saying what this step is for, shown as the card title (“Fix type errors” instead of “Edit file”). Turning it off restores the tool name right away and stops requesting the line from the next turn.",
+	"已关闭（工具卡只显示工具名）": "Off (cards show only the tool name)",
+	"允许执行": "Allow",
+	"拒绝": "Deny",
+	"上一项": "Previous",
+	"下一项": "Next",
+	"全部允许": "Allow all",
+	"全部拒绝": "Deny all",
+	"到点自动起一轮会话 · 共 {total} 条 · {enabledCount} 条启用中": "Starts a conversation automatically on schedule · {total} total · {enabledCount} enabled",
+	"新建定时任务": "New scheduled task",
+	"立即运行": "Run now",
+	"立即运行定时任务": "Run scheduled task now",
+	"已开始运行「{name}」": "Started “{name}”",
+	"正在加载定时任务…": "Loading scheduled tasks…",
+	"还没有定时任务": "No scheduled tasks yet",
+	"刚触发过": "Just triggered",
+	"选中左边一条定时任务查看详情。": "Select a scheduled task on the left to view details.",
+	"（目录不存在，触发会被跳过）": "(directory missing; the run will be skipped)",
+	"停用定时任务": "Disable scheduled task",
+	"启用定时任务": "Enable scheduled task",
+	"编辑定时任务": "Edit scheduled task",
+	"触发方式": "Schedule",
+	"启用中": "Enabled",
+	"已停用": "Disabled",
+	"上次触发": "Last triggered",
+	"创建时间": "Created",
+	"（无人值守时会拒绝写操作）": "(write operations are denied when unattended)",
+	"模型 / Agent": "Model / Agent",
+	"浏览器 / MCP": "Browser / MCP",
+	"不适用（外部 Agent 自带工具）": "Not applicable (external agent brings its own tools)",
+	"跟随全局默认": "Use global default",
+	"不挂": "None attached",
+	"需求": "Prompt",
+	"（没有填需求）": "(no prompt provided)",
+	"运行记录": "Run history",
+	"{n} 次": "{n} runs",
+	"还没跑过：到点会在侧栏里出现一个会话。": "Not run yet: a conversation will appear in the sidebar at the scheduled time.",
+	"还没跑过（现在是停用状态）。": "Not run yet (currently disabled).",
+	"打开这个会话：{title}": "Open this conversation: {title}",
+	"另有 {n} 条会话已被删除，不再列出。": "{n} more conversations were deleted and are no longer listed.",
+	"跑出来的会话与手动新建的会话完全一样，在侧栏里能看到。": "Runs produce the same conversations as manual ones and appear in the sidebar.",
+	"每次触发都落在上面那个工作区里。": "Each run happens in the workspace above.",
+	"每次触发都会新建一个临时工作区（空目录、不进项目列表）。": "Each run creates a temporary workspace (empty directory, not added to the project list).",
+	"（已删除的项目）": "(deleted project)",
+	"每次运行自动创建": "Auto-created for each run",
+	"cron：{cron}": "Cron: {cron}",
+	"一次性：{at}": "One-time: {at}",
+	"未设置时间表": "No schedule set",
+	"未选择": "Not selected",
+	"未选择（外部 Agent 已删除）": "Not selected (external agent deleted)",
+	"{name} · 跟随 agent 默认": "{name} · agent default",
+	"未选择（配置已删除）": "Not selected (config deleted)",
+	"{n} 秒前": "{n}s ago",
+	"{n} 分钟前": "{n}m ago",
+	"{n} 小时前": "{n}h ago",
+	"{n} 天前": "{n}d ago",
+	"上次触发：{time}": "Last triggered: {time}",
+	"还没触发过": "Not triggered yet",
+	"配置「什么时候自动起一轮会话」：按 cron 表达式，或指定一个时刻。跑起来的会话在侧栏里可见、可回看。": "Configure when a conversation starts automatically: by cron expression or at a specific time. Resulting conversations are visible in the sidebar and can be revisited.",
+	"保存修改": "Save changes",
+	"先选一个模型或外部 Agent：定时任务触发时没人值守，不会替你挑一份配置": "Choose a model or external agent first: no one is around when the scheduled task runs, so it will not pick a config for you",
+	"先选一个模型：定时任务触发时没人值守，不会替你挑一份配置": "Choose a model first: no one is around when the scheduled task runs, so it will not pick a config for you",
+	"选一个触发时刻：一次性任务必须知道「什么时候」跑": "Choose a trigger time: a one-time task must know when to run",
+	"每天巡检依赖": "Daily dependency check",
+	"选择模型 / Agent": "Choose model / agent",
+	"触发时用什么跑：内置模型（配置 → 模型），或外部 Agent（ACP，可跟随它自己的默认模型）": "What to run with: a built-in model (config → model), or an external agent (ACP, which may use its own default model)",
+	"这个工作区的目录已不存在（{path}），保存会被拒绝：请重新选择工作区，或改用「每次运行自动创建」。": "This workspace directory no longer exists ({path}), so saving will be rejected: choose another workspace or use “Auto-created for each run”.",
+	"每次触发都在这个工作区里跑一轮会话。": "Each run happens in this workspace.",
+	"不绑工作区：每次触发自动新建一个临时工作区（空目录、不进项目列表），从零干一遍。": "No workspace: each run creates a temporary workspace (empty directory, not added to the project list) and starts from scratch.",
+	"权限 / 模型与新建会话时是同一套选项；浏览器 / MCP 只对内置模型生效 —— 外部 Agent 自带工具，不读这两个开关。": "Permission / model use the same options as a new conversation; browser / MCP only apply to built-in models — external agents bring their own tools and ignore these toggles.",
+	"权限 / 模型 / 浏览器 / MCP 与新建会话时是同一套选项；浏览器工具跑在服务端，无人值守也能用。": "Permission / model / browser / MCP use the same options as a new conversation; browser tools run on the server and also work unattended.",
+	"必须选一个目标（内置模型，或外部 Agent）—— 触发时没人值守，不会替你挑一个。外部 Agent 可以「跟随它自己的默认模型」。": "You must choose a target (built-in model or external agent) — no one is around when the task runs, so it will not pick one for you. External agents can use their own default model.",
+	"按时间表（cron）": "On a schedule (cron)",
+	"一次性（指定时刻）": "One-time (specific time)",
+	"cron 表达式": "Cron expression",
+	"每小时": "Every hour",
+	"每天 9:00": "Daily at 9:00",
+	"每天 18:00": "Daily at 18:00",
+	"每周一 9:00": "Mondays at 9:00",
+	"每月 1 号 9:00": "1st of each month at 9:00",
+	"分 时 日 月 周（周日为 0），由服务端内置 cron 调度": "Minute hour day month weekday (Sunday = 0), scheduled by the server’s built-in cron",
+	"触发时刻": "Trigger time",
+	"到点触发一次，之后自动停用": "Runs once at the given time, then disables itself",
+	"「确认模式」要先有人点「允许」才放行写操作，而定任务跑的时候旁边通常没人 —— 写文件 / 执行命令会被拒绝。无人值守请选「完全访问」；只想看不想改就选「只读模式」。": "“Confirm mode” requires someone to click “Allow” before writes proceed, but no one is usually around when a scheduled task runs — file writes / command execution will be denied. For unattended runs choose “Full access”; to view without changes choose “Read-only mode”.",
+	"外部 Agent 的权限请求只有「完全访问」才会自动放行；当前档位下这些请求会一直等不到人答复，超时后被拒绝 —— 需要它真的动手时请选「完全访问」。": "Only “Full access” auto-approves an external agent’s permission requests; at the current level these requests wait until they time out and are then denied — choose “Full access” when it must actually take action.",
+	"触发的会话与手动新建的会话完全一样（侧栏可回看、可继续对话），区别只是「谁按的开始」。": "Triggered conversations are exactly like manually created ones (revisitable in the sidebar and can continue); the only difference is who started them.",
+	"例：检查依赖有没有新版本，有就升级并提交": "e.g. Check dependencies for new versions, upgrade and commit if any"
+};
+// packages/i18n/src/dict/chat.ts
+/**
+* 对话模块英文文案：消息列表与工具卡、输入区、排队与插话、提问表单、会话标签、审批卡、后台任务。
+*
+* key = 中文原文；未翻译的条目自动回落到中文。
+*/
+var CHAT = {
+	"未知项目": "Unknown project",
+	"临时会话": "Scratch conversations",
+	"取消归档 {title}": "Unarchive {title}",
+	"彻底删除": "Delete permanently",
+	"还没有归档会话。会话行行尾那颗归档按钮点一下，它就会收进这里。": "No archived conversations yet. Click the archive button at the end of a conversation row to move it here.",
+	"正在加载会话…": "Loading conversations…",
+	"正在删除": "Deleting",
+	"确认清空": "Confirm clear",
+	"确认清空 {count} 条": "Confirm clearing {count}",
+	"清空中…": "Clearing…",
+	"清空 {name} 下的 {count} 条归档会话": "Clear all {count} archived chats in {name}",
+	"再点一次确认清空 {name}": "Click again to clear {name}",
+	"这一轮已经结束，作答会作为一条新消息发出去。": "This turn has ended; your answer will be sent as a new message.",
+	"助手的提问（无待作答表单）": "Assistant question (no form to answer)",
+	"助手的提问（请在输入框里作答）": "Assistant question (answer in the input box)",
+	"多选": "Multiple choice",
+	"其他": "Other",
+	"其他补充…": "Something else…",
+	"其他（自由输入）": "Other (free input)",
+	"上一题": "Previous",
+	"上一题（←）": "Previous (←)",
+	"第 {index} / {total} 题": "Question {index} / {total}",
+	"第 {index} 题（已作答）": "Question {index} (answered)",
+	"第 {index} 题（未作答）": "Question {index} (unanswered)",
+	"下一题": "Next",
+	"下一题（→）": "Next (→)",
+	"提交全部答案": "Submit all answers",
+	"还有 {count} 题没答": "{count} question(s) left",
+	"提交": "Submit",
+	"跳过": "Skip",
+	"失败": "Failed",
+	"已回答": "Answered",
+	"已跳过": "Skipped",
+	"助手的提问": "Assistant question",
+	"提问失败": "Question failed",
+	"未作答": "Not answered",
+	"正在删除消息…": "Deleting message…",
+	"还没有消息": "No messages yet",
+	"第 {attempt} 次重试": "Retry attempt {attempt}",
+	"第 {attempt} 次重试（接着上次的进度）": "Retry attempt {attempt} (resuming from where it stopped)",
+	"连接中断，正在重连（第 {attempt} 次）…": "Connection lost; reconnecting (attempt {attempt})…",
+	"服务端这一轮还在跑，接上就继续": "The server is still running this turn; it will continue once reconnected",
+	"（本轮没有返回内容）": "(No content returned this turn)",
+	"消息目录": "Message outline",
+	"（这条消息没有文字）": "(This message has no text)",
+	"会话加载失败": "Failed to load conversation",
+	"本轮用量": "This turn usage",
+	"整轮耗时 {time}": "Turn duration {time}",
+	"合计": "Total",
+	"缓存命中率": "Cache hit rate",
+	"缓存命中 {cached} / 输入 {input}": "Cache reads {cached} / input {input}",
+	"编辑消息 · 重发将删除本条及其后的消息": "Editing message · resending deletes this and all later messages",
+	"（空消息）": "(empty message)",
+	"取消编辑": "Cancel editing",
+	"编辑插话 · 发送后重新插回当前轮": "Editing note · it will be injected back into the current turn after sending",
+	"清空队列里的 {count} 条消息？": "Clear {count} queued messages?",
+	"这些都还没发出去，清空后就没了。": "These have not been sent yet and will be lost.",
+	"待发送 · {count} 条": "Queued · {count}",
+	"排队中": "Queued",
+	"上轮失败，队列已暂停": "Last turn failed; queue paused",
+	"继续发下一条": "Continue with next",
+	"清空队列": "Clear queue",
+	"插入中 · {count} 条（下个步骤边界生效，agent 正在跑的这一轮内）": "Injecting · {count} (applies at the next step boundary, while the agent is running this turn)",
+	"未发出 · {count} 条（本轮已结束，可挑一条立刻发出去）": "Not sent · {count} (turn ended; you can send one immediately)",
+	"拖动左侧把手可调整顺序": "Drag the left handle to reorder",
+	"消息内容": "Message content",
+	"按住拖动调整顺序": "Hold and drag to reorder",
+	"删除这条待发送消息？": "Delete this queued message?",
+	"对话进行中，本轮结束后会自动发送": "Conversation in progress; it will be sent automatically after this turn",
+	"立刻发送这一条": "Send this now",
+	"发送这一条": "Send this",
+	"正在插话…": "Interjecting…",
+	"插话：下一个工具步骤边界停下当前步骤后发出": "Interject: sent at the next tool-step boundary after the current step stops",
+	"插话这一条": "Interject this message",
+	"已插话，等下一个工具步骤边界生效": "Interjected — waiting for the next tool-step boundary",
+	"等待边界生效": "Waiting for the boundary",
+	"编辑并写回输入框": "Edit and write back to composer",
+	"（仅附件）": "(attachments only)",
+	"移除这条插话？": "Remove this note?",
+	"这条插话带了 {count} 个附件，会在边界与文字一起注入": "This note has {count} attachment(s) that will be injected with the text at the boundary",
+	"立刻发送这一条（作为新一轮的普通消息）": "Send this now (as a regular message in a new turn)",
+	"编辑并写回输入框（附件一起回显）": "Edit and write back to composer (attachments included)",
+	"编辑这条插话": "Edit this note",
+	"移除（还没生效：不再发给 agent，也不再发出去）": "Remove (not yet applied: it will not reach the agent or be sent)",
+	"移除这条插话": "Remove this note",
+	"权限答复：{label}": "Permission reply: {label}",
+	"确认（逐次询问）": "Confirm (ask every time)",
+	"完全放行（不再询问）": "Allow all (never ask)",
+	"正在读取这个外部 Agent 的模式…": "Reading modes from the external agent…",
+	"切换权限档失败：{error}": "Failed to switch permission mode: {error}",
+	"未知错误": "Unknown error",
+	"模式：{name}（由外部 Agent 提供，可切换）": "Mode: {name} (provided by the external agent; switchable)",
+	"模式（由外部 Agent 提供，可切换）": "Mode (provided by the external agent; switchable)",
+	"模式：{name}": "Mode: {name}",
+	"模式": "Mode",
+	"正在读取这个外部 Agent 的思考档…": "Reading thinking levels from the external agent…",
+	"切换思考档失败：{error}": "Failed to switch thinking level: {error}",
+	"思考档：{name}": "Thinking level: {name}",
+	"思考档：{name}（由外部 Agent 提供，session/set_config_option 切换）": "Thinking level: {name} (provided by the external agent; switched via session/set_config_option)",
+	"思考档": "Thinking level",
+	"手动压缩失败：{error}": "Manual compaction failed: {error}",
+	"上下文用量": "Context usage",
+	"上下文用量（agent 上报，点击看详情）": "Context usage (reported by the agent; click for details)",
+	"上下文用量（点击看详情，可手动压缩）": "Context usage (click for details; manual compaction available)",
+	"本轮累计输入": "Input this turn",
+	"（压缩后估算，下一轮起按上游实测值）": "(post-compaction estimate; upstream usage takes over next turn)",
+	"其中系统提示词 + 工具": "of which system prompt + tools",
+	"其中缓存命中": "of which cache hits",
+	"其中思考": "of which reasoning",
+	"子任务": "Subagents",
+	"（{count} 次）": "({count} calls)",
+	"会话累计": "Conversation total",
+	"最近一次压缩：{before} → {after} token，摘要了 {summarized} 条消息、保留 {kept} 条。": "Last compaction: {before} → {after} tokens, summarized {summarized} message(s), kept {kept} message(s).",
+	"最近没有发生过上下文压缩。": "No context compaction has occurred recently.",
+	"已开启摘要压缩（{time}）：之前的对话以摘要参与上下文，原始消息未动。": "Summary compaction enabled ({time}): earlier conversation participates as a summary; original messages are unchanged.",
+	"检查点之后还没有超出保留区的历史，压缩不会减少占用": "There is not yet more history beyond the keep window since the last checkpoint; compacting would not free anything",
+	"外部 Agent 自己管理上下文，本地无法压缩": "External agents manage their own context; nothing to compact locally",
+	"这一轮还在进行中，请等它结束后再压缩": "This turn is still running; wait for it to finish before compacting",
+	"压缩中…": "Compacting…",
+	"压缩上下文": "Compact context",
+	"未连接服务端，无法上传附件": "Not connected to the server; cannot upload attachments",
+	"当前 Agent 不支持图片输入，请改用文字描述，或把文件放进工作区": "This agent does not accept image input; describe it in text or put the file in the workspace instead",
+	"上传失败": "Upload failed",
+	"连接中断": "Connection lost",
+	"正在自动重连（第 {attempt} 次）· 服务端这一轮还在跑，接上就接着出": "Reconnecting automatically (attempt {attempt}) · The server is still running this turn; output will continue once reconnected",
+	"立即重连": "Reconnect now",
+	"上下文已压缩": "Context compacted",
+	"上下文交接文档": "Context handoff",
+	"正在整理旧上下文…": "Preparing context handoff…",
+	"等待模型输出…": "Waiting for model output…",
+	"压缩前 {tokens} token": "Before: {tokens} tokens",
+	"→ 压缩后 {tokens} token": "After: {tokens} tokens",
+	"摘要了 {summarized} 条消息，保留 {kept} 条": "Summarized {summarized} message(s), kept {kept}",
+	"在「{name}」里说点什么": "Say something in “{name}”",
+	"先添加一个工作区": "Add a workspace first",
+	"Agent 会在该目录内执行命令、读写文件；工作区外的路径一律拒绝": "The agent runs commands and reads/writes files inside this directory; paths outside the workspace are denied",
+	"工作区就是 Agent 的边界：只有登记过的目录能被读写": "The workspace is the agent boundary: only registered directories can be read or written",
+	"等待确认：{label}": "Waiting for confirmation: {label}",
+	"等待回答：{label}": "Waiting for answer: {label}",
+	"正在运行…": "Running…",
+	"等待确认": "Waiting for confirmation",
+	"等待回答": "Waiting for answer",
+	"ACP 会话": "ACP conversation",
+	"对话会话": "Chat conversation",
+	"多智能体协作会话": "Multi-agent conversation",
+	"未查看": "Unseen",
+	"定时任务起的会话，还没点开过": "Scheduled-task conversation that has not been opened",
+	"确认归档": "Confirm archive",
+	"归档会话": "Archive conversation",
+	"重命名会话": "Rename conversation",
+	"打开会话目录": "Open conversation directory",
+	"已重启会话，下一条消息会重新连接": "Session restarted; the next message will reconnect",
+	"重启会话": "Restart session",
+	"已重新加载会话": "Session reloaded",
+	"重新加载会话": "Reload session",
+	"转换为内置 Agent 会话": "Convert to built-in Agent conversation",
+	"列出目录": "List directory",
+	"查找文件": "Find files",
+	"搜索内容": "Search contents",
+	"读取文件": "Read file",
+	"写入文件": "Write file",
+	"编辑文件": "Edit file",
+	"删除文件": "Delete file",
+	"执行命令": "Run command",
+	"查看与编辑文件": "View & edit files",
+	"打开 AI 助手": "Open AI assistant",
+	"关闭 AI 助手": "Close AI assistant",
+	"在终端执行": "Run in terminal",
+	"读取终端输出": "Read terminal output",
+	"发送按键": "Send keys",
+	"拖动可继续选择，松手后点复制": "Drag to extend the selection, then tap Copy",
+	"复制选中文本": "Copy selection",
+	"清除选区": "Clear selection",
+	"已复制选中文本": "Selection copied",
+	"复制失败，请检查剪贴板权限": "Copy failed — check clipboard permission",
+	"列出终端会话": "List terminal sessions",
+	"更新待办清单": "Update todo list",
+	"抓取网页": "Fetch page",
+	"网页截图": "Screenshot",
+	"读取 Git": "Read Git",
+	"读取技能": "Read skill",
+	"向用户提问": "Ask the user",
+	"列出项目": "List projects",
+	"浏览目录": "Browse directories",
+	"创建项目": "Create project",
+	"切换项目": "Switch project",
+	"移除项目": "Remove project",
+	"创建 Worktree": "Create worktree",
+	"删除 Worktree": "Delete worktree",
+	"创建定时任务": "Create scheduled task",
+	"列出定时任务": "List scheduled tasks",
+	"修改定时任务": "Update scheduled task",
+	"删除定时任务": "Delete scheduled task",
+	"启停定时任务": "Enable/disable scheduled task",
+	"创建插件": "Create plugin",
+	"子任务 · 侦察": "Sub-agent · Scout",
+	"子任务 · 审查": "Sub-agent · Reviewer",
+	"读取": "Read",
+	"移动文件": "Move file",
+	"切换模式": "Switch mode",
+	"…（已截断）": "… (truncated)",
+	"工具执行失败": "Tool failed",
+	"正在思考…": "Thinking…",
+	"思考了几秒": "Thought for a few seconds",
+	"思考了 {seconds} 秒": "Thought for {seconds}s",
+	"思考 ×{count}": "Thinking ×{count}",
+	"工具调用 ×{count}": "Tool calls ×{count}",
+	"提问 ×{count}": "Questions ×{count}",
+	"执行过程": "Process",
+	"思考中…": "Thinking…",
+	"思考过程": "Thinking process",
+	"已工作 {duration}": "Worked {duration}",
+	"正在工作…": "Working…",
+	"发送时间 {time}": "Sent at {time}",
+	"结束时间 {time}": "Finished at {time}",
+	"{seconds} 秒": "{seconds}s",
+	"{minutes} 分 {seconds} 秒": "{minutes}m {seconds}s",
+	"{minutes} 分": "{minutes}m",
+	"完整内容": "Full content",
+	"这次调用的完整内容（列表里被截断了），可选中复制；点击内容会显示复制按钮。": "The full content of this call (truncated in the list). Select to copy, or tap the content to show the copy button.",
+	"复制消息": "Copy message",
+	"从此签出：以这条消息为终点创建分支会话（历史到这里为止，两边各自独立）": "Fork from here: create a branch conversation ending at this message (history up to here; the two are independent)",
+	"从此签出": "Fork from here",
+	"从此转为内置 Agent 会话：以这条消息为终点复制成一条内置会话（历史到这里为止）": "Convert from here: copy this into a built-in agent conversation ending at this message (history up to here)",
+	"从此转为内置 Agent 会话": "Convert to built-in agent",
+	"重试这条：不修改内容，直接以它为起点重新发送（会删掉它之后的消息）": "Retry from here: resend this message unchanged, starting a new turn from it (later messages are deleted)",
+	"重试这条消息": "Retry this message",
+	"重试这条消息？": "Retry this message?",
+	"将删除这条及其后的全部消息，再按原文重新发送（不可撤销）。": "This message and everything after it will be deleted, then resent unchanged. This cannot be undone.",
+	"没能重试：检查模型与会话状态后再试": "Retry failed: check the model and conversation state, then try again",
+	"编辑并重新发送": "Edit and resend",
+	"删除本条？": "Delete this one?",
+	"仅本条": "This one only",
+	"及后续 {count} 条": "And the following {count}",
+	"删除这条消息（可选是否连同其后的消息一起删）": "Delete this message (optionally along with the ones after it)",
+	"删除这条消息": "Delete this message",
+	"@@ 编辑 {index} @@": "@@ Edit {index} @@",
+	"@@ 新建 / 覆盖 @@": "@@ New / overwrite @@",
+	"子任务运行中… {seconds}s": "Sub-agent running… {seconds}s",
+	"· 正在 {tool}": "· running {tool}",
+	"· 已调用 {count} 个工具": "· {count} tools called",
+	"疯狂输出中...": "Streaming…",
+	"实时输出中...": "Live output…",
+	"命令运行中，暂无输出": "Command running, no output yet",
+	"（这个命令还没有产生任何 stdout / stderr。它可能正在跑，也可能一直沉默。）": "(This command has produced no stdout / stderr yet. It may be running, or it may stay silent.)",
+	"这一轮还在生成，先停止再重新加载": "This turn is still generating — stop it before reloading",
+	"上拉刷新": "Pull up to refresh",
+	"松开刷新": "Release to refresh",
+	"正在刷新…": "Refreshing…",
+	"{done}/{total} 已完成": "{done}/{total} done",
+	"（待办清单已清空）": "(Todo list cleared)",
+	"子任务输出中...": "Sub-agent output…",
+	"子任务结论": "Sub-agent result",
+	"查看子任务过程": "View sub-agent process",
+	"停止子任务": "Stop sub-agent",
+	"返回主会话": "Back to conversation",
+	"子任务 · {name}": "Sub-agent · {name}",
+	"运行中…": "Running…",
+	"跑完了，但没有产出结论": "Finished with no conclusion",
+	"执行失败": "Failed",
+	"执行失败（详情只在服务端日志里）": "Failed (details only in server logs)",
+	"已中止": "Aborted",
+	"已工作 {time}": "Worked {time}",
+	"还没有过程记录": "No process recorded yet",
+	"按键 {keys}": "Keys {keys}",
+	"图片加载失败": "Failed to load image",
+	"查看文档 {title}": "Open document {title}",
+	"查看": "View",
+	"下载图片": "Download image",
+	"正在运行": "Running",
+	"未指定工作区": "No workspace",
+	"（目录不存在）": " (directory missing)",
+	"工作区：Agent 只能读写这个目录里的东西": "Workspace: the agent can only read and write inside this directory",
+	"浏览器工具：已开启（点击关闭）": "Browser tools: on (click to turn off)",
+	"浏览器工具：已关闭（点击开启，下一轮生效）": "Browser tools: off (click to turn on; applies next turn)",
+	"关闭浏览器工具": "Turn off browser tools",
+	"开启浏览器工具": "Turn on browser tools",
+	"未检测到": "Not detected",
+	"自动": "Auto",
+	"自带 Chromium": "Bundled Chromium",
+	"Playwright 自带 Chromium": "Playwright bundled Chromium",
+	"选择模型": "Select model",
+	"打开设置 → {tab}": "Open settings → {tab}",
+	"AI 模型": "AI models",
+	"外部 Agent（ACP）": "External agents (ACP)",
+	"选择后端": "Select backend",
+	"这一轮用哪个模型 / 哪个外部 Agent（下一轮生效）": "Which model / external agent to use this turn (applies next turn)",
+	"跟随 agent 默认": "Follow agent default",
+	"还没有模型配置": "No model configs yet",
+	"还没有外部 Agent": "No external agents yet",
+	"发送（本轮结束后自动执行）": "Send (runs automatically after this turn)",
+	"松开以添加附件": "Release to attach",
+	"停止录音": "Stop recording",
+	"语音输入（也可按住 Alt+V 说话）": "Voice input (or hold Alt+V to talk)",
+	"停止本轮": "Stop this turn",
+	"正在创建会话…": "Creating conversation…",
+	"正在创建会话": "Creating conversation",
+	"上下文压缩中，稍后再发": "Compacting context — send again in a moment",
+	"斜线命令": "Slash commands",
+	"生成项目约束文档": "Generate AGENTS.md",
+	"读一遍这个项目后生成 AGENTS.md（下一轮对话会被全文注入系统提示词）": "Read this project and generate AGENTS.md (injected in full on the next turn)",
+	"提交改动": "Commit changes",
+	"让模型看当前改动、生成提交信息并提交": "Have the model review the changes, write the commit message and commit",
+	"先选一个有磁盘目录的项目（内置「任务」没有目录，写不了 AGENTS.md）": "Select a project with a directory first (the built-in \"Tasks\" workspace has no directory, so AGENTS.md cannot be written)",
+	"先选一个有磁盘目录的项目（内置「任务」没有目录，提交不了）": "Select a project with a directory first (the built-in \"Tasks\" workspace has no directory, so it cannot commit)",
+	"没能发出 /init：这一下被拦住了（压缩上下文中 / 没有可用会话），稍后再试": "Could not send /init: it was blocked (compacting context / no available conversation). Try again later.",
+	"没能发出 /git-commit：这一下被拦住了（压缩上下文中 / 没有可用会话），稍后再试": "Could not send /git-commit: it was blocked (compacting context / no available conversation). Try again later.",
+	"工具权限：{label}": "Tool permission: {label}",
+	"切换模型（下一轮生效）": "Switch model (applies next turn)",
+	"没有可选项": "Nothing to choose",
+	"还没有快捷功能": "No quick actions yet",
+	"添加后会出现在工作区工具条的 ⚡ 下拉里，点一下即可执行。": "Once added they appear in the ⚡ menu of the workspace toolbar — one click runs them.",
+	"停止并关闭这个对话？": "Stop and close this conversation?",
+	"这条会话正在生成回复，关闭标签会先停止当前回合（已生成的内容保留）。": "This conversation is still generating; closing the tab stops the current turn first (what has been generated is kept).",
+	"停止并关闭": "Stop and close",
+	"刷新这个对话？": "Reload this conversation?",
+	"这个标签右侧面板里挂着的 {count} 条终端会一起重开，里面正在运行的进程会一起结束。": "The {count} terminal(s) attached to this tab will reopen, and any running processes in them will end.",
+	"终端 {index}": "Terminal {index}",
+	"终端 · 容器内": "Terminal · in container",
+	"终端 · {cwd}": "Terminal · {cwd}",
+	"终端（已开 {count} 条）": "Terminal ({count} open)",
+	"选择终端": "Choose terminal",
+	"容器终端": "Container terminal",
+	"没有检测到可选的终端": "No terminals detected",
+	"正在检测终端…": "Detecting terminals…",
+	"工作区文件": "Workspace files",
+	"工作区文件 · {name}": "Workspace files · {name}",
+	"收起工作区文件": "Hide workspace files",
+	"源码管理": "Source control",
+	"源代码管理": "Source control",
+	"源代码管理 · {name}": "Source control · {name}",
+	"源代码管理（{count} 处改动）": "Source control ({count} changes)",
+	"收起源代码管理": "Hide source control",
+	"浏览器画面": "Browser view",
+	"预览 · {name}": "Preview · {name}",
+	"预览（容器页面）": "Preview (container page)",
+	"收起预览": "Hide preview",
+	"收起浏览器": "Hide browser",
+	"未知标签": "Unknown tab",
+	"展开面板": "Show panel",
+	"收起面板": "Hide panel",
+	"展开/收起面板": "Show/hide panel",
+	"更多面板入口": "More panel entries",
+	"浏览器里打不开本机路径：{path}（这个动作需要在宿主机上执行）": "Cannot open a local path in the browser: {path} (this action must run on the host machine)",
+	"{title} · 临时会话：不指定项目的对话（目录在服务端数据目录）": "{title} · scratch conversation: not bound to a project (directory lives in the server data dir)",
+	"外部 Agent：{name}": "External agent: {name}",
+	"新会话": "New conversation",
+	"后台任务 · {count} 项运行中": "Background tasks · {count} running",
+	"后台任务 · {count} 项已结束": "Background tasks · {count} finished",
+	"展开后台任务": "Expand background tasks",
+	"收起后台任务": "Collapse background tasks",
+	"已完成": "Done",
+	"已取消": "Canceled",
+	"已运行 {time}": "Running for {time}",
+	"用时 {time}": "Took {time}",
+	"日志 {count}": "Log {count}",
+	"加载日志…": "Loading log…",
+	"还没有输出": "No output yet",
+	"停止后台命令": "Stop background command",
+	"关闭这条后台任务": "Dismiss this background task",
+	"正在生成参数": "Preparing input",
+	"执行中": "Running",
+	"等待审批": "Awaiting approval",
+	"已审批": "Approved",
+	"出错": "Error",
+	"已拒绝": "Denied"
+};
+// packages/i18n/src/dict/hosts.ts
+/**
+* 主机模块英文文案：主机、终端与终端设置、SSH 隧道、脚本、应用日志。
+*
+* key = 中文原文；未翻译的条目自动回落到中文。
+*/
+var HOSTS = {
+	"主机": "Hosts",
+	"新建终端": "New terminal",
+	"清屏": "Clear",
+	"粘贴": "Paste",
+	"全屏": "Fullscreen",
+	"退出全屏": "Exit fullscreen",
+	"收起": "Collapse",
+	"展开": "Expand",
+	"展开 / 收起": "Expand / collapse",
+	"关闭终端": "Close terminal",
+	"关闭标签": "Close tab",
+	"刷新标签": "Reload tab",
+	"打开终端": "Open terminal",
+	"可用快捷键": "Shortcuts",
+	"发送回车": "Enter",
+	"主机已从清单里删除": "Host was removed from the list",
+	"本机终端": "Local terminal",
+	"隧道": "Tunnel",
+	"SSH 隧道": "SSH tunnel",
+	"应用日志": "App logs",
+	"脚本": "Scripts",
+	"终端连接中": "Terminal connecting",
+	"终端运行中": "Terminal ready",
+	"终端已退出": "Terminal exited",
+	"选一台主机，在内容区域打开它的终端": "Pick a host to open its terminal in the content area",
+	"选一个脚本，挑一台主机运行它": "Pick a script and a host to run it on",
+	"搜索主机…": "Search hosts…",
+	"没有匹配的主机。": "No matching hosts.",
+	"搜索脚本…": "Search scripts…",
+	"没有匹配的脚本。": "No matching scripts.",
+	"选中即复制": "Copy on select",
+	"选中终端文字后自动复制。": "Automatically copy selected terminal text.",
+	"右键粘贴": "Paste on right-click",
+	"右键把剪贴板内容粘贴到命令行；选中文字时仍弹原菜单。默认开启。": "Right-click pastes clipboard contents into the command line; with text selected it still shows the context menu. Enabled by default.",
+	"命令预测": "Command prediction",
+	"记录命令历史": "Record command history",
+	"记录已执行的命令，供预测和「命令历史」使用；关闭后不再新增记录。": "Record executed commands for prediction and “Command history”; when off no new entries are added.",
+	"滚动缓冲": "Scrollback",
+	"一个终端标签能往上翻多少行，超出后最早的行会被丢掉。每个标签各占一份内存，行数调很大又同时开很多标签要留意。": "How many lines a terminal tab can scroll back through; once it fills up the oldest lines are dropped. Each tab keeps its own buffer in memory, so keep an eye on it when using a large value with many tabs.",
+	"{n} 行": "{n} lines",
+	"默认终端": "Default terminal",
+	"正在检测可用终端…": "Detecting available terminals…",
+	"跟随系统默认": "Follow system default",
+	"使用宿主平台的默认终端": "Use the host platform’s default terminal",
+	"默认使用 {name}": "Use {name} by default",
+	"宿主没提供可选的终端，只能用平台默认。": "The host does not expose selectable terminals; only the platform default is available.",
+	"根据历史与常见命令给出补全建议；→ 接受，Ctrl+↑/↓ 换选。": "Suggests completions from history and common commands; → to accept, Ctrl+↑/↓ to change.",
+	"工具条「终端」按钮默认使用的 shell；只影响新开的终端。在会话顶栏「选择终端」里选过的 shell 会自动记到这里。": "The shell the toolbar “Terminal” button uses by default; only affects new terminals. A shell picked from “Choose terminal” in the conversation header is remembered here automatically.",
+	"本地终端": "Local terminal",
+	"SSH 主机": "SSH host",
+	"编辑本地终端": "Edit local terminal",
+	"添加本地终端": "Add local terminal",
+	"编辑 SSH 主机": "Edit SSH host",
+	"添加 SSH 主机": "Add SSH host",
+	"名称，如「项目终端」「Git Bash」": "Name, e.g. “Project terminal” or “Git Bash”",
+	"跟随平台默认": "Follow platform default",
+	"这台机器上没检测到可选的终端。": "No selectable terminals detected on this machine.",
+	"工作目录": "Working directory",
+	"留空 = 主目录，如 D:\\code\\demo": "Leave empty for home, e.g. D:\\code\\demo",
+	"这条终端固定从这个目录打开，与当前打开的项目无关；留空 = 主目录。": "This terminal always opens in this directory, independent of the currently open project; leave empty for home.",
+	"启动参数": "Startup arguments",
+	"每行一个参数，如": "One argument per line, e.g.",
+	"追加在 shell 自带参数之后；不做引号解析，所以一行就是一个参数。": "Appended after the shell’s own arguments; quotes are not parsed, so each line is one argument.",
+	"启动后自动执行": "Run automatically after start",
+	"如 npm run dev（留空 = 不执行）": "e.g. npm run dev (leave empty to skip)",
+	"终端起来后自动敲这一条命令。": "Types this command automatically once the terminal is up.",
+	"名称（可留空）": "Name (optional)",
+	"主机地址，如 10.0.0.8": "Host address, e.g. 10.0.0.8",
+	"端口 {port}": "Port {port}",
+	"用户名，如 root": "Username, e.g. root",
+	"私钥": "Private key",
+	"密码（留空 = 不修改）": "Password (leave empty to keep)",
+	"私钥内容，如 -----BEGIN OPENSSH PRIVATE KEY-----": "Private key contents, e.g. -----BEGIN OPENSSH PRIVATE KEY-----",
+	"私钥口令（没有就留空）": "Passphrase (leave empty if none)",
+	"跳板机": "Jump host",
+	"不使用跳板": "No jump host",
+	"{name}（{summary}）": "{name} ({summary})",
+	"字符集": "Charset",
+	"保活（秒）": "Keepalive (seconds)",
+	"留空 = {n}；0 = 关。": "Empty = {n}; 0 = off.",
+	"新建主机": "New host",
+	"主机与终端": "Hosts & terminals",
+	"还没有主机或终端。": "No hosts or terminals yet.",
+	"新建分组": "New group",
+	"重命名分组": "Rename group",
+	"分组名称": "Group name",
+	"顶级分组": "Top level",
+	"分组对 SSH 主机与本机终端是**共用**的，可以建多级；条目归属靠拖拽调整。": "Groups are **shared** by SSH hosts and local terminals and can be nested; drag items to change their group.",
+	"删除本机终端？": "Delete local terminal?",
+	"删除 SSH 主机？": "Delete SSH host?",
+	"「{name}」会从列表里移除。已经打开的终端标签不受影响。": "“{name}” will be removed from the list. Open terminal tabs are not affected.",
+	"「{name}」（{summary}）会从列表里移除。以它为跳板机的主机会变成直连，删掉就得重新添加。已经打开的终端标签不受影响，但关掉之后就再也连不上了。": "“{name}” ({summary}) will be removed from the list. Hosts using it as a jump host will connect directly instead, and you would have to add it again. Open terminal tabs are not affected, but once closed they can no longer reconnect.",
+	"删除分组「{name}」？": "Delete group “{name}”?",
+	"它的子分组会一并删除。": "Its sub-groups will be deleted too.",
+	"组内及子分组共有 {count} 个主机 / 终端。": "There are {count} hosts / terminals in this group and its sub-groups.",
+	"组内没有主机 / 终端。": "This group has no hosts / terminals.",
+	"同时删除组内（含子分组）的主机 / 终端": "Also delete hosts / terminals in this group (including sub-groups)",
+	"删除分组与组内条目": "Delete group and its items",
+	"仅删除分组": "Delete group only",
+	"移动分组「{name}」": "Move group “{name}”",
+	"整棵子树会一起移动；下拉里已经排掉它自己和它的子分组。": "The whole subtree moves together; the dropdown already excludes the group itself and its sub-groups.",
+	"收起分组": "Collapse group",
+	"展开分组": "Expand group",
+	"在「{name}」中添加": "Add to “{name}”",
+	"在此分组添加主机 / 终端": "Add host / terminal to this group",
+	"新建子分组": "New sub-group",
+	"移动到…": "Move to…",
+	"删除分组": "Delete group",
+	"打开 {name} · {detail}": "Open {name} · {detail}",
+	"打开 {name} · {detail} · 再点会新开一个标签": "Open {name} · {detail} · clicking again opens another tab",
+	"编辑 {name}": "Edit {name}",
+	"删除 {name}": "Delete {name}",
+	"连接": "Connect",
+	"SFTP 文件管理": "SFTP files",
+	"隧道…": "Tunnel…",
+	"移出分组": "Remove from group",
+	"已删除分组「{name}」：组内及子分组的主机 / 终端已一并删除": "Deleted group “{name}” and all hosts / terminals inside it and its sub-groups.",
+	"已删除分组「{name}」：组内及子分组的主机 / 终端已移到「{fallback}」": "Deleted group “{name}”; hosts / terminals inside it and its sub-groups moved to “{fallback}”.",
+	"已移动「{name}」到所选分组下": "Moved “{name}” under the selected group",
+	"已移动「{name}」到顶级分组": "Moved “{name}” to top level",
+	"{n} 个参数": "{n} args",
+	"未命名主机": "Unnamed host",
+	"地址未填写": "Address not set",
+	"监控不可用": "Monitoring unavailable",
+	"CPU 占用 {value}": "CPU usage {value}",
+	"内存占用 {value}%": "Memory usage {value}%",
+	"{host} 性能监控": "{host} performance monitor",
+	"主机性能监控": "Host performance monitor",
+	"监控不可用：{error}": "Monitoring unavailable: {error}",
+	"正在连接主机并读取指标…": "Connecting to the host and reading metrics…",
+	"已陈旧": "Stale",
+	"实时": "Live",
+	"采集间隔": "Sample interval",
+	"最近一次读取失败：{error}": "Last read failed: {error}",
+	"近约 {seconds} 秒": "Last ~{seconds}s",
+	"内存": "Memory",
+	"{n} 逻辑核": "{n} logical cores",
+	"{n} 核": "{n} cores",
+	"负载 (1 / 5 / 15 分)": "Load (1 / 5 / 15 min)",
+	"已运行": "Uptime",
+	"物理内存": "Physical memory",
+	"磁盘": "Disk",
+	"网络": "Network",
+	"合计速率": "Total rate",
+	"内存占用": "Memory used",
+	"{n} 秒": "{n}s",
+	"{d} 天 {h} 时": "{d}d {h}h",
+	"{h} 时 {m} 分": "{h}h {m}m",
+	"{m} 分": "{m}m"
+};
+// packages/i18n/src/dict/api.ts
+/**
+* 接口请求模块英文文案：接口请求的导航文案。该模块界面目前直接写中文，未接入 `t()`，新文案加到这里。
+*
+* key = 中文原文；未翻译的条目自动回落到中文。
+*/
+var API = {
+	"接口请求": "API requests",
+	"接口": "API"
+};
+// packages/i18n/src/dict/notes.ts
+/**
+* 笔记模块英文文案：笔记的导航文案。该模块界面目前直接写中文，未接入 `t()`，新文案加到这里。
+*
+* key = 中文原文；未翻译的条目自动回落到中文。
+*/
+var NOTES = { "笔记": "Notes" };
+// packages/i18n/src/dict/workspace.ts
+/**
+* 工作区 / 项目模块英文文案：工作区与项目、文件管理、Git / worktree、容器、预览、快捷功能。
+*
+* key = 中文原文；未翻译的条目自动回落到中文。
+*/
+var WORKSPACE = {
+	"已复制报错": "Build error copied",
+	"复制失败，请手动选择文本": "Copy failed; select the text and copy manually",
+	"构建中": "Building",
+	"构建失败": "Build failed",
+	"已就绪": "Ready",
+	"未构建": "Not built",
+	"环境变量指定": "Set by env var",
+	"该镜像由 FIZZ_CONTAINER_IMAGE_<ENV> 指定，请在外部构建": "This image is set by FIZZ_CONTAINER_IMAGE_<ENV>; build it externally",
+	"按当前 Dockerfile 重新构建（已有容器仍是旧镜像，重建后需要重建容器）": "Rebuild from the current Dockerfile (existing containers still use the old image; recreate them afterwards)",
+	"构建这个运行环境镜像": "Build this runtime image",
+	"构建中…": "Building…",
+	"重新构建": "Rebuild",
+	"构建": "Build",
+	"{size} · 构建于 {time}": "{size} · built {time}",
+	"镜像由环境变量指定，这里只检测是否存在": "Image is set by an env var; this only checks whether it exists",
+	"尚未构建：首次启动容器型项目时会自动构建": "Not built yet: it is built automatically the first time a container project starts",
+	"复制这段报错": "Copy this error",
+	"构建日志（尾部 {count} 行）": "Build log (last {count} lines)",
+	"{count} 个项目在用这个镜像（重建镜像后需重建容器才生效）。重建容器会重启容器，正在运行的会话会中断。": "{count} project(s) use this image (recreate containers after rebuilding). Recreating a container restarts it and interrupts running conversations.",
+	"重建中…": "Recreating…",
+	"重建容器": "Recreate container",
+	"公网域名已保存（{count} 个）": "Public domains saved ({count})",
+	"公网访问已关闭": "Public access disabled",
+	"公网访问": "Public access",
+	"每个容器项目会在每个域名下获得": "Each container project gets",
+	"子域；不填则只能用内网地址。": "subdomain under each domain; leave empty to use internal addresses only.",
+	"删除这个域名": "Remove this domain",
+	"添加域名": "Add domain",
+	"保存后立刻生效（不用重启服务）": "Takes effect immediately after saving (no restart needed)",
+	"没有改动": "No changes",
+	"还没有连上服务端。": "Not connected to the server yet.",
+	"正在读取公网访问设置…": "Loading public access settings…",
+	"公网访问已关闭，只能使用内网地址。": "Public access is off; only internal addresses are available.",
+	"域名已保存，但公网入口端口没在监听": "Domains saved, but the public entry port is not listening",
+	"公网入口是一个独立端口，要用": "The public entry uses a separate port, set with",
+	"指定（默认关闭，填 0 表示不启用），配好后重启服务；再在防火墙 / 反代里放行它。": "(disabled by default; 0 disables it). Restart the server afterwards and allow it through your firewall / reverse proxy.",
+	"已启用": "Enabled",
+	"预览地址形如": "Preview URLs look like",
+	"（共 {count} 个域名）": "( {count} domains in total )",
+	"在 DNS 里把这些记录指到": "Point these records in DNS to",
+	"这台机器": "this machine",
+	"（本机地址；有固定公网 IP 时换成它）": "(local address; use a fixed public IP if you have one)",
+	"（本机没有对外网卡，填这台机器的公网 IP）": "(this machine has no outbound NIC; enter its public IP)",
+	"TLS 由你自己的反代终结。": "TLS is terminated by your own reverse proxy.",
+	"复制目标地址": "Copy target address",
+	"容器运行环境": "Container runtime",
+	"容器型项目在独立容器中运行；镜像全局共享，重建会影响所有使用它的项目。": "Container projects run in isolated containers; images are shared globally, so rebuilding affects every project using them.",
+	"重新检测": "Recheck",
+	"正在检测 docker…": "Detecting docker…",
+	"这台机器上没有可用的 docker": "No usable docker on this machine",
+	"请确认 Docker 已安装且守护进程正在运行": "Make sure Docker is installed and the daemon is running",
+	"基础层被所有环境镜像共用：重建它之后，环境镜像还要各自重建一次才会用到新层。": "The base layer is shared by all environment images: after rebuilding it, each environment image must be rebuilt once more to use the new layer.",
+	"这里列的是服务端上的目录（Agent 就跑在那台机器上）。选中的目录会登记为项目。": "These are directories on the server (where the agent runs). The selected directory will be registered as a project.",
+	"选择文件夹…": "Choose folder…",
+	"从 Git 导入…": "Import from Git…",
+	"新建容器型项目…": "New container project…",
+	"连接远端服务器…": "Connect to a remote server…",
+	"添加远端工作区": "Add remote workspace",
+	"Agent 的文件读写与命令都在这台 SSH 主机上的目录里执行。会话历史仍保存在本机。": "The agent reads, writes, and runs commands in a directory on this SSH host. Conversation history stays on this machine.",
+	"还没有 SSH 主机：先在「主机」里添加一台，再回来选它。": "No SSH hosts yet: add one under “Hosts”, then come back and pick it.",
+	"SSH 主机": "SSH host",
+	"选择一台主机": "Choose a host",
+	"远端目录（绝对路径）": "Remote directory (absolute path)",
+	"请填写以 / 开头的绝对路径。": "Enter an absolute path starting with /.",
+	"上一级": "Up one level",
+	"正在读取…": "Reading…",
+	"这里没有子目录": "No subdirectories here",
+	"留空 = 用目录名": "Empty = use the directory name",
+	"首期远端工作区暂不支持 worktree、技能 / 项目规则注入与插件 / MCP / ACP；文件面板、终端、源码管理与 Agent 工具可用。": "Remote workspaces do not support worktrees, skill / project-rule injection, or plugins/MCP/ACP yet; the file panel, terminal, source control and agent tools work.",
+	"连接中…": "Connecting…",
+	"添加": "Add",
+	"主机已删除": "Host deleted",
+	"（远端目录不可用）": "(remote directory unavailable)",
+	"远端目录不可用：{path}（目录不存在，或主机当前不可达）": "Remote directory unavailable: {path} (it does not exist, or the host is unreachable)",
+	"远端目录不可用": "Remote directory unavailable",
+	"工作区：Agent 只能读写这个目录里的东西。切换会回到空会话（会话归属不可改）": "Workspace: the agent can only read and write inside this directory. Switching starts a new empty conversation (a conversation cannot change workspace).",
+	"未给出原因": "No reason given",
+	"容器正在停止…": "Stopping container…",
+	"容器正在启动（{phase}）…": "Starting container ({phase})…",
+	"容器启动失败": "Container failed to start",
+	"容器未运行": "Container not running",
+	"公网访问不可用：没配域名，或公网入口端口没启用（设置 → 容器 → 公网访问）。只能走「内网」地址（需要服务端就在本机）。": "Public access unavailable: no domain configured, or the public gateway port is disabled (Settings → Containers → Public access). Only the local address works (the server must be on this machine).",
+	"这个项目还没对外发布，也没有预览 key，公网入口会一律拒绝。去「容器设置」生成一个预览 key，或打开「对外发布」。": "This project is not published and has no preview key, so the public gateway will reject all requests. Generate a preview key in Container Settings, or turn on Publish.",
+	"复制失败，请手动选中地址": "Copy failed; select the address manually",
+	"打不开这个地址": "Could not open this address",
+	"容器没在跑，还没有本机地址": "Container is not running; no local address yet",
+	"服务端就在本机时用它 —— 服务端在别处时这个地址指向的是浏览器自己那台机器": "Use this when the server is on this machine — if it is elsewhere, this address points at the browser’s own machine",
+	"还没有预览 key：去「容器设置」生成一个": "No preview key yet: generate one in Container Settings",
+	"公网访问不可用（设置 → 容器 → 公网访问）": "Public access unavailable (Settings → Containers → Public access)",
+	"走服务端的公网入口（未发布时会带上预览 key）": "Use the server’s public gateway (includes the preview key when unpublished)",
+	"未对外发布：公网入口只认带预览 key 的访问，复制地址时会把 key 一起带上": "Not published: the public gateway only accepts requests with a preview key; copying the address includes the key",
+	"未对外发布且还没有预览 key，公网入口一律拒绝：去「容器设置」点一次「重新生成」": "Not published and no preview key yet; the public gateway rejects all requests: click Regenerate once in Container Settings",
+	"未发布：链接自带预览 key": "Not published: the link includes a preview key",
+	"未发布：去「容器设置」生成预览 key": "Not published: generate a preview key in Container Settings",
+	"当前阶段": "Current phase",
+	"停止中（docker stop 优雅退出窗口）": "Stopping (docker stop graceful shutdown window)",
+	"原因": "Reason",
+	"服务端没有给出原因": "The server did not provide a reason",
+	"公网预览被挡住了": "Public preview blocked",
+	"容器没有启动": "Container not started",
+	"预览页面跑在容器里，容器没起来就没有东西可看。": "The preview runs inside the container; nothing can be shown until it starts.",
+	"可以直接切到「内网」看，或者去左侧项目菜单的「容器状态 → 启动容器」。": "You can switch to Local, or start the container from the project menu’s “Container status → Start container”.",
+	"这个面板不会替你启动容器 —— 去左侧项目菜单的「容器状态 → 启动容器」。": "This panel will not start the container for you — use the project menu’s “Container status → Start container”.",
+	"准备中": "Preparing",
+	"检测容器状态": "Checking container status",
+	"准备运行环境镜像": "Preparing environment image",
+	"启动容器": "Starting container",
+	"等待容器内 Agent 就绪": "Waiting for the agent inside the container",
+	"容器没起来：{error}": "Container failed to start: {error}",
+	"「{name}」的容器已启动": "Container for “{name}” started",
+	"启动容器失败：{error}": "Failed to start container: {error}",
+	"重启「{name}」的容器？": "Restart the container for “{name}”?",
+	"会在服务端停掉并重新创建这个容器，正在跑的会话会中断（/workspace 里的项目文件不受影响）。重建要等几十秒到几分钟，取决于镜像是否已经就绪。": "This stops and recreates the container on the server, interrupting running conversations (project files under /workspace are unaffected). Rebuilding takes tens of seconds to minutes depending on whether the image is ready.",
+	"重启容器": "Restart container",
+	"「{name}」的容器已重启": "Container for “{name}” restarted",
+	"重启容器失败：{error}": "Failed to restart container: {error}",
+	"停止「{name}」的容器？": "Stop the container for “{name}”?",
+	"会停掉这个容器，正在跑的会话会中断（/workspace 里的项目文件不受影响）。停着的时候不占内存，下次打开这个项目会自动重新启动。": "This stops the container and interrupts running conversations (project files under /workspace are unaffected). A stopped container uses no memory; opening this project again will start it automatically.",
+	"停止容器": "Stop container",
+	"「{name}」的容器已停止": "Container for “{name}” stopped",
+	"停止容器失败：{error}": "Failed to stop container: {error}",
+	"有会话正在运行…": "A conversation is running…",
+	"工作区目录不存在：{path}（可能已被删除或移动）": "Workspace directory does not exist: {path} (it may have been deleted or moved)",
+	"{path} — 目录不存在（可能已被删除或移动）": "{path} — directory does not exist (it may have been deleted or moved)",
+	"工作区目录不存在": "Workspace directory does not exist",
+	"有未查看的任务会话": "Unseen scheduled-task conversation",
+	"这个项目里有定时任务起的会话还没点开": "This project has an unopened scheduled-task conversation",
+	"容器状态": "Container status",
+	"启动中…": "Starting…",
+	"停止中…": "Stopping…",
+	"重启中…": "Restarting…",
+	"容器设置…": "Container settings…",
+	"导入会话": "Import conversation",
+	"移除工作区": "Remove workspace",
+	"空空如也。": "Nothing here yet.",
+	"再点一次右侧按钮确认删除": "Click the right button again to confirm deletion",
+	"服务端未检测到 git：点开查看安装教程": "git not detected on the server: open for installation instructions",
+	"服务端未检测到 git": "git not detected on the server",
+	"容器运行中": "Container running",
+	"运行中": "Running",
+	"启动中": "Starting",
+	"停止中": "Stopping",
+	"启动失败": "Start failed",
+	"容器已停止": "Container stopped",
+	"已停止": "Stopped",
+	"容器启动中…": "Container starting…",
+	"没有可复制的内容": "Nothing to copy",
+	"复制失败：{error}": "Copy failed: {error}",
+	"工作区不存在": "Workspace does not exist",
+	"当前环境不支持在文件管理器中定位": "This environment does not support revealing in the file manager",
+	"工作区目录未知": "Unknown workspace directory",
+	"打开工作区目录": "Open workspace directory",
+	"用文件管理器打开": "Open in file manager",
+	"已打开：{path}": "Opened: {path}",
+	"打开失败": "Failed to open",
+	"用 {name} 打开": "Open with {name}",
+	"已用 {name} 打开：{path}": "Opened {path} with {name}",
+	"打开文件管理器失败": "Failed to open the file manager",
+	"当前环境不支持在文件管理器中打开": "This environment does not support opening in the file manager",
+	"关闭未保存的文件？": "Close unsaved file?",
+	"「{name}」有未保存的改动，关闭标签会丢弃它们。": "“{name}” has unsaved changes; closing the tab will discard them.",
+	"丢弃并关闭": "Discard and close",
+	"已刷新 {name}": "Refreshed {name}",
+	"已复制 {count} 项": "Copied {count} item(s)",
+	"已复制：{name}": "Copied: {name}",
+	"已剪切 {count} 项（Ctrl+V 或右键目标文件夹选「粘贴到此处」）": "Cut {count} item(s) (press Ctrl+V or right-click the target folder and choose “Paste here”)",
+	"已剪切：{name}（Ctrl+V 或右键目标文件夹选「粘贴到此处」）": "Cut: {name} (press Ctrl+V or right-click the target folder and choose “Paste here”)",
+	"当前数据源不支持移动": "This data source does not support moving",
+	"当前数据源不支持复制": "This data source does not support copying",
+	"它们已经在这个目录里了": "They are already in this directory",
+	"它已经在这个目录里了": "It is already in this directory",
+	"{verb}失败（{failed}/{total}）：{errors}": "{verb} failed ({failed}/{total}): {errors}",
+	"移动": "Move",
+	"；": "; ",
+	"已{verb} {count} 项到 {dir}": "{verb} {count} item(s) to {dir}",
+	"已{verb}「{name}」到 {dir}": "{verb} “{name}” to {dir}",
+	"下载失败：{error}": "Download failed: {error}",
+	"已开始下载 {name}": "Download started: {name}",
+	"当前数据源不支持删除": "This data source does not support deleting",
+	"删除失败（{failed}/{total}）：{errors}": "Delete failed ({failed}/{total}): {errors}",
+	"已删除 {count} 项": "Deleted {count} item(s)",
+	"已删除：{name}": "Deleted: {name}",
+	"已上传 {name}": "Uploaded {name}",
+	"已上传 {count} 个文件": "Uploaded {count} file(s)",
+	"上传失败：{errors}": "Upload failed: {errors}",
+	"当前数据源不支持重命名": "This data source does not support renaming",
+	"名字不能为空": "Name cannot be empty",
+	"名字里不能有 / 或 \\": "Name cannot contain / or \\",
+	"重命名失败：{error}": "Rename failed: {error}",
+	"已重命名为「{name}」": "Renamed to “{name}”",
+	"已存在同名{label}：{name}": "A {label} with the same name already exists: {name}",
+	"当前数据源不支持新建{label}": "This data source does not support creating a {label}",
+	"新建失败：{error}": "Create failed: {error}",
+	"已新建{label}": "Created {label}",
+	"剪贴板是空的：先复制或剪切条目": "Clipboard is empty: copy or cut items first",
+	"复制 {count} 项": "Copy {count} item(s)",
+	"剪切 {count} 项": "Cut {count} item(s)",
+	"剪切": "Cut",
+	"粘贴到此处": "Paste here",
+	"复制路径": "Copy path",
+	"已复制路径：{path}": "Path copied: {path}",
+	"复制绝对路径": "Copy absolute path",
+	"根目录未知，暂时拼不出绝对路径": "Root directory unknown; cannot build an absolute path",
+	"已复制绝对路径：{path}": "Absolute path copied: {path}",
+	"在文件管理器中显示": "Reveal in file manager",
+	"在文件管理器中打开": "Open in file manager",
+	"下载（zip）": "Download (zip)",
+	"新建文件": "New file",
+	"新建文件夹": "New folder",
+	"上传文件": "Upload file",
+	"删除 {count} 项": "Delete {count} item(s)",
+	"关闭其他": "Close others",
+	"关闭右侧": "Close to the right",
+	"关闭左侧": "Close to the left",
+	"关闭全部": "Close all",
+	"把「{name}」改成新名字。": "Rename “{name}”.",
+	"输入新名字": "Enter a new name",
+	"重命名中…": "Renaming…",
+	"新建{kind}": "New {kind}",
+	"在「{dir}」下新建一个{kind}。": "Create a {kind} under “{dir}”.",
+	"输入文件名（如 index.ts）": "Enter a file name (e.g. index.ts)",
+	"输入文件夹名": "Enter a folder name",
+	"创建": "Create",
+	"创建中…": "Creating…",
+	"复制当前路径": "Copy current path",
+	"{count} 项": "{count} item(s)",
+	"隐藏被忽略的文件（.gitignore / 默认规则）": "Hide ignored files (.gitignore / default rules)",
+	"显示被忽略的文件（.gitignore / 默认规则）": "Show ignored files (.gitignore / default rules)",
+	"展开折叠前的目录": "Restore collapsed directories",
+	"折叠所有目录": "Collapse all directories",
+	"隐藏行号": "Hide line numbers",
+	"显示行号": "Show line numbers",
+	"关闭自动换行": "Disable word wrap",
+	"开启自动换行": "Enable word wrap",
+	"及其全部子内容": "and all its contents",
+	"移动到这里？": "Move here?",
+	"粘贴到这里？": "Paste here?",
+	"移动到": "move to",
+	"复制到": "copy to",
+	"（它们已经在这个目录里了）": " (they are already in this directory)",
+	"{name}（命中忽略规则，默认不显示）": "{name} (matches ignore rules; hidden by default)",
+	"目录条目过多，未全部列出": "Too many entries; not all are listed",
+	"从磁盘重新读取": "Reload from disk",
+	"编辑源码": "Edit source",
+	"显示被忽略的文件": "Show ignored files",
+	"刷新文件树": "Refresh file tree",
+	"返回文件列表": "Back to file list",
+	"未打开文件": "No file open",
+	"切换行号": "Toggle line numbers",
+	"切换自动换行": "Toggle word wrap",
+	"保存（Ctrl+S）": "Save (Ctrl+S)",
+	"该文件类型不支持预览": "Preview is not supported for this file type",
+	"预览加载失败": "Failed to load preview",
+	"从左侧选择一个文件查看或编辑": "Select a file on the left to view or edit",
+	"覆盖同名文件？": "Overwrite files with the same name?",
+	"{files} 在 {dir} 下已经存在，继续会覆盖它们原来的内容（不可恢复）。": "{files} already exist under {dir}; continuing will overwrite their contents (irreversible).",
+	"、": ", ",
+	"根目录": "root directory",
+	"覆盖并上传": "Overwrite and upload",
+	"删除这 {count} 项？": "Delete these {count} item(s)?",
+	"删除{kind}？": "Delete {kind}?",
+	"{names}{more}（含文件夹里的全部子内容）将被永久删除，无法恢复。": "{names}{more} (including all contents of folders) will be permanently deleted and cannot be recovered.",
+	" 等 {count} 项": " and {count} more",
+	"「{name}」{suffix}将被永久删除，无法恢复。": "“{name}” {suffix}will be permanently deleted and cannot be recovered.",
+	"把 {items}{action}「{dir}」。{note}": "{action} {items} to “{dir}”.{note}",
+	"{count} 项（{names}{more}）": "{count} item(s) ({names}{more})",
+	" 等": " and more",
+	"刷新未保存的文件？": "Reload unsaved file?",
+	"「{name}」有未保存的改动，刷新会用磁盘上的最新内容覆盖它们。": "“{name}” has unsaved changes; reloading will overwrite them with the latest content on disk.",
+	"丢弃并刷新": "Discard and reload",
+	"正在加载预览…": "Loading preview…",
+	"容器预览": "Container preview",
+	"这个项目不存在了": "This project no longer exists",
+	"它可能已经被删除。关掉这个标签，从左侧项目列表重新打开即可。": "It may have been deleted. Close this tab and reopen it from the project list on the left.",
+	"正在读取容器状态…": "Reading container status…",
+	"马上就好。这一步只是问服务端容器在不在，不会启动任何东西。": "Almost there. This only asks the server whether the container exists; nothing is started.",
+	"服务端没有可用的 docker": "No usable docker on the server",
+	"这类项目的预览要跑在容器里，没有 docker 就起不来。在服务端机器上装好 docker（或修好 docker 连接）后刷新即可。": "Previews for this kind of project run inside a container, so they cannot start without docker. Install docker on the server (or fix the docker connection) and refresh.",
+	"这个项目没有配预览端口": "This project has no preview port configured",
+	"服务端建项目时会按镜像自动填好；这里是老数据或被手改坏了。删掉重建一个项目最省事，也可以去「容器设置」里补。": "The server fills this in from the image when creating a project; this one is old data or was edited by hand. Recreating the project is easiest, or add it in “Container settings”.",
+	"内网": "Internal",
+	"公网": "Public",
+	"复制地址": "Copy address",
+	"在系统浏览器打开": "Open in system browser",
+	"对外发布": "Publish publicly",
+	"服务端没配公网域名，发布后也访问不到": "The server has no public domain configured, so a published URL would not be reachable",
+	"容器正在启动": "Container starting",
+	"就绪后这里会自动显示页面，不用手动刷新。": "The page appears here automatically once it is ready — no manual refresh needed.",
+	"容器正在停止": "Container stopping",
+	"停好之后预览会回到「容器没有启动」。想继续看页面，等它停完再点一次启动（或去项目菜单的「容器状态 → 启动容器」）。": "When it finishes stopping, the preview goes back to “container not running”. To keep viewing, start it again after it stops (or use “Container status → Start container” in the project menu).",
+	"正在等预览服务就绪": "Waiting for the preview service",
+	"容器已经起来了，里面的预览服务还在监听。通常一两秒，就绪后自动显示。": "The container is up and its preview service is still starting. Usually a second or two; it shows automatically once ready.",
+	"预览要跑在容器里，容器没起来就没有页面可看。下面这段是启动时的原话，可以拿去搜或者贴给 agent；修好之后去项目菜单的「容器状态 → 启动容器」重试。": "The preview runs inside the container, so there is no page while it is down. Below is the raw startup output — search it or paste it to the agent; once fixed, retry via “Container status → Start container” in the project menu.",
+	"看内网地址": "View internal address",
+	"还没有连上服务端": "Not connected to the server yet",
+	"移除工作区？": "Remove workspace?",
+	"「{name}」及其全部会话都会被移除，它下面的 worktree 工作区、定时任务也会一起清掉；{files}": "“{name}” and all of its conversations will be removed, along with its worktree workspaces and scheduled tasks; {files}",
+	"磁盘上的文件默认不会动。": "files on disk are left untouched by default.",
+	"磁盘上的文件不会动。": "files on disk are left untouched.",
+	"同时删除 git worktree": "Also delete the git worktree",
+	"连目录一起删掉（{path}），未提交的改动会丢；分支保留。": "Delete the directory too ({path}); uncommitted changes are lost, the branch is kept.",
+	"导入（{count}）": "Import ({count})",
+	"{name} 的 .worktree/ 目录：勾一个导入成这个项目下的工作区；已导入的可以移除。": "The .worktree/ directory of {name}: tick one to import it as a workspace of this project; imported ones can be removed.",
+	"正在扫描…": "Scanning…",
+	"共 {total} 个，可导入 {available} 个": "{total} total, {available} importable",
+	"重新扫描": "Rescan",
+	"正在读取 .worktree/ 目录…": "Reading the .worktree/ directory…",
+	"分支 {branch}": "branch {branch}",
+	"不是 worktree": "Not a worktree",
+	"这个项目的 .worktree/ 目录是空的": "This project’s .worktree/ directory is empty",
+	"新建 worktree": "New worktree",
+	"在 {name} 下按分支拉一个独立工作树，创建后会自动登记成一个新项目。": "Pull an independent worktree from a branch under {name}; it is registered as a new project automatically.",
+	"worktree 标识": "Worktree identifier",
+	"英文标识，如 feature-login": "Identifier, e.g. feature-login",
+	"项目名（可选）": "Project name (optional)",
+	"留空 = 用标识作为项目名": "Empty = use the identifier as the project name",
+	"仓库当前分支（HEAD）": "Current branch (HEAD)",
+	"目录会建在 {path}/.worktree/{id}，分支名为 worktree/{id}。": "The directory will be {path}/.worktree/{id} and the branch worktree/{id}.",
+	"<项目目录>": "<project directory>",
+	"基线分支": "Base branch",
+	"创建 worktree": "Create worktree",
+	"worktree 标识只能包含字母、数字、-、_、.，且要以字母或数字开头": "A worktree identifier may only contain letters, digits, -, _, . and must start with a letter or digit",
+	"这里列的是服务端上的目录。仓库会被克隆到选中的目录里。": "These are directories on the server. The repository is cloned into the selected one.",
+	"从 Git 导入项目": "Import project from Git",
+	"在跑 Agent 的服务器上克隆仓库，克隆完成自动登记成项目。": "Clones the repository on the machine running the agent, then registers it as a project.",
+	"仓库地址": "Repository URL",
+	"https://github.com/owner/repo.git 或 git@host:owner/repo.git": "https://github.com/owner/repo.git or git@host:owner/repo.git",
+	"克隆到（父目录）": "Clone into (parent directory)",
+	"服务端上的绝对路径，如 /home/me/projects": "Absolute path on the server, e.g. /home/me/projects",
+	"浏览": "Browse",
+	"目录名（可选，缺省取仓库名）": "Directory name (optional, defaults to the repo name)",
+	"将克隆到": "Will clone into",
+	"正在取消：停掉 git 并清理已下载的内容…": "Cancelling: stopping git and cleaning up what was downloaded…",
+	"正在克隆，大仓库可能要几分钟。可以取消，也可以转到后台让它继续跑。": "Cloning — a large repo may take a few minutes. You can cancel, or move it to the background and let it finish.",
+	"取消克隆": "Cancel clone",
+	"转到后台": "Move to background",
+	"克隆并导入": "Clone and import",
+	"编辑快捷功能": "Edit quick action",
+	"删除快捷功能": "Delete quick action",
+	"再点一次确认删除": "Click again to delete",
+	"请填写完整的快捷功能信息": "Fill in all quick action fields",
+	"快捷功能": "Quick actions",
+	"添加快捷功能": "Add quick action",
+	"配置位置：{path}": "Config file: {path}",
+	"配置文件读取中…": "Reading config file…",
+	"复制配置路径": "Copy config path",
+	"已复制配置路径": "Config path copied",
+	"按钮上的文字，例如「项目看板」": "Text on the button, e.g. “Project board”",
+	"命令": "Command",
+	"链接": "Link",
+	"说明（可选）": "Description (optional)",
+	"鼠标悬停在按钮上时的提示": "Tooltip shown when hovering the button",
+	"命令会在工作区目录里新开一条内嵌终端执行；多条命令用换行分隔，按顺序逐行执行。": "The command runs in a new embedded terminal inside the workspace; separate multiple commands with newlines to run them in order.",
+	"相对路径按工作区根目录解析，用系统默认程序打开（仅桌面端支持）。": "Relative paths resolve against the workspace root and open with the system default app (desktop only).",
+	"用系统默认浏览器打开该链接。": "Opens the link in the system default browser.",
+	"快捷功能绑定当前工作区，点击工作区工具条上的 ⚡ 即可执行。": "Quick actions are bound to the current workspace; click ⚡ in the workspace toolbar to run them.",
+	"导入": "Import",
+	"还没有工作区": "No workspaces yet",
+	"修改": "Modified",
+	"新增": "Added",
+	"冲突": "Conflict",
+	"未跟踪": "Untracked",
+	"HEAD（分离）": "HEAD (detached)",
+	"（无分支）": "(no branch)",
+	"分离头指针": "Detached HEAD",
+	"分离头指针状态下不能拉取": "Cannot pull while HEAD is detached",
+	"分离头指针状态下不能推送": "Cannot push while HEAD is detached",
+	"现在处于分离头指针：先切回一个分支再推送": "HEAD is detached: switch back to a branch before pushing",
+	"还没读到仓库状态（正在刷新）：稍等一下再推": "Repository status not loaded yet (refreshing): wait a moment before pushing",
+	"这个工作区还不是 git 仓库：没有可推送的内容（先在面板里初始化）": "This workspace is not a git repository yet: nothing to push (initialize it in the panel first)",
+	"这个工作区还不是 git 仓库。": "This workspace is not a git repository yet.",
+	"初始化 git 仓库": "Initialize git repository",
+	"初始化后所有文件都是未跟踪状态；建议先补一个": "After initialization all files are untracked; add a ",
+	"再提交。": " before committing.",
+	"在这个工作区目录里执行 git init（初始分支沿用你 git 配置里的 init.defaultBranch）": "Run git init in this workspace directory (the initial branch follows init.defaultBranch in your git config)",
+	"已初始化 git 仓库": "Git repository initialized",
+	"仓库：{root}": "Repository: {root}",
+	"读取仓库状态…": "Reading repository status…",
+	"读取 diff…": "Loading diff…",
+	"读取这次提交…": "Loading this commit…",
+	"全部暂存": "Stage all",
+	"全部取消暂存": "Unstage all",
+	"已全部暂存": "Staged all",
+	"已全部取消暂存": "Unstaged all",
+	"更改": "Changes",
+	"已暂存的更改": "Staged changes",
+	"展开这一组": "Expand this group",
+	"收起这一组": "Collapse this group",
+	"展开这一组里的所有目录": "Expand all directories in this group",
+	"折叠这一组里的所有目录": "Collapse all directories in this group",
+	"改动过多、列表已截断，批量操作已停用": "Too many changes; the list is truncated and bulk actions are disabled",
+	"改动太多，只列出前 {count} 项（多半是没配": "Too many changes; only the first {count} are listed (usually no ",
+	"的依赖 / 产物目录）。为避免漏提交，批量暂存已停用，建议先把这些目录加进": " dependencies / build output). To avoid missing files, bulk staging is disabled; add these directories to ",
+	"按目录树显示": "Show as directory tree",
+	"改为平铺列表": "Show as flat list",
+	"切换分支": "Switch branch",
+	"本地分支": "Local branches",
+	"远端分支（检出为本地分支并跟踪）": "Remote branches (check out as a local branch and track)",
+	"远端分支（会带上游跟踪）": "Remote branches (with upstream tracking)",
+	"还没有任何分支（先提交一次）": "No branches yet (make a commit first)",
+	"不能删除当前所在的分支": "Cannot delete the current branch",
+	"删除本地分支 {name}": "Delete local branch {name}",
+	"删除本地分支 {name}…": "Delete local branch {name}…",
+	"删除本地分支？": "Delete local branch?",
+	"删除远端分支 {name}": "Delete remote branch {name}",
+	"删除远端分支 {name}…": "Delete remote branch {name}…",
+	"删除远端分支？": "Delete remote branch?",
+	"新建分支": "New branch",
+	"新建分支…": "New branch…",
+	"新建分支：从当前 HEAD 或任意分支切一条新分支出来": "New branch: create a branch from HEAD or any branch",
+	"从下面的起点切出一条新分支并切过去（当前未提交的改动会跟着带到新分支）。": "Create a new branch from the point below and switch to it (current uncommitted changes come along).",
+	"分支名，如 feature/login": "Branch name, e.g. feature/login",
+	"从哪切出来": "Branch from",
+	"当前 HEAD": "Current HEAD",
+	"当前 HEAD（{branch}）": "Current HEAD ({branch})",
+	"创建并切换": "Create and switch",
+	"提交信息（Ctrl / ⌘ + Enter 提交）": "Commit message (Ctrl / ⌘ + Enter to commit)",
+	"提交已暂存的改动": "Commit the staged changes",
+	"先在「已暂存的更改」里暂存改动": "Stage changes under “Staged changes” first",
+	"没有未提交的改动": "No uncommitted changes",
+	"推送": "Push",
+	"推送 {count}": "Push {count}",
+	"推送到…": "Push to…",
+	"推送到远端（不做强推）": "Push to the remote (no force push)",
+	"拉取": "Pull",
+	"拉取 {count}": "Pull {count}",
+	"从 {upstream} 拉取": "Pull from {upstream}",
+	"已拉取": "Pulled",
+	"当前分支没有上游：先推送一次设好上游": "The current branch has no upstream: push once to set it",
+	"还没有远端：先填一个远端地址": "No remote yet: add a remote URL first",
+	"管理远端": "Manage remotes",
+	"管理远端…": "Manage remotes…",
+	"还没有配置远端：在这里添加": "No remotes configured: add one here",
+	"已配置 {count} 个远端：查看 / 改地址 / 删除": "{count} remotes configured: view / edit URL / delete",
+	"添加一个远端（https 与 git@host:path 两种写法都支持），配好就能推送了。": "Add a remote (both https and git@host:path are supported); then you can push.",
+	"远端名（一般就是 origin）": "Remote name (usually origin)",
+	"修改远端「{name}」的地址。": "Edit the URL of remote “{name}”.",
+	"修改远端 {name} 的地址": "Edit the URL of remote {name}",
+	"改「{name}」的地址": "Change the URL of “{name}”",
+	"删除远端 {name}": "Delete remote {name}",
+	"删除远端 {name}…": "Delete remote {name}…",
+	"删除远端「{name}」？": "Delete remote “{name}”?",
+	"还没有配置远端 —— 上面填一个地址点「添加」即可。": "No remotes configured yet — enter a URL above and click “Add”.",
+	"只会删掉「这个远端配在哪」，本地分支与提交不受影响，远端仓库本身也不会变。但它的远端跟踪分支（": "Only the remote configuration is removed; local branches and commits are unaffected and the remote repository itself does not change. However its remote-tracking branches (",
+	"）和当前分支对它的上游设置会一起消失，之后要推送得重新配置。": ") and the current branch’s upstream setting will also disappear; push again after reconfiguring.",
+	"远端的 {branch} 会被删掉（=": "Remote {branch} will be deleted (= ",
+	"）。这一步会推到远端，别人再 fetch 就会看到它消失，无法撤销。本地如果还有同名分支，不受影响。": "). This pushes to the remote, so others will see it disappear on their next fetch. It cannot be undone. A local branch with the same name is unaffected.",
+	"的引用会被删除。已经并进其它分支的提交不会丢；删完之后也只有 reflog（默认保留约 90 天）里还能找回它。": " reference will be deleted. Commits already merged into other branches are safe; afterwards only the reflog (kept ~90 days by default) can bring it back.",
+	"强制删除：这个分支还没有合并也删（未合并的提交删完只剩 reflog 能找回）": "Force delete: delete this branch even if it is not merged (unmerged commits can only be recovered from the reflog)",
+	"贮藏": "Stash",
+	"贮藏当前更改": "Stash current changes",
+	"贮藏当前更改…": "Stash current changes…",
+	"贮藏当前更改（git stash）：工作区清空，改动收进贮藏栈": "Stash current changes (git stash): the working tree is cleared and changes go into the stash stack",
+	"贮藏当前改动（git stash）：工作区清空，改动收进贮藏栈，之后可以再弹出来": "Stash current changes (git stash): the working tree is cleared and changes go into the stash stack; pop them later",
+	"工作区（和暂存区）里的改动会被收进贮藏栈，工作区回到干净状态；之后可以在变更列表下方的「贮藏」里再弹出来。": "Working-tree (and staged) changes are moved into the stash stack and the working tree becomes clean; pop them later from “Stashes” below the change list.",
+	"说明（可空，如：调一半的登录页）": "Message (optional, e.g. half-done login page)",
+	"连未跟踪文件一起收（": "Also stash untracked files (",
+	"）—— 不勾的话新文件会留在工作区": ") — leave unchecked and new files stay in the working tree",
+	"还没有贮藏": "No stashes yet",
+	"弹出": "Pop",
+	"应用": "Apply",
+	"弹出（git stash pop）：应用这次贮藏，并从栈里删掉": "Pop (git stash pop): apply this stash and remove it from the stack",
+	"应用（git stash apply）：应用这次贮藏，但留在栈里": "Apply (git stash apply): apply this stash and keep it in the stack",
+	"删除这次贮藏（git stash drop）…": "Delete this stash (git stash drop)…",
+	"删除贮藏 {ref}": "Delete stash {ref}",
+	"删除这次贮藏？": "Delete this stash?",
+	"（{message}）会从贮藏栈里删掉。里面的改动没有别处保存，删完之后只剩 reflog（默认保留约 90 天）里还能找到 —— 想留着就先「应用」或「弹出」。": " ({message}) will be removed from the stash stack. Nothing else stores its changes; afterwards only the reflog (kept ~90 days by default) can find them — apply or pop it first to keep them.",
+	"回滚": "Revert",
+	"回滚 {count} 个文件": "Revert {count} files",
+	"回滚「更改」里列出的文件？": "Revert the files listed under “Changes”?",
+	"回滚「更改」里列出的这些文件（未暂存 + 未跟踪）": "Revert the files listed under “Changes” (unstaged + untracked)",
+	"回滚「{path}」里的改动？": "Revert changes in “{path}”?",
+	"回滚这个目录": "Revert this directory",
+	"这 {count} 个文件会回到上次提交，已暂存的那份也会一起丢掉": "These {count} files will return to the last commit, and their staged versions will be lost too",
+	"；其中 {count} 个未跟踪 / 只存在于暂存区的新文件会被从磁盘上删除": "; {count} untracked / newly staged files will be deleted from disk",
+	"。未提交的内容无法恢复。": ". Uncommitted content cannot be recovered.",
+	"只影响工作区内、列表里列出的这些文件 —— 仓库里别处的改动不会被碰。": "Only the files listed here inside the workspace are affected — changes elsewhere in the repository are untouched.",
+	"此操作无法撤销。": "This operation cannot be undone.",
+	"放弃这个文件的改动？": "Discard changes to this file?",
+	"删除这个文件？": "Delete this file?",
+	"放弃改动": "Discard changes",
+	"放弃这个目录的全部改动（含已暂存的），回到上次提交": "Discard all changes in this directory (including staged), back to the last commit",
+	"丢弃这个目录里未暂存的改动": "Discard unstaged changes in this directory",
+	"放弃这个文件的全部改动（含已暂存的），回到上次提交": "Discard all changes to this file (including staged), back to the last commit",
+	"丢弃这个文件未暂存的改动": "Discard unstaged changes to this file",
+	"删除这个未跟踪文件": "Delete this untracked file",
+	"取消暂存": "Unstage",
+	"取消暂存这个目录": "Unstage this directory",
+	"暂存这个目录": "Stage this directory",
+	"暂存这个文件": "Stage this file",
+	"{path}（已暂存）": "{path} (staged)",
+	"「{path}」还没有被 git 跟踪（新文件），回退会把它从磁盘上删除。此操作无法撤销。": "“{path}” is not tracked by git yet (new file); reverting deletes it from disk. This cannot be undone.",
+	"「{path}」还没提交过、只存在于暂存区，回退会把它从索引和磁盘上一并删除。此操作无法撤销。": "“{path}” has never been committed and exists only in the index; reverting deletes it from both the index and disk. This cannot be undone.",
+	"「{path}」已暂存的那份改动、以及它之后在工作区里的改动都会丢掉，回到上次提交的状态。未提交的内容无法恢复。": "The staged changes to “{path}”, plus later working-tree changes, will be discarded, returning to the last commit. Uncommitted content cannot be recovered.",
+	"「{path}」未暂存的改动会丢掉（回到已暂存 / 上次提交的状态）。未提交的内容无法恢复。": "Unstaged changes to “{path}” will be discarded (back to the staged / last commit state). Uncommitted content cannot be recovered.",
+	"「{path}」里这 {count} 个文件已暂存的那份改动、以及它之后在工作区里的改动都会丢掉，回到上次提交的状态。": "The staged changes to the {count} files under “{path}”, plus later working-tree changes, will be discarded, returning to the last commit.",
+	"「{path}」里这 {count} 个文件未暂存的改动都会丢掉，回到已暂存 / 上次提交的状态。": "Unstaged changes to the {count} files under “{path}” will be discarded, returning to the staged / last commit state.",
+	"它们全都没被 git 跟踪，会**直接从磁盘上删除**。": "None of them are tracked by git; all will **be deleted from disk**.",
+	"其中 {count} 个还没被 git 跟踪，会**直接从磁盘上删除**。": "{count} of them are not tracked by git and will **be deleted from disk**.",
+	"历史提交": "Commit history",
+	"还没有提交": "No commits yet",
+	"查看 {short} 改了什么": "Show what {short} changed",
+	"收起 {short} 的改动": "Collapse changes in {short}",
+	"检出": "Checkout",
+	"检出这次提交（分离头指针）": "Check out this commit (detached HEAD)",
+	"复制完整哈希": "Copy full hash",
+	"复制短哈希（{short}）": "Copy short hash ({short})",
+	"已复制完整提交哈希": "Full commit hash copied",
+	"已复制短哈希": "Short hash copied",
+	"没有可复制的提交哈希": "No commit hash to copy",
+	"这次提交没有文件改动（空提交，或合并提交默认不带 diff）。": "This commit has no file changes (empty commit, or a merge commit which has no diff by default).",
+	"这次提交没有可显示的文本改动（可能全是二进制文件或纯 mode 变更）。": "This commit has no displayable text changes (they may all be binary or pure mode changes).",
+	"二进制": "Binary",
+	"没有可展示的文本差异（二进制文件，或只有权限 / 模式变化）": "No displayable text diff (binary file, or only permission / mode changes)",
+	"文件已删除（工具入参没有内容，无原文可对比）": "File deleted (no content in the tool input, so there is no original to compare)"
+};
+({
+	...COMMON,
+	...SETTINGS,
+	...AGENT,
+	...CHAT,
+	...HOSTS,
+	...API,
+	...NOTES,
+	...WORKSPACE
+});
 // packages/i18n/src/index.ts
 /**
 * Fizz 国际化内核：语言状态 + 中英文文案。
@@ -1911,7 +4152,7 @@ function findSkill(skills, name) {
 /**
 * `read_skill`：读取某个技能的说明（默认 SKILL.md 本身）。
 *
-* 技能目录通常在工作区之外（用户级 / Claude 兼容目录），工作区的 read_file 够不着，
+* 技能目录通常在工作区之外（用户级 / Claude 兼容目录），工作区的 read 够不着，
 * 所以单独给一个工具 —— 它的读写范围被限制在**已发现的技能目录**内。
 */
 function buildReadSkillTool(skills) {
@@ -1954,7 +4195,7 @@ function buildSkillsPromptSection(skills) {
 		...skills.map((s) => `- ${s.name}：${s.description}`),
 		"使用约定：",
 		"- 判断任务与某个技能相关时，**先调用 read_skill 读它的完整说明，再严格按说明执行**；不要凭技能名猜做法；",
-		"- 技能说明里提到的脚本 / 参考资料，用 read_skill 的 file 参数读取，或用 execute_command 以绝对路径执行；",
+		"- 技能说明里提到的脚本 / 参考资料，用 read_skill 的 file 参数读取，或用 bash 以绝对路径执行；",
 		"- 技能与当前任务无关时不要提及，也不要在正文里罗列技能清单。"
 	].join("\n"), [
 		"## Available skills",
@@ -1962,289 +4203,9 @@ function buildSkillsPromptSection(skills) {
 		...skills.map((s) => `- ${s.name}: ${s.description}`),
 		"Conventions:",
 		"- When a task relates to a skill, **first call read_skill to read its full instructions, then follow them strictly**; do not guess from the name;",
-		"- Read scripts/references mentioned by a skill with read_skill’s file parameter, or run them via execute_command with an absolute path;",
+		"- Read scripts/references mentioned by a skill with read_skill’s file parameter, or run them via bash with an absolute path;",
 		"- Do not mention skills unrelated to the current task and do not list them in the reply."
 	].join("\n"));
-}
-// packages/tools/src/edit-match.ts
-/** 策略名 → 给模型看的说明（空 = 精确命中，不用多说） */
-var NOTES = {
-	exact: "",
-	lineTrimmed: "忽略了行首行尾空白差异",
-	indentation: "忽略了缩进差异",
-	whitespace: "忽略了空格数量差异",
-	blockAnchor: "按首尾行锚点匹配",
-	trimmedBlock: "忽略了首尾空行差异",
-	escaped: "把字面量转义还原成真实字符后匹配",
-	lineNumberPrefix: "剥掉了 read_file 输出的行号前缀"
-};
-/** 只在「行」这一层退让的策略（不含精确命中）：单行命中时要补回缩进 */
-var LINE_LEVEL_STRATEGIES = /* @__PURE__ */ new Set([
-	"lineTrimmed",
-	"indentation",
-	"whitespace",
-	"blockAnchor",
-	"trimmedBlock"
-]);
-function buildLineIndex(lf) {
-	const lines = lf.split("\n");
-	const starts = new Array(lines.length);
-	let off = 0;
-	for (let i = 0; i < lines.length; i += 1) {
-		starts[i] = off;
-		off += lines[i].length + 1;
-	}
-	return {
-		lines,
-		starts
-	};
-}
-function normalize$1(text) {
-	if (!text.includes("\r")) {
-		const { lines, starts } = buildLineIndex(text);
-		return {
-			lf: text,
-			lines,
-			starts,
-			toOriginal: null
-		};
-	}
-	const chars = [];
-	const map = [];
-	for (let i = 0; i < text.length; i += 1) {
-		const ch = text[i];
-		if (ch === "\r" && text[i + 1] === "\n") continue;
-		map.push(i);
-		chars.push(ch);
-	}
-	const lf = chars.join("");
-	const { lines, starts } = buildLineIndex(lf);
-	return {
-		lf,
-		lines,
-		starts,
-		toOriginal: map
-	};
-}
-function toOriginalStart(ctx, index) {
-	return ctx.toOriginal ? ctx.toOriginal[index] : index;
-}
-function toOriginalEnd(ctx, index) {
-	return ctx.toOriginal ? ctx.toOriginal[index] + 1 : index + 1;
-}
-/** 某个片段在 lf 里出现的每一处 */
-function findAll(ctx, search) {
-	if (!search) return [];
-	const spans = [];
-	let from = 0;
-	for (;;) {
-		const at = ctx.lf.indexOf(search, from);
-		if (at === -1) return spans;
-		spans.push({
-			start: at,
-			end: at + search.length
-		});
-		from = at + search.length;
-	}
-}
-/** 第 first~last 行（含）构成的区间；单行带上缩进提示 */
-function lineSpan(ctx, first, last) {
-	const span = {
-		start: ctx.starts[first],
-		end: ctx.starts[last] + ctx.lines[last].length
-	};
-	if (first === last) span.indent = /^[ \t]*/.exec(ctx.lines[first])?.[0] ?? "";
-	return span;
-}
-/** 逐行比较的滑动窗口：任意一行的比较不成立就换下一段 */
-function findLineWindow(ctx, oldLines, equal) {
-	const n = oldLines.length;
-	if (n === 0 || n > ctx.lines.length) return [];
-	const spans = [];
-	for (let i = 0; i + n <= ctx.lines.length; i += 1) {
-		let hit = true;
-		for (let k = 0; k < n; k += 1) if (!equal(ctx.lines[i + k], oldLines[k])) {
-			hit = false;
-			break;
-		}
-		if (hit) spans.push(lineSpan(ctx, i, i + n - 1));
-	}
-	return spans;
-}
-var collapseSpaces = (line) => line.replace(/[ \t]+/g, " ").trim();
-var stripIndent = (line) => line.replace(/^[ \t]+/, "");
-/** 第 5 档：首尾行锚点，中间行只要过半相似就认（长块里个别行被模型改动过） */
-function findBlockAnchor(ctx, oldLines) {
-	const n = oldLines.length;
-	if (n < 3) return [];
-	const first = oldLines[0].trim();
-	const last = oldLines[n - 1].trim();
-	if (!first || !last) return [];
-	const spans = [];
-	for (let i = 0; i + n <= ctx.lines.length; i += 1) {
-		if (ctx.lines[i].trim() !== first) continue;
-		if (ctx.lines[i + n - 1].trim() !== last) continue;
-		let same = 0;
-		let total = 0;
-		for (let k = 1; k < n - 1; k += 1) {
-			const a = ctx.lines[i + k].trim();
-			const b = oldLines[k].trim();
-			if (!a && !b) continue;
-			total += 1;
-			if (a === b) same += 1;
-		}
-		if (total === 0 || same / total >= .5) spans.push(lineSpan(ctx, i, i + n - 1));
-	}
-	return spans;
-}
-/** 行级的四档退让（2~5），命中返回对应的策略名 */
-function matchByLines(ctx, oldLines) {
-	const lineTrimmed = findLineWindow(ctx, oldLines, (a, b) => a.trim() === b.trim());
-	if (lineTrimmed.length > 0) return {
-		spans: lineTrimmed,
-		strategy: "lineTrimmed"
-	};
-	const indentation = findLineWindow(ctx, oldLines, (a, b) => stripIndent(a) === stripIndent(b));
-	if (indentation.length > 0) return {
-		spans: indentation,
-		strategy: "indentation"
-	};
-	const whitespace = findLineWindow(ctx, oldLines, (a, b) => collapseSpaces(a) === collapseSpaces(b));
-	if (whitespace.length > 0) return {
-		spans: whitespace,
-		strategy: "whitespace"
-	};
-	const blockAnchor = findBlockAnchor(ctx, oldLines);
-	if (blockAnchor.length > 0) return {
-		spans: blockAnchor,
-		strategy: "blockAnchor"
-	};
-	return null;
-}
-/** 去掉首尾的空行（模型框选时多带上几行空行是常事） */
-function pruneBlankLines(lines) {
-	let start = 0;
-	let end = lines.length;
-	while (start < end && !lines[start].trim()) start += 1;
-	while (end > start && !lines[end - 1].trim()) end -= 1;
-	return lines.slice(start, end);
-}
-/**
-* 把模型可能多写的字面量转义还原：`\n` → 换行、`\t` → 制表符、`\"` → 引号等。
-* 只在确实含反斜杠转义且能还原出变化时才返回新串，否则返回 null（不参与退档）。
-*/
-function unescapeLiterals(text) {
-	if (!/\\[ntr"'`\\/]/.test(text)) return null;
-	const restored = text.replace(/\\([ntr"'`\\/])/g, (_all, ch) => {
-		switch (ch) {
-			case "n": return "\n";
-			case "t": return "	";
-			case "r": return "\r";
-			default: return ch;
-		}
-	});
-	return restored === text ? null : restored;
-}
-/** read_file 输出的行号前缀：`   42 | code`（缩进 + 数字 + 竖线 + 一个空格） */
-var LINE_NUMBER_PREFIX_RE = /^[ \t]*\d+[ \t]*\|[ \t]?/;
-/**
-* 剥掉 read_file 的行号前缀（第 8 档兜底）。
-* 要求**每一行非空行都带前缀**才认，否则返回 null —— 免得把「正文里恰好有
-* `12 | xxx` 这种内容」的文件误判成抄了行号。
-*/
-function stripLineNumberPrefix(text) {
-	const lines = text.split("\n");
-	const body = lines.filter((line) => line.trim());
-	if (body.length === 0) return null;
-	if (!body.every((line) => LINE_NUMBER_PREFIX_RE.test(line))) return null;
-	const stripped = lines.map((line) => line.trim() ? line.replace(LINE_NUMBER_PREFIX_RE, "") : line).join("\n");
-	return stripped === text ? null : stripped;
-}
-/** 按「严格 → 宽松」找 oldText；找不到返回 null */
-function findMatch(ctx, rawOld, allowDeepFallback) {
-	const old = rawOld.replace(/\r\n/g, "\n");
-	const exact = findAll(ctx, old);
-	if (exact.length > 0) return {
-		spans: exact,
-		strategy: "exact"
-	};
-	const oldLines = old.split("\n");
-	const direct = matchByLines(ctx, oldLines);
-	if (direct) return direct;
-	const pruned = pruneBlankLines(oldLines);
-	if (pruned.length > 0 && pruned.length !== oldLines.length) {
-		const hit = matchByLines(ctx, pruned);
-		if (hit) return {
-			spans: hit.spans,
-			strategy: "trimmedBlock"
-		};
-	}
-	if (!allowDeepFallback) return null;
-	const unescaped = unescapeLiterals(old);
-	if (unescaped) {
-		const hit = findMatch(ctx, unescaped, false);
-		if (hit) return {
-			...hit,
-			strategy: "escaped"
-		};
-	}
-	const stripped = stripLineNumberPrefix(old);
-	if (stripped) {
-		const hit = findMatch(ctx, stripped, false);
-		if (hit) return {
-			...hit,
-			strategy: "lineNumberPrefix"
-		};
-	}
-	return null;
-}
-/** 把 newText 的换行对齐到目标处的风格，免得往 CRLF 文件里插 LF */
-function alignEol(text, eol) {
-	if (eol === "\r\n") return text.replace(/\r\n/g, "\n").replace(/\n/g, "\r\n");
-	return text.replace(/\r\n/g, "\n");
-}
-/** 逐处替换（从后往前，前面的下标才不会因为长度变化错位） */
-function replaceSpans(ctx, text, spans, newText, hintIndent) {
-	const fileEol = text.includes("\r\n") ? "\r\n" : "\n";
-	let out = text;
-	for (let i = spans.length - 1; i >= 0; i -= 1) {
-		const span = spans[i];
-		const start = toOriginalStart(ctx, span.start);
-		const end = toOriginalEnd(ctx, span.end - 1);
-		let replacement = alignEol(newText, text.slice(start, end).includes("\r\n") ? "\r\n" : fileEol);
-		if (hintIndent && span.indent) replacement = span.indent + replacement;
-		out = out.slice(0, start) + replacement + out.slice(end);
-	}
-	return out;
-}
-/** 失败时的说明：给出「oldText 首行在文件第几行出现过」这类可操作线索 */
-function describeMiss(ctx, old) {
-	const head = `未找到要替换的内容（已按「忽略行尾 / 缩进 / 空白差异」逐档重试）：\n${old.split("\n").slice(0, 6).join("\n")}`;
-	const firstLine = old.split("\n").map((line) => line.trim()).find((line) => line.length > 0);
-	if (!firstLine) return `${head}\n请先 read_file 确认这个文件的原文。`;
-	const lineNo = ctx.lines.findIndex((line) => line.trim() === firstLine);
-	if (lineNo >= 0) return `${head}\n文件中第 ${lineNo + 1} 行的内容与 oldText 首行一致，但后面几行对不上 —— 常见原因是原文已经改过、缩进抄错，或 oldText 里混进了 read_file 输出的「行号 | 」前缀。请重新 read_file 核对后再编辑。`;
-	return `${head}\noldText 的首行在文件里也找不到完全一致的行 —— 请先 read_file 重新确认原文（注意不要带输出里的「行号 | 」前缀）。`;
-}
-/**
-* 用容错匹配把 `oldText` 换成 `newText`（同一片段出现多处时全部替换）。
-*
-* @param text 文件全文（原样读进来的内容）
-* @throws 任何一档都没命中时抛错，错误里带可操作线索
-*/
-function applyTolerantEdit(text, oldText, newText) {
-	if (!oldText.trim()) throw new Error("oldText 不能为空");
-	const ctx = normalize$1(text);
-	const match = findMatch(ctx, oldText, true);
-	if (!match) throw new Error(describeMiss(ctx, oldText.replace(/\r\n/g, "\n")));
-	const hintIndent = LINE_LEVEL_STRATEGIES.has(match.strategy) && !oldText.includes("\n") && !newText.includes("\n") && !/^[ \t]/.test(oldText) && !/^[ \t]/.test(newText);
-	const next = replaceSpans(ctx, text, match.spans, newText, hintIndent);
-	if (next === text) throw new Error("新旧内容相同：newText 与命中的原文一模一样，没有任何改动（检查是不是把 newText 又写成了原文）");
-	return {
-		text: next,
-		count: match.spans.length,
-		note: NOTES[match.strategy] ?? ""
-	};
 }
 // packages/tools/src/ansi.ts
 /**
@@ -2415,6 +4376,572 @@ function createOutputDecoder() {
 		}
 	};
 }
+// packages/tools/src/ripgrep.ts
+/**
+* 随包 ripgrep：给本地工作区的 `grep` / `glob` 用（与 dsh 的实现同源）。
+*
+* 为什么不用系统 `rg`：Windows / macOS 用户机器上通常没有；而 Node 侧自己遍历
+* （`backend.ts` 里那套）在大仓库上慢一个数量级，且正则方言与 rg 有出入。
+*
+* 二进制从哪来（按顺序试，全失败就返回 null，调用方退回 JS 遍历）：
+* 1. `FIZZ_RG_PATH` 环境变量（排障用）；
+* 2. `@vscode/ripgrep` 的 `rgPath`（server / dev / 装了依赖的容器）；
+* 3. `PATH` 里的 `rg`（容器镜像用 apt 装了 ripgrep，见 runtime.Dockerfile）。
+*
+* ⚠️ Electron 打包后模块路径在 `app.asar` 里，而可执行文件必须解包
+*    （`app.asar.unpacked`，见 apps/desktop/package.json 的 asarUnpack）。
+*    这里做一次路径改写，否则 spawn 报 ENOTDIR。
+*/
+var cached;
+/** asar 内的路径 → 解包后的真实路径 */
+function unwrapAsar(p) {
+	const marker = `${sep}app.asar${sep}`;
+	return p.includes(marker) ? p.replace(marker, `${sep}app.asar.unpacked${sep}`) : p;
+}
+function isExecutable(p) {
+	try {
+		accessSync(p, constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+function findOnPath(name) {
+	for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+		if (!dir) continue;
+		const candidate = join(dir, name);
+		if (isExecutable(candidate)) return candidate;
+	}
+	return null;
+}
+/** 解析 rg 可执行文件；返回 null = 这台机器上没有可用的 ripgrep */
+async function resolveRgPath() {
+	if (cached !== void 0) return cached;
+	const fromEnv = process.env.FIZZ_RG_PATH;
+	if (fromEnv && existsSync(fromEnv)) {
+		cached = fromEnv;
+		return cached;
+	}
+	try {
+		const mod = await import("@vscode/ripgrep");
+		if (typeof mod.rgPath === "string") {
+			const real = unwrapAsar(mod.rgPath);
+			if (existsSync(real)) {
+				cached = real;
+				return cached;
+			}
+		}
+	} catch {}
+	cached = findOnPath(process.platform === "win32" ? "rg.exe" : "rg");
+	return cached;
+}
+/** 跑一次 rg；`--json` 的 stdout 可能很大，这里只按需要收集（调用方给上限） */
+function runRg(bin, args, cwd, signal) {
+	return new Promise((resolve, reject) => {
+		const child = spawn(bin, args, {
+			cwd,
+			windowsHide: true,
+			...signal ? { signal } : {}
+		});
+		const out = [];
+		let err = "";
+		child.stdout.on("data", (d) => out.push(d));
+		child.stderr.on("data", (d) => {
+			err = (err + d.toString("utf8")).slice(-4e3);
+		});
+		child.on("error", reject);
+		child.on("close", (code) => {
+			resolve({
+				stdout: Buffer.concat(out).toString("utf8"),
+				stderr: err,
+				code: code ?? 0
+			});
+		});
+	});
+}
+/** 默认忽略目录 → rg 的 `--glob=!…`（rg 自己还会遵守 .gitignore） */
+function ignoreGlobs() {
+	return [...DEFAULT_IGNORE_DIRS].filter((name) => name !== ".git").map((name) => `--glob=!**/${name}/**`);
+}
+/**
+* 用 rg 搜内容。返回 `null` = 没有可用的 rg（调用方退回 JS 实现）。
+*
+* 与 dsh 的 grep 一致：遵守 `.gitignore`、不搜隐藏文件、跳过二进制；
+* 额外附上 Fizz 的默认忽略目录（`dist` / `node_modules` 等没写进 .gitignore 的也算）。
+*/
+function buildSearchArgs(opts) {
+	return [
+		"--json",
+		"--max-filesize",
+		String(opts.maxFileBytes),
+		...opts.caseInsensitive ? ["--ignore-case"] : [],
+		...opts.includeGlob ? [`--glob=${opts.includeGlob}`] : [],
+		...ignoreGlobs(),
+		`--regexp=${opts.pattern}`,
+		"--",
+		opts.start
+	];
+}
+async function ripgrepSearch(opts) {
+	const bin = await resolveRgPath();
+	if (!bin) return null;
+	const run = await runRg(bin, buildSearchArgs(opts), opts.start, opts.signal);
+	if (run.code === 1) return [];
+	if (run.code !== 0) throw new Error(`ripgrep failed: ${run.stderr.trim() || `exit ${run.code}`}`);
+	const byFile = /* @__PURE__ */ new Map();
+	let total = 0;
+	for (const line of run.stdout.split("\n")) {
+		if (!line) continue;
+		let event;
+		try {
+			event = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		if (event.type !== "match") continue;
+		const abs = event.data?.path?.text;
+		const text = event.data?.lines?.text;
+		const lineNo = event.data?.line_number;
+		if (!abs || typeof text !== "string" || typeof lineNo !== "number") continue;
+		const rel = toRelative(abs, opts.root);
+		if (rel === null) continue;
+		let entry = byFile.get(rel);
+		if (!entry) {
+			entry = {
+				file: rel,
+				hits: []
+			};
+			byFile.set(rel, entry);
+		}
+		entry.hits.push({
+			line: lineNo,
+			text: text.replace(/\r?\n$/, "")
+		});
+		total += 1;
+		if (total >= opts.maxResults) break;
+	}
+	return [...byFile.values()];
+}
+/** 用 rg 找文件。返回 `null` = 没有可用的 rg。 */
+function buildFindArgs(opts) {
+	return [
+		"--files",
+		`--glob=${opts.pattern}`,
+		...opts.includeIgnored ? ["--no-ignore", "--hidden"] : [],
+		"--glob=!**/.git/**",
+		"--glob=!**/.svn/**",
+		"--glob=!**/.hg/**",
+		"--glob=!**/.bzr/**",
+		"--glob=!**/.jj/**",
+		"--",
+		opts.start
+	];
+}
+async function ripgrepFind(opts) {
+	const bin = await resolveRgPath();
+	if (!bin) return null;
+	const run = await runRg(bin, buildFindArgs(opts), opts.start, opts.signal);
+	if (run.code === 1) return [];
+	if (run.code !== 0) throw new Error(`ripgrep failed: ${run.stderr.trim() || `exit ${run.code}`}`);
+	const out = [];
+	for (const line of run.stdout.split("\n")) {
+		if (!line) continue;
+		const rel = toRelative(line, opts.root);
+		if (rel === null) continue;
+		out.push(rel);
+		if (out.length >= opts.maxResults) break;
+	}
+	return out;
+}
+/** rg 打印的是「绝对路径」（我们给的就是绝对起点），换算成相对工作区根 */
+function toRelative(path, root) {
+	const normalized = path.replace(/\\/g, "/");
+	const base = root.replace(/\\/g, "/").replace(/\/+$/, "");
+	if (normalized === base) return "";
+	if (!normalized.startsWith(`${base}/`)) return null;
+	return normalized.slice(base.length + 1);
+}
+// packages/tools/src/backend.ts
+/**
+* 工作区后端的**本地实现**：把原先直接散在 `tools.ts` 里的 fs / 搜索 / 进程执行
+* 收进一个对象。
+*
+* 为什么单独成文件：远端实现要复用同一套工具定义，而 `tools.ts` 又要在未传后端时
+* 回落到这里 —— 实现留在 `tools.ts` 会形成循环 import。ssh2 只在 `apps/server`，
+* 这里只用 Node 内置能力。
+*
+* 行为与改造前逐项对齐：同一套忽略规则、同样的词法排序、同样的进程组终止与输出解码。
+*/
+/** 搜索文件的大小上限（1MB，跳过大文件避免卡死） */
+var MAX_SEARCH_FILE_SIZE = 1048576;
+function entryTypeOf(stat) {
+	if (stat.isDirectory()) return "dir";
+	if (stat.isFile()) return "file";
+	if (stat.isSymbolicLink()) return "symlink";
+	return "other";
+}
+/**
+* 杀掉整棵进程树（超时 / 中止 / 单条停止都走它）。
+*
+* ⚠️ **不再看 `child.killed`**：那个标志只表示「我们向**它自己**发过信号」，与「树还在不在」
+* 无关。以前的 `if (child.exitCode !== null || child.killed) return` 会让第二次调用直接
+* 什么都不做 —— 用户报「AI 跑了 `npx vite`，我点停止停不下来」，多半就是第一刀（某个
+* 只杀 shell 的路径或 SIGINT）已经把 `killed` 置上，后面这道保险丝全被跳过了。
+* 现在无条件再打一记整树 kill：幂等（进程没了 taskkill / kill 都是空转）。
+*/
+function killChild(child, isWin) {
+	const pid = child.pid;
+	if (!pid) return;
+	if (isWin) {
+		/**
+		* ⚠️ `taskkill` 是**异步**的：`spawn` 自己不抛错，ENOENT / 权限不足 / 「进程已退出」
+		* 全都只走 `'error'` 事件或非 0 退出码 —— 以前的 `try { spawn(...) } catch {}` 一个都
+		* 接不住，失败了就是**静默空转**（命令继续跑、端口继续占着）。这里两条路都补上：
+		* 打整树，同时在任何失败信号上退回直接 kill shell。
+		*/
+		const killer = spawn("taskkill", [
+			"/pid",
+			String(pid),
+			"/T",
+			"/F"
+		], {
+			stdio: "ignore",
+			windowsHide: true
+		});
+		const fallback = () => {
+			try {
+				child.kill("SIGKILL");
+			} catch {}
+		};
+		killer.on("error", fallback);
+		killer.on("exit", (code) => {
+			if (code !== 0) fallback();
+		});
+		return;
+	}
+	try {
+		process.kill(-pid, "SIGKILL");
+		return;
+	} catch {}
+	try {
+		child.kill("SIGKILL");
+	} catch {}
+}
+/**
+* 把一条命令翻译成「起哪个 shell、带什么参数、什么环境」。
+*
+* 前台（`runCommand`）与后台（`spawnBackgroundShell`）**必须用同一份判定**：两条路要是
+* 各挑一次 shell，同一条命令「直接跑」和「丢后台跑」的行为就会不一样 —— 最典型的是
+* Windows 上前台走 Git Bash、后台掉进 PowerShell，管道 / `&&` / 单引号整个不认。
+*/
+function resolveShellSpawn(command) {
+	const isWin = process.platform === "win32";
+	const bashPath = isWin ? gitBashPath() : null;
+	const useBash = !isWin || Boolean(bashPath);
+	return {
+		shellCmd: isWin ? bashPath ?? commandShellPath() : "/bin/bash",
+		shellArgs: isWin ? useBash ? ["-lc", command] : [
+			"-NoLogo",
+			"-NoProfile",
+			"-NonInteractive",
+			"-Command",
+			`[Console]::OutputEncoding=[Text.Encoding]::UTF8;$OutputEncoding=[Text.Encoding]::UTF8;${command}`
+		] : ["-lc", command],
+		env: isWin && useBash ? {
+			...process.env,
+			PATH: `${join(dirname(bashPath), "..", "usr", "bin")};${process.env.PATH ?? ""}`
+		} : process.env,
+		isWin
+	};
+}
+/** 本地执行：与改造前的 `runCommand` 同一套进程树终止 / 解码 / 截断语义，只返回原始结果 */
+function localExec(command, cwd, opts) {
+	const { shellCmd, shellArgs, env, isWin } = resolveShellSpawn(command);
+	const timeoutMs = opts.timeoutMs ?? 12e4;
+	const maxBytes = opts.maxBytes ?? 4e6;
+	const child = spawn(shellCmd, shellArgs, {
+		cwd,
+		env,
+		windowsHide: true,
+		...isWin ? {} : { detached: true }
+	});
+	let stdout = "";
+	let stderr = "";
+	let truncated = false;
+	const cleanStdout = createAnsiStripper();
+	const cleanStderr = createAnsiStripper();
+	const decodeStdout = createOutputDecoder();
+	const decodeStderr = createOutputDecoder();
+	return new Promise((resolve) => {
+		let settled = false;
+		const finish = (reason, exitCode, error) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			opts.signal?.removeEventListener("abort", onAbort);
+			stdout += decodeStdout.flush();
+			stderr += decodeStderr.flush();
+			resolve({
+				stdout,
+				stderr,
+				exitCode: exitCode ?? null,
+				reason,
+				error,
+				truncated
+			});
+		};
+		const reap = () => {
+			killChild(child, isWin);
+			setTimeout(() => killChild(child, isWin), 600).unref?.();
+		};
+		const onAbort = () => {
+			reap();
+			finish("aborted");
+		};
+		const timer = setTimeout(() => {
+			reap();
+			finish("timeout");
+		}, timeoutMs);
+		if (opts.signal) {
+			if (opts.signal.aborted) onAbort();
+			else opts.signal.addEventListener("abort", onAbort, { once: true });
+		}
+		child.stdout.on("data", (d) => {
+			const chunk = decodeStdout.decode(d);
+			if (!chunk) return;
+			stdout += chunk;
+			if (stdout.length > maxBytes) {
+				stdout = stdout.slice(-maxBytes);
+				truncated = true;
+			}
+			opts.onOutput?.("stdout", cleanStdout(chunk));
+		});
+		child.stderr.on("data", (d) => {
+			const chunk = decodeStderr.decode(d);
+			if (!chunk) return;
+			stderr += chunk;
+			if (stderr.length > maxBytes) {
+				stderr = stderr.slice(-maxBytes);
+				truncated = true;
+			}
+			opts.onOutput?.("stderr", cleanStderr(chunk));
+		});
+		child.on("error", (err) => finish("error", null, err.message));
+		child.on("exit", (code) => finish("exit", code));
+	});
+}
+/** 目录项排序：目录在前、同类按名称（与改造前 list_files 一致） */
+function sortEntries(entries) {
+	return entries.sort((a, b) => {
+		const ad = a.type === "dir" ? 0 : 1;
+		const bd = b.type === "dir" ? 0 : 1;
+		return ad === bd ? a.name.localeCompare(b.name) : ad - bd;
+	});
+}
+/** 本地后端 */
+function createLocalBackend(root) {
+	const base = root;
+	return {
+		kind: "local",
+		root: base,
+		resolve: (p) => resolveInside(base, p),
+		rel: (abs) => relPathOf(base, abs),
+		join: (...parts) => join(...parts),
+		dirname: (p) => dirname(p),
+		basename: (p) => basename(p),
+		async stat(p) {
+			const st = await promises.stat(p).catch(() => null);
+			if (!st) return null;
+			return {
+				type: entryTypeOf(st),
+				size: st.size,
+				mtimeMs: st.mtimeMs
+			};
+		},
+		async readDir(p) {
+			const entries = await promises.readdir(p, { withFileTypes: true });
+			const out = [];
+			for (const ent of entries) {
+				const type = ent.isDirectory() ? "dir" : ent.isFile() ? "file" : ent.isSymbolicLink() ? "symlink" : "other";
+				let size;
+				if (type === "file") size = await promises.stat(join(p, ent.name)).then((s) => s.size).catch(() => void 0);
+				out.push({
+					name: ent.name,
+					type,
+					size
+				});
+			}
+			return sortEntries(out);
+		},
+		async readFile(p, opts) {
+			if (opts?.maxBytes) {
+				const st = await promises.stat(p);
+				if (st.size > opts.maxBytes) throw new Error(`文件过大（${st.size} 字节，超过 ${opts.maxBytes} 字节上限）`);
+			}
+			return promises.readFile(p);
+		},
+		async writeFile(p, data, opts) {
+			if (opts?.createParents !== false) await promises.mkdir(dirname(p), { recursive: true });
+			if (!opts?.atomic) {
+				await promises.writeFile(p, data);
+				return;
+			}
+			const tmp = join(dirname(p), `.fizz-tmp-${process.pid}-${Date.now()}`);
+			await promises.writeFile(tmp, data);
+			await promises.rename(tmp, p).catch(async (err) => {
+				await promises.rm(tmp, { force: true }).catch(() => void 0);
+				throw err;
+			});
+		},
+		async mkdirp(p) {
+			await promises.mkdir(p, { recursive: true });
+		},
+		async remove(p, opts) {
+			await promises.rm(p, {
+				recursive: opts?.recursive ?? false,
+				force: opts?.force ?? false
+			});
+		},
+		async rename(from, to) {
+			await promises.rename(from, to);
+		},
+		ignoreChecker: () => createIgnoreChecker(base),
+		async search(opts) {
+			const start = resolveInside(base, opts.subPath);
+			if (opts.context === 0) {
+				const viaRg = await ripgrepSearch({
+					pattern: opts.pattern,
+					caseInsensitive: opts.caseInsensitive,
+					root: base,
+					start,
+					...opts.includeGlob ? { includeGlob: opts.includeGlob } : {},
+					maxResults: opts.maxResults,
+					maxFileBytes: opts.maxFileBytes
+				});
+				if (viaRg) return viaRg.map((f) => ({
+					file: f.file,
+					hits: f.hits.map((h) => ({
+						line: h.line,
+						text: h.text.trimEnd().slice(0, 200)
+					}))
+				}));
+			}
+			const re = new RegExp(opts.pattern, opts.caseInsensitive ? "i" : "");
+			const fileRe = opts.filePattern ? new RegExp(opts.filePattern, opts.caseInsensitive ? "i" : "") : null;
+			const st = await promises.stat(start).catch(() => null);
+			if (!st) throw new Error(`路径不存在：${opts.subPath || "."}（相对于工作区根）`);
+			const acc = [];
+			let hits = 0;
+			const pushFile = (file, fileHits, source) => {
+				if (!fileHits.length) return;
+				const entry = {
+					file,
+					hits: fileHits
+				};
+				if (opts.context > 0 && source) entry.context = buildSearchContext(fileHits, source, opts.context);
+				acc.push(entry);
+			};
+			const scan = async (abs, rel) => {
+				if (hits >= opts.maxResults) return;
+				if (fileRe && !fileRe.test(rel.split("/").pop() ?? rel)) return;
+				if ((await promises.stat(abs)).size > opts.maxFileBytes) return;
+				const buf = await promises.readFile(abs);
+				if (buf.includes(0)) return;
+				const source = buf.toString("utf8").split("\n");
+				const fileHits = [];
+				for (let i = 0; i < source.length && hits < opts.maxResults; i++) {
+					re.lastIndex = 0;
+					if (re.test(source[i])) {
+						fileHits.push({
+							line: i + 1,
+							text: source[i].trimEnd().slice(0, 200)
+						});
+						hits++;
+					}
+				}
+				pushFile(rel, fileHits, opts.context > 0 ? source : void 0);
+			};
+			const walk = async (dir) => {
+				if (hits >= opts.maxResults) return;
+				const entries = await promises.readdir(dir, { withFileTypes: true });
+				for (const ent of entries) {
+					if (hits >= opts.maxResults) return;
+					const abs = join(dir, ent.name);
+					const rel = relPathOf(base, abs);
+					if (opts.ignore(rel, ent.isDirectory())) continue;
+					if (ent.isDirectory()) {
+						await walk(abs);
+						continue;
+					}
+					if (ent.isFile()) await scan(abs, rel);
+				}
+			};
+			if (st.isFile()) await scan(start, relPathOf(base, start));
+			else await walk(start);
+			return acc;
+		},
+		async find(opts) {
+			const start = resolveInside(base, opts.subPath);
+			const viaRg = await ripgrepFind({
+				pattern: opts.pattern,
+				root: base,
+				start,
+				includeIgnored: opts.includeIgnored === true,
+				maxResults: opts.maxResults
+			});
+			if (viaRg) return viaRg;
+			const re = globToRegExp(opts.pattern);
+			const st = await promises.stat(start).catch(() => null);
+			if (!st) throw new Error(`路径不存在：${opts.subPath || "."}（相对于工作区根）`);
+			const out = [];
+			const walk = async (dir) => {
+				if (out.length >= opts.maxResults) return;
+				const entries = await promises.readdir(dir, { withFileTypes: true });
+				entries.sort((a, b) => a.name.localeCompare(b.name));
+				for (const ent of entries) {
+					if (out.length >= opts.maxResults) return;
+					const abs = join(dir, ent.name);
+					const rel = relPathOf(base, abs);
+					if (opts.ignore(rel, ent.isDirectory())) continue;
+					if (ent.isDirectory()) await walk(abs);
+					else if (ent.isFile() && re.test(rel)) out.push(rel);
+				}
+			};
+			if (st.isFile()) {
+				const rel = relPathOf(base, start);
+				if (re.test(rel)) out.push(rel);
+			} else await walk(start);
+			return out;
+		},
+		exec: (command, opts = {}) => localExec(command, opts.cwd ?? base, opts)
+	};
+}
+/** 把命中行 ±context 合并成连续区间（与改造前的 formatter 同一套区间合并规则；远端 backend 也复用它） */
+function buildSearchContext(hits, source, context) {
+	const ranges = [];
+	for (const h of hits) {
+		const s = Math.max(1, h.line - context);
+		const e = Math.min(source.length, h.line + context);
+		const last = ranges[ranges.length - 1];
+		if (last && s <= last[1] + 1) last[1] = Math.max(last[1], e);
+		else ranges.push([s, e]);
+	}
+	const hitLines = new Set(hits.map((h) => h.line));
+	const out = [];
+	ranges.forEach(([s, e], idx) => {
+		if (idx > 0) out.push({
+			line: 0,
+			text: "--",
+			hit: false
+		});
+		for (let n = s; n <= e; n++) out.push({
+			line: n,
+			text: source[n - 1].trimEnd().slice(0, 200),
+			hit: hitLines.has(n)
+		});
+	});
+	return out;
+}
 // packages/tools/src/output-log.ts
 /**
 * 超长工具输出的落盘：**execute_command** / **web_fetch** 结果太长时，把全文写进工作区的
@@ -2485,51 +5012,53 @@ function lineAlignedStart(text, approx) {
 	return nl === -1 ? text.length : nl + 1;
 }
 /** 落盘目录（含 .gitignore 兜底）：任何失败都往上抛，由调用方决定降级 */
-async function ensureDir(root) {
-	const dir = join(root, TOOL_OUTPUT_DIR);
-	await promises.mkdir(dir, { recursive: true });
-	await promises.writeFile(join(root, ".fizz", ".gitignore"), "*", { flag: "wx" }).catch(() => void 0);
+async function ensureDir(backend) {
+	const dir = backend.join(backend.root, TOOL_OUTPUT_DIR);
+	await backend.mkdirp(dir);
+	const gitignore = backend.join(backend.root, ".fizz", ".gitignore");
+	if (!await backend.stat(gitignore).catch(() => null)) await backend.writeFile(gitignore, "*").catch(() => void 0);
 	return dir;
 }
 /** 尽力而为地清旧缓存：超期或超量的删掉。失败吞掉 —— 缓存不值得为它报错 */
-async function sweepOldOutputs(dir) {
+async function sweepOldOutputs(backend, dir) {
 	try {
-		const names = await promises.readdir(dir).catch(() => []);
+		const entries = await backend.readDir(dir).catch(() => []);
 		const alive = [];
-		for (const name of names) {
-			if (!/\.(log|md)$/.test(name)) continue;
-			const abs = join(dir, name);
-			const stat = await promises.stat(abs).catch(() => null);
+		for (const ent of entries) {
+			if (ent.type !== "file" || !/\.(log|md)$/.test(ent.name)) continue;
+			const abs = backend.join(dir, ent.name);
+			const stat = await backend.stat(abs).catch(() => null);
 			if (!stat) continue;
-			if (Date.now() - stat.mtimeMs > OUTPUT_TTL_MS) {
-				await promises.rm(abs, { force: true }).catch(() => void 0);
+			if (stat.mtimeMs !== void 0 && Date.now() - stat.mtimeMs > OUTPUT_TTL_MS) {
+				await backend.remove(abs, { force: true }).catch(() => void 0);
 				continue;
 			}
 			alive.push({
 				path: abs,
-				mtime: stat.mtimeMs
+				mtime: stat.mtimeMs ?? 0
 			});
 		}
 		if (alive.length <= MAX_OUTPUT_FILES) return;
 		alive.sort((a, b) => a.mtime - b.mtime);
-		for (const old of alive.slice(0, alive.length - MAX_OUTPUT_FILES)) await promises.rm(old.path, { force: true }).catch(() => void 0);
+		for (const old of alive.slice(0, alive.length - MAX_OUTPUT_FILES)) await backend.remove(old.path, { force: true }).catch(() => void 0);
 	} catch {}
 }
 /**
 * 把过长内容落进工作区，返回「相对路径 + 行数」。
 *
-* 落盘失败（只读文件系统、磁盘满…）时**不抛**：降级成 `null`，调用方退回到纯截断 ——
-* 一次缓存写失败不该把整轮工具调用搞挂。
+* `backend` 为 `null`（未绑定工作区）或落盘失败（只读文件系统、磁盘满…）时**不抛**：
+* 降级成 `null`，调用方退回到纯截断 —— 一次缓存写失败不该把整轮工具调用搞挂。
 */
-async function spillToWorkspace(root, text, meta) {
-	if (!root) return null;
+async function spillToWorkspace(backend, text, meta) {
+	if (!backend?.root) return null;
 	try {
-		const dir = await ensureDir(root);
+		const dir = await ensureDir(backend);
 		const ext = meta.tool === "web_fetch" ? "md" : "log";
-		const relPath = `${TOOL_OUTPUT_DIR}/${meta.tool === "web_fetch" ? "web-fetch" : "cmd"}-${randomBytes(4).toString("hex")}.${ext}`;
-		const absPath = join(root, relPath);
-		await promises.writeFile(absPath, text, "utf8");
-		await sweepOldOutputs(dir);
+		const name = `${meta.tool === "web_fetch" ? "web-fetch" : "cmd"}-${randomBytes(4).toString("hex")}.${ext}`;
+		const relPath = `${TOOL_OUTPUT_DIR}/${name}`;
+		const absPath = backend.join(dir, name);
+		await backend.writeFile(absPath, text);
+		await sweepOldOutputs(backend, dir);
 		return {
 			relPath,
 			absPath,
@@ -2549,7 +5078,7 @@ async function summarizeLongOutput(full, meta) {
 	if (full.length <= 4e3) return full;
 	const headChars = meta.headChars ?? Math.floor(SUMMARY_BODY_CHARS / 2);
 	const tailChars = meta.tailChars ?? Math.floor(SUMMARY_BODY_CHARS / 2);
-	const spilled = await spillToWorkspace(meta.root, full, {
+	const spilled = await spillToWorkspace(meta.backend, full, {
 		tool: meta.tool,
 		...meta.detail ? { detail: meta.detail } : {}
 	});
@@ -2560,13 +5089,13 @@ async function summarizeLongOutput(full, meta) {
 	const tail = full.slice(tailStart);
 	const headLines = countLines(head);
 	const tailStartLine = countLines(full.slice(0, tailStart)) + 1;
-	const stem = basename(spilled.relPath).replace(/\.(log|md)$/, "");
+	const stem = (spilled.relPath.split("/").pop() ?? spilled.relPath).replace(/\.(log|md)$/, "");
 	return `${head}\n…（中段略去，见下方说明）…\n${tail}\n\n${[
 		"【输出过长，已完整落盘到工作区文件】",
 		`- 文件：${spilled.relPath}（相对工作区根，全文都在里面，共 ${spilled.totalLines} 行）`,
 		meta.detail ? `- 来源：${meta.tool} ${meta.detail}` : `- 来源：${meta.tool}`,
 		`- 本次返回：第 1–${headLines} 行，以及第 ${tailStartLine}–${spilled.totalLines} 行；其余行没有出现在这条结果里。`,
-		`- 读其余部分：用 read_file(path="${spilled.relPath}", offset=<起始行号>, limit=<行数>) 一段段往下翻（例如 offset=${headLines + 1}, limit=200），直到读完 ${spilled.totalLines} 行；也可以 search_files(pattern="<关键词>", filePattern="*${stem}*") 直接定位。`,
+		`- 读其余部分：用 read(file_path="${spilled.relPath}", offset=<起始行号>, limit=<行数>) 一段段往下翻（例如 offset=${headLines + 1}, limit=200），直到读完 ${spilled.totalLines} 行；也可以 grep(pattern="<关键词>", include="*${stem}*") 直接定位。`,
 		...meta.extra ? [`- 补充：${meta.extra}`] : []
 	].join("\n")}`;
 }
@@ -2576,42 +5105,245 @@ function clipToBudget(text, max = SUMMARY_BODY_CHARS) {
 	const cut = text.lastIndexOf("\n", max);
 	return `${text.slice(0, cut > max * .6 ? cut : max)}\n…（本段已按预算裁剪）`;
 }
-// packages/tools/src/tools.ts
+// packages/tools/src/str-replace-editor.ts
 /**
-* 工作区 Agent 工具集：文件读取 / 查找 / 写入 / 编辑 / 删除 / 执行命令。
+* `str_replace_editor`：Anthropic 风格的「一个工具四个子命令」（与 dsh 的
+* `@deepseek-ai/dsh-tool-str-replace-editor` 同源）。
 *
-* 所有工具都绑定一个工作区根目录（root），文件路径一律相对工作区，
-* 经 resolveInside 越界校验后落盘，防止 Agent 逃出工作区。
+* 存在的意义不是再抄一遍 `read` / `write` / `edit`，而是**兼容**：很多提示词、技能、
+* 从 Claude Code 搬来的工作流都会直接调这个名字。语义上它是一个独立面：
+* - `view`：带行号看文件（`     1  content`），或看目录（最多两层）；
+* - `create`：**只能新建**，目标已存在就报错（覆盖属于 `write`）；
+* - `str_replace`：`old_str` 必须**唯一命中**，`new_str` 省略 = 删掉；
+* - `insert`：在 `insert_line` 那行**之后**插入。
 *
-* 权限：**会改动东西的工具**（write_file / edit_file / delete_file / execute_command）
-* 统一走 `guardWrite` 一道闸 ——
-* - `readonly`：直接回绝（不落盘、不执行），并告诉模型让用户去切换模式；
-* - `confirm`：经 requestConfirm 弹卡片等用户点「允许」，被拒绝就当次调用放弃；
-*   没有可用的 requestConfirm 通道时**按拒绝处理**（fail-closed）；
-* - `full`：放行。
+* 与 dsh 的差别只有一处，且是刻意的：dsh 要求**绝对路径**（它的执行世界没有「工作区根」
+* 这个概念），Fizz 的模型一直按「相对工作区根」工作 —— 所以这里相对路径按工作区解析，
+* 绝对路径只要落在工作区内也接受。错误文案仍保持 dsh 原样。
 *
-* 只读类工具（list/read/search/find/read_skill）在任何模式下都不拦。
+* 读后写：`str_replace` / `insert` 与内置 `edit` 走同一张观察表（改之前必须读过），
+* 否则「唯一命中」这条硬要求会让模型在没看过文件时反复瞎猜。
 */
+/** view 的默认输出上限（与 dsh 一致） */
+var VIEW_MAX_OUTPUT_CHARS = 16e3;
+var TRUNCATED_MESSAGE = "<response clipped><NOTE>To save on context only part of this file has been shown to you. You should retry this tool after you have searched inside the file with `grep -n` in order to find the line numbers of what you are looking for.</NOTE>";
+var DEFAULT_DESCRIPTION = `Custom editing tool for viewing, creating and editing files
+* State is persistent across command calls and discussions with the user
+* If \`path\` is a file, \`view\` displays the result of applying \`cat -n\`. If \`path\` is a directory, \`view\` lists non-hidden files and directories up to 2 levels deep
+* The \`create\` command cannot be used if the specified \`path\` already exists as a file
+* If a \`command\` generates a long output, it will be truncated and marked with \`<response clipped>\`
+* A null placeholder for a parameter unused by the selected command is treated as omitted. Required parameters still need values; omit \`str_replace.new_str\` rather than setting it to null when deleting a match
+
+Notes for using the \`str_replace\` command:
+* The \`old_str\` parameter should match EXACTLY one or more consecutive lines from the original file. Be mindful of whitespaces!
+* If the \`old_str\` parameter is not unique in the file, the replacement will not be performed. Make sure to include enough context in \`old_str\` to make it unique
+* The \`new_str\` parameter should contain the edited lines that should replace the \`old_str\`
+`.trim();
+function maybeTruncate(content, maxOutputChars) {
+	return content.length <= maxOutputChars ? content : content.slice(0, maxOutputChars) + TRUNCATED_MESSAGE;
+}
+/** 文件内容 → `cat -n` 风格（6 位右对齐行号 + 两个空格） */
+function formatFileView(path, content, viewRange, maxOutputChars = VIEW_MAX_OUTPUT_CHARS) {
+	const allLines = content.split("\n");
+	let lines = allLines;
+	let initialLine = 1;
+	let finalLine;
+	let prompt = `Here's the content of ${path} with line numbers (which has a total of ${allLines.length} lines)`;
+	if (viewRange !== void 0) {
+		const [requestedInitial, requestedFinal] = viewRange;
+		if (viewRange.length !== 2 || requestedInitial === void 0 || requestedFinal === void 0 || !viewRange.every(Number.isInteger)) throw new Error("Invalid `view_range`. It should be a list of two integers.");
+		initialLine = requestedInitial;
+		finalLine = requestedFinal;
+		if (initialLine < 1 || initialLine > allLines.length) throw new Error(`Invalid \`view_range\`: [${viewRange.join(", ")}]. Its first element \`${initialLine}\` should be within the range of lines of the file: [1, ${allLines.length}]`);
+		if (finalLine > allLines.length) throw new Error(`Invalid \`view_range\`: [${viewRange.join(", ")}]. Its second element \`${finalLine}\` should be smaller than the number of lines in the file: \`${allLines.length}\``);
+		if (finalLine !== -1 && finalLine < initialLine) throw new Error(`Invalid \`view_range\`: [${viewRange.join(", ")}]. Its second element \`${finalLine}\` should be larger or equal than its first \`${initialLine}\``);
+		lines = finalLine === -1 ? allLines.slice(initialLine - 1) : allLines.slice(initialLine - 1, finalLine);
+		prompt += ` with view_range=[${initialLine}, ${finalLine}]`;
+	}
+	const numbered = lines.map((line, index) => `${String(initialLine + index).padStart(6, " ")}  ${line}`).join("\n");
+	return maybeTruncate(`${prompt}:\n${numbered}\n`, maxOutputChars);
+}
+/** 唯一命中才替换；返回替换后的全文（dsh 的 `str_replace` 语义） */
+function replaceUnique(before, oldStr, newStr, path) {
+	const offset = before.indexOf(oldStr);
+	if (offset < 0) throw new Error(`No replacement was performed, old_str \`${oldStr}\` did not appear verbatim in ${path}.`);
+	if (before.indexOf(oldStr, offset + oldStr.length) >= 0) {
+		const lines = [];
+		let scan = before.indexOf(oldStr);
+		let line = 1;
+		let cursor = 0;
+		while (scan >= 0) {
+			while (cursor < scan) {
+				if (before[cursor] === "\n") line += 1;
+				cursor += 1;
+			}
+			lines.push(line);
+			scan = before.indexOf(oldStr, scan + oldStr.length);
+		}
+		throw new Error(`No replacement was performed. Multiple occurrences of old_str \`${oldStr}\` in lines [${lines.join(", ")}]. Please ensure it is unique`);
+	}
+	return before.slice(0, offset) + newStr + before.slice(offset + oldStr.length);
+}
+/** 在第 `insertLine` 行**之后**插入（0 = 文件最前面） */
+function insertAfterLine(before, insertLine, newStr) {
+	const lines = before.split("\n");
+	if (!Number.isInteger(insertLine) || insertLine < 0 || insertLine > lines.length) throw new Error(`Invalid \`insert_line\` parameter: ${insertLine}. It should be within the range of lines of the file: [0, ${lines.length}]`);
+	return [
+		...lines.slice(0, insertLine),
+		...newStr.split("\n"),
+		...lines.slice(insertLine)
+	].join("\n");
+}
+/** 组装 `str_replace_editor` 工具（注册名与 dsh 一致） */
+function buildStrReplaceEditorTool(deps) {
+	const { backend } = deps;
+	const maxOutputChars = deps.maxOutputChars ?? 16e3;
+	/** 路径 → 绝对路径（相对工作区解析；越界由 backend.resolve 抛错） */
+	const resolveTarget = (path) => {
+		if (path.trim().length === 0) throw new Error("path must be a non-empty string");
+		const abs = backend.resolve(path);
+		return {
+			abs,
+			display: backend.rel(abs)
+		};
+	};
+	/** 目录树：最多两层，跳过隐藏项 / node_modules / __pycache__（与 dsh 一致） */
+	const listDirectory = async (abs, display) => {
+		const rows = [`d\t${display}`];
+		const visit = async (dir, depth) => {
+			const entries = [...await backend.readDir(dir)].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+			for (const entry of entries) {
+				if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === "__pycache__") continue;
+				const child = backend.join(dir, entry.name);
+				const type = entry.type === "dir" ? "d" : entry.type === "file" ? "f" : "?";
+				rows.push(`${type}\t${backend.rel(child)}`);
+				if (entry.type === "dir" && depth < 1) await visit(child, depth + 1);
+			}
+		};
+		await visit(abs, 0);
+		return `Here're the files and directories up to 2 levels deep in ${display}, excluding hidden items, node_modules, and Python cache directories:\n${maybeTruncate(`${rows.join("\n")}\n`, maxOutputChars)}\n`;
+	};
+	return tool({
+		description: deps.description ?? DEFAULT_DESCRIPTION,
+		inputSchema: z.object({
+			command: z.enum([
+				"view",
+				"create",
+				"str_replace",
+				"insert"
+			]).describe("The commands to run. Allowed options are: `view`, `create`, `str_replace`, `insert`."),
+			path: z.string().describe("Path to a file or directory, e.g. `src/app.ts` or `src`. Relative paths resolve against the workspace root; absolute paths inside the workspace are also accepted."),
+			file_text: z.string().nullish().describe("Required string parameter of `create` command, with the content of the file to be created. A null placeholder is treated as omitted by commands that do not use this parameter."),
+			insert_line: z.number().nullish().describe("Required integer parameter of `insert` command. The `new_str` will be inserted AFTER the line `insert_line` of `path`. A null placeholder is treated as omitted by commands that do not use this parameter."),
+			new_str: z.string().nullish().describe("Optional string parameter of `str_replace` command containing the new string (if omitted, no string will be added). Required string parameter of `insert` command containing the string to insert. A null placeholder is accepted only by commands that do not use this parameter."),
+			old_str: z.string().nullish().describe("Required string parameter of `str_replace` command containing the string in `path` to replace. A null placeholder is treated as omitted by commands that do not use this parameter."),
+			view_range: z.array(z.number()).nullish().describe("Optional parameter of `view` command when `path` points to a file. If omitted or null, the full file is shown. If provided, the file will be shown in the indicated line number range, e.g. [11, 12] will show lines 11 and 12. Indexing at 1 to start. Setting `[start_line, -1]` shows all lines from `start_line` to the end of the file.")
+		}),
+		execute: async (input, options) => {
+			const { command } = input;
+			const { abs, display } = resolveTarget(input.path);
+			const stat = await backend.stat(abs);
+			if (command === "view") {
+				if (!stat) throw new Error(`The path ${display} does not exist. Please provide a valid path.`);
+				if (stat.type === "dir") {
+					if (input.view_range) throw new Error("The `view_range` parameter is not allowed when `path` points to a directory.");
+					const listing = await listDirectory(abs, display);
+					if (!deps.nestedDocs) return listing;
+					const extra = await deps.nestedDocs(abs, true).catch(() => null);
+					return extra ? `${listing}\n${extra}` : listing;
+				}
+				if (stat.type !== "file") throw new Error(`cannot view "${display}": not a regular file or directory`);
+				const text = await readText(backend, abs);
+				await deps.recordObserved(abs);
+				const out = formatFileView(display, text, input.view_range ?? void 0, maxOutputChars);
+				if (!deps.nestedDocs) return out;
+				const extra = await deps.nestedDocs(abs, false).catch(() => null);
+				return extra ? `${out}\n${extra}` : out;
+			}
+			if (command === "create") {
+				if (input.file_text === void 0 || input.file_text === null) throw new Error("Parameter `file_text` is required for command: create");
+				if (stat) throw new Error(`File already exists at: ${display}. Cannot overwrite files using command \`create\`.`);
+				const refused = await deps.guardWrite("文件未写入", {
+					toolCallId: options.toolCallId,
+					toolName: "str_replace_editor",
+					command: `新建文件 ${display}（${input.file_text.length} 字符）`
+				});
+				if (refused) return refused;
+				await backend.writeFile(abs, input.file_text, { createParents: true });
+				await deps.recordObserved(abs);
+				return `New file created successfully at: ${display}`;
+			}
+			if (command === "str_replace") {
+				if (input.new_str === null) throw new Error("Parameter `new_str` must be omitted or contain a string for command: str_replace");
+				const oldStr = input.old_str ?? void 0;
+				if (oldStr === void 0) throw new Error("Parameter `old_str` is required for command: str_replace");
+				if (oldStr.length === 0) throw new Error("Parameter `old_str` is empty for command: str_replace");
+				const refuse = await deps.checkObserved(abs, display);
+				if (refuse) throw new Error(refuse);
+				if (!stat || stat.type !== "file") throw new Error(`cannot edit "${display}": not a regular file`);
+				const after = replaceUnique(await readText(backend, abs), oldStr, input.new_str ?? "", display);
+				const refused = await deps.guardWrite("文件未被编辑", {
+					toolCallId: options.toolCallId,
+					toolName: "str_replace_editor",
+					command: `编辑文件 ${display}（1 处替换）`
+				});
+				if (refused) return refused;
+				await backend.writeFile(abs, after, { createParents: true });
+				await deps.recordObserved(abs);
+				return `The file ${display} has been edited successfully.`;
+			}
+			if (input.insert_line === void 0 || input.insert_line === null) throw new Error("Parameter `insert_line` is required for command: insert");
+			if (input.new_str === void 0 || input.new_str === null) throw new Error("Parameter `new_str` is required for command: insert");
+			const refuse = await deps.checkObserved(abs, display);
+			if (refuse) throw new Error(refuse);
+			if (!stat || stat.type !== "file") throw new Error(`cannot insert into "${display}": not a regular file`);
+			const after = insertAfterLine(await readText(backend, abs), input.insert_line, input.new_str);
+			const refused = await deps.guardWrite("文件未被编辑", {
+				toolCallId: options.toolCallId,
+				toolName: "str_replace_editor",
+				command: `编辑文件 ${display}（在第 ${input.insert_line} 行后插入）`
+			});
+			if (refused) return refused;
+			await backend.writeFile(abs, after, { createParents: true });
+			await deps.recordObserved(abs);
+			return `The file ${display} has been edited successfully.`;
+		}
+	});
+}
+/** 读文本（二进制 / 超大直接报错，与 read 同一口径） */
+async function readText(backend, abs) {
+	const stat = await backend.stat(abs);
+	const display = backend.rel(abs);
+	if (!stat) throw new Error(`The path ${display} does not exist. Please provide a valid path.`);
+	if (stat.type !== "file") throw new Error(`cannot view "${display}": not a regular file or directory`);
+	const buf = await backend.readFile(abs);
+	if (buf.includes(0)) throw new Error(`cannot view "${display}": binary file`);
+	return buf.toString("utf8");
+}
+// packages/tools/src/tools.ts
 /**
 * 单个文件整体读入的上限（字节）：超过就不当文本处理。
 *
 * 超限只有「读不动」这一个理由（模型自己也读不动这么大一段），按行分段用
-* read_file 的 offset/limit 即可，不走 output-log（那里只留给 execute_command）。
+* read 的 offset/limit 即可，不走 output-log（那里只留给 bash）。
 */
-var MAX_FILE_BYTES$1 = 8e6;
-/** 搜索文件的大小上限（1MB，跳过大文件避免卡死） */
-var MAX_SEARCH_FILE_SIZE = 1048576;
-/** 搜索命中的单行截断长度 */
-var MAX_LINE_CHARS = 200;
-/**
-* 单条输出流（stdout / stderr）的缓存上限（字符）：超出后只留最新的一段，
-* 防止一条 `yes` / `find /` 之类把内存吃光。
-*
-* ⚠️ 这**不是**给模型的截断上限：以前这里留着 MAX_CMD_OUT 然后 `slice(-MAX_CMD_OUT)`，
-* 等于在缓冲阶段就把中间内容**丢掉了**，后面再怎么提示都找不回来。现在只留一个防爆内存
-* 的兜底，返回给模型的那一段走 `summarizeLongOutput`（落盘 + 给日志 id）。
-*/
-var MAX_CMD_CAPTURE = 4e6;
+var MAX_FILE_BYTES = 8e6;
+/** 一次 read 的**默认且最大**行数（与 dsh 一致：传更大的值是错误，不是夹取） */
+var READ_LIMIT = 2e3;
+/** 单行最长返回多少字符（超出截断并标注） */
+var READ_MAX_LINE_LENGTH = 2e3;
+/** 一次 read 最多返回多少字节（UTF-8，含行间的换行） */
+var READ_MAX_BYTES = 51200;
+/** grep 一次最多保留多少条命中 */
+var GREP_MAX_MATCHES = 250;
+/** grep 单行预览最多多少字符 */
+var GREP_MAX_LINE_BYTES = 2e3;
+/** glob 一次最多返回多少条路径 */
+var GLOB_MAX_RESULTS = 100;
+/** 后端 stat 拼出的「版本」：文件变了这两个值一定有一个会动 */
+function versionOf(stat) {
+	return `${stat.size}:${stat.mtimeMs ?? 0}`;
+}
 /**
 * 按 `includeTools` 过滤工具集。缺省返回原对象。
 *
@@ -2626,7 +5358,7 @@ function filterToolSet(tools, include) {
 	for (const k of include) out[k] = tools[k];
 	return out;
 }
-function clampInt$1(v, min, max, fallback) {
+function clampInt(v, min, max, fallback) {
 	if (v === void 0) return fallback;
 	return Math.max(min, Math.min(max, Math.trunc(v)));
 }
@@ -2634,327 +5366,63 @@ function clampInt$1(v, min, max, fallback) {
 * 读取文本文件：二进制（含 NUL）与超大文件直接报错。
 *
 * 超大文件报错的理由只剩「读不动」这一个（`MAX_FILE_BYTES`），不再是因为「太大不适合
-* 一次返回」—— 后者由 read_file 的 offset/limit 分段读解决。
+* 一次返回」—— 后者由 read 的 offset/limit 分段读解决。
 */
-async function readTextFile(abs) {
-	const stat = await promises.stat(abs);
-	if (stat.isDirectory()) throw new Error(`不是文件：${basename(abs)}`);
-	if (stat.size > MAX_FILE_BYTES$1) throw new Error(`文件过大（${stat.size} 字节，超过 ${MAX_FILE_BYTES$1} 字节上限），无法整体按文本读取。请先用 search_files 定位关键内容，再用 read_file 的 offset/limit 分段读取`);
-	const buf = await promises.readFile(abs);
-	if (buf.includes(0)) throw new Error("二进制文件，无法以文本方式读取");
+async function readTextFile(backend, abs, display) {
+	const stat = await backend.stat(abs);
+	if (!stat) throw new Error(`cannot read "${display}": not found`);
+	if (stat.type !== "file") throw new Error(`cannot read "${display}": not a regular file`);
+	if (stat.size > MAX_FILE_BYTES) throw new Error(`cannot read "${display}": ${stat.size} bytes exceeds the ${MAX_FILE_BYTES}-byte limit`);
+	const buf = await backend.readFile(abs, { maxBytes: MAX_FILE_BYTES });
+	if (buf.includes(0)) throw new Error(`cannot read "${display}": binary file`);
 	return buf.toString("utf8");
 }
-async function listDir(dir, root, depth, ignored, lines) {
-	const entries = await promises.readdir(dir, { withFileTypes: true });
-	entries.sort((a, b) => {
-		const ad = a.isDirectory() ? 0 : 1;
-		const bd = b.isDirectory() ? 0 : 1;
-		return ad === bd ? a.name.localeCompare(b.name) : ad - bd;
-	});
-	for (const ent of entries) {
-		const abs = join(dir, ent.name);
-		const rel = relPathOf(root, abs);
-		if (ignored(rel, ent.isDirectory())) continue;
-		if (ent.isDirectory()) {
-			lines.push(`${rel}/`);
-			if (depth > 0) await listDir(abs, root, depth - 1, ignored, lines);
-		} else if (ent.isFile()) {
-			const size = (await promises.stat(abs)).size;
-			lines.push(`${rel}\t${size}B`);
-		}
-	}
+/** read 的模型可见文本：`<path>/<type>/<content>` 信封 + `N: 行内容` + 分页脚注 */
+function formatReadOutput(display, lines, offset, totalLines, truncatedByBytes) {
+	const endLine = lines.at(-1)?.number ?? Math.max(0, offset - 1);
+	let footer;
+	if (truncatedByBytes) footer = `(Output capped. Showing lines ${offset}-${endLine}. Use offset=${endLine + 1} to continue.)`;
+	else if (endLine < totalLines) footer = `(Showing lines ${offset}-${endLine} of ${totalLines}. Use offset=${endLine + 1} to continue.)`;
+	else footer = `(End of file - total ${totalLines} lines)`;
+	return `<path>${display}</path>
+<type>file</type>
+<content>
+${lines.length > 0 ? `${lines.map((line) => `${line.number}: ${line.text}`).join("\n")}\n\n${footer}` : footer}
+</content>`;
 }
-async function searchDir(dir, root, re, fileRe, ignored, acc, needSource) {
-	if (acc.hits >= acc.max) return;
-	const entries = await promises.readdir(dir, { withFileTypes: true });
-	for (const ent of entries) {
-		if (acc.hits >= acc.max) return;
-		const abs = join(dir, ent.name);
-		const rel = relPathOf(root, abs);
-		if (ignored(rel, ent.isDirectory())) continue;
-		if (ent.isDirectory()) {
-			await searchDir(abs, root, re, fileRe, ignored, acc, needSource);
-			continue;
-		}
-		if (!ent.isFile()) continue;
-		await scanFile(abs, rel, re, fileRe, acc, needSource);
-	}
+/** write 的模型可见文本 */
+function formatWriteOutput(display, created) {
+	return `<path>${display}</path>
+<type>file</type>
+<content>
+${created ? "Created file" : "Updated file"}
+</content>`;
 }
-/** 扫单个文件：命中行攒进 acc（超大小 / 二进制跳过；fileRe 对文件名生效） */
-async function scanFile(abs, rel, re, fileRe, acc, needSource) {
-	if (acc.hits >= acc.max) return;
-	if (fileRe && !fileRe.test(rel.split("/").pop() ?? rel)) return;
-	if ((await promises.stat(abs)).size > MAX_SEARCH_FILE_SIZE) return;
-	const buf = await promises.readFile(abs);
-	if (buf.includes(0)) return;
-	const source = buf.toString("utf8").split("\n");
-	const hits = [];
-	for (let i = 0; i < source.length && acc.hits < acc.max; i++) {
-		re.lastIndex = 0;
-		if (re.test(source[i])) {
-			hits.push({
-				line: i + 1,
-				text: source[i].trimEnd().slice(0, MAX_LINE_CHARS)
-			});
-			acc.hits++;
-		}
-	}
-	if (hits.length) acc.files.push(needSource ? {
-		rel,
-		hits,
-		source
-	} : {
-		rel,
-		hits
-	});
+/** edit 的模型可见文本 */
+function formatEditOutput(display, replaceAll) {
+	return replaceAll ? `The file ${display} has been updated. All occurrences were successfully replaced.` : `The file ${display} has been updated successfully.`;
 }
 /**
-* 把 glob 编译成 RegExp：`**` 跨目录，`*` / `?` 不跨 `/`。
-* 不含 `/` 的 glob（如 `*.ts`）自动补 `**​/` 前缀，让它能匹配任意层级 —— 符合直觉。
-*/
-function globToRegExp(glob) {
-	const raw = glob.trim();
-	const pat = raw.includes("/") ? raw : `**/${raw}`;
-	let re = "";
-	for (let i = 0; i < pat.length; i++) {
-		const ch = pat[i];
-		if (ch === "*") {
-			if (pat[i + 1] === "*") {
-				i++;
-				if (pat[i + 1] === "/") {
-					i++;
-					re += "(?:.*/)?";
-				} else re += ".*";
-			} else re += "[^/]*";
-		} else if (ch === "?") re += "[^/]";
-		else if ("\\^$.|+()[]{}".includes(ch)) re += `\\${ch}`;
-		else re += ch;
-	}
-	return new RegExp(`^${re}$`);
-}
-/** 按文件名 glob 递归查找（复用同一套忽略规则，匹配相对路径） */
-async function findFiles(dir, root, re, ignored, out, max) {
-	if (out.length >= max) return;
-	const entries = await promises.readdir(dir, { withFileTypes: true });
-	entries.sort((a, b) => a.name.localeCompare(b.name));
-	for (const ent of entries) {
-		if (out.length >= max) return;
-		const abs = join(dir, ent.name);
-		const rel = relPathOf(root, abs);
-		if (ignored(rel, ent.isDirectory())) continue;
-		if (ent.isDirectory()) await findFiles(abs, root, re, ignored, out, max);
-		else if (ent.isFile()) {
-			if (re.test(rel)) out.push(rel);
-		}
-	}
-}
-/** 把内容命中格式化成模型友好的文本 */
-function formatSearchHits(acc, context) {
-	if (!acc.files.length) return "（未找到匹配）";
-	const out = [];
-	if (context <= 0) {
-		for (const f of acc.files) for (const h of f.hits) out.push(`${f.rel}:${h.line}: ${h.text}`);
-		return out.join("\n");
-	}
-	for (const f of acc.files) {
-		const src = f.source;
-		if (!src) continue;
-		out.push(`${f.rel}:`);
-		const ranges = [];
-		for (const h of f.hits) {
-			const s = Math.max(1, h.line - context);
-			const e = Math.min(src.length, h.line + context);
-			const last = ranges[ranges.length - 1];
-			if (last && s <= last[1] + 1) last[1] = Math.max(last[1], e);
-			else ranges.push([s, e]);
-		}
-		const hitLines = new Set(f.hits.map((h) => h.line));
-		ranges.forEach(([s, e], idx) => {
-			if (idx > 0) out.push("--");
-			for (let n = s; n <= e; n++) {
-				const mark = hitLines.has(n) ? ":" : "-";
-				out.push(`${n}${mark} ${src[n - 1].trimEnd().slice(0, MAX_LINE_CHARS)}`);
-			}
-		});
-	}
-	return out.join("\n");
-}
-/**
-* 杀掉整棵进程树（超时 / 中止 / 单条停止都走它）。
+* 字面量替换（与 dsh 的 `editText` 同语义）。
 *
-* ⚠️ **不再看 `child.killed`**：那个标志只表示「我们向**它自己**发过信号」，与「树还在不在」
-* 无关。以前的 `if (child.exitCode !== null || child.killed) return` 会让第二次调用直接
-* 什么都不做 —— 用户报「AI 跑了 `npx vite`，我点停止停不下来」，多半就是第一刀（某个
-* 只杀 shell 的路径或 SIGINT）已经把 `killed` 置上，后面这道保险丝全被跳过了。
-* 现在无条件再打一记整树 kill：幂等（进程没了 taskkill / kill 都是空转）。
+* - 在 **LF 归一化**的文本上匹配，最后按原文的主流行尾还原（CRLF 文件改完还是 CRLF）；
+* - 默认**必须唯一命中**：0 处报「没找到」，多处要求 `replace_all`（模型自己决定）；
+* - 不存在「近似匹配」：行尾 / 缩进 / 行号前缀的差异都要模型自己抄对，这是 dsh 的取舍。
 */
-function killChild(child, isWin) {
-	const pid = child.pid;
-	if (!pid) return;
-	if (isWin) {
-		/**
-		* ⚠️ `taskkill` 是**异步**的：`spawn` 自己不抛错，ENOENT / 权限不足 / 「进程已退出」
-		* 全都只走 `'error'` 事件或非 0 退出码 —— 以前的 `try { spawn(...) } catch {}` 一个都
-		* 接不住，失败了就是**静默空转**（命令继续跑、端口继续占着）。这里两条路都补上：
-		* 打整树，同时在任何失败信号上退回直接 kill shell。
-		*/
-		const killer = spawn("taskkill", [
-			"/pid",
-			String(pid),
-			"/T",
-			"/F"
-		], {
-			stdio: "ignore",
-			windowsHide: true
-		});
-		const fallback = () => {
-			try {
-				child.kill("SIGKILL");
-			} catch {}
-		};
-		killer.on("error", fallback);
-		killer.on("exit", (code) => {
-			if (code !== 0) fallback();
-		});
-		return;
-	}
-	try {
-		process.kill(-pid, "SIGKILL");
-		return;
-	} catch {}
-	try {
-		child.kill("SIGKILL");
-	} catch {}
-}
-/**
-* 把一条命令翻译成「起哪个 shell、带什么参数、什么环境」。
-*
-* 前台（`runCommand`）与后台（`spawnBackgroundShell`）**必须用同一份判定**：两条路要是
-* 各挑一次 shell，同一条命令「直接跑」和「丢后台跑」的行为就会不一样 —— 最典型的是
-* Windows 上前台走 Git Bash、后台掉进 PowerShell，管道 / `&&` / 单引号整个不认。
-*
-* shell 选择：POSIX 恒为 `/bin/bash -lc`；Windows **优先 Git Bash** —— 模型拿到的是
-* POSIX 工具链（ls / grep / sed / find / cat / 管道…），与主流编码代理一致。Git Bash 的
-* coreutils 在 `<Git>\usr\bin`，登录 profile 之外再显式置前，保证 ls / grep 一定找得到
-* （继承的 Windows PATH 里通常没有它）。没有 Git Bash 时回退 PowerShell 7（`pwsh`，启动
-* 更快、UTF-8 默认行为更少坑），再没装就退到系统自带的 5.1（强制 UTF-8 输出，cmd 的 GBK
-* 会乱码）。判定在 `@fizz/shells` 的 `commandShellPath()` 与 `gitBashPath()`，
-* 与终端选择器共用同一份探测。
-*/
-function resolveShellSpawn(command) {
-	const isWin = process.platform === "win32";
-	const bashPath = isWin ? gitBashPath() : null;
-	const useBash = !isWin || Boolean(bashPath);
+function applyLiteralEdit(text, oldString, newString, replaceAll, display) {
+	const crlf = (text.match(/\r\n/g)?.length ?? 0) > 0 && (text.match(/\r\n/g)?.length ?? 0) * 2 >= (text.match(/\n/g)?.length ?? 0);
+	const lf = text.replace(/\r\n/g, "\n");
+	const needle = oldString.replace(/\r\n/g, "\n");
+	const replacement = newString.replace(/\r\n/g, "\n");
+	if (needle.length === 0) throw new Error("old_string must be a non-empty string");
+	const count = lf.split(needle).length - 1;
+	if (count === 0) throw new Error(`old_string was not found in "${display}"`);
+	if (count > 1 && !replaceAll) throw new Error(`old_string matched ${count} times in "${display}"; provide a more specific old_string or set replace_all to true`);
+	const next = replaceAll ? lf.split(needle).join(replacement) : lf.replace(needle, replacement);
 	return {
-		shellCmd: isWin ? bashPath ?? commandShellPath() : "/bin/bash",
-		shellArgs: isWin ? useBash ? ["-lc", command] : [
-			"-NoLogo",
-			"-NoProfile",
-			"-NonInteractive",
-			"-Command",
-			`[Console]::OutputEncoding=[Text.Encoding]::UTF8;$OutputEncoding=[Text.Encoding]::UTF8;${command}`
-		] : ["-lc", command],
-		env: isWin && useBash ? {
-			...process.env,
-			PATH: `${join(dirname(bashPath), "..", "usr", "bin")};${process.env.PATH ?? ""}`
-		} : process.env,
-		isWin
+		text: crlf ? next.replace(/\n/g, "\r\n") : next,
+		count
 	};
-}
-/**
-* 在工作区目录下执行 shell 命令：输出 stdout + stderr（超预算时把全文落进工作区的
-* `.fizz/tool-output/`，回行号坐标），超时 / abortSignal 触发时终止整个进程树
-* （POSIX 用进程组，Windows 用 taskkill /T）。
-*
-* `root` 只用于落盘（全文要能被 read_file 读到，就必须在工作区内）。
-*/
-async function runCommand(command, cwd, timeoutMs, root, signal, sink) {
-	const { shellCmd, shellArgs, env, isWin } = resolveShellSpawn(command);
-	const child = spawn(shellCmd, shellArgs, {
-		cwd,
-		env,
-		windowsHide: true,
-		...isWin ? {} : { detached: true }
-	});
-	let stdout = "";
-	let stderr = "";
-	const cleanStdout = createAnsiStripper();
-	const cleanStderr = createAnsiStripper();
-	const decodeStdout = createOutputDecoder();
-	const decodeStderr = createOutputDecoder();
-	return new Promise((resolve) => {
-		let settled = false;
-		/**
-		* 收场：把 stdout + stderr 拼成**完整**输出，超预算时交给 `summarizeLongOutput`
-		* 把全文落进工作区并回行号坐标（模型用 read_file 的 offset/limit 接着读）。
-		*
-		* stderr 以前是**完全不截断**直接拼在后面的（stdout 才截），一条刷满错误输出的
-		* 命令能把整个结果顶爆；现在两条流走同一条路，一视同仁。
-		*/
-		const finish = async (reason, code) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			signal?.removeEventListener("abort", onAbort);
-			sink?.onEnd?.();
-			const info = reason === "exit" ? `（退出码 ${code}）` : reason === "timeout" ? `（超时 ${timeoutMs}ms，已终止进程树）` : "（已中止）";
-			stdout += decodeStdout.flush();
-			stderr += decodeStderr.flush();
-			const out = stripAnsi(stdout).trim();
-			const err = stripAnsi(stderr).trim();
-			resolve(await summarizeLongOutput(`$ ${command}\n${info}\n${out}${err ? `\n${err}` : ""}`, {
-				root,
-				tool: "execute_command",
-				detail: command.slice(0, 200)
-			}));
-		};
-		/**
-		* 收树两次：立刻一记整树 SIGKILL / taskkill（SIGKILL 不可捕获，通常一步到位），
-		* 600ms 后再补一记 —— 有些 shell（Git Bash 的 `-lc`、`npm run` 的短命包装进程）
-		* 会在第一记打下去之后才 **fork** 出真正的命令（`npx vite` 的 vite 是孙子辈），
-		* 只打一记会漏掉最后出生的那一批，用户就看到「停不下来、端口还占着」。
-		* 补刀定时器 `unref()`：别把服务端进程吊住。
-		*/
-		const reap = () => {
-			killChild(child, isWin);
-			setTimeout(() => killChild(child, isWin), 600).unref?.();
-		};
-		const onAbort = () => {
-			reap();
-			finish("aborted");
-		};
-		const timer = setTimeout(() => {
-			reap();
-			finish("timeout");
-		}, timeoutMs);
-		if (signal) {
-			if (signal.aborted) onAbort();
-			else signal.addEventListener("abort", onAbort, { once: true });
-		}
-		child.stdout.on("data", (d) => {
-			const chunk = decodeStdout.decode(d);
-			if (!chunk) return;
-			stdout += chunk;
-			if (stdout.length > MAX_CMD_CAPTURE) stdout = stdout.slice(-4e6);
-			sink?.onOutput("stdout", cleanStdout(chunk));
-		});
-		child.stderr.on("data", (d) => {
-			const chunk = decodeStderr.decode(d);
-			if (!chunk) return;
-			stderr += chunk;
-			if (stderr.length > MAX_CMD_CAPTURE) stderr = stderr.slice(-4e6);
-			sink?.onOutput("stderr", cleanStderr(chunk));
-		});
-		child.on("error", (err) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			signal?.removeEventListener("abort", onAbort);
-			sink?.onEnd?.();
-			resolve(`$ ${command}\n（命令启动失败：${err.message}）`);
-		});
-		child.on("exit", (code) => void finish("exit", code));
-	});
 }
 /**
 * 引擎注入的「这一步的意图」（见 `@fizz/agent` 的 `withToolIntent`）。
@@ -2967,21 +5435,54 @@ function intentOf(input) {
 	const value = input?.intent;
 	return typeof value === "string" ? value.trim() : "";
 }
+/**
+* 把后端执行结果拼成 `bash` 的模型可见文本（与 dsh 的 `renderResult` 同格式）：
+* stdout、`[stderr]` 段、`[exit code: N]` 标记；全空写 `(no output)`。
+*
+* 非 0 退出码**不是**工具错误（模型自己决定怎么办）；只有启动失败这种基础设施问题才抛错。
+*/
+async function formatBashOutput(backend, command, result, timeoutMs) {
+	const out = stripAnsi(result.stdout);
+	const err = stripAnsi(result.stderr);
+	if (result.reason === "error") throw new Error(`command failed to start: ${result.error ?? "unknown error"}`);
+	let body = out;
+	if (err.length > 0) {
+		if (body.length > 0 && !body.endsWith("\n")) body += "\n";
+		body += `[stderr]\n${err}`;
+	}
+	if (body.trim().length === 0) body = "(no output)";
+	const markers = [];
+	if (result.reason === "timeout") markers.push(`[timed out after ${timeoutMs}ms]`);
+	if (result.reason === "aborted") markers.push("[stopped: cancelled]");
+	if (result.reason === "exit" && result.exitCode !== 0) markers.push(`[exit code: ${result.exitCode}]`);
+	return summarizeLongOutput(markers.length ? `${body.trimEnd()}\n${markers.join("\n")}` : body.trimEnd(), {
+		backend,
+		tool: "bash",
+		detail: command.slice(0, 200)
+	});
+}
 /** 构建工作区 Agent 工具集（绑定 root 目录；改动类工具按权限模式拦一道） */
 function buildAgentTools(root, opts) {
 	const currentMode = () => opts.getPermissionMode?.() ?? opts.permissionMode;
+	const backend = opts.backend ?? createLocalBackend(root);
 	const isWin = process.platform === "win32";
 	const bashPath = isWin ? gitBashPath() : null;
-	const shellNote = isWin ? bashPath ? "命令运行在 Git Bash（POSIX）环境：可以用 ls / grep / sed / find / cat / 管道等 Unix 工具与语法；Windows 路径建议写成 C:/xxx 或 /c/xxx 形式。" : "命令运行在 PowerShell 环境（未检测到 Git Bash）。" : "命令运行在 bash 环境。";
-	const shellNoteEn = process.platform === "win32" ? bashPath ? "Commands run in Git Bash (POSIX): you can use ls / grep / sed / find / cat, pipes, and Unix syntax. For Windows paths prefer C:/xxx or /c/xxx." : "Commands run in PowerShell (Git Bash not detected)." : "Commands run in bash.";
+	const shellNote = backend.kind === "remote" ? "命令运行在远端 Linux 主机的 POSIX shell（bash/sh）中：可以用 ls / grep / sed / find / cat、管道与 Unix 语法；路径是远端主机上的绝对路径。" : isWin ? bashPath ? "命令运行在 Git Bash（POSIX）环境：可以用 ls / grep / sed / find / cat / 管道等 Unix 工具与语法；Windows 路径建议写成 C:/xxx 或 /c/xxx 形式。" : "命令运行在 PowerShell 环境（未检测到 Git Bash）。" : "命令运行在 bash 环境。";
+	const shellNoteEn = backend.kind === "remote" ? "Commands run in a POSIX shell (bash/sh) on the remote Linux host: ls / grep / sed / find / cat, pipes, and Unix syntax are available; paths are absolute paths on that host." : isWin ? bashPath ? "Commands run in Git Bash (POSIX): you can use ls / grep / sed / find / cat, pipes, and Unix syntax. For Windows paths prefer C:/xxx or /c/xxx." : "Commands run in PowerShell (Git Bash not detected)." : "Commands run in bash.";
+	/**
+	* 观察表：本次工具集生命周期内「模型读过哪些文件、读到的版本是什么」。
+	*
+	* 对应 dsh 的 `fs-observation-policy`：write / edit 只能改「读过且没被别人改过」的文件。
+	* 与 dsh 的差别：工具集一轮建一次，所以这张表只活在**一轮**里（跨轮要重读）；
+	* 校验是写前再 stat 一次，不是后端层的原子 CAS —— 中间被外部改掉的极小窗口仍存在。
+	*/
+	const observed = /* @__PURE__ */ new Map();
 	/**
 	* 改动类工具的统一闸门。
 	*
 	* 返回 `null` = 放行；返回字符串 = 这个字符串就是**工具结果**（回绝说明），
 	* 直接 return 回去即可 —— 不用抛错：回绝是「预期内的结果」，让模型看到原因后
 	* 能向用户解释，而不是变成一个工具报错把整轮打断。
-	*
-	* `denied` 用来拼文案，写成「文件未写入」这类短句。
 	*/
 	const guardWrite = async (denied, req) => {
 		const mode = currentMode();
@@ -2990,6 +5491,26 @@ function buildAgentTools(root, opts) {
 		if (!opts.requestConfirm) return `「${req.toolName}」需要用户确认，但当前环境没有可用的确认通道（无界面 / 未接入审批），已取消这次调用。请告诉用户这次没有执行，不要重试。`;
 		return await opts.requestConfirm(req) ? null : `用户拒绝了这次调用：${denied}。请询问用户接下来希望怎么做，不要擅自重试同一步。`;
 	};
+	/**
+	* 读后写校验：没读过 → 明确让模型先读；读之后被外部改过 → 让它重读。
+	* 返回 `null` = 放行。
+	*/
+	const checkObserved = async (abs, display) => {
+		const prior = observed.get(abs);
+		const stat = await backend.stat(abs);
+		if (!prior) {
+			if (!stat) return null;
+			return `cannot modify "${display}": file has not been read — read the file, then retry`;
+		}
+		if (!stat) return `cannot write "${display}": file no longer exists — re-read the file, then retry`;
+		if (versionOf(stat) !== prior) return `cannot write "${display}": file changed since it was read — re-read the file, then retry`;
+		return null;
+	};
+	/** 记下「这个文件现在是什么版本」（读成功 / 刚写完） */
+	const recordObserved = async (abs) => {
+		const stat = await backend.stat(abs);
+		if (stat) observed.set(abs, versionOf(stat));
+	};
 	/** 把按需加载的子目录规则附在工具结果后面（没有规则 / 钩子抛错就原样返回） */
 	const withNestedDocs = async (text, abs, isDirectory) => {
 		if (!opts.nestedDocs) return text;
@@ -2997,200 +5518,213 @@ function buildAgentTools(root, opts) {
 		return extra ? `${text}\n\n${extra}` : text;
 	};
 	return filterToolSet({
-		list_files: tool({
-			description: tr("列出工作区目录内容（自动忽略 .git、node_modules、构建产物与 .gitignore 规则）。返回每个条目的相对路径，目录带 / 后缀，文件附大小。适合先了解项目结构。", "List workspace directory contents (ignores .git, node_modules, build outputs, and .gitignore rules). Returns relative paths; directories end with /, files include size. Useful for getting oriented in a project."),
+		read: tool({
+			description: "Read a UTF-8 text file and return line-numbered content.",
 			inputSchema: z.object({
-				path: z.string().optional().describe(tr("相对工作区的目录路径，缺省为工作区根目录", "Directory path relative to the workspace; defaults to the workspace root")),
-				depth: z.number().optional().describe(tr("递归深度，默认 0（仅当前目录），最大 4", "Recursion depth; default 0 (current directory only), max 4"))
+				file_path: z.string().describe("Path to read, resolved by the filesystem backend."),
+				offset: z.number().optional().describe("1-based first line to return. Defaults to 1."),
+				limit: z.number().optional().describe(`Maximum number of lines to return. Defaults to ${READ_LIMIT}.`)
 			}),
-			execute: async ({ path = "", depth = 0 }) => {
-				const absDir = resolveInside(root, path);
-				const stat = await promises.stat(absDir).catch(() => null);
-				if (!stat) throw new Error(`路径不存在：${path || "."}（相对于工作区根）`);
-				if (!stat.isDirectory()) throw new Error(`不是目录：${path || "."}（list_dir 的 path 必须是目录）`);
-				const ignored = await createIgnoreChecker(root);
-				const lines = [];
-				await listDir(absDir, root, clampInt$1(depth, 0, 4, 0), ignored, lines);
-				return withNestedDocs(lines.length ? lines.join("\n") : "（空目录）", absDir, true);
-			}
-		}),
-		read_file: tool({
-			description: tr("读取文件内容并附行号，用于理解源码 / 配置 / 文档。路径相对工作区根目录。默认只读前 200 行（上限 2000）：大文件请用 offset/limit 按需分段读，不要一次拉全文。超出预算时会按行裁剪并告诉你还有哪些行没显示。⚠️ 行号只是给你定位用的（格式 `  42 | 代码`），**不要**把它复制进 edit_file 的 oldText。", "Read a file with line numbers for understanding source, config, or docs. Paths are relative to the workspace root. By default it reads the first 200 lines (max 2000): for large files use offset/limit instead of fetching everything at once. When over budget it trims by line and tells you which lines were omitted. ⚠️ Line numbers are only for navigation (`  42 | code`); do NOT copy them into edit_file oldText."),
-			inputSchema: z.object({
-				path: z.string().describe(tr("相对工作区的文件路径", "File path relative to the workspace")),
-				offset: z.number().optional().describe(tr("起始行号（1 起），缺省 1", "Starting line number (1-based); defaults to 1")),
-				limit: z.number().optional().describe(tr("返回行数上限，默认 200，最大 2000", "Maximum lines to return; default 200, max 2000"))
-			}),
-			execute: async ({ path, offset = 1, limit = 200 }) => {
-				const abs = resolveInside(root, path);
-				const text = await readTextFile(abs);
-				const rel = relPathOf(root, abs);
-				const lines = text.split("\n");
-				const start = Math.max(0, offset - 1);
-				const slice = lines.slice(start, start + clampInt$1(limit, 1, 2e3, 200));
-				const body = slice.map((l, i) => `${String(start + i + 1).padStart(5)} | ${l}`).join("\n");
-				const header = `${rel}（共 ${lines.length} 行 / ${text.length} 字符）`;
-				const endLine = start + slice.length;
-				if (text.length <= 4e3) {
-					const more = endLine < lines.length ? `\n…（本段到第 ${endLine} 行，offset=${endLine + 1} 继续）` : "";
-					return withNestedDocs(`${header}\n${body}${more}`, abs, false);
+			execute: async ({ file_path, offset, limit }) => {
+				if (file_path.trim().length === 0) throw new Error("file_path must be a non-empty string");
+				const startLine = offset === void 0 ? 1 : Math.trunc(offset);
+				if (!Number.isFinite(startLine) || startLine < 1) throw new Error("offset must be a positive integer");
+				const maxLines = limit === void 0 ? READ_LIMIT : Math.trunc(limit);
+				if (!Number.isFinite(maxLines) || maxLines < 1) throw new Error("limit must be a positive integer");
+				if (maxLines > READ_LIMIT) throw new Error(`limit must be less than or equal to ${READ_LIMIT}`);
+				const abs = backend.resolve(file_path);
+				const display = backend.rel(abs);
+				const text = await readTextFile(backend, abs, display);
+				const stat = await backend.stat(abs);
+				if (stat) observed.set(abs, versionOf(stat));
+				const all = text.split("\n").map((line) => line.endsWith("\r") ? line.slice(0, -1) : line);
+				const totalLines = all.length;
+				if (startLine > totalLines && !(totalLines === 1 && all[0] === "")) throw new Error(`offset ${startLine} is out of range for "${display}" (${totalLines} lines)`);
+				const rows = [];
+				let bytes = 0;
+				let truncatedByBytes = false;
+				for (let i = startLine - 1; i < totalLines && rows.length < maxLines; i += 1) {
+					const raw = all[i];
+					const line = raw.length > READ_MAX_LINE_LENGTH ? `${raw.slice(0, READ_MAX_LINE_LENGTH)}... (line truncated to ${READ_MAX_LINE_LENGTH} chars)` : raw;
+					const cost = Buffer.byteLength(line, "utf8") + 1;
+					if (bytes + cost > READ_MAX_BYTES && rows.length > 0) {
+						truncatedByBytes = true;
+						break;
+					}
+					bytes += cost;
+					rows.push({
+						number: i + 1,
+						text: line
+					});
 				}
-				return withNestedDocs([
-					header,
-					clipToBudget(body),
-					`…（本次返回第 ${start + 1}–${endLine} 行；文件还有第 ${endLine + 1}–${lines.length} 行没显示，用 offset=${endLine + 1} 继续）…`
-				].join("\n"), abs, false);
+				const out = formatReadOutput(display, rows, startLine, totalLines, truncatedByBytes);
+				return withNestedDocs(out, abs, false);
 			}
 		}),
-		write_file: tool({
-			description: tr("创建或整体覆盖写入一个文件（自动创建父目录）。会覆盖已有内容，写入前请先 read_file 确认原文。路径相对工作区根目录。", "Create or fully overwrite a file (parent directories are created automatically). Existing content is replaced; use read_file first to confirm. Paths are relative to the workspace root."),
+		write: tool({
+			description: "Create or fully replace a UTF-8 text file.",
 			inputSchema: z.object({
-				path: z.string().describe(tr("相对工作区的文件路径", "File path relative to the workspace")),
-				content: z.string().describe(tr("完整文件内容", "Full file contents"))
+				file_path: z.string().describe("Path to write, resolved by the filesystem backend. Provide `file_path` before `content` in the arguments."),
+				content: z.string().describe("Full UTF-8 text content to write.")
 			}),
 			execute: async (input, options) => {
-				const { path, content } = input;
+				const { file_path, content } = input;
+				if (file_path.trim().length === 0) throw new Error("file_path must be a non-empty string");
+				const abs = backend.resolve(file_path);
+				const display = backend.rel(abs);
+				const refuse = await checkObserved(abs, display);
+				if (refuse) throw new Error(refuse);
 				const refused = await guardWrite("文件未写入", {
 					toolCallId: options.toolCallId,
-					toolName: "write_file",
-					command: `写入文件 ${path}（${content.length} 字符）`,
+					toolName: "write",
+					command: `写入文件 ${display}（${content.length} 字符）`,
 					intent: intentOf(input)
 				});
 				if (refused) return refused;
-				const abs = resolveInside(root, path);
-				await promises.mkdir(dirname(abs), { recursive: true });
-				await promises.writeFile(abs, content, "utf8");
-				return `已写入 ${relPathOf(root, abs)}（${content.length} 字符）`;
+				const existed = await backend.stat(abs) !== null;
+				await backend.writeFile(abs, content, { createParents: true });
+				const after = await backend.stat(abs);
+				if (after) observed.set(abs, versionOf(after));
+				return formatWriteOutput(display, !existed);
 			}
 		}),
-		edit_file: tool({
-			description: tr("对文件做多处查找替换编辑（只改局部，不整体重写）。oldText 直接用 read_file 看到的原文内容：不要带输出里的「行号 | 」前缀，也不要自己加工转义符。系统已容忍行尾（CRLF/LF）、缩进、行尾空白的细微差异，但替换范围以 oldText 为准，所以仍要带上足够上下文、避免误伤相似片段。同一段文本出现多处时全部替换；一处都找不到则报错且不落盘（错误里会指出 oldText 首行在文件第几行出现过）。", "Apply multiple search/replace edits to a file (local changes only, no full rewrite). oldText must be the exact text seen in read_file: no “line | ” prefix and no escaping changes. Minor differences in line endings (CRLF/LF), indentation, and trailing whitespace are tolerated, but the replacement range follows oldText — include enough context to avoid hitting similar snippets. Every occurrence is replaced; if none is found the call errors and nothing is written (the error reports where oldText’s first line occurs)."),
+		edit: tool({
+			description: "Edit an existing UTF-8 text file by replacing literal text.",
 			inputSchema: z.object({
-				path: z.string().describe(tr("相对工作区的文件路径", "File path relative to the workspace")),
-				edits: z.array(z.object({
-					oldText: z.string().describe(tr("要查找的原文片段（照抄 read_file 的内容，不含行号前缀）", "Exact source text to find (copy read_file output without line-number prefixes)")),
-					newText: z.string().describe(tr("替换后的文本", "Replacement text"))
-				})).describe(tr("按顺序应用的替换列表", "List of replacements applied in order"))
+				file_path: z.string().describe("Path to edit, resolved by the filesystem backend. Provide `file_path` before `old_string` and `new_string` in the arguments."),
+				old_string: z.string().describe("Literal text to replace."),
+				new_string: z.string().describe("Literal replacement text. Use an empty string to delete the match."),
+				replace_all: z.boolean().optional().describe("Replace all matches. Defaults to false; when false, old_string must appear exactly once.")
 			}),
 			execute: async (input, options) => {
-				const { path, edits } = input;
-				if (edits.length === 0) throw new Error("edits 是空的：至少给一处 oldText/newText");
-				const abs = resolveInside(root, path);
-				let text;
-				try {
-					text = await readTextFile(abs);
-				} catch (err) {
-					if (err?.code === "ENOENT") throw new Error(`文件不存在：${path}（edit_file 只能改已存在的文件，新建请用 write_file）`);
-					throw err;
-				}
-				const applied = [];
-				for (const { oldText, newText } of edits) {
-					const result = applyTolerantEdit(text, oldText, newText);
-					text = result.text;
-					const head = oldText.split("\n").map((line) => line.trim()).find((line) => line.length > 0) ?? "";
-					const brief = `${head.slice(0, 40)}${head.length > 40 ? "…" : ""}`;
-					applied.push(`${brief}（${result.count} 处${result.note ? `，${result.note}` : ""}）`);
-				}
+				const { file_path, old_string, new_string } = input;
+				const replaceAll = input.replace_all ?? false;
+				if (file_path.trim().length === 0) throw new Error("file_path must be a non-empty string");
+				if (old_string.length === 0) throw new Error("old_string must be a non-empty string");
+				if (old_string === new_string) throw new Error("old_string and new_string must differ");
+				const abs = backend.resolve(file_path);
+				const display = backend.rel(abs);
+				const refuse = await checkObserved(abs, display);
+				if (refuse) throw new Error(refuse);
+				const { text, count } = applyLiteralEdit(await readTextFile(backend, abs, display), old_string, new_string, replaceAll, display);
 				const refused = await guardWrite("文件未被编辑", {
 					toolCallId: options.toolCallId,
-					toolName: "edit_file",
-					command: `编辑文件 ${path}（${edits.length} 处替换）`,
+					toolName: "edit",
+					command: `编辑文件 ${display}（${count} 处替换）`,
 					intent: intentOf(input)
 				});
 				if (refused) return refused;
-				await promises.writeFile(abs, text, "utf8");
-				return `已应用 ${applied.length} 处编辑（${relPathOf(root, abs)}）：${applied.join("；")}`;
+				await backend.writeFile(abs, text, { createParents: true });
+				const after = await backend.stat(abs);
+				if (after) observed.set(abs, versionOf(after));
+				return formatEditOutput(display, replaceAll);
 			}
 		}),
-		search_files: tool({
-			description: tr("在工作区中按正则搜索文件内容（自动跳过忽略目录、二进制与大文件）。返回命中文件的相对路径、行号与行内容。用于定位符号、关键配置与错误来源。结果很多时用 filesOnly 只拿「文件:命中数」省上下文；要看代码上下文用 context。", "Search file contents in the workspace by regex (skips ignored directories, binaries, and large files). Returns relative paths, line numbers, and matching lines. Use it to locate symbols, key config, and error sources. For many results use filesOnly to get “file:count” and save context; use context to see surrounding code."),
+		glob: tool({
+			description: `Find files, not directories, whose paths match a glob pattern, including hidden and ignored files. Returns up to ${GLOB_MAX_RESULTS} paths.`,
 			inputSchema: z.object({
-				pattern: z.string().describe(tr("正则表达式（默认区分大小写）", "Regular expression (case-sensitive by default)")),
-				path: z.string().optional().describe(tr("搜索起点（相对工作区的文件或目录）：给目录递归搜，给文件只搜这一个，缺省为根目录", "Search root (file or directory relative to the workspace): directories are searched recursively, a file only itself; defaults to root")),
-				filePattern: z.string().optional().describe(tr("限定文件名正则，如 \"\\.(ts|tsx|json)$\"", "Optional file-name regex, e.g. \"\\.(ts|tsx|json)$\"")),
-				caseInsensitive: z.boolean().optional().describe(tr("忽略大小写（同时作用于 pattern 与 filePattern），默认 false", "Case-insensitive (applies to pattern and filePattern); default false")),
-				filesOnly: z.boolean().optional().describe(tr("只返回命中的文件及其命中数（每行 `路径:命中数`），不返回行内容", "Return only matching files and hit counts (`path:count` per line), not line contents")),
-				context: z.number().optional().describe(tr("每条命中附带的前后上下文行数（0–5），默认 0。适合需要看清代码结构的场景", "Context lines around each hit (0–5); default 0. Useful when code structure matters")),
-				maxResults: z.number().optional().describe(tr("最大命中行数，默认 200，最大 1000", "Maximum matching lines; default 200, max 1000"))
+				pattern: z.string().describe("Glob pattern to match file paths against (e.g. \"**/*.ts\", \"src/**/*.test.js\"). A pattern with no \"/\" matches the basename at any depth, so \"*\" and \"*.ts\" both search the whole tree; include a separator to anchor the depth."),
+				path: z.string().optional().describe("Directory to search in. Defaults to the session workspace; a relative path resolves against it.")
 			}),
-			execute: async ({ pattern, path = "", filePattern, caseInsensitive = false, filesOnly = false, context = 0, maxResults = 200 }) => {
-				const flags = caseInsensitive ? "i" : "";
-				let re;
+			execute: async ({ pattern, path = "" }) => {
+				if (pattern.trim().length === 0) throw new Error("pattern must be a non-empty string");
+				if (path.length > 0 && path.trim().length === 0) throw new Error("path must be a non-empty string when given");
+				const absPath = backend.resolve(path);
+				if (!await backend.stat(absPath)) throw new Error(`cannot list "${path || "."}": not found`);
+				/**
+				* 与 dsh 一致：**包含**隐藏文件与被 .gitignore 忽略的文件，只排除版本库元数据目录。
+				* 这条与 grep 相反（grep 遵守 .gitignore），是 dsh 刻意的取舍。
+				*/
+				const out = await backend.find({
+					pattern,
+					subPath: path,
+					maxResults: GLOB_MAX_RESULTS,
+					includeIgnored: true,
+					ignore: (_rel, isDir) => {
+						if (!isDir) return false;
+						const name = _rel.split("/").pop() ?? _rel;
+						return name === ".git" || name === ".svn" || name === ".hg" || name === ".bzr";
+					}
+				});
+				if (!out.length) return "No files found";
+				const head = out.slice(0, GLOB_MAX_RESULTS);
+				const more = out.length >= GLOB_MAX_RESULTS ? `\n\n(Showing ${head.length} paths. Narrow pattern or path to see more.)` : "";
+				return `${head.join("\n")}${more}`;
+			}
+		}),
+		grep: tool({
+			description: `Search file contents with a regular expression. Returns matching lines with line numbers, grouped by file. Returns up to ${GREP_MAX_MATCHES} matches.`,
+			inputSchema: z.object({
+				pattern: z.string().describe("Regular expression to search for."),
+				path: z.string().optional().describe("File or directory to search. Defaults to the session workspace; a relative path resolves against it."),
+				include: z.string().optional().describe("One glob filter for which files to search (e.g. \"*.ts\", \"*.{js,jsx}\"). Not a list; negation is not supported.")
+			}),
+			execute: async ({ pattern, path = "", include }) => {
+				if (pattern.length === 0) throw new Error("pattern must be a non-empty string");
+				if (path.length > 0 && path.trim().length === 0) throw new Error("path must be a non-empty string when given");
+				if (include !== void 0) {
+					if (include.trim().length === 0) throw new Error("include must be a non-empty glob when given");
+					if (include.startsWith("!")) throw new Error("include must be a positive glob filter; negated patterns (\"!…\") are not supported");
+				}
+				const insensitive = pattern.startsWith("(?i)");
+				const source = insensitive ? pattern.slice(4) : pattern;
 				try {
-					re = new RegExp(pattern, flags);
+					new RegExp(source, insensitive ? "i" : "");
 				} catch (e) {
-					throw new Error(`无效的正则：${e.message}`);
+					throw new Error(`invalid pattern: ${e.message}`);
 				}
-				let fileRe = null;
+				const filePattern = include === void 0 ? void 0 : globToRegExpSource(include);
 				if (filePattern) try {
-					fileRe = new RegExp(filePattern, flags);
+					new RegExp(filePattern, insensitive ? "i" : "");
 				} catch (e) {
-					throw new Error(`无效的文件名正则：${e.message}`);
+					throw new Error(`invalid include glob: ${e.message}`);
 				}
-				const absPath = resolveInside(root, path);
-				const stat = await promises.stat(absPath).catch(() => null);
-				if (!stat) throw new Error(`路径不存在：${path || "."}（相对于工作区根）`);
-				const ctx = clampInt$1(context, 0, 5, 0);
-				const max = clampInt$1(maxResults, 1, 1e3, 200);
-				const acc = {
-					files: [],
-					hits: 0,
-					max
-				};
-				if (stat.isFile()) await scanFile(absPath, relPathOf(root, absPath), re, fileRe, acc, ctx > 0);
-				else {
-					const ignored = await createIgnoreChecker(root);
-					await searchDir(absPath, root, re, fileRe, ignored, acc, ctx > 0);
-				}
-				if (!acc.files.length) return "（未找到匹配）";
-				if (filesOnly) return `${acc.files.map((f) => `${f.rel}:${f.hits.length}`).join("\n")}\n（${acc.files.length} 个文件，共 ${acc.hits} 处匹配）`;
-				const full = formatSearchHits(acc, ctx);
-				const tail = acc.hits >= max ? `\n…（本轮已到 ${max} 行命中上限，还有匹配没查完：想看更多就提高 maxResults（上限 1000）、缩小 path / filePattern，或换更精确的 pattern）…` : "";
-				return `${clipToBudget(full, MAX_TOOL_RESULT_CHARS)}${tail}`;
+				const absPath = backend.resolve(path);
+				if (!await backend.stat(absPath)) throw new Error(`cannot search "${path || "."}": not found`);
+				const files = await backend.search({
+					pattern: source,
+					caseInsensitive: insensitive,
+					subPath: path,
+					...filePattern ? { filePattern } : {},
+					...include !== void 0 ? { includeGlob: include } : {},
+					context: 0,
+					maxResults: GREP_MAX_MATCHES,
+					maxFileBytes: MAX_SEARCH_FILE_SIZE,
+					ignore: await backend.ignoreChecker()
+				});
+				const matches = files.flatMap((f) => f.hits.map((h) => ({
+					path: f.file,
+					...h
+				})));
+				if (!matches.length) return "No matches found";
+				return formatGrepOutput(files, matches.length);
 			}
 		}),
-		find_files: tool({
-			description: tr("按文件名 / 通配符查找文件（如 \"*.ts\"、\"**/*.test.tsx\"、\"src/**/index.*\"）。只匹配文件名，不搜内容（搜内容用 search_files）。自动跳过忽略目录。用于「项目里有哪些 X 文件」这类问题。", "Find files by name or glob (e.g. \"*.ts\", \"**/*.test.tsx\", \"src/**/index.*\"). Matches file names only, not contents (use search_files for contents). Ignored directories are skipped. Useful for “which X files exist in this project?”."),
+		bash: tool({
+			description: tr("在工作区目录下执行 shell 命令并返回输出（stdout + stderr）。适用于运行构建 / 测试 / git 操作 / 安装依赖 / 启动服务等。命令默认超时 120 秒。输出超过一个工具结果的预算时会被完整落盘到工作区的 .fizz/tool-output/ 下，结果里给出相对路径、全文行数与本次返回了哪几行；其余部分用 read 传那个 path 加 offset / limit 按行接着读，也可以用 grep 检索（常见于构建 / 测试的完整日志）。注意这是真实执行环境，删除、覆盖、危险命令（rm -rf、git push --force 等）前先说明影响。需要在**本轮结束后继续跑**的进程（dev server / watch / 长构建）把 run_in_background 设为 true：调用会立刻返回一个后台任务 id，它不受本轮超时与停止影响，输出显示在输入框上方的任务面板里；当前这一轮就要用它的输出时**不要**开这个开关。" + shellNote, "Run a shell command in the workspace and return stdout + stderr. Use it for builds, tests, git, installing dependencies, starting services, etc. Default timeout is 120 seconds. If output exceeds one tool result, the full text is saved under .fizz/tool-output/ and the result includes the relative path, total lines, and which lines were returned; read the rest with read offset/limit on that path, or search it with grep (common for full build/test logs). This is a real execution environment: explain the impact before deleting, overwriting, or running dangerous commands (rm -rf, git push --force, etc.). Set run_in_background: true for processes that must keep running after this turn (dev servers, watchers, long builds): the call returns a background task id immediately, it is not affected by this turn's timeout or stop, and its output shows in the task panel above the input box; do NOT set it when the current turn needs the output." + shellNoteEn),
 			inputSchema: z.object({
-				pattern: z.string().describe(tr("文件名通配符：* 匹配单层任意字符，? 匹配单个字符，** 跨目录；不含 / 时匹配任意层级下的文件名", "File-name glob: * matches any characters in one segment, ? one character, ** across directories; without / it matches file names at any depth")),
-				path: z.string().optional().describe(tr("搜索起点（相对工作区的文件或目录）：给目录递归找，给文件只检查这一个，缺省为根目录", "Search root (file or directory relative to the workspace): directories are searched recursively, a file only itself; defaults to root")),
-				maxResults: z.number().optional().describe(tr("最大返回条数，默认 200，最大 1000", "Maximum results; default 200, max 1000"))
-			}),
-			execute: async ({ pattern, path = "", maxResults = 200 }) => {
-				const re = globToRegExp(pattern);
-				const absPath = resolveInside(root, path);
-				const stat = await promises.stat(absPath).catch(() => null);
-				if (!stat) throw new Error(`路径不存在：${path || "."}（相对于工作区根）`);
-				const max = clampInt$1(maxResults, 1, 1e3, 200);
-				const out = [];
-				if (stat.isFile()) {
-					const rel = relPathOf(root, absPath);
-					if (re.test(rel)) out.push(rel);
-				} else await findFiles(absPath, root, re, await createIgnoreChecker(root), out, max);
-				if (!out.length) return `（没有匹配 ${pattern} 的文件）`;
-				const more = out.length >= max ? `\n…（已达上限 ${max}，可能有更多）` : "";
-				return `${out.length} 个文件：\n${out.join("\n")}${more}`;
-			}
-		}),
-		execute_command: tool({
-			description: tr("在工作区目录下执行 shell 命令并返回输出（stdout + stderr）。适用于运行构建 / 测试 / git 操作 / 安装依赖 / 启动服务等。命令默认超时 120 秒。输出超过一个工具结果的预算时会被完整落盘到工作区的 .fizz/tool-output/ 下，结果里给出相对路径、全文行数与本次返回了哪几行；其余部分用 read_file 传那个 path 加 offset / limit 按行接着读，也可以用 search_files 检索（常见于构建 / 测试的完整日志）。注意这是真实执行环境，删除、覆盖、危险命令（rm -rf、git push --force 等）前先说明影响。需要在**本轮结束后继续跑**的进程（dev server / watch / 长构建）把 runInBackground 设为 true：调用会立刻返回一个后台任务 id，它不受本轮超时与停止影响，输出显示在输入框上方的任务面板里；当前这一轮就要用它的输出时**不要**开这个开关。" + shellNote, "Run a shell command in the workspace and return stdout + stderr. Use it for builds, tests, git, installing dependencies, starting services, etc. Default timeout is 120 seconds. If output exceeds one tool result, the full text is saved under .fizz/tool-output/ and the result includes the relative path, total lines, and which lines were returned; read the rest with read_file offset/limit on that path, or search it with search_files (common for full build/test logs). This is a real execution environment: explain the impact before deleting, overwriting, or running dangerous commands (rm -rf, git push --force, etc.). Set runInBackground: true for processes that must keep running after this turn (dev servers, watchers, long builds): the call returns a background task id immediately, it is not affected by this turn's timeout or stop, and its output shows in the task panel above the input box; do NOT set it when the current turn needs the output." + shellNoteEn),
-			inputSchema: z.object({
-				command: z.string().describe(tr("要执行的命令", "Command to run")),
-				timeoutMs: z.number().optional().describe(tr("超时毫秒数，默认 120000，最大 300000", "Timeout in milliseconds; default 120000, max 300000")),
-				cwd: z.string().optional().describe(tr("执行目录（相对工作区），缺省为工作区根目录", "Working directory (relative to the workspace); defaults to the workspace root")),
-				runInBackground: z.boolean().optional().describe(tr("设为 true 时把命令丢到后台：立刻返回任务 id，进程在本轮结束后继续跑（dev server / watch / 长构建）。本轮需要它的输出时不要开", "Set true to run the command in the background: returns a task id immediately and the process keeps running after this turn (dev servers, watchers, long builds). Do not set it when this turn needs the output"))
+				description: z.string().describe("Clear, concise description of what this command does in active voice, e.g. \"List files in the workspace\"."),
+				command: z.string().describe("The command to execute."),
+				timeoutMs: z.number().optional().describe("Timeout in milliseconds; default 120000, max 300000."),
+				workdir: z.string().optional().describe("Working directory for this command. Defaults to the session workspace; a relative path is resolved against it."),
+				run_in_background: z.boolean().optional().describe("Run in the background and return a job id immediately. No timeout applies. Do not set it when this turn needs the output.")
 			}),
 			execute: async (input, options) => {
-				const { command, timeoutMs, cwd = "", runInBackground } = input;
+				const { command } = input;
+				if (command.trim().length === 0) throw new Error("invalid command: expected a non-empty string");
+				const runInBackground = input.run_in_background ?? false;
+				const cwd = input.workdir ?? "";
 				const refused = await guardWrite("命令未运行", {
 					toolCallId: options.toolCallId,
-					toolName: "execute_command",
+					toolName: "bash",
 					command,
 					intent: intentOf(input)
 				});
 				if (refused) return refused;
-				const execDir = resolveInside(root, cwd);
-				if (!(await promises.stat(execDir)).isDirectory()) throw new Error(`执行目录不是目录：${cwd || "."}（cwd 必须是目录；要操作某个文件请把路径写进命令里）`);
+				const execDir = backend.resolve(cwd);
+				const stat = await backend.stat(execDir);
+				if (!stat) throw new Error(`cannot run "${command}": working directory not found: ${cwd || "."}`);
+				if (stat.type !== "dir") throw new Error(`cannot run "${command}": workdir is not a directory: ${cwd || "."}`);
 				/**
 				* 后台执行：**先过权限闸、再登记**，与前台同一条口径（后台不等于免审批）。
 				*
@@ -3198,6 +5732,7 @@ function buildAgentTools(root, opts) {
 				* 本轮的 abort / 超时都打不到它（那正是「dev server 活过这一轮」的实现方式）。
 				*/
 				if (runInBackground) {
+					if (backend.kind === "remote") return "远端工作区首期不支持后台执行（run_in_background），命令**没有**启动。请改为普通执行（受本轮超时约束），或让用户在远端自己开一个终端。";
 					if (!opts.onBackgroundCommand) return "当前环境不支持后台执行（没有任务登记通道），命令**没有**启动。请改为普通执行，或让用户自己开一个终端。";
 					const started = await opts.onBackgroundCommand({
 						command,
@@ -3211,11 +5746,10 @@ function buildAgentTools(root, opts) {
 						"本轮不要再等它的输出 —— 需要结果时用普通执行，或先做别的、稍后再看面板。"
 					].join("\n");
 				}
-				const t = clampInt$1(timeoutMs, 1e3, 3e5, 12e4);
+				const t = clampInt(input.timeoutMs, 1e3, 3e5, 12e4);
 				/**
 				* per-command 停止器：单条停止（调用方持有的 `stop()`）与整轮停止
-				* （`options.abortSignal`）都只 abort 这一个 controller —— 互不影响：
-				* 单条停不动 run，整轮停照旧杀进程树（原来的 signal 分支就是它）。
+				* （`options.abortSignal`）都只 abort 这一个 controller —— 互不影响。
 				*/
 				const ctrl = new AbortController();
 				const stop = () => ctrl.abort();
@@ -3226,14 +5760,31 @@ function buildAgentTools(root, opts) {
 				const toolCallId = options.toolCallId;
 				opts.onCommandStart?.(toolCallId, stop);
 				try {
-					return await runCommand(command, execDir, t, root, ctrl.signal, {
-						onOutput: (stream, chunk) => opts.onCommandOutput?.(toolCallId, stream, chunk),
-						onEnd: () => opts.onCommandEnd?.(toolCallId)
+					const result = await backend.exec(command, {
+						cwd: execDir,
+						timeoutMs: t,
+						signal: ctrl.signal,
+						onOutput: (stream, chunk) => opts.onCommandOutput?.(toolCallId, stream, chunk)
 					});
+					return await formatBashOutput(backend, command, result, t);
 				} finally {
+					opts.onCommandEnd?.(toolCallId);
 					options.abortSignal?.removeEventListener("abort", stop);
 				}
 			}
+		}),
+		/**
+		* Anthropic 风格的兼容编辑器（`view` / `create` / `str_replace` / `insert`）。
+		*
+		* 它与 `read` / `write` / `edit` 并存而不是替代：从 Claude Code 搬来的技能与提示词
+		* 会直接点名它。语义细节见 `str-replace-editor.ts` 的文件头。
+		*/
+		str_replace_editor: buildStrReplaceEditorTool({
+			backend,
+			guardWrite,
+			checkObserved,
+			recordObserved,
+			...opts.nestedDocs ? { nestedDocs: opts.nestedDocs } : {}
 		}),
 		/**
 		* 待办清单（todo list）：把一个**多步骤**任务拆成可勾选条目，边做边维护进度。
@@ -3275,43 +5826,206 @@ function buildAgentTools(root, opts) {
 				};
 			}
 		}),
-		/**
-		* 删除文件。存在的意义不只是「省得拼 rm」—— 更重要的是把删除收敛成
-		* 一个「单路径 + resolveInside 校验 + 同一道确认闸」的动作：
-		* 让模型拼 `rm -rf xxx` 才删，误伤面比单文件大得多。
-		*/
-		delete_file: tool({
-			description: tr("删除工作区内的文件。默认只删单个文件；path 是目录时必须显式传 recursive=true（会连同目录内所有内容一起删）。路径不存在会报错，不会静默成功。不可恢复操作，调用前请确认路径。", "Delete a file in the workspace. By default only a single file is deleted; if path is a directory you must pass recursive=true (deletes all contents too). Missing paths error instead of silently succeeding. This is irreversible — confirm the path before calling."),
-			inputSchema: z.object({
-				path: z.string().describe(tr("相对工作区的路径", "Path relative to the workspace")),
-				recursive: z.boolean().optional().describe(tr("path 是目录时必须显式传 true 才允许删除，默认 false（此时传目录会报错）", "When path is a directory, explicitly pass true to allow deletion; default false (passing a directory then errors)"))
-			}),
-			execute: async (input, options) => {
-				const { path, recursive = false } = input;
-				const abs = resolveInside(root, path);
-				let stat;
-				try {
-					stat = await promises.stat(abs);
-				} catch {
-					throw new Error(`路径不存在：${path}`);
-				}
-				const isDir = stat.isDirectory();
-				if (isDir && !recursive) throw new Error(`${path} 是目录。删除目录必须显式传 recursive: true（会连同目录内所有内容一起删除）。`);
-				const refused = await guardWrite("内容未被删除", {
-					toolCallId: options.toolCallId,
-					toolName: "delete_file",
-					command: isDir ? `删除目录（含全部内容）：${path}` : `删除文件：${path}`,
-					intent: intentOf(input)
-				});
-				if (refused) return refused;
-				if (isDir) await promises.rm(abs, { recursive: true });
-				else await promises.unlink(abs);
-				return `已删除${isDir ? "目录" : "文件"} ${path}`;
-			}
-		}),
 		...opts.skills?.length ? buildReadSkillTool(opts.skills) : {}
 	}, opts.includeTools);
 }
+/**
+* grep 结果：与 dsh 的 `formatGrepOutput` 同格式。
+*
+* ```
+* Found 3 matches
+*
+* a.ts
+* Line 3: const x = 1
+* ```
+*/
+function formatGrepOutput(files, total) {
+	return `${total > GREP_MAX_MATCHES ? `Found ${GREP_MAX_MATCHES} of ${total} matches` : `Found ${total} match(es)`}\n\n${files.map((f) => {
+		const lines = f.hits.map((h) => {
+			const text = h.text.length > GREP_MAX_LINE_BYTES ? `${h.text.slice(0, GREP_MAX_LINE_BYTES)} (line truncated)` : h.text;
+			return `Line ${h.line}: ${text}`;
+		});
+		return `${f.file}\n${lines.join("\n")}`;
+	}).join("\n\n")}`;
+}
+/**
+* `include` 是 dsh / ripgrep 的 glob（`*.ts`、`*.{js,jsx}`），而 Fizz 的本地搜索后端
+* 收的是**文件名正则**。这里做一层最小转换：`**` → `.*`、`*` → `[^/]*`、`?` → `.`、
+* `{a,b}` → `(a|b)`。远端后端本来就把 filePattern 当正则用，两边一致。
+*
+* ⚠️ P4 换成随包 ripgrep 之后，这段可以删掉（rg 直接吃 glob）。
+*/
+function globToRegExpSource(glob) {
+	let out = "";
+	for (let i = 0; i < glob.length; i += 1) {
+		const ch = glob[i];
+		if (ch === "*") {
+			if (glob[i + 1] === "*") {
+				out += ".*";
+				i += 1;
+				if (glob[i + 1] === "/") i += 1;
+			} else out += "[^/]*";
+			continue;
+		}
+		if (ch === "?") {
+			out += ".";
+			continue;
+		}
+		if (ch === "{") {
+			const end = glob.indexOf("}", i);
+			if (end > i) {
+				const options = glob.slice(i + 1, end).split(",");
+				out += `(${options.map((o) => o.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`;
+				i = end;
+				continue;
+			}
+		}
+		out += /[.*+?^${}()|[\]\\]/.test(ch) ? `\\${ch}` : ch;
+	}
+	return `^${out}$`;
+}
+// packages/git/src/git-panel.ts
+/**
+* git 路由（status / diff / branches / log / action）共用的 git 访问层。
+* 本地工作区走 simple-git；远端工作区由 `apps/server` 注入走 SSH exec 的 `GitExec`
+* （见 `GitExec` 的注释），所以这里的每个 helper 都接受可选的 `exec`。
+* 「面板」指这层命令最终服务的源代码管理面板（非交互、无 TTY 的服务端环境）。
+*
+* 之前这里是手写的 execFile('git', ...) 包装（原本内嵌在 status route 里），换 simple-git
+* 的原因是让子进程管理（env / 超时 / 参数校验 / 流式缓冲）交给库，自己不再维护 spawn 细节。
+*
+* ⚠️ 换库时踩过的几个点，别绕过它们：
+*
+* 1. **stderr 的用户可见输出要靠 outputHandler 抓回来**。`git checkout -b` / `git init` /
+*    `git push` 成功时把「Switched to a new branch」「Initialized empty ...」打在 stderr 上，
+*    而 simple-git 的 raw()/各 typed API 只回 stdout —— 面板的 `output` 字段会变成空串。
+*    所以 `git()` 里用 outputHandler 把 stderr 流拼接进 GitRun，行为与 execFile 时代一致。
+*
+* 2. **simple-git 4.x 默认剥离所有 `GIT_*` 环境变量**（防 env 注入的安全守卫），且
+*    `.env()` 是显式供给：受控键（EDITOR / PAGER / GIT_* 等）只要出现在显式 env 里
+*    就直接抛错 —— 而哪些键存在取决于部署机器，逐个白名单不可靠。所以这里**不动
+*    `.env()`**（子进程继承完整 process.env，守卫只做静默剥离），需要的变量在
+*    进程级兜底 + `allowEnvironment` 放行。代价是其余 `GIT_*`（GIT_DIR / GIT_ASKPASS
+*    等）不再透传 —— 对面板的非交互命令这是更安全的选择，需要它们的场景应该配 git config。
+*
+* 3. **`GIT_TERMINAL_PROMPT=0` 在模块加载时兜底写进 process.env**：面板没有 TTY，
+*    Linux 上 git 的凭据提示会直接读 /dev/tty 把 HTTP 请求挂死，必须禁掉。只在未设置时
+*    兜底（尊重部署方的显式配置）；副作用是同进程的内置终端里的 git 也禁用终端提示 ——
+*    Windows 上凭据走 GCM 弹窗不受影响，纯终端提示的场景本来也该配 credential helper。
+*
+* 4. **status 仍用 `--porcelain=v2` + 自有解析器**（见 status route 的 parseStatus），
+*    没换成 simple-git 的 `status()`：它的解析器走 porcelain v1，对「刚 init 还没有
+*    任何提交」的 unborn 分支，`## No commits yet on master` 会被它的正则解析出
+*    分支名 "No" —— 而 init-commit 恰恰是面板的核心流程。v2 输出没有这个坑。
+*
+* 5. **4.x 移除了 maxBuffer**（改流式收集，没有上限）。大仓库的超大 status / diff 不会再
+*    像 execFile 时代那样直接把进程杀掉，diff 的 400k 字符截断仍由 route 自己负责。
+*/
+if (process.env.GIT_TERMINAL_PROMPT === void 0) process.env.GIT_TERMINAL_PROMPT = "0";
+/** 单条 git 命令的空闲超时（stdout/stderr 有输出就重置）：防凭据 / ssh 提示把请求挂死 */
+var GIT_TIMEOUT_MS = 3e5;
+/**
+* 造一个面向某目录的 simple-git 客户端。每次调用新建一个实例：
+* outputHandler 里抓 stderr 的闭包是按调用隔离的，共享实例会把不同命令的 stderr 串在一起。
+*/
+function gitPanel(cwd, timeoutMs = GIT_TIMEOUT_MS) {
+	const baseDir = existsSync(cwd) ? cwd : tmpdir();
+	return simpleGit({
+		baseDir,
+		config: ["core.quotePath=false"],
+		allowEnvironment: ["GIT_TERMINAL_PROMPT"],
+		timeout: { block: timeoutMs },
+		errors: (error, result) => {
+			if (result.exitCode) {
+				const text = Buffer.concat([...result.stdErr, ...result.stdOut]).toString("utf8").trim();
+				return new Error(text || `git 以退出码 ${result.exitCode} 结束`);
+			}
+			return error;
+		}
+	});
+}
+/**
+* 本机执行：跑一条 git 命令（simple-git 的 raw 通道）。**不抛异常**：失败也把 stderr
+* 原样带回，调用方自己判断 —— 与 execFile 时代的签名一致，route 里的错误分支不用动。
+*
+* 成功时 stderr 也要（checkout / init 的信息在 stderr 上），靠 outputHandler 抓。
+*/
+var localGitExec = async (cwd, args, opts) => {
+	const client = gitPanel(cwd, opts?.timeoutMs);
+	let stderrText = "";
+	client.outputHandler((_command, _stdout, stderr) => {
+		stderr?.on("data", (chunk) => {
+			stderrText += chunk.toString("utf8");
+		});
+	});
+	try {
+		return {
+			ok: true,
+			stdout: await client.raw(args),
+			stderr: stderrText
+		};
+	} catch (err) {
+		return {
+			ok: false,
+			stdout: "",
+			stderr: stderrText.trim() || (err instanceof Error ? err.message : String(err)) || "git 执行失败"
+		};
+	}
+};
+/** 跑一条 git 命令；`exec` 缺省是本机（simple-git），远端由调用方注入 */
+async function git(cwd, args, exec = localGitExec) {
+	return exec(cwd, args);
+}
+/** 解析仓库根目录（绝对路径）；不是仓库（或没装 git）返回 null */
+async function repoRoot(dir, exec = localGitExec) {
+	const res = await git(dir, ["rev-parse", "--show-toplevel"], exec);
+	const root = unquotePath(res.stdout.trim());
+	return res.ok && root ? root : null;
+}
+/**
+* 还原 git 的 C 风格引号路径（`"a\b" / \346\226\207` 这类）。
+*
+* `core.quotePath=false` 已经让中文路径裸输出，这里只为带 `"` / 控制字符等
+* 仍会被引用的路径兜底；逻辑与 git 的 quote 转义规则一致。
+*/
+function unquotePath(raw) {
+	if (raw.length < 2 || !raw.startsWith("\"") || !raw.endsWith("\"")) return raw;
+	const body = raw.slice(1, -1);
+	const out = [];
+	for (let i = 0; i < body.length; i++) {
+		const ch = body[i];
+		if (ch !== "\\") {
+			out.push(...Buffer.from(ch, "utf8"));
+			continue;
+		}
+		const next = body[++i];
+		if (next === void 0) break;
+		if (next >= "0" && next <= "7") {
+			let oct = next;
+			while (oct.length < 3 && body[i + 1] !== void 0 && body[i + 1] >= "0" && body[i + 1] <= "7") oct += body[++i];
+			out.push(Number.parseInt(oct, 8));
+			continue;
+		}
+		out.push({
+			a: 7,
+			b: 8,
+			f: 12,
+			n: 10,
+			r: 13,
+			t: 9,
+			v: 11,
+			"\"": 34,
+			"\\": 92
+		}[next] ?? next.charCodeAt(0));
+	}
+	return Buffer.from(out).toString("utf8");
+}
+z.enum([
+	"opencode",
+	"pi",
+	"generic"
+]);
+z.enum(["once", "always"]);
 // packages/tools/src/ask-followup.ts
 /**
 * `ask_followup_question` 工具（**传输无关**的共享实现，桌面端 / server 共用）。
@@ -3395,9 +6109,39 @@ function buildAskFollowupTool(sink, requestId) {
 		}
 	}) };
 }
+// packages/tools/src/dir-size.ts
+/**
+* 递归统计目录占用（不跟随符号链接；读不了的文件跳过，不让统计失败拖垮接口）。
+*
+* 两处在用：设置页「浏览器」里的运行时体积（`playwright-browsers.ts`，约 150MB 那份
+* headless shell）与**每个会话的网站数据**体积（`browser/profiles.ts`）。别在各自的
+* 文件里再抄一份 —— 统计口径（目录项算不算、读不到时算多少）必须一致，否则同一页上
+* 两个数字看起来会互相打架。
+*/
+function directorySize(dir) {
+	let total = 0;
+	const stack = [dir];
+	while (stack.length > 0) {
+		const current = stack.pop();
+		let entries;
+		try {
+			entries = readdirSync(current, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+		for (const entry of entries) {
+			const full = join(current, String(entry.name));
+			if (entry.isDirectory()) stack.push(full);
+			else if (entry.isFile()) try {
+				total += statSync(full).size;
+			} catch {}
+		}
+	}
+	return total;
+}
 // packages/tools/src/playwright-browsers.ts
 /**
-* Playwright 浏览器的运行时保障：web_fetch 的 `engine="browser"`、screenshot 工具
+* Playwright 浏览器的运行时保障：web_fetch 的 `engine="browser"`
 * 与**内置浏览器面板 / `browser_*` 工具**都跑无头 Chromium，而安装包**不再随包分发
 * 浏览器**（原 extraResources 方案光一个 headless shell 就 271MB，占了安装包近一半），
 * 改为**首次使用时在线下载** `chromium-headless-shell`（约 150MB），落到 playwright
@@ -3439,9 +6183,14 @@ function buildAskFollowupTool(sink, requestId) {
 * ⚠️ **谁会触发下载**：设置页「浏览器」的『安装』是唯一显式入口。只剩内置浏览器引擎的
 * launch 兜底（`browser/engine.ts` 的 `ensureChromiumReady()`）还会在缺失时自愈 —— 那是
 * 「装配闸放过了、但运行时事后没了」的最后一道，正常路径走不到。
-* `web_fetch` 的 `engine="browser"`（`BrowserRuntimeMissingError`）与 `screenshot` 都
-* **不再**触发，没装就直接回一句去设置里装；`browser_*` 工具与浏览器面板也各自在
-* 装配 / 连接处先挡（`chat-turn.ts`、`browser-ws.ts`）。
+*
+* 依赖这里的**两个工具面**都在装配期按 `browserRuntimeInfo().installed` 先挡一道，没装就
+* 不给模型看见，避免「每次调用都只回一句去设置里装」：
+* - `browser_*` 工具集与浏览器面板：`chat-turn.ts` / `browser-ws.ts` 挡；
+* - `web_fetch`：照挂，但 schema 里没有 `engine` 入参（只有 fetch 引擎）。
+* （`screenshot` 工具已移除，历史消息仍按 `TOOL_LABELS` 的旧条目渲染。）
+* 剩下的 `BrowserRuntimeMissingError` / `playwright 未安装` 那几句只兜「装配之后运行时被
+* 卸掉」这种赛况。
 */
 /** 单次下载的总超时：网络再差 10 分钟也该有结论了，挂死比失败更难排查 */
 var DOWNLOAD_TIMEOUT_MS = 6e5;
@@ -3630,33 +6379,11 @@ function browserRuntimeInfo() {
 		downloading: pendingDownload !== void 0
 	};
 }
-/** 递归统计目录占用（不跟随符号链接；读不了的文件跳过，不让统计失败拖垮接口） */
-function directorySize(dir) {
-	let total = 0;
-	const stack = [dir];
-	while (stack.length > 0) {
-		const current = stack.pop();
-		let entries;
-		try {
-			entries = readdirSync(current, { withFileTypes: true });
-		} catch {
-			continue;
-		}
-		for (const entry of entries) {
-			const full = join(current, String(entry.name));
-			if (entry.isDirectory()) stack.push(full);
-			else if (entry.isFile()) try {
-				total += statSync(full).size;
-			} catch {}
-		}
-	}
-	return total;
-}
 // packages/tools/src/headless.ts
 /**
-* 无头 chromium 的启动保障：**web_fetch（engine="browser"）与 screenshot 共用**。
+* 无头 chromium 的启动保障：**web_fetch（engine="browser"）与 browser_* 工具共用**。
 *
-* 抽成公共模块的理由：这两个工具的浏览器路径各写过一份 launch，各有各的毛病 ——
+* 抽成公共模块的理由：这两处的浏览器路径各写过一份 launch，各有各的毛病 ——
 * `chromium.launch()` 不吃 timeout 选项，浏览器二进制起不来时（缺依赖 / 沙箱被拒）会
 * **永久挂住**，那一轮对话跟着卡死；渲染后的固定等待也不接中止，用户点「停止」得干等满。
 * 见 `docs/lessons/desktop.md`「打包体积」一条。
@@ -3748,7 +6475,7 @@ function pageErrorMessage(err) {
 * 设计要点：
 * - 只读 / 无副作用：不写文件、不改系统，任何权限模式下都可用，相当于「读一个网页」。
 *   （唯一例外：正文超长时会把**全文**落一份到工作区 `.fizz/tool-output/`，
-*   那是 Fizz 自己的缓存目录 —— 文件树与 git 都忽略它，且只有这样 read_file
+*   那是 Fizz 自己的缓存目录 —— 文件树与 git 都忽略它，且只有这样 read
 *   才能把中段读回来。见 output-log.ts 的形状说明。）
 * - 正文 HTML 用 turndown 转成 Markdown，链接单独列出便于 Agent 继续深挖；
 * - 输出有上限（默认 20000 字符），超长截断并标注，避免把整页塞爆上下文。
@@ -3768,6 +6495,14 @@ function pageErrorMessage(err) {
 * 进度，用户只知道「卡住了」；而且它会和「设置 → 浏览器」的安装任务抢同一次下载。
 * 运行时由设置页显式安装，没装就立刻返回一句能执行的话（改用 fetch 引擎 / 让用户去装），
 * 见 `BrowserRuntimeMissingError`。
+*
+* ## 没装浏览器 = 只有一个引擎
+*
+* 装没装**在装配期现读**（`browserRuntimeInfo().installed`）：没装时 schema 里**根本没有
+* `engine` 这个入参**，description 也只说 fetch。留着那个选项（哪怕回一句「没装，请改用
+* fetch」）等于给模型一个注定失败的分支 —— 它每轮都会先试一遍 browser 才死心，白烧步数、
+* 还把落空的失败信息灌进上下文。装好后下一轮装配自动带上（与 `chat-turn` 的 `browser_*`
+* 装配闸、工具条那颗开关同一判据）。
 */
 /**
 * 返回 Markdown 的正文默认上限（字符）。
@@ -3775,13 +6510,13 @@ function pageErrorMessage(err) {
 * 取 8000 而不是更大的值：正文超过一个工具结果的预算时，`formatPage` 会把**全文**
 * 落盘并把开头结尾返回给模型（见 output-log.ts）—— 也就是说默认值给大了并不会让
 * 模型看到更多有用内容，只会让它在摘要之外还多背一段正文。真需要细读某一段时，
-* 模型可以按落盘文件的行号位置 read_file，或显式调大 maxChars 重抓。
+* 模型可以按落盘文件的行号位置 read，或显式调大 maxChars 重抓。
 */
 var DEFAULT_MAX_CHARS = 8e3;
 /** 最多列出的页面内链接条数 */
 var MAX_LINKS = 50;
 /** 页面加载默认超时（毫秒） */
-var DEFAULT_TIMEOUT$1 = 3e4;
+var DEFAULT_TIMEOUT = 3e4;
 /** fetch 路径下，用于 Markdown 转换的 HTML 最大字符数（防超大页撑爆内存 / 卡死） */
 var MAX_HTML_CHARS = 3e6;
 /**
@@ -3816,7 +6551,7 @@ var BROWSER_EXTRACT = `
   };
 })()
 `;
-var UA$1 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 /** 解除常见 HTML 实体 */
 function decodeEntities(s) {
 	return s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&#39;/g, "'").replace(/&nbsp;/g, " ");
@@ -3890,15 +6625,15 @@ async function htmlToMarkdown(html) {
 * `.fizz/tool-output/` 并回相对路径 + 行号 —— 抓来的长文档最该做的事就是「回头精读
 * 某一段」，而不是把中段直接扔掉（读回来要重抓一次，代价太大）。
 */
-async function formatPage(p, requestedUrl, clampedMax, root) {
+async function formatPage(p, requestedUrl, clampedMax, backend) {
 	const clipped = p.markdown.length > clampedMax;
 	const md = clipped ? p.markdown.slice(0, clampedMax) : p.markdown;
 	const linkSection = p.links.length ? `\n\n## 页面内链接（前 ${Math.min(p.links.length, MAX_LINKS)} 条）\n` + p.links.slice(0, MAX_LINKS).map((l) => `- [${l.text}](${l.href})`).join("\n") : "";
 	return summarizeLongOutput(`${`# ${p.title || "(无标题)"}\n源地址：${p.finalUrl}（抓取自 ${requestedUrl}）\n`}\n${md}${linkSection}`, {
-		root,
+		backend,
 		tool: "web_fetch",
 		detail: p.finalUrl,
-		extra: clipped ? `正文按你给的 maxChars=${clampedMax} 裁到了开头这段；想要更靠后的内容就用 read_file 的 offset/limit 翻落盘文件，或把 maxChars 调大（上限 100000）重抓。` : void 0
+		extra: clipped ? `正文按你给的 maxChars=${clampedMax} 裁到了开头这段；想要更靠后的内容就用 read 的 offset/limit 翻落盘文件，或把 maxChars 调大（上限 100000）重抓。` : void 0
 	});
 }
 /**
@@ -3917,7 +6652,7 @@ async function fetchByBrowser(target, timeout, abortSignal) {
 	if (!browserRuntimeInfo().installed) throw new BrowserRuntimeMissingError();
 	const browser = await launchHeadlessChromium(timeout);
 	try {
-		const page = await (await browser.newContext({ userAgent: UA$1 })).newPage();
+		const page = await (await browser.newContext({ userAgent: UA })).newPage();
 		abortSignal?.addEventListener("abort", () => {
 			page.close().catch(() => {});
 		}, { once: true });
@@ -3955,7 +6690,7 @@ async function fetchByHttp(target, timeout, abortSignal) {
 	try {
 		const res = await fetch(target, {
 			headers: {
-				"User-Agent": UA$1,
+				"User-Agent": UA,
 				Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 			},
 			redirect: "follow",
@@ -3981,16 +6716,30 @@ async function fetchByHttp(target, timeout, abortSignal) {
 		if (abortSignal) abortSignal.removeEventListener("abort", onAbort);
 	}
 }
-function buildWebFetchTool(root, stopHooks = {}) {
+function buildWebFetchTool(root, stopHooks = {}, backend) {
+	const spillBackend = backend ?? (root ? createLocalBackend(root) : null);
+	/**
+	* 这一轮暴露几个抓取引擎：**装配期现读**运行时。没装就**连 `engine` 这个入参都不给**
+	* （理由见文件头「没装浏览器 = 只有一个引擎」），description 也换成单引擎版本。
+	*/
+	const browserEngine = browserRuntimeInfo().installed;
+	const urlField = z.string().describe("要抓取的网页 URL，必须是 http(s)，如 https://example.com");
+	const timeoutField = z.number().optional().describe("页面加载超时（毫秒），默认 30000，最大 60000");
+	const maxCharsField = z.number().optional().describe(`返回 Markdown 的最大字符数，默认 ${DEFAULT_MAX_CHARS}，范围 1000–100000。默认值已够判断页面内容；一般不要调大 —— 需要看某一段时用落盘文件的 offset/limit 更省。`);
 	return { web_fetch: tool({
-		description: "抓取网页并整理成结构化 Markdown 返回给模型。默认用 Node 原生 fetch 取静态 HTML（更快更轻量）；设置 engine=\"browser\" 则改用 Playwright 无头浏览器跑 JS 渲染（适合 SPA / 动态内容、搜索结果页）。适合：联网查资料、读文档 / 博客 / 文章、从网页提取链接继续深挖。页面过长时会只回开头结尾，并把全文落盘到工作区文件（结果里给出相对路径与行号）；其余部分用 read_file 的 offset/limit 接着读，也可以用 search_files 检索。只读、不写任何文件。browser 引擎需要内置浏览器运行时（headless shell），由用户在「设置 → 浏览器」里安装 —— 没装时这个引擎会直接告诉你改用 fetch，不会自行下载。",
-		inputSchema: z.object({
-			url: z.string().describe("要抓取的网页 URL，必须是 http(s)，如 https://example.com"),
+		description: browserEngine ? "抓取网页并整理成结构化 Markdown 返回给模型。默认用 Node 原生 fetch 取静态 HTML（更快更轻量）；设置 engine=\"browser\" 则改用 Playwright 无头浏览器跑 JS 渲染（适合 SPA / 动态内容、搜索结果页）。适合：联网查资料、读文档 / 博客 / 文章、从网页提取链接继续深挖。页面过长时会只回开头结尾，并把全文落盘到工作区文件（结果里给出相对路径与行号）；其余部分用 read 的 offset/limit 接着读，也可以用 grep 检索。只读、不写任何文件。browser 引擎需要内置浏览器运行时（headless shell），由用户在「设置 → 浏览器」里安装 —— 没装时这个引擎会直接告诉你改用 fetch，不会自行下载。" : "抓取网页并整理成结构化 Markdown 返回给模型。用 Node 原生 fetch 取静态 HTML（这台机器没装内置浏览器，所以只有这一个引擎，不需要浏览器）。适合：联网查资料、读文档 / 博客 / 文章、从网页提取链接继续深挖。拿不到 JS 渲染后的内容（SPA / 纯前端渲染的页面）—— 抓到正文为空时不要反复重试同一个地址，换可达的静态页面或镜像。页面过长时会只回开头结尾，并把全文落盘到工作区文件（结果里给出相对路径与行号）；其余部分用 read 的 offset/limit 接着读，也可以用 grep 检索。只读、不写任何文件。",
+		inputSchema: browserEngine ? z.object({
+			url: urlField,
 			engine: z.enum(["browser", "fetch"]).optional().describe("抓取引擎：browser=用 Playwright 无头浏览器跑 JS 渲染；fetch=用 Node 原生 fetch 取静态 HTML（默认）。拿不到 JS 渲染内容时改用 browser。"),
-			timeoutMs: z.number().optional().describe("页面加载超时（毫秒），默认 30000，最大 60000"),
-			maxChars: z.number().optional().describe(`返回 Markdown 的最大字符数，默认 ${DEFAULT_MAX_CHARS}，范围 1000–100000。默认值已够判断页面内容；一般不要调大 —— 需要看某一段时用落盘文件的 offset/limit 更省。`)
+			timeoutMs: timeoutField,
+			maxChars: maxCharsField
+		}) : z.object({
+			url: urlField,
+			timeoutMs: timeoutField,
+			maxChars: maxCharsField
 		}),
-		execute: async ({ url, engine, timeoutMs, maxChars }, options) => {
+		execute: async (raw, options) => {
+			const { url, engine, timeoutMs, maxChars } = raw;
 			/**
 			* **每条抓取一个自己的 AbortController**，并与「整轮中止」的信号并联：
 			* - 用户点卡片上的「停止」→ 只 abort 这一条（宿主通过 `stopHooks` 拿到入口）；
@@ -4010,7 +6759,7 @@ function buildWebFetchTool(root, stopHooks = {}) {
 			const toolCallId = options.toolCallId ?? "";
 			if (toolCallId) stopHooks.onStart?.(toolCallId, () => stopCtrl.abort());
 			const clampedMax = Math.max(1e3, Math.min(1e5, Math.trunc(maxChars ?? DEFAULT_MAX_CHARS)));
-			const timeout = Math.max(1e3, Math.min(6e4, Math.trunc(timeoutMs ?? DEFAULT_TIMEOUT$1)));
+			const timeout = Math.max(1e3, Math.min(6e4, Math.trunc(timeoutMs ?? DEFAULT_TIMEOUT)));
 			let target;
 			try {
 				target = new URL(url);
@@ -4020,7 +6769,7 @@ function buildWebFetchTool(root, stopHooks = {}) {
 			}
 			if (signal.aborted) return "web_fetch 已被中止（未发起请求）。";
 			try {
-				return await formatPage(engine === "browser" ? await fetchByBrowser(target, timeout, signal) : await fetchByHttp(target, timeout, signal), target.toString(), clampedMax, root);
+				return await formatPage(engine === "browser" ? await fetchByBrowser(target, timeout, signal) : await fetchByHttp(target, timeout, signal), target.toString(), clampedMax, spillBackend);
 			} catch (err) {
 				if (err instanceof BrowserRuntimeMissingError) return "web_fetch 的 browser 引擎需要内置浏览器（Playwright headless shell，约 150MB），这台机器上还没装，web_fetch 不会替你下载。两条路：① 用 engine=\"fetch\" 重抓（文档站 / 博客这类静态 HTML 够用；别原样重试 browser 引擎）；② 告诉用户去「设置 → 浏览器」点「安装」，装好后重试。";
 				const msg = pageErrorMessage(err);
@@ -4035,423 +6784,19 @@ function buildWebFetchTool(root, stopHooks = {}) {
 		}
 	}) };
 }
-Object.fromEntries(Object.entries({
-	hosts: "hosts.json",
-	api: "api.json",
-	scripts: "scripts.json"
-}).map(([kind, file]) => [file, kind]));
-// packages/workspace/src/store.ts
-/** 数据目录：`FIZZ_DATA_DIR` > `~/.fizz-server` */
-function resolveDataDir() {
-	return process.env.FIZZ_DATA_DIR?.trim() || join(homedir(), ".fizz-server");
-}
-// packages/workspace/src/app-log.ts
-/**
-* 应用日志：整个 App 的业务事件记录（SSH / 终端 / 隧道 / SFTP / 插件 / Agent …）。
-*
-* 形态照搬 dogi 的主机日志，但有三处关键差异：
-*
-* 1. **落在 server 侧，不在 Electron 主进程**。本项目的能力都在 `apps/server`（Hono），
-*    桌面端只是进程内直连同一个 server —— 记在主进程就等于 Web 端看不见，所以本文件
-*    在 `@fizz/workspace`（零 Electron、零引擎依赖），web 与 desktop 共享同一份。
-*
-* 2. **命名空间是运行时注册的，不是编译期枚举**。dogi 的 `HostLogScope` 写死六个值，
-*    新增功能要改类型 + 改 UI 两张静态表；这里改成 `registerNamespace()` 注册进一张
-*    Map，日志面板从 `namespaces()` 读出 Tab 列表，新增功能只加一行注册。
-*
-* 3. **`scope` 的类型是宽松的 `string`**（`AppLogScope`），且 `log()` 对未注册的 scope
-*    自动登记一个兜底元数据 —— 漏注册只会让 Tab 名字难看，**不会丢日志**。
-*
-* 两条通道（与 dogi 同构）：
-* - 内存环形缓冲（上限 `MAX_ENTRIES`）：界面经 `GET /api/app-log` 全量读取，
-*   新记录经 SSE 推给渲染端补增量；
-* - JSONL 落盘（`<dataDir>/logs/app.log`）：跨重启保留，启动时回填尾部；超过
-*   `MAX_FILE_BYTES` 滚动一代为 `app.log.1`（每笔追加前 stat 一次 —— 写入是生命周期级
-*   事件，频率低，不值得为省一次 stat 引入复杂度）。
-*
-* 落盘失败（磁盘只读等）静默降级为仅内存，日志本身绝不能拖垮业务；清空会同时清掉内存
-* 与文件，序号继续递增不复用（避免渲染端 key 撞车）。
-*/
-/** 内存保留条数（渲染端同值封顶；落盘文件另行按体积滚动） */
-var APP_LOG_MAX_ENTRIES = 1e3;
-/** 落盘文件体积上限（超过后滚动为 .1，只保留一代） */
-var MAX_FILE_BYTES = 2097152;
-var LOG_DIR_NAME = "logs";
-var LOG_FILE_NAME = "app.log";
-/** 已注册命名空间（Map 保持插入序，供「省略 order 时按注册顺序」兜底） */
-var namespaces = /* @__PURE__ */ new Map();
-/** 未注册 scope 的兜底元数据（只影响 Tab 名字，不影响日志本身） */
-var autoLabeled = /* @__PURE__ */ new Map();
-/** 未注册 scope 的兜底元数据：标识当标签，排在注册项之后 */
-function ensureNamespace(scope) {
-	if (namespaces.has(scope) || autoLabeled.has(scope)) return;
-	autoLabeled.set(scope, true);
-}
-var AppLogger = class extends EventEmitter {
-	entries = [];
-	seq = 0;
-	filePath = "";
-	dirPath = "";
-	/** 串行化的落盘链路（滚动与追加不能交错） */
-	pending = Promise.resolve();
-	/**
-	* 初始化：建目录 + 回填落盘尾部。由 server 启动流程调用。
-	* 多次调用幂等；目录不可用时退化为仅内存模式（界面照常，只是不落盘）。
-	*/
-	async init(dataDir = resolveDataDir()) {
-		if (this.dirPath) return;
-		try {
-			const dir = join(dataDir, LOG_DIR_NAME);
-			await mkdir(dir, { recursive: true });
-			this.dirPath = dir;
-			this.filePath = join(dir, LOG_FILE_NAME);
-			await this.loadTail();
-		} catch {}
-	}
-	/** 日志目录（供「打开日志目录」用；init 失败时为空串） */
-	directory() {
-		return this.dirPath;
-	}
-	/**
-	* 全部日志（从旧到新，界面按需倒序展示）。
-	*
-	* ⚠️ 返回**浅拷贝**：调用方（HTTP 序列化、SSE 攒帧）拿到的是数组副本，之后
-	* `log()` 往 `this.entries` 里 push 不会改动它手里那份 —— 直接返回引用的话，
-	* 一边 `JSON.stringify` 一边追加，序列化结果会随追加而变化（`maxSeq` 与
-	* `entries` 就可能对不上）。条目本身是只读用的，不必深拷贝。
-	*/
-	list() {
-		return [...this.entries];
-	}
-	/**
-	* 等在途的落盘写完（进程收尾时调）。
-	*
-	* ⚠️ **不调会丢最后几条**：`persist()` 是异步 `appendFile` 且**不 await**（写入是生命周期
-	* 级事件，不该阻塞业务），进程 `exit` 时链上没跑完的那几条就丢了 —— 而「最后一次收尾」
-	* 恰恰是最值得留档的那几条。挂在 `shutdown.ts` 第 6 步（与 store 落盘同一处）。
-	*
-	* 失败不抛：收尾流程不该因为日志写不出去而卡住或报错。
-	*/
-	async flush() {
-		await this.pending.catch(() => {});
-	}
-	/** 清空内存与落盘文件；之后的序号继续递增 */
-	clear() {
-		this.entries = [];
-		const path = this.filePath;
-		if (!path) return;
-		this.pending = this.pending.then(() => writeFile(path, "").catch(() => {}));
-	}
-	info(scope, message, detail) {
-		return this.log(scope, "info", message, detail);
-	}
-	warn(scope, message, detail) {
-		return this.log(scope, "warn", message, detail);
-	}
-	error(scope, message, detail) {
-		return this.log(scope, "error", message, detail);
-	}
-	log(scope, level, message, detail) {
-		ensureNamespace(scope);
-		const entry = {
-			seq: ++this.seq,
-			ts: Date.now(),
-			scope,
-			level,
-			message,
-			detail
-		};
-		this.entries.push(entry);
-		if (this.entries.length > 1e3) this.entries.splice(0, this.entries.length - APP_LOG_MAX_ENTRIES);
-		this.emit("entry", entry);
-		this.persist(entry);
-		return entry;
-	}
-	/**
-	* 更新已有条目（长任务的输出增量回填）：就地覆盖字段并再次广播 —— 同一 seq 的重复
-	* 广播即「更新」语义，渲染端按 seq 覆盖；落盘追加一行，启动回填按 seq 去重（后写覆盖先写）。
-	*/
-	update(seq, patch) {
-		const entry = this.entries.find((e) => e.seq === seq);
-		if (!entry) return;
-		if (patch.level !== void 0) entry.level = patch.level;
-		if (patch.message !== void 0) entry.message = patch.message;
-		if (patch.detail !== void 0) entry.detail = patch.detail;
-		this.emit("entry", entry);
-		this.persist(entry);
-	}
-	/** 启动时回填落盘文件的尾部（损坏行直接跳过，绝不因为一行坏数据起不来） */
-	async loadTail() {
-		const lines = (await readFile(this.filePath, "utf8").catch(() => "")).split("\n").filter((line) => line.trim());
-		const bySeq = /* @__PURE__ */ new Map();
-		for (const line of lines) try {
-			const entry = JSON.parse(line);
-			if (typeof entry?.seq !== "number" || typeof entry.message !== "string") continue;
-			ensureNamespace(entry.scope);
-			bySeq.set(entry.seq, entry);
-		} catch {}
-		for (const entry of [...bySeq.values()].sort((a, b) => a.seq - b.seq).slice(-1e3)) {
-			this.entries.push(entry);
-			if (entry.seq > this.seq) this.seq = entry.seq;
-		}
-	}
-	persist(entry) {
-		const path = this.filePath;
-		if (!path) return;
-		const line = `${JSON.stringify(entry)}\n`;
-		this.pending = this.pending.then(() => this.rotateIfNeeded(path)).then(() => appendFile(path, line, "utf8")).catch(() => {});
-	}
-	async rotateIfNeeded(path) {
-		try {
-			if ((await stat(path)).size <= MAX_FILE_BYTES) return;
-			await rename(path, `${path}.1`);
-		} catch {}
-	}
-};
-new AppLogger();
-// packages/tools/src/screenshot.ts
-/**
-* 内置 screenshot 工具：用 Playwright 无头浏览器打开网页截图，存到服务端数据目录的
-* `screenshots/`，并返回一个**同源相对 URL**（`/api/screenshots/<uuid>.<ext>`）。
-*
-* 模型可把它作为 Markdown 图片语法嵌入回复（如 `![截图](/api/screenshots/xxx.png)`），
-* 前端渲染时按页面源解析即可，不需要知道服务器的外网地址。
-*
-* 设计要点：
-* - 只读 / 无副作用：只往数据目录写一张图，不碰工作区文件，任何权限模式都可用
-*   （与 web_fetch 一个待遇 —— 相当于「看一眼网页长什么样」）；
-* - 依赖内置浏览器运行时（Playwright headless shell，与 web_fetch 的 browser 引擎同源）：
-*   **不替用户下载**，没装就回一句「去设置 → 浏览器里装」，不让整轮对话崩掉；
-* - playwright 走动态 import，没装也能正常启动，只是用到时才报错；
-* - 文件名用随机 UUID，对外暴露的 `/api/screenshots/...` 按「高熵不可猜测」处理
-*   （服务端生成的高熵 UUID），这样 markdown 里的 `<img>` 在启用鉴权时
-*   也能直接加载（浏览器不会给图片请求带 Authorization 头）。
-*/
-/** 截图落盘子目录（相对数据目录） */
-var SCREENSHOT_DIR = "screenshots";
-var DEFAULT_TIMEOUT = 3e4;
-var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
-/** 把数值夹到 [min,max] 并取整（视口尺寸用） */
-function clampInt(v, min, max, fallback) {
-	if (v === void 0) return fallback;
-	return Math.max(min, Math.min(max, Math.trunc(v)));
-}
-/** 构建 screenshot 工具（返回单键 ToolSet，便于在 agent 端与其它工具合并） */
-function buildScreenshotTool() {
-	return { screenshot: tool({
-		description: "用无头浏览器打开一个网页并截图，返回图片地址（Markdown 图片语法）。适合：让对话直接「看到」某个网页 / 报表 / 图表长什么样，或把页面状态记录进回复。返回的是一个相对地址（形如 /api/screenshots/xxx.png），请务必在你的回复里用 Markdown 图片语法引用它，例如 `![网页截图](/api/screenshots/xxx.png)`，这样用户才能直接看到图。只读、不写任何工作区文件。需要内置浏览器运行时（headless shell），由用户在「设置 → 浏览器」里安装 —— 没装时这个工具会直接告诉你，不会自行下载。",
-		inputSchema: z.object({
-			url: z.string().describe("要截图的网页 URL，必须是 http(s)，如 https://example.com"),
-			width: z.number().optional().describe("浏览器视口宽度（像素），默认 1280，范围 320–4000"),
-			height: z.number().optional().describe("浏览器视口高度（像素），默认 800，范围 240–4000"),
-			fullPage: z.boolean().optional().describe("是否截取整页（自动滚动到底部，保留完整长图），默认 false（只截首屏视口）"),
-			format: z.enum([
-				"png",
-				"jpeg",
-				"webp"
-			]).optional().describe("图片格式，默认 png（无损、体积较大）；jpeg 更小但有损；webp 兼顾"),
-			timeoutMs: z.number().optional().describe("页面加载超时（毫秒），默认 30000，最大 60000")
-		}),
-		execute: async ({ url, width, height, fullPage, format, timeoutMs }, options) => {
-			let target;
-			try {
-				target = new URL(url);
-				if (target.protocol !== "http:" && target.protocol !== "https:") return `screenshot 拒绝非 http(s) 地址：${url}（协议：${target.protocol}）`;
-			} catch {
-				return `screenshot 收到非法 URL：${url}。请传入完整地址如 https://example.com`;
-			}
-			if (options.abortSignal?.aborted) return "screenshot 已被中止（未发起请求）。";
-			const fmt = format ?? "png";
-			const timeout = Math.max(1e3, Math.min(6e4, Math.trunc(timeoutMs ?? DEFAULT_TIMEOUT)));
-			const fileName = `${randomUUID()}.${fmt}`;
-			const dir = join(resolveDataDir(), SCREENSHOT_DIR);
-			const absPath = join(dir, fileName);
-			try {
-				if (!browserRuntimeInfo().installed) return "screenshot 需要内置浏览器（Playwright headless shell，约 150MB），这台机器上还没装，screenshot 不会替你下载。请告诉用户去「设置 → 浏览器」点「安装」，装好后重试；这期间要读网页内容可以改用 web_fetch（它的 fetch 引擎不需要浏览器）。";
-				const browser = await launchHeadlessChromium(timeout);
-				try {
-					const page = await (await browser.newContext({
-						userAgent: UA,
-						viewport: {
-							width: clampInt(width, 320, 4e3, 1280),
-							height: clampInt(height, 240, 4e3, 800)
-						}
-					})).newPage();
-					options.abortSignal?.addEventListener("abort", () => {
-						page.close().catch(() => {});
-					}, { once: true });
-					await page.goto(target.toString(), {
-						waitUntil: "domcontentloaded",
-						timeout
-					});
-					await abortableSleep(800, options.abortSignal);
-					if (options.abortSignal?.aborted) return "screenshot 已被用户中止（点了「停止」）。";
-					await promises.mkdir(dir, { recursive: true });
-					await page.screenshot({
-						path: absPath,
-						fullPage: fullPage ?? false,
-						type: fmt
-					});
-				} finally {
-					await browser.close().catch(() => {});
-				}
-				const servePath = `/api/screenshots/${fileName}`;
-				return [
-					`截图已生成并保存到服务端。请在你的回复中以 Markdown 图片语法引用它，让用户直接看到图：`,
-					`![网页截图](${servePath})`,
-					`（图片地址：${servePath}；格式：${fmt}；整页：${fullPage ? "是" : "否"}）`
-				].join("\n");
-			} catch (err) {
-				const msg = pageErrorMessage(err);
-				if (/Executable doesn't exist|executable doesn't exist|Failed to launch/i.test(msg)) return `screenshot 启动内置浏览器失败：可执行文件缺失或不完整（${msg}）。请告诉用户到「设置 → 浏览器」点「安装」把运行时补回来后再试。`;
-				return `screenshot 截图 ${url} 失败：${msg}`;
-			}
-		}
-	}) };
-}
-// packages/git/src/git-panel.ts
-/**
-* git 路由（status / diff / branches / log / action）共用的 git 访问层，基于 simple-git。
-* 「面板」指这层命令最终服务的源代码管理面板（非交互、无 TTY 的服务端环境）。
-*
-* 之前这里是手写的 execFile('git', ...) 包装（原本内嵌在 status route 里），换 simple-git
-* 的原因是让子进程管理（env / 超时 / 参数校验 / 流式缓冲）交给库，自己不再维护 spawn 细节。
-*
-* ⚠️ 换库时踩过的几个点，别绕过它们：
-*
-* 1. **stderr 的用户可见输出要靠 outputHandler 抓回来**。`git checkout -b` / `git init` /
-*    `git push` 成功时把「Switched to a new branch」「Initialized empty ...」打在 stderr 上，
-*    而 simple-git 的 raw()/各 typed API 只回 stdout —— 面板的 `output` 字段会变成空串。
-*    所以 `git()` 里用 outputHandler 把 stderr 流拼接进 GitRun，行为与 execFile 时代一致。
-*
-* 2. **simple-git 4.x 默认剥离所有 `GIT_*` 环境变量**（防 env 注入的安全守卫），且
-*    `.env()` 是显式供给：受控键（EDITOR / PAGER / GIT_* 等）只要出现在显式 env 里
-*    就直接抛错 —— 而哪些键存在取决于部署机器，逐个白名单不可靠。所以这里**不动
-*    `.env()`**（子进程继承完整 process.env，守卫只做静默剥离），需要的变量在
-*    进程级兜底 + `allowEnvironment` 放行。代价是其余 `GIT_*`（GIT_DIR / GIT_ASKPASS
-*    等）不再透传 —— 对面板的非交互命令这是更安全的选择，需要它们的场景应该配 git config。
-*
-* 3. **`GIT_TERMINAL_PROMPT=0` 在模块加载时兜底写进 process.env**：面板没有 TTY，
-*    Linux 上 git 的凭据提示会直接读 /dev/tty 把 HTTP 请求挂死，必须禁掉。只在未设置时
-*    兜底（尊重部署方的显式配置）；副作用是同进程的内置终端里的 git 也禁用终端提示 ——
-*    Windows 上凭据走 GCM 弹窗不受影响，纯终端提示的场景本来也该配 credential helper。
-*
-* 4. **status 仍用 `--porcelain=v2` + 自有解析器**（见 status route 的 parseStatus），
-*    没换成 simple-git 的 `status()`：它的解析器走 porcelain v1，对「刚 init 还没有
-*    任何提交」的 unborn 分支，`## No commits yet on master` 会被它的正则解析出
-*    分支名 "No" —— 而 init-commit 恰恰是面板的核心流程。v2 输出没有这个坑。
-*
-* 5. **4.x 移除了 maxBuffer**（改流式收集，没有上限）。大仓库的超大 status / diff 不会再
-*    像 execFile 时代那样直接把进程杀掉，diff 的 400k 字符截断仍由 route 自己负责。
-*/
-if (process.env.GIT_TERMINAL_PROMPT === void 0) process.env.GIT_TERMINAL_PROMPT = "0";
-/** 单条 git 命令的空闲超时（stdout/stderr 有输出就重置）：防凭据 / ssh 提示把请求挂死 */
-var GIT_TIMEOUT_MS = 3e5;
-/**
-* 造一个面向某目录的 simple-git 客户端。每次调用新建一个实例：
-* outputHandler 里抓 stderr 的闭包是按调用隔离的，共享实例会把不同命令的 stderr 串在一起。
-*/
-function gitPanel(cwd, timeoutMs = GIT_TIMEOUT_MS) {
-	const baseDir = existsSync(cwd) ? cwd : tmpdir();
-	return simpleGit({
-		baseDir,
-		config: ["core.quotePath=false"],
-		allowEnvironment: ["GIT_TERMINAL_PROMPT"],
-		timeout: { block: timeoutMs },
-		errors: (error, result) => {
-			if (result.exitCode) {
-				const text = Buffer.concat([...result.stdErr, ...result.stdOut]).toString("utf8").trim();
-				return new Error(text || `git 以退出码 ${result.exitCode} 结束`);
-			}
-			return error;
-		}
-	});
-}
-/**
-* 跑一条 git 命令（simple-git 的 raw 通道）。**不抛异常**：失败也把 stderr 原样带回，
-* 调用方自己判断 —— 与 execFile 时代的签名一致，route 里的错误分支不用动。
-*
-* 成功时 stderr 也要（checkout / init 的信息在 stderr 上），靠 outputHandler 抓。
-*/
-async function git(cwd, args) {
-	const client = gitPanel(cwd);
-	let stderrText = "";
-	client.outputHandler((_command, _stdout, stderr) => {
-		stderr?.on("data", (chunk) => {
-			stderrText += chunk.toString("utf8");
-		});
-	});
-	try {
-		return {
-			ok: true,
-			stdout: await client.raw(args),
-			stderr: stderrText
-		};
-	} catch (err) {
-		return {
-			ok: false,
-			stdout: "",
-			stderr: stderrText.trim() || (err instanceof Error ? err.message : String(err)) || "git 执行失败"
-		};
-	}
-}
-/** 解析仓库根目录（绝对路径）；不是仓库（或没装 git）返回 null */
-async function repoRoot(dir) {
-	const res = await git(dir, ["rev-parse", "--show-toplevel"]);
-	const root = unquotePath(res.stdout.trim());
-	return res.ok && root ? root : null;
-}
-/**
-* 还原 git 的 C 风格引号路径（`"a\b" / \346\226\207` 这类）。
-*
-* `core.quotePath=false` 已经让中文路径裸输出，这里只为带 `"` / 控制字符等
-* 仍会被引用的路径兜底；逻辑与 git 的 quote 转义规则一致。
-*/
-function unquotePath(raw) {
-	if (raw.length < 2 || !raw.startsWith("\"") || !raw.endsWith("\"")) return raw;
-	const body = raw.slice(1, -1);
-	const out = [];
-	for (let i = 0; i < body.length; i++) {
-		const ch = body[i];
-		if (ch !== "\\") {
-			out.push(...Buffer.from(ch, "utf8"));
-			continue;
-		}
-		const next = body[++i];
-		if (next === void 0) break;
-		if (next >= "0" && next <= "7") {
-			let oct = next;
-			while (oct.length < 3 && body[i + 1] !== void 0 && body[i + 1] >= "0" && body[i + 1] <= "7") oct += body[++i];
-			out.push(Number.parseInt(oct, 8));
-			continue;
-		}
-		out.push({
-			a: 7,
-			b: 8,
-			f: 12,
-			n: 10,
-			r: 13,
-			t: 9,
-			v: 11,
-			"\"": 34,
-			"\\": 92
-		}[next] ?? next.charCodeAt(0));
-	}
-	return Buffer.from(out).toString("utf8");
-}
 // packages/tools/src/git-read.ts
 /**
 * `git_read`：给 agent 的**只读 git 视图**。
 *
-* 为什么单独做一个窄工具，而不是让 agent 用 `execute_command` 跑 git：
-* - `execute_command` 既能读也能写；「只读 agent 带 execute_command」是个假承诺
+* 为什么单独做一个窄工具，而不是让 agent 用 `bash` 跑 git：
+* - `bash` 既能读也能写；「只读 agent 带 bash」是个假承诺
 *   （`rm` / `git checkout .` / `git reset --hard` 都能毁东西）；
 * - 白名单式的窄接口把危险面压到「四条只读命令」，且天然免疫 `-i` / `-p` 这类
 *   会挂死的交互参数；
 * - 输出统一走 `clipToBudget`，一条 `git diff` 不会把上下文炸掉。
 *
 * ⚠️ 这里**刻意不给** checkout / add / commit / reset / push / stash：写仓库的活
-* 留给父 agent 的 execute_command（那里有审批链路）。真要做写操作窄工具时，
+* 留给父 agent 的 bash（那里有审批链路）。真要做写操作窄工具时，
 * 也要照审批的规矩来，不能因为「git 命令而已」就绕过 requestConfirm。
 */
 /**
@@ -4467,7 +6812,7 @@ var REF_RE = /^[A-Za-z0-9._/^~{}()[\]@,-]+$/;
 var MAX_LOG_ENTRIES = 50;
 function buildGitReadTool(root) {
 	return { git_read: tool({
-		description: tr("只读地看这个 git 仓库：当前改动（git status / git diff）、最近的提交历史（git log）、某个提交的内容（git show）。适合「改了什么」「最近谁动过这里」「这个提交干了什么」这类问题。只能看，不能改仓库（要提交 / 回滚 / 切分支请用 execute_command，那边有审批）。", "Read-only view of this git repository: current changes (git status / git diff), recent history (git log), and a specific commit (git show). Suitable for questions like “what changed”, “who touched this recently”, or “what did this commit do”. Read-only: use execute_command for commit / rollback / branch switching (that path has approval)."),
+		description: tr("只读地看这个 git 仓库：当前改动（git status / git diff）、最近的提交历史（git log）、某个提交的内容（git show）。适合「改了什么」「最近谁动过这里」「这个提交干了什么」这类问题。只能看，不能改仓库（要提交 / 回滚 / 切分支请用 bash，那边有审批）。", "Read-only view of this git repository: current changes (git status / git diff), recent history (git log), and a specific commit (git show). Suitable for questions like “what changed”, “who touched this recently”, or “what did this commit do”. Read-only: use bash for commit / rollback / branch switching (that path has approval)."),
 		inputSchema: z.object({
 			action: z.enum([
 				"status",
@@ -4574,6 +6919,12 @@ z.object({
 		apiStyle: API_STYLE.nullable().optional()
 	}).optional()
 });
+z.enum([
+	"stdio",
+	"http",
+	"sse"
+]);
+z.record(z.string(), z.string());
 // packages/tools/src/browser/input.ts
 /** CDP 的 buttons 位掩码：左=1 / 右=2 / 中=4 / 后退=8 / 前进=16 */
 function buttonBit(button) {
@@ -4709,6 +7060,27 @@ function launchAttempts(pref) {
 		].filter((a) => a !== null);
 	}
 }
+// packages/tools/src/browser/profiles.ts
+/** profile 根目录；null = 没注入（此时引擎退化成临时上下文，登录态不落盘） */
+var profilesRoot = null;
+/** 某会话的 profile 目录；没注入根目录时 null（= 不落盘） */
+function browserProfileDirOf(sessionId) {
+	if (!profilesRoot) return null;
+	return join(profilesRoot, sessionId.replace(/[^a-zA-Z0-9._-]/g, "-"));
+}
+/**
+* 删一个 profile 目录（失败不抛：Windows 上偶尔有杀不掉的子进程占着文件）。
+*
+* 调用方**必须先把对应浏览器关掉**（见文件头）。失败也不该让「清除网站数据」整体报错 ——
+* 用户要的是「尽量清掉」，剩一份残留由下次「全部清除」兜住。
+*/
+async function removeBrowserProfileDir(dir) {
+	if (!dir) return;
+	await rm(dir, {
+		recursive: true,
+		force: true
+	}).catch(() => void 0);
+}
 // packages/tools/src/browser/engine.ts
 /**
 * 浏览器引擎：一个会话 = 一个 headless Chromium（Playwright 起），画面走 CDP screencast
@@ -4724,10 +7096,6 @@ function launchAttempts(pref) {
 */
 /** screencast 帧节流：最多 ~30fps，避免把 CPU 都喂给编码（静止页面也会持续推帧） */
 var MIN_FRAME_INTERVAL = 33;
-/**
-* 持久化 profile 的根目录。没注入时回退为**临时上下文**（会话一关登录态即失，不落盘）。
-*/
-var profilesRoot = null;
 var BrowserSession = class {
 	id;
 	browser = null;
@@ -4795,7 +7163,7 @@ var BrowserSession = class {
 			deviceScaleFactor: preset.dpr,
 			ignoreHTTPSErrors: true
 		};
-		const profileDir = profileDirOf(this.id);
+		const profileDir = browserProfileDirOf(this.id);
 		if (profileDir) {
 			this.context = await chromium.launchPersistentContext(profileDir, {
 				headless: true,
@@ -5060,10 +7428,6 @@ function normalizeUrl(input) {
 function errText(err) {
 	return pageErrorMessage(err).split("\n")[0];
 }
-function profileDirOf(sessionId) {
-	if (!profilesRoot) return null;
-	return join(profilesRoot, sessionId.replace(/[^a-zA-Z0-9._-]/g, "-"));
-}
 var BrowserSessionManager = class {
 	sessions = /* @__PURE__ */ new Map();
 	get(id) {
@@ -5088,15 +7452,16 @@ var BrowserSessionManager = class {
 		this.sessions.delete(id);
 		await session.close(reason);
 	}
-	/** 关闭会话并**删除**它的持久化 profile（登录态一并清除）；只在该会话被删除时调用 */
-	async purge(id) {
-		await this.close(id, "会话已删除").catch(() => {});
-		const dir = profileDirOf(id);
-		if (!dir) return;
-		await rm(dir, {
-			recursive: true,
-			force: true
-		}).catch(() => {});
+	/**
+	* 关闭会话并**删除**它的持久化 profile（Cookie / 登录态 / 本地存储一并清除）。
+	*
+	* 两处调用：会话被删除（`api/conversations/[id]/route.ts`）与用户点「清除网站数据」
+	* （`api/conversations/[id]/browser-data/route.ts`）。**顺序不能反** —— 先 `close`
+	* 再删目录，否则 Windows 上文件被占着，`rm` 会只成功一半、留下坏 profile。
+	*/
+	async purge(id, reason = "会话已删除") {
+		await this.close(id, reason).catch(() => {});
+		await removeBrowserProfileDir(browserProfileDirOf(id));
 	}
 	/** 应用退出时调用：不留孤儿浏览器进程 */
 	async closeAll() {
@@ -5406,6 +7771,17 @@ var Context = class Context {
 	get hooks() {
 		const s = this.get("hooks");
 		if (!s) throw new Error("hooks 服务未提供：请先 ctx.set(\"hooks\", new HooksService(ctx))");
+		return s;
+	}
+	/**
+	* 插件 RPC（前端半拿数据的通道，见 `services/rpc.ts`）。
+	*
+	* 只挂在**长驻 context** 上（与 uploads 同级）：前端可能在任意时刻调用它，
+	* 而回合结束时 turn context 已经销毁了。想在回合里注册方法就写 `inject: ['rpc']`。
+	*/
+	get rpc() {
+		const s = this.get("rpc");
+		if (!s) throw new Error("rpc 服务未提供：这个 context 没有 RPC 能力（只挂在长驻 context 上，回合里请用 inject: [\"rpc\"] 声明依赖）");
 		return s;
 	}
 	/**
@@ -6182,7 +8558,7 @@ async function readNestedProjectDocs(workspacePath, targetPath, loaded, isDirect
 			});
 			const { text, section } = truncateAtSection(expanded, MAX_NESTED_DOC_CHARS);
 			const dirLabel = toPosixRelative(root, current) || ".";
-			const truncNote = text.length < expanded.length ? `\n\n（该文档过长，以上为前 ${Math.round(text.length / expanded.length * 100)}%` + (section ? `（截至「${section}」）` : "") + `；需要时用 read_file 读 ${rel} 补全。）` : "";
+			const truncNote = text.length < expanded.length ? `\n\n（该文档过长，以上为前 ${Math.round(text.length / expanded.length * 100)}%` + (section ? `（截至「${section}」）` : "") + `；需要时用 read 读 ${rel} 补全。）` : "";
 			blocks.push(`<nested-project-doc path="${rel}" dir="${dirLabel}">\n这是 ${dirLabel} 目录的规则，只作用于该目录及其子目录；与上层规则冲突时以更具体的这份为准。\n\n${text}${truncNote}\n</nested-project-doc>`);
 			break;
 		}
@@ -6224,7 +8600,7 @@ function buildProjectDocSection(doc) {
 	];
 	if (doc.truncated) {
 		const percent = Math.round(doc.text.length / doc.totalChars * 100);
-		lines.push(en ? `⚠️ This document is too long (${doc.totalChars} chars); the text above is only the first ${percent}%` + (doc.section ? ` (up to “${doc.section}”)` : "") + `. If this task may touch later sections, read ${doc.file} with read_file first — do not guess.` : `⚠️ 该文档过长（共 ${doc.totalChars} 字符），以上只是前 ${percent}%` + (doc.section ? `（截至「${doc.section}」）` : "") + `。若这次任务可能涉及后面的章节，先用 read_file 读 ${doc.file} 补全，别凭猜测动手。`);
+		lines.push(en ? `⚠️ This document is too long (${doc.totalChars} chars); the text above is only the first ${percent}%` + (doc.section ? ` (up to “${doc.section}”)` : "") + `. If this task may touch later sections, read ${doc.file} with read first — do not guess.` : `⚠️ 该文档过长（共 ${doc.totalChars} 字符），以上只是前 ${percent}%` + (doc.section ? `（截至「${doc.section}」）` : "") + `。若这次任务可能涉及后面的章节，先用 read 读 ${doc.file} 补全，别凭猜测动手。`);
 	}
 	return lines.join("\n");
 }
@@ -6341,9 +8717,9 @@ function buildAgentSystemPrompt(workspacePath, workspaceName, skills = [], proje
 		"Conventions:",
 		"- Always use paths relative to the workspace root;",
 		"- Call tools directly. Never narrate calls or results in prose such as “[calling tool xxx]”;",
-		"- For oversized output (execute_command / web_fetch), return only the beginning and end. The full text is saved to a workspace file under .fizz/tool-output/ and the result includes its path, total lines, and which lines were returned. To read the middle, call read_file on that path with offset/limit, or search it with search_files — do not stop at the summary and do not re-run the command or re-fetch the page for the same content;",
+		"- For oversized output (bash / web_fetch), return only the beginning and end. The full text is saved to a workspace file under .fizz/tool-output/ and the result includes its path, total lines, and which lines were returned. To read the middle, call read on that path with offset/limit, or search it with grep — do not stop at the summary and do not re-run the command or re-fetch the page for the same content;",
 		"- Before dangerous operations (rm -rf, git push --force, deleting/overwriting files), explain the impact first;",
-		"- After editing, verify with execute_command when possible — prefer the project’s own typecheck/lint, the fastest static check;",
+		"- After editing, verify with bash when possible — prefer the project’s own typecheck/lint, the fastest static check;",
 		"- When done, summarize concisely what you did, how you verified it, and what remains."
 	] : [
 		`你是一个运行在 Fizz 中的 AI Agent（编程与运维助手），工作区是「${workspaceName}」（${workspacePath}）。`,
@@ -6351,9 +8727,9 @@ function buildAgentSystemPrompt(workspacePath, workspaceName, skills = [], proje
 		"使用约定：",
 		"- 所有路径一律使用相对工作区根目录的路径；",
 		"- 需要工具时直接调用，不要在正文里用「[调用工具 xxx]」这类文字复述调用过程或结果；",
-		"- 超长输出（execute_command / web_fetch）只回「开头 + 结尾」，但全文已落盘到结果里给出的那个工作区文件（.fizz/tool-output/ 下），里面写着路径、全文行数与本次返回了哪几行。需要中段时用 read_file 传那个 path 加 offset / limit 按行读回来，或 search_files 检索它 ——不要停在摘要上、也不要为同一段内容反复重跑命令或重新抓页面；",
+		"- 超长输出（bash / web_fetch）只回「开头 + 结尾」，但全文已落盘到结果里给出的那个工作区文件（.fizz/tool-output/ 下），里面写着路径、全文行数与本次返回了哪几行。需要中段时用 read 传那个 file_path 加 offset / limit 按行读回来，或 grep 检索它 ——不要停在摘要上、也不要为同一段内容反复重跑命令或重新抓页面；",
 		"- 危险操作（rm -rf、git push --force、删除 / 覆盖文件）先说明影响再执行；",
-		"- 改完文件后尽量用 execute_command 验证 —— 优先跑项目自带的类型检查 / lint，这是最快的静态验证；",
+		"- 改完文件后尽量用 bash 验证 —— 优先跑项目自带的类型检查 / lint，这是最快的静态验证；",
 		"- 任务完成时用简洁的中文总结做了什么、验证结果如何、有何遗留。"
 	];
 	lines.push("", buildPlanningSection());
@@ -6460,7 +8836,7 @@ function buildPlanningSection() {
 * 内置能力 → 插件。
 *
 * 这里把「系统原本手工塞进工具集的东西」改写成 **priority 0 的内置插件**：
-* 文件 / 命令工具、web_fetch / screenshot，以及「把一批现成工具挂进注册表」的通用袋子
+* 文件 / 命令工具、web_fetch，以及「把一批现成工具挂进注册表」的通用袋子
 * （extraTools、已构建好的 MCP 工具集都走它）。装配入口仍是 `buildAgentSetup`，
 * 只是它现在**只消费注册表产出的结果**，不再手工 `Object.assign` 拼工具集。
 *
@@ -6490,22 +8866,24 @@ function fileToolsPlugin(root, options) {
 	};
 }
 /**
-* 全局只读的联网工具插件：web_fetch + screenshot。不依赖工作区，任何会话都可用
+* 全局只读的联网工具插件：`web_fetch`。不依赖工作区，任何会话都可用
 * （无工作区时 `root` 传空串 = 超长正文只截断不落盘，见 spillToWorkspace）。
+*
+* 只有 `web_fetch` 一个工具，且**总是挂**：fetch 引擎不需要浏览器，装没装浏览器由它自己
+* 决定要不要暴露 `engine` 这个入参（见 `buildWebFetchTool`）。
+*
+* 曾经的 `screenshot` 工具已移除（截图对模型的价值不如 browser_snapshot 的文本快照，
+* 而且它依赖无头浏览器，没装就只剩一句「先去设置里装」）。历史会话里的旧卡片仍按
+* `TOOL_LABELS` 的 `screenshot` 条目渲染。
 */
-function webToolsPlugin(root, stopHooks = {}) {
+function webToolsPlugin(root, stopHooks = {}, backend) {
 	return {
 		name: "builtin:web-tools",
 		apply(ctx) {
-			ctx.tools.registerAll(buildWebFetchTool(root, stopHooks), {
+			ctx.tools.registerAll(buildWebFetchTool(root, stopHooks, backend), {
 				priority: 0,
 				origin: BUILTIN_ORIGIN,
 				source: "builtin:web_fetch"
-			});
-			ctx.tools.registerAll(buildScreenshotTool(), {
-				priority: 0,
-				origin: BUILTIN_ORIGIN,
-				source: "builtin:screenshot"
 			});
 		}
 	};
@@ -6657,10 +9035,9 @@ function wrapToolsWithHooks(tools, hooks) {
 * ⚠️ 刻意**不含**技能工具：技能可能在别的工作区路径上，派出去反而读错东西；侦察只看代码。
 */
 var READONLY_TOOLS = [
-	"list_files",
-	"find_files",
-	"search_files",
-	"read_file",
+	"glob",
+	"grep",
+	"read",
 	"git_read"
 ];
 /**
@@ -6713,6 +9090,7 @@ var MAX_CONSECUTIVE_FAILURES = 3;
 var SUBAGENT_SPECS = {
 	explorer: {
 		id: "explorer",
+		name: SUBAGENT_META.explorer.name,
 		description: "只读侦察：定位符号在哪定义 / 查找用法与引用 / 读若干文件并汇总。适合\"只需要读、产出很长、结论能压成一页\"的活。不能改文件。",
 		instructions: "你是 Fizz 的侦察子任务（explorer）。用只读工具在代码库里定位与汇总，把原始搜索输出压成一页结构化结论（带「文件路径:行号」）。不要改文件、不要执行命令、不要向用户提问。",
 		includeTools: READONLY_TOOLS,
@@ -6721,6 +9099,7 @@ var SUBAGENT_SPECS = {
 	},
 	reviewer: {
 		id: "reviewer",
+		name: SUBAGENT_META.reviewer.name,
 		description: "只读审查：读当前改动（工作区里的代码）并给问题清单，适合\"改完了想找人复核一遍\"。不能改文件。",
 		instructions: "你是 Fizz 的审查子任务（reviewer）。读工作区里的相关代码，指出实际问题（逻辑错误、边界条件、与项目约定不符之处），按严重程度给清单。不要改文件、不要执行命令、不要向用户提问。",
 		includeTools: READONLY_TOOLS,
@@ -6734,12 +9113,29 @@ var SUBAGENT_SPECS = {
 * 优先级：设置页的 `maxSteps[id]` > 规格默认值（真源在 contracts 的 `SUBAGENT_META`）。
 * 越界 / 非数字一律回默认 —— 收敛在引擎这层也要做一遍，不能指望请求体是干净的。
 */
-function resolveMaxSteps(id, override) {
-	const fallback = SUBAGENT_META[id].defaultMaxSteps;
+function resolveMaxSteps(id, override, fallbackSteps = SUBAGENT_META.explorer.defaultMaxSteps) {
+	const fallback = fallbackSteps;
 	const raw = override?.[id];
 	if (typeof raw !== "number" || !Number.isFinite(raw)) return fallback;
 	const steps = Math.trunc(raw);
 	return steps < 1 || steps > 128 ? fallback : steps;
+}
+/**
+* 用户自定义的子智能体 → 引擎认的规格。
+*
+* `description` 直接就是派活工具的描述（父模型靠它决定派给谁）；`instructions` 只补
+* **业务边界**，只读 / 不给用户提问 / 结论格式这些硬约束仍由 `DELEGATION_PROMPT_SUFFIX` 兜底。
+*/
+function specFromDefinition(def) {
+	return {
+		id: def.id,
+		name: def.name,
+		description: def.description,
+		instructions: def.instructions?.trim() || `你是 Fizz 的子任务「${def.name}」。按任务要求用只读工具完成工作，并给出结论。`,
+		includeTools: def.tools,
+		maxSteps: def.maxSteps ?? SUBAGENT_META.explorer.defaultMaxSteps,
+		preferredModelId: void 0
+	};
 }
 /**
 * 克隆一份模型配置、只换 `model` 字段（给子 agent 用便宜模型）。
@@ -6797,21 +9193,37 @@ function recordSubagentUsage(stats, id, usage) {
 function buildDelegationTools(ids, opts) {
 	const failures = /* @__PURE__ */ new Map();
 	const out = {};
+	const remote = opts.backend?.kind === "remote";
 	const allTools = {
 		...buildAgentTools(opts.workspacePath, {
 			permissionMode: "readonly",
-			skills: []
+			skills: [],
+			...opts.backend ? { backend: opts.backend } : {}
 		}),
-		...buildWebFetchTool(opts.workspacePath ?? ""),
-		...buildGitReadTool(opts.workspacePath)
+		...buildWebFetchTool(opts.workspacePath ?? "", {}, opts.backend),
+		...remote ? {} : buildGitReadTool(opts.workspacePath)
 	};
+	/** 内置规格 + 用户定义 */
+	const specs = new Map(Object.entries(SUBAGENT_SPECS));
+	for (const def of opts.definitions ?? []) specs.set(def.id, specFromDefinition(def));
 	for (const id of ids) {
-		const spec = SUBAGENT_SPECS[id];
-		if (!spec) throw new Error(`未知的 subagent id：${id}`);
-		const tools = filterToolSet(allTools, [...spec.includeTools, "web_fetch"]);
-		/** 这一轮这个子任务的步数上限（设置页可覆盖） */
-		const maxSteps = resolveMaxSteps(id, opts.maxSteps);
-		const model = resolveModel(spec.preferredModelId ? subagentModel(opts.model, spec.preferredModelId) : opts.subagentModel ?? opts.model);
+		const spec = specs.get(id);
+		if (!spec) {
+			console.warn(`[subagent] 跳过未定义的子智能体 id：${id}`);
+			continue;
+		}
+		const builtin = id in SUBAGENT_SPECS;
+		const include = remote ? spec.includeTools.filter((name) => name !== "git_read") : [...spec.includeTools];
+		const wanted = builtin ? [...include, "web_fetch"] : include;
+		const tools = filterToolSet(allTools, [...new Set(wanted)]);
+		/** 这一轮这个子任务的步数上限（设置页可覆盖，其次才是规格 / 定义里的值） */
+		const maxSteps = resolveMaxSteps(id, opts.maxSteps, spec.maxSteps);
+		/**
+		* 模型优先级：定义里给这个子智能体单独配的模型 > 规格里的 preferredModelId
+		* （父配置内的便宜档）> 设置页的全局子任务模型 > 父模型。
+		*/
+		const definitionModel = opts.definitionModels?.[id];
+		const model = resolveModel(definitionModel ?? (spec.preferredModelId ? subagentModel(opts.model, spec.preferredModelId) : opts.subagentModel ?? opts.model));
 		out[`agent-${id}`] = {
 			description: spec.description,
 			inputSchema: z.object({ task: z.string().describe("要交给这个子任务的具体问题 / 目标。写清楚要找什么、要看哪里。") }),
@@ -6849,6 +9261,7 @@ function buildDelegationTools(ids, opts) {
 					type: "subagent-start",
 					toolCallId,
 					subagentId: id,
+					name: spec.name,
 					task
 				});
 				if (toolCallId && opts.commandStops) opts.commandStops.set(toolCallId, () => own.abort());
@@ -7559,6 +9972,7 @@ function buildAgentSetup(opts) {
 		permissionMode: opts.permissionMode ?? "full",
 		...opts.getPermissionMode ? { getPermissionMode: opts.getPermissionMode } : {},
 		...opts.requestConfirm ? { requestConfirm: opts.requestConfirm } : {},
+		...opts.workspaceBackend ? { backend: opts.workspaceBackend } : {},
 		...opts.commandStops ? {
 			onCommandStart: (id, stop) => opts.commandStops.set(id, stop),
 			onCommandEnd: (id) => opts.commandStops.delete(id),
@@ -7583,7 +9997,7 @@ function buildAgentSetup(opts) {
 	ctx.plugin(webToolsPlugin(opts.workspace.path ?? "", opts.commandStops ? {
 		onStart: (id, stop) => opts.commandStops.set(id, stop),
 		onEnd: (id) => opts.commandStops.delete(id)
-	} : {}));
+	} : {}, opts.workspaceBackend));
 	const tools = wrapToolsWithApproval(ctx.tools.entries(), {
 		permissionMode: opts.permissionMode ?? "full",
 		...opts.getPermissionMode ? { getPermissionMode: opts.getPermissionMode } : {},
@@ -7855,9 +10269,10 @@ async function runAgent(opts) {
 	* （见 `estimateBaseTokens`），重建不会变，但每次尝试重算会白跑一遍 schema 序列化。
 	*/
 	const loadedNestedDocs = extractNestedDocPaths(opts.history);
-	const nestedDocs = opts.workspace.path ? (absPath, isDirectory) => readNestedProjectDocs(opts.workspace.path, absPath, loadedNestedDocs, isDirectory) : null;
+	const nestedDocs = opts.workspace.path && !opts.workspace.remote ? (absPath, isDirectory) => readNestedProjectDocs(opts.workspace.path, absPath, loadedNestedDocs, isDirectory) : null;
 	const agentSetup = opts.setup ?? buildAgentSetup({
 		workspace: opts.workspace,
+		...opts.workspaceBackend ? { workspaceBackend: opts.workspaceBackend } : {},
 		skills: opts.skills,
 		projectDoc: opts.projectDoc ?? null,
 		permissionMode: opts.permissionMode,
@@ -7963,6 +10378,12 @@ async function runAgent(opts) {
 			* 再压一遍只会把刚写好的摘要再摘要一次。唯一的例外是 context overflow 恢复
 			* （`forceCompact`）—— 那条路明确要求重新压，调用处已经把断点清掉了。
 			*/
+			/**
+			* 内联附件（base64）的**整轮**预算：主历史的组装与运行中插话共用一份，
+			* 同一张图跨多次组装只扣一次（见 `createInlineBudget`）。
+			* 每次「尝试」各建一份 —— 重试是从全量历史重新起跑。
+			*/
+			const inlineBudget = createInlineBudget();
 			let messages;
 			if (resumeMessages) messages = resumeMessages;
 			else {
@@ -8000,6 +10421,8 @@ async function runAgent(opts) {
 				}
 				messages = await toModelMessages(compacted.history, {
 					resolveFileUrl: opts.resolveFileUrl,
+					resolveAttachment: opts.resolveAttachment,
+					inlineBudget,
 					allowImages: modelSettings.imageInput
 				});
 			}
@@ -8015,9 +10438,12 @@ async function runAgent(opts) {
 			const delegationTools = opts.subagents?.length && modelSettings.toolCall ? buildDelegationTools(opts.subagents, {
 				workspacePath: opts.workspace.path,
 				workspaceName: opts.workspace.name,
+				...opts.workspaceBackend ? { backend: opts.workspaceBackend } : {},
 				model: effectiveModel,
 				...opts.subagentModel ? { subagentModel: withModelApiStyle(opts.subagentModel) } : {},
 				...opts.subagentMaxSteps ? { maxSteps: opts.subagentMaxSteps } : {},
+				...opts.subagentDefs ? { definitions: opts.subagentDefs } : {},
+				...opts.subagentDefinitionModels ? { definitionModels: Object.fromEntries(Object.entries(opts.subagentDefinitionModels).map(([id, config]) => [id, withModelApiStyle(config)])) } : {},
 				/**
 				* 子 run 的事件**不经过父流**（它是工具里自己起的流），所以看门狗的心跳
 				* 必须在这里刷新 —— 否则一个跑了 3 分钟但一直在吐字的子任务会被当成卡死。
@@ -8191,18 +10617,19 @@ async function runAgent(opts) {
 					const steerFiles = modelSettings.imageInput ? allSteerFiles : allSteerFiles.filter((f) => !f.mediaType.startsWith("image/"));
 					const omittedSteerImages = allSteerFiles.length - steerFiles.length;
 					const steerBody = [steerText, omittedSteerImages > 0 ? `（有 ${omittedSteerImages} 张图片因当前模型未开启图片输入被省略）` : ""].filter(Boolean).join("\n") || (steerFiles.length ? "（本条插话只带了附件，没有文字说明）" : "（本条插话没有可发送的内容）");
-					const steerContent = steerFiles.map((f) => {
-						const url = opts.resolveFileUrl ? opts.resolveFileUrl(f.url) : f.url;
-						return f.mediaType.startsWith("image/") ? {
-							type: "image",
-							image: url,
-							mediaType: f.mediaType
-						} : {
-							type: "file",
-							data: url,
-							mediaType: f.mediaType,
-							filename: f.name
-						};
+					/**
+					* 附件的投递与主历史同一套（`attachmentParts`）：没有公网地址时同样走内联字节，
+					* 预算与主历史共用一份 —— 插话带的大图不会绕过整轮上限。
+					*/
+					const steerAttachments = await attachmentParts(steerFiles, {
+						resolveAttachment: opts.resolveAttachment,
+						resolveFileUrl: opts.resolveFileUrl,
+						budget: inlineBudget
+					});
+					const steerContent = [...steerAttachments.parts];
+					for (const note of steerAttachments.notes) steerContent.push({
+						type: "text",
+						text: note
 					});
 					/**
 					* ⚠️ 注入给模型的文本必须**带框**：插话是一条普通 user 消息，而模型天然把

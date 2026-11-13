@@ -804,6 +804,22 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
     }
 
     /**
+     * 用户自建的子智能体：定义随设置落盘，这里只做两件事 —— 决定要不要下传、
+     * 把它们各自的专用模型解析成完整配置（解析失败退回全局 → 父模型，同上一个模型的降级口径）。
+     */
+    const subagentDefinitions =
+      backend === 'builtin' && !isCollab ? (subagentSettings.definitions ?? []) : []
+    const subagentDefinitionModels: Record<string, AiModelConfig> = {}
+    for (const def of subagentDefinitions) {
+      if (!def.modelConfigId || !def.modelId) continue
+      try {
+        subagentDefinitionModels[def.id] = domain.resolveModelConfig(def.modelConfigId, def.modelId)
+      } catch (err) {
+        console.warn(`[subagent] 子智能体「${def.name}」的模型不可用，沿用父会话模型：`, err)
+      }
+    }
+
+    /**
      * 多智能体协作：运行时编排器（@ 点名 / 广播判定 / SendMessage 投递）。
      *
      * 任务 / 消息状态独立写 `collab.json`（`onState` 内部节流）；回复以带 `agentId/agentName`
@@ -979,6 +995,8 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
        * ACP 会话走下面的 runAcpAgent：外部 agent 自己管编排，不该被我们塞子任务。
        */
       subagents: backend === 'builtin' && !isCollab ? subagentSettings.enabled : [],
+      ...(subagentDefinitions.length > 0 ? { subagentDefs: subagentDefinitions } : {}),
+      ...(Object.keys(subagentDefinitionModels).length > 0 ? { subagentDefinitionModels } : {}),
       ...(backend === 'builtin' && subagentModel ? { subagentModel } : {}),
       // 步数上限同理只在真会派活时下传：没启用子任务时这两个字段都是垃圾
       ...(backend === 'builtin' && !isCollab && subagentSettings.maxSteps

@@ -17,17 +17,23 @@
  * 留在「通用」组里的：结束通知 / 屏幕常亮 / 语音输入静音超时 / 系统监控 / 远程访问 / 软件更新
  * （它们是宿主环境与提醒的事，不是 AI 的行为）。
  */
+import { useState } from 'react'
 import { toast } from 'sonner'
 import {
   Check,
   Footprints,
   Layers,
+  Pencil,
+  Plus,
   RotateCcw,
   ShieldCheck,
   Signpost,
   Timer,
+  Trash2,
   Users
 } from 'lucide-react'
+import { Button } from '@fizz/ui/button'
+import { ConfirmDeleteDialog } from '@fizz/agent-kit/shared/components/ConfirmDeleteDialog'
 import { NumberField } from '@fizz/ui/number-field'
 import { Switch } from '@fizz/ui/switch'
 import {
@@ -41,12 +47,21 @@ import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import { permissionOption, permissionOptions } from '@fizz/agent-kit/shared/lib/permission'
 import {
-  SUBAGENT_IDS,
+  BUILTIN_SUBAGENT_IDS,
   SUBAGENT_MAX_STEPS,
   SUBAGENT_META,
   SUBAGENT_MIN_STEPS,
+  type SubagentDefinition,
   type SubagentId
 } from '@fizz/contracts/types'
+import {
+  SubagentDialog,
+  definitionOf,
+  draftOf,
+  emptySubagentDraft,
+  type SubagentDraft
+} from '@fizz/agent-kit/features/settings/SubagentDialog'
+import { toolLabel } from '@fizz/agent-kit/shared/lib/parts'
 import {
   DEFAULT_MAX_STEPS,
   DEFAULT_TOOL_CALL_CONCURRENCY,
@@ -59,6 +74,20 @@ import { useT } from '@fizz/agent-kit/shared/lib/language'
 
 export function AiPreferencesTab({ app }: { app: AgentApp }) {
   const tr = useT()
+  /** 正在编辑的自定义子智能体草稿（null = 弹窗关着） */
+  const [subagentDraft, setSubagentDraft] = useState<SubagentDraft | null>(null)
+  /** 待确认删除的自定义子智能体 */
+  const [deletingSubagent, setDeletingSubagent] = useState<SubagentDefinition | null>(null)
+  const subagentDefinitions = app.subagentSettings?.definitions ?? []
+
+  /** 保存整份自定义清单；返回错误文案（null = 成功） */
+  const saveSubagentDefinitions = async (next: SubagentDefinition[]): Promise<string | null> => {
+    const ok = await app.saveSubagentDefinitions(next)
+    if (ok) return null
+    return tr('保存失败：{error}', {
+      error: useAgentStore.getState().error ?? tr('未知原因')
+    })
+  }
   const current = permissionOption(app.permissionMode)
 
   /**
@@ -238,7 +267,7 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
           {tr('每项可以单独设步数上限（搜索 / 读文件各算一步），留空用默认值。')}
         </p>
         <div className="space-y-2">
-          {SUBAGENT_IDS.map((id) => {
+          {BUILTIN_SUBAGENT_IDS.map((id) => {
             const enabled = (app.subagentSettings?.enabled ?? []).includes(id)
             /** 用户设过的步数；`null` = 没设，输入框留空并显示默认值占位 */
             const savedSteps = app.subagentSettings?.maxSteps?.[id] ?? null
@@ -308,6 +337,112 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
             )
           })}
         </div>
+        {/* 自定义子智能体：与内置那两项同一套启停语义，只是定义来自设置 */}
+        <div className="space-y-2 rounded-md border border-border/60 p-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-xs font-medium">{tr('自定义子智能体')}</div>
+              <div className="text-[0.6875rem] leading-4 text-muted-foreground">
+                {tr('自己起名字、写用途、挑工具。建完同样要勾上才会派活。')}
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 shrink-0 gap-1 px-2 text-xs"
+              onClick={() => setSubagentDraft(emptySubagentDraft())}
+            >
+              <Plus className="size-3.5" />
+              {tr('新建')}
+            </Button>
+          </div>
+
+          {subagentDefinitions.length === 0 ? (
+            <p className="text-xs text-muted-foreground">{tr('还没有自定义子智能体。')}</p>
+          ) : (
+            <div className="space-y-2">
+              {subagentDefinitions.map((def) => {
+                const enabled = (app.subagentSettings?.enabled ?? []).includes(def.id)
+                return (
+                  <div
+                    key={def.id}
+                    className="flex items-start gap-2 rounded-md border border-border/60 px-3 py-2"
+                  >
+                    <button
+                      type="button"
+                      aria-label={
+                        enabled
+                          ? tr('停用子任务 {name}', { name: def.name })
+                          : tr('启用子任务 {name}', { name: def.name })
+                      }
+                      aria-pressed={enabled}
+                      onClick={async () => {
+                        const ok = await app.toggleSubagent(def.id, !enabled)
+                        if (!ok) {
+                          toast.error(
+                            tr('保存失败：{error}', {
+                              error: useAgentStore.getState().error ?? tr('未知原因')
+                            })
+                          )
+                        }
+                      }}
+                      className={cn(
+                        'mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border',
+                        enabled
+                          ? 'border-primary bg-primary text-primary-foreground'
+                          : 'border-border text-transparent'
+                      )}
+                    >
+                      <Check className="size-3" />
+                    </button>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate text-sm">{def.name}</span>
+                        <code className="shrink-0 text-[0.625rem] text-muted-foreground">
+                          agent-{def.id}
+                        </code>
+                      </div>
+                      <div className="line-clamp-2 text-xs leading-4 text-muted-foreground">
+                        {def.description}
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {def.tools.map((key) => (
+                          <span
+                            key={key}
+                            className="rounded bg-muted px-1.5 py-0.5 text-[0.625rem] text-muted-foreground"
+                          >
+                            {toolLabel(key)}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-0.5">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-7"
+                        aria-label={tr('编辑 {name}', { name: def.name })}
+                        onClick={() => setSubagentDraft(draftOf(def))}
+                      >
+                        <Pencil className="size-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-7 text-muted-foreground hover:text-destructive"
+                        aria-label={tr('删除 {name}', { name: def.name })}
+                        onClick={() => setDeletingSubagent(def)}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
         <div className="space-y-1.5">
           <div className="text-xs font-medium">{tr('子任务模型')}</div>
           <Select value={subagentModelValue} onValueChange={(value) => void saveSubagentModel(value)}>
@@ -332,6 +467,54 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
           {tr('默认关闭；是否派活由主 Agent 判断。')}
         </p>
       </section>
+
+      <SubagentDialog
+        open={subagentDraft !== null}
+        initial={subagentDraft ?? emptySubagentDraft()}
+        modelChoices={subagentModelChoices}
+        onOpenChange={(open) => {
+          if (!open) setSubagentDraft(null)
+        }}
+        onSubmit={async (draft) => {
+          const built = definitionOf(draft)
+          if (!built.definition) return tr('填写有误')
+          // ⚠️ 用「id 是否已存在」判断新建还是编辑：新建时 id 是刚生成的，
+          // 拿 `draft.id` 判会把新条目当成「编辑一个不存在的 id」，结果什么都没保存。
+          const exists = subagentDefinitions.some((d) => d.id === draft.id)
+          const next = exists
+            ? subagentDefinitions.map((d) => (d.id === draft.id ? built.definition! : d))
+            : [...subagentDefinitions, built.definition]
+          const failure = await saveSubagentDefinitions(next)
+          if (failure) return failure
+          // 新建即启用：用户刚建完还要再去勾一下，多半会以为没生效
+          if (!exists) {
+            await app.toggleSubagent(built.definition.id, true)
+          }
+          setSubagentDraft(null)
+          toast.success(tr('已保存'))
+          return null
+        }}
+      />
+
+      <ConfirmDeleteDialog
+        open={deletingSubagent !== null}
+        title={tr('删除子智能体？')}
+        description={tr('「{name}」会从设置里移除，并从启用清单里摘掉；历史消息里仍显示它当时的名字。', {
+          name: deletingSubagent?.name ?? ''
+        })}
+        onCancel={() => setDeletingSubagent(null)}
+        onConfirm={() => {
+          const target = deletingSubagent
+          setDeletingSubagent(null)
+          if (!target) return
+          void (async () => {
+            const next = subagentDefinitions.filter((d) => d.id !== target.id)
+            const failure = await saveSubagentDefinitions(next)
+            if (failure) toast.error(failure)
+            else toast.success(tr('已删除'))
+          })()
+        }}
+      />
 
       <section className="space-y-2">
         <div className="flex items-center gap-1.5 text-sm font-medium">

@@ -207,7 +207,8 @@ export function createRemoteBackend(hostId: string, rawRoot: string): WorkspaceB
       caseInsensitive: opts.caseInsensitive,
       subPath: target,
       context: opts.context,
-      maxFileBytes: opts.maxFileBytes
+      maxFileBytes: opts.maxFileBytes,
+      ...(opts.includeGlob ? { includeGlob: opts.includeGlob } : {})
     }
     const fileRe = opts.filePattern
       ? new RegExp(opts.filePattern, opts.caseInsensitive ? 'i' : '')
@@ -253,13 +254,15 @@ export function createRemoteBackend(hostId: string, rawRoot: string): WorkspaceB
       const rel = relOf(start)
       return re.test(rel) ? [rel] : []
     }
-    const run = await exec(buildFindCommand(startRel(start)), { timeoutMs: 120_000 })
+    const includeIgnored = opts.includeIgnored === true
+    const run = await exec(buildFindCommand(startRel(start), includeIgnored), { timeoutMs: 120_000 })
     requireExecOk(run, '查找')
     const out: string[] = []
     for (const rel of parseFindNull(run.stdout)) {
       if (out.length >= opts.maxResults) break
       if (!re.test(rel)) continue
-      if (opts.ignore(rel, false)) continue
+      // includeIgnored（dsh 的 glob）时不走忽略回调，只保留版本库元数据排除
+      if (!includeIgnored && opts.ignore(rel, false)) continue
       out.push(rel)
     }
     return out.sort((a, b) => a.localeCompare(b))

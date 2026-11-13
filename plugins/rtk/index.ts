@@ -6,7 +6,7 @@
  *
  * ## 为什么挂在 `tool:call` 上，而不是包一层执行器
  *
- * `execute_command` 的 `runCommand` 里已经有输出落盘（`.fizz/tool-output/`）、进程树 kill、
+ * `bash`（旧名 `execute_command`）里已经有输出落盘（`.fizz/tool-output/`）、进程树 kill、
  * `guardWrite` 审批、`onCommandOutput` 流式回调。改那条路等于把这些全部重做一遍，而且
  * `run_in_terminal`（客户端 PTY）根本不走它。`tool:call` 是唯一的公共咽喉：
  *
@@ -14,7 +14,7 @@
  *     后 `wrapToolsWithHooks`），所以确认卡上显示的就是**真正要跑的那条**命令；
  *   - 它不改模型的 tool-call 入参（AI SDK 早已记录），历史里永远是 `git status`，
  *     上下文不会被 `rtk` 前缀污染；
- *   - `execute_command` 与 `run_in_terminal` 一条代码覆盖两种执行环境。
+ *   - `bash` 与 `run_in_terminal` 一条代码覆盖两种执行环境。
  *
  * ## ⚠️ 监听器必须同步
  *
@@ -60,7 +60,7 @@
  *
  * rtk 自己认命令前缀 `RTK_DISABLED=1 git status`（`rtk rewrite` 返回 exit 1，本插件走到
  * exit 1 就原样放行，端到端是通的）。但那是 **POSIX 的 `VAR=val cmd` 语法**：Windows 上
- * `execute_command` 优先 Git Bash 时能用，退回 cmd / PowerShell 就变成「不是内部或外部命令」
+ * `bash` 优先 Git Bash 时能用，退回 cmd / PowerShell 就变成「不是内部或外部命令」
  * —— 看起来像插件的锅，其实是 shell 语法。
  *
  * 所以给用户 / 模型的建议一律是 **`rtk bypass <命令>`**：它就是一条普通命令，各 shell 都合法，
@@ -74,8 +74,14 @@
  */
 import { spawnSync } from 'node:child_process'
 
-/** 会跑 shell 命令的工具 → 改写它的 `command` 字段，其余入参原样透传 */
-const SHELL_TOOLS = new Set(['execute_command', 'run_in_terminal'])
+/**
+ * 会跑 shell 命令的工具 → 改写它的 `command` 字段，其余入参原样透传。
+ *
+ * ⚠️ 名字必须与 `packages/tools/src/tools.ts` 里的注册名**逐字一致**：钩子按下发的
+ * 工具名匹配，匹配不上一律原样放行 —— 不报错、不打日志，症状是「开关打开了，命令照旧直跑」。
+ * 改名时漏了这里就是一次静默失效（2026-11 `execute_command` → `bash` 已经踩过一次）。
+ */
+export const SHELL_TOOLS = new Set(['bash', 'run_in_terminal'])
 
 /** 重写缓存上限（命令串 → 改写后的命令串）。纯函数，同一进程内可复用 */
 const CACHE_MAX = 200
@@ -207,12 +213,12 @@ function rewriteCommand(
  * ```
  *
  * 它默认宿主是 Claude Code，而我们的接入方式是本插件（不装它的 hook），所以这行是**常态**。
- * 关键问题是它**不会白打**：`execute_command` 的 `runCommand` 把 stdout 与 stderr 一起拼进
+ * 关键问题是它**不会白打**：`bash` 把 stdout 与 stderr 一起拼进
  * 工具结果（`packages/tools/src/tools.ts`），于是**每一条被改写的命令都多付一行 + 一条
  * 无用的行动建议**，纯噪音、纯 token。
  *
  * rtk 认 `RTK_SUPPRESS_HOOK_WARNING`（实测 `=1` 后 stdout/stderr 都干净，改写结果与退出码
- * 不变），但它是**进程级**开关：插件能改的只有命令串，而 `execute_command` 是拿
+ * 不变），但它是**进程级**开关：插件能改的只有命令串，而 `bash` 是拿
  * `process.env` 起子进程的 —— 所以只能往服务端进程的环境里塞一次，让所有子命令继承。
  * 这个键只有 rtk 会读，对别的命令无副作用。
  *

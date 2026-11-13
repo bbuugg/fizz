@@ -256,11 +256,11 @@ export const SETTINGS: Record<string, string> = {
     'The download runs in the background; closing settings will not stop it',
   '安装失败': 'Installation failed',
   '也可以用 playwright MCP': 'Or use playwright MCP',
-  '不想装这份运行时，可以在「MCP」页加一条 Playwright 官方 MCP（npx @playwright/mcp@latest）。会话里挂了带同名工具的 MCP 时，内置浏览器工具会自动让位，不需要手动关。注意两点：MCP 用自己的浏览器实例，右侧「浏览器」面板看不到它的画面；没装这份运行时，网页截图工具不会挂出来，网页抓取也只剩不需要浏览器的 fetch 引擎。':
-    'If you would rather not install this runtime, add the official Playwright MCP (npx @playwright/mcp@latest) on the MCP page. When a session has an MCP that exposes the same tool names, the built-in browser tools step aside automatically — no need to turn them off. Two caveats: the MCP drives its own browser instance, so the browser panel shows nothing of it; and without this runtime the screenshot tool is not mounted at all and web fetching only offers the plain fetch engine.',
+  '不想装这份运行时，可以在「MCP」页加一条 Playwright 官方 MCP（npx @playwright/mcp@latest）。会话里挂了带同名工具的 MCP 时，内置浏览器工具会自动让位，不需要手动关。注意两点：MCP 用自己的浏览器实例，右侧「浏览器」面板看不到它的画面；没装这份运行时，浏览器工具不会挂出来，网页抓取也只剩不需要浏览器的 fetch 引擎。':
+    'If you would rather not install this runtime, add the official Playwright MCP (npx @playwright/mcp@latest) on the MCP page. When a session has an MCP that exposes the same tool names, the built-in browser tools step aside automatically — no need to turn them off. Two caveats: the MCP drives its own browser instance, so the browser panel shows nothing of it; and without this runtime the browser tools are not mounted at all and web fetching only offers the plain fetch engine.',
   '卸载内置浏览器？': 'Uninstall the built-in browser?',
-  '会删掉这份 headless shell（约 150MB）。卸载期间先关掉所有浏览器会话；之后浏览器工具与网页截图不再挂出来，网页抓取只剩不需要浏览器的 fetch 引擎，想再用需要重新下载。':
-    'This deletes the headless shell (about 150MB). All browser sessions are closed first; afterwards browser tools and page screenshots are no longer mounted and web fetching only offers the plain fetch engine. Download it again to get them back.',
+  '会删掉这份 headless shell（约 150MB）。卸载期间先关掉所有浏览器会话；之后浏览器工具（含截图）不再挂出来，网页抓取只剩不需要浏览器的 fetch 引擎，想再用需要重新下载。':
+    'This deletes the headless shell (about 150MB). All browser sessions are closed first; afterwards browser tools (screenshots included) are no longer mounted and web fetching only offers the plain fetch engine. Download it again to get them back.',
   '网站数据': 'Site data',
   '每个会话各存一份独立的浏览数据（Cookie、登录状态、本地存储与缓存），互不共享 —— 所以才会「这个会话登着、那个会话没登」。删除会话时会一并清掉；只想换账号请到右侧「浏览器」面板里清那一个会话，这里只做兜底。':
     'Each conversation keeps its own browsing data (cookies, sign-in state, local storage and cache) — nothing is shared, which is why one conversation can be signed in while another is not. Deleting a conversation clears its copy too; to switch accounts, clear just that conversation from the browser panel on the right. This section is only a fallback.',

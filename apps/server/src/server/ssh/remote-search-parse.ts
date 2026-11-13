@@ -33,6 +33,8 @@ export interface SearchCommandOptions {
   subPath: string
   context: number
   maxFileBytes: number
+  /** dsh 的 include：单个 glob，直接喂 `--glob`（不给 = 不限定文件名） */
+  includeGlob?: string
 }
 
 /** rg 命令：`--no-config` 防止用户家目录的 rg 配置改变输出结构 */
@@ -50,6 +52,7 @@ export function buildRgCommand(opts: SearchCommandOptions): string {
     '--max-columns-preview'
   ]
   if (opts.caseInsensitive) args.push('-i')
+  if (opts.includeGlob) args.push('--glob', opts.includeGlob)
   if (opts.context > 0) args.push('--context', String(opts.context))
   for (const dir of DEFAULT_IGNORE_DIRS) args.push('--glob', `!**/${dir}/**`)
   args.push('--', opts.pattern, opts.subPath || '.')
@@ -69,7 +72,11 @@ export function buildGrepCommand(opts: SearchCommandOptions): string {
  * find 命令：先把忽略目录剪掉（`-prune`），再输出文件。
  * 只做「列出候选」，glob 与二次忽略由调用方在 JS 侧判（与本地后端同一套语义）。
  */
-export function buildFindCommand(subPath: string): string {
+export function buildFindCommand(subPath: string, includeIgnored = false): string {
+  if (includeIgnored) {
+    // dsh 的 glob 语义：连隐藏与被忽略的文件一起找，只交给 rg 那套 VCS 排除
+    return `find ${shellQuote(subPath || '.')} -type f -print0`
+  }
   const names = [...DEFAULT_IGNORE_DIRS]
   const start = subPath || '.'
   if (names.length === 0) return `find ${shellQuote(start)} -type f -print0`

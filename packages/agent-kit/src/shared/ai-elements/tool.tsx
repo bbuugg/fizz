@@ -332,6 +332,14 @@ function ToolHeadLabel({ titleText, detail }: { titleText: string; detail?: stri
  * 那段说明一致，卡片上不该混成同一个图标。
  */
 const TOOL_HEAD_ICONS: Record<string, LucideIcon> = {
+  // 对齐 dsh 后的名字；旧名保留给历史会话（同一颗图标）
+  bash: TerminalIcon,
+  read: FileTextIcon,
+  write: FilePlusIcon,
+  edit: FilePenIcon,
+  glob: FileSearchIcon,
+  grep: SearchIcon,
+  str_replace_editor: FilePenIcon,
   execute_command: TerminalIcon,
   run_in_terminal: SquareTerminalIcon,
   read_terminal_output: SquareTerminalIcon,
@@ -651,7 +659,7 @@ export const ToolOutput = ({
     Output = looksLikeJson(output) ? (
       <CodeBlock code={output} language="json" />
     ) : (
-      <pre className="m-0 overflow-auto whitespace-pre-wrap break-all p-4 font-mono text-sm">
+      <pre className="m-0 overflow-auto whitespace-pre p-4 font-mono text-sm">
         {output}
       </pre>
     );

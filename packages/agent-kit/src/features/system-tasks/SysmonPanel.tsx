@@ -32,6 +32,12 @@
  * 还会换行，四张卡就够把一屏占满 —— 再让进程表「自己滚」，它等于永远待在视野外。所以
  * 窄屏把限高去掉（根节点 `overflow-y-auto`、进程区不再 `flex-1`），从上一直滚到表。
  *
+ * ⚠️ **进程表在手机上必须塞得进 360–430px**：根节点是 `overflow-y-auto`，按 CSS 规范
+ * 另一轴会变成 `auto` —— 表稍微宽一点，整页就会出现**左右滚动条**（2026-11 就是这么报的）。
+ * 所以窄屏只留「名称 / PID / CPU % / 内存 % / 结束」，且数值列宽降一档（`w-12`/`w-14`）、
+ * 名称列内边距收成 `px-1.5`。加列 / 加宽之前先按 360px 算一遍总宽，别再往表里塞绝对
+ * 值列（内存 / 状态 / 累计 CPU / 用户都是 `sm:` / `md:` / `lg:` 才回来的）。
+ *
  * ## CPU 百分比的口径
  *
  * **单核 100% 为满**（与 `top` / 任务管理器一致）：一个开满 8 线程的进程会显示 700%+。
@@ -335,7 +341,9 @@ function CoreStrip({ values }: { values: number[] }): React.JSX.Element | null {
   if (values.length === 0) return null
   return (
     <div
-      className="flex h-8 items-stretch gap-[2px]"
+      // overflow-hidden：几十上百核时固定 gap 之和也会把卡片顶宽（手机上就是整页横向滚动），
+      // 宁可在极多核时裁掉最后一两根柱子，也不要让整页横着滚
+      className="flex h-8 items-stretch gap-[2px] overflow-hidden"
       title={`每核占用（${values.length} 核）：${values.map((v) => `${pct(v)}%`).join(' / ')}`}
     >
       {values.map((value, index) => {
@@ -643,7 +651,7 @@ function ProcessTableHead({ sysmon }: { sysmon: SysmonController }): React.JSX.E
  * 刻意做成**长短不一**：一排等宽的灰条看起来像加载失败的空表格，长短错落才像「内容还没
  * 到」。8 条足够铺满大多数屏幕的可视高度，多了纯粹是浪费渲染。
  */
-const SKELETON_NAME_WIDTHS = ['w-40', 'w-28', 'w-52', 'w-24', 'w-36', 'w-44', 'w-32', 'w-48']
+const SKELETON_NAME_WIDTHS = ['w-3/5', 'w-2/5', 'w-4/5', 'w-1/3', 'w-1/2', 'w-2/3', 'w-1/2', 'w-3/4']
 
 /**
  * 进程表的加载骨架（首帧专用）。
@@ -660,23 +668,23 @@ function ProcessTableSkeleton({ sysmon }: { sysmon: SysmonController }): React.J
         <tbody>
           {SKELETON_NAME_WIDTHS.map((width, index) => (
             <tr key={index} className="border-b border-border/30">
-              <td className="px-2 py-1.5">
+              <td className="min-w-0 max-w-0 px-1.5 py-1.5 sm:px-2">
                 <div className={cn('h-3 animate-pulse rounded bg-foreground/10', width)} />
-                <div className="mt-1 h-2 w-20 animate-pulse rounded bg-foreground/[0.06]" />
+                <div className="mt-1 h-2 w-2/3 animate-pulse rounded bg-foreground/[0.06]" />
               </td>
-              <td className="px-2 py-1.5">
+              <td className="px-1.5 py-1.5 sm:px-2">
                 <div className="ml-auto h-3 w-10 animate-pulse rounded bg-foreground/10" />
               </td>
               <td className="hidden px-2 py-1.5 md:table-cell">
                 <div className="h-3 w-16 animate-pulse rounded bg-foreground/10" />
               </td>
-              <td className="px-2 py-1.5">
+              <td className="px-1.5 py-1.5 sm:px-2">
                 <div className="ml-auto h-3 w-8 animate-pulse rounded bg-foreground/10" />
               </td>
-              <td className="px-2 py-1.5">
+              <td className="px-1.5 py-1.5 sm:px-2">
                 <div className="ml-auto h-3 w-8 animate-pulse rounded bg-foreground/10" />
               </td>
-              <td className="px-2 py-1.5">
+              <td className="hidden px-2 py-1.5 sm:table-cell">
                 <div className="ml-auto h-3 w-12 animate-pulse rounded bg-foreground/10" />
               </td>
               <td className="hidden px-2 py-1.5 sm:table-cell">
@@ -730,7 +738,7 @@ function ProcessTable({
               proc.self && 'bg-destructive/5'
             )}
           >
-            <td className="min-w-0 max-w-0 px-2 py-1">
+            <td className="min-w-0 max-w-0 px-1.5 py-1 sm:px-2">
               <div className="flex min-w-0 items-center gap-1.5">
                 <span className="truncate font-medium" title={proc.name}>
                   {proc.name}
@@ -750,7 +758,7 @@ function ProcessTable({
                 </div>
               )}
             </td>
-            <td className="px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
+            <td className="px-1.5 py-1 text-right font-mono tabular-nums text-muted-foreground sm:px-2">
               {proc.pid}
             </td>
             <td
@@ -759,7 +767,7 @@ function ProcessTable({
             >
               {proc.user || '—'}
             </td>
-            <td className="px-2 py-1 text-right font-mono tabular-nums">
+            <td className="px-1.5 py-1 text-right font-mono tabular-nums sm:px-2">
               {/* windowMs = 0 说明还没采到第二帧，此时的 0 是「不知道」而不是「没用 CPU」 */}
               {windowMs === 0 ? (
                 <span className="text-muted-foreground">—</span>
@@ -767,12 +775,12 @@ function ProcessTable({
                 <span className={cpuTextClass(proc.cpuPercent)}>{proc.cpuPercent.toFixed(1)}</span>
               )}
             </td>
-            <td className="px-2 py-1 text-right font-mono tabular-nums">
+            <td className="px-1.5 py-1 text-right font-mono tabular-nums sm:px-2">
               <span className={LOAD_TEXT_CLASS[loadLevel(proc.memPercent)]}>
                 {proc.memPercent.toFixed(1)}
               </span>
             </td>
-            <td className="whitespace-nowrap px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
+            <td className="hidden whitespace-nowrap px-2 py-1 text-right font-mono tabular-nums text-muted-foreground sm:table-cell">
               {formatBytes(proc.rss)}
             </td>
             <td

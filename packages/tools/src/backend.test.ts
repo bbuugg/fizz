@@ -18,6 +18,17 @@ import { summarizeLongOutput } from './output-log'
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }))
 
+/**
+ * 搜索 / 查找的 **rg 分支在这里关掉**，强制走 JS 遍历：
+ * - 单测不许 spawn 真实进程（仓库约定），本文件又把 `child_process` 整体 mock 了；
+ * - 下面两个用例守的是 JS 那套语义（忽略规则、glob 匹配、显式点名文件），
+ *   与 rg 分支是两条实现，混在一起会变成「有 rg 的机器绿、没 rg 的机器红」。
+ */
+vi.mock('./ripgrep', () => ({
+  ripgrepSearch: async () => null,
+  ripgrepFind: async () => null
+}))
+
 interface FakeChild extends EventEmitter {
   stdout: EventEmitter
   stderr: EventEmitter

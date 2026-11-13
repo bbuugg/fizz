@@ -1,15 +1,15 @@
 /**
  * `git_read`：给 agent 的**只读 git 视图**。
  *
- * 为什么单独做一个窄工具，而不是让 agent 用 `execute_command` 跑 git：
- * - `execute_command` 既能读也能写；「只读 agent 带 execute_command」是个假承诺
+ * 为什么单独做一个窄工具，而不是让 agent 用 `bash` 跑 git：
+ * - `bash` 既能读也能写；「只读 agent 带 bash」是个假承诺
  *   （`rm` / `git checkout .` / `git reset --hard` 都能毁东西）；
  * - 白名单式的窄接口把危险面压到「四条只读命令」，且天然免疫 `-i` / `-p` 这类
  *   会挂死的交互参数；
  * - 输出统一走 `clipToBudget`，一条 `git diff` 不会把上下文炸掉。
  *
  * ⚠️ 这里**刻意不给** checkout / add / commit / reset / push / stash：写仓库的活
- * 留给父 agent 的 execute_command（那里有审批链路）。真要做写操作窄工具时，
+ * 留给父 agent 的 bash（那里有审批链路）。真要做写操作窄工具时，
  * 也要照审批的规矩来，不能因为「git 命令而已」就绕过 requestConfirm。
  */
 import { relative } from 'node:path'
@@ -39,10 +39,10 @@ export function buildGitReadTool(root: string): ToolSet {
       description: tr(
         '只读地看这个 git 仓库：当前改动（git status / git diff）、最近的提交历史（git log）、某个提交的内容（git show）。' +
           '适合「改了什么」「最近谁动过这里」「这个提交干了什么」这类问题。' +
-          '只能看，不能改仓库（要提交 / 回滚 / 切分支请用 execute_command，那边有审批）。',
+          '只能看，不能改仓库（要提交 / 回滚 / 切分支请用 bash，那边有审批）。',
         'Read-only view of this git repository: current changes (git status / git diff), recent history (git log), and a specific commit (git show). ' +
           'Suitable for questions like “what changed”, “who touched this recently”, or “what did this commit do”. ' +
-          'Read-only: use execute_command for commit / rollback / branch switching (that path has approval).'
+          'Read-only: use bash for commit / rollback / branch switching (that path has approval).'
       ),
       inputSchema: z.object({
         action: z

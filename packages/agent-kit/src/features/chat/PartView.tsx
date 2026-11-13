@@ -40,6 +40,7 @@ import { t } from '@fizz/i18n'
 import { FileDiffView, type DiffHunk } from '@fizz/agent-kit/features/git/FileDiffView'
 import {
   ASK_FOLLOWUP_TOOL,
+  canonicalToolName,
   isCommandRunning,
   isStoppableToolName,
   isStoppableToolRunning,
@@ -215,10 +216,56 @@ function buildFileDiff(part: AgentMessagePart): {
 } | null {
   const p = part as { toolName?: string; input?: unknown }
   const input = p.input as
-    | { path?: string; content?: string; edits?: Array<{ oldText?: string; newText?: string }> }
+    | {
+        path?: string
+        file_path?: string
+        content?: string
+        old_string?: string
+        new_string?: string
+        edits?: Array<{ oldText?: string; newText?: string }>
+        command?: string
+        file_text?: string | null
+        old_str?: string | null
+        new_str?: string | null
+      }
     | undefined
   if (!input) return null
+  const name = canonicalToolName(p.toolName ?? '')
+  const path = input.file_path ?? input.path ?? ''
 
+  // str_replace_editor：create / str_replace 能直接出 diff，insert 只有新内容、走通用卡
+  if (name === 'str_replace_editor') {
+    if (input.command === 'create') {
+      return {
+        path,
+        hunks: [{ header: t('@@ 新建 / 覆盖 @@'), lines: diffLines('', input.file_text ?? '') }]
+      }
+    }
+    if (input.command === 'str_replace') {
+      return {
+        path,
+        hunks: [
+          {
+            header: t('@@ 编辑 {index} @@', { index: 1 }),
+            lines: diffLines(input.old_str ?? '', input.new_str ?? '')
+          }
+        ]
+      }
+    }
+    return null
+  }
+  if (name === 'edit' && !Array.isArray(input.edits)) {
+    // 新 schema：一次一处字面量替换（old_string → new_string）
+    return {
+      path,
+      hunks: [
+        {
+          header: t('@@ 编辑 {index} @@', { index: 1 }),
+          lines: diffLines(input.old_string ?? '', input.new_string ?? '')
+        }
+      ]
+    }
+  }
   if (p.toolName === 'edit_file' && Array.isArray(input.edits)) {
     return {
       path: input.path ?? '',
@@ -228,9 +275,9 @@ function buildFileDiff(part: AgentMessagePart): {
       }))
     }
   }
-  if (p.toolName === 'write_file' && typeof input.content === 'string') {
+  if (name === 'write' && typeof input.content === 'string') {
     return {
-      path: input.path ?? '',
+      path,
       hunks: [{ header: t('@@ 新建 / 覆盖 @@'), lines: diffLines('', input.content) }]
     }
   }
@@ -455,9 +502,11 @@ function TodoChecklist({ items }: { items: TodoItem[] }) {
 /**
  * 文本块直显。
  *
- * `singleLine`（脚本 / 命令的**结果**用）：换行折成空格、溢出省略，消息列表里一行带过，
- * 全文挂在 `title` 上悬停可看 —— 脚本输出动辄几十行，全量铺开会把消息流撑爆。
- * 不带 `singleLine`（ACP 内容块等可能天生多行的文本）：等宽 + 预换行 + 滚动上限。
+ * 两条分支都**不折行**：`whitespace-pre` 保留原有换行，超宽的行靠**横向滚动**看
+ * （而不是 `break-all` 把一行拆成十几行、把消息流撑长）。纵向给 `max-h`，超出内部滚动。
+ *
+ * `singleLine`（脚本 / 命令的**结果**用）：同一条结果的纵向空间压到 12rem，全文仍挂在
+ * `title` 上悬停可看。不带 `singleLine`（ACP 内容块等）：纵向上限 8rem。
  */
 function AcpTextBlock({ text, singleLine }: { text: string; singleLine?: boolean }) {
   if (singleLine) {
@@ -465,7 +514,7 @@ function AcpTextBlock({ text, singleLine }: { text: string; singleLine?: boolean
       <div
         // 工具输出（脚本 / 命令结果）：不是 <pre>，靠 data-selectable 进 styles.css 的内容白名单
         data-selectable
-        className="whitespace-pre-wrap overflow-x-hidden overflow-y-auto rounded-md bg-muted/50 px-2 py-1.5 font-mono text-ellipsis text-xs max-h-48"
+        className="overflow-x-auto overflow-y-auto whitespace-pre rounded-md bg-muted/50 px-2 py-1.5 font-mono text-xs max-h-48"
         title={text}
       >
         {text}
@@ -473,7 +522,7 @@ function AcpTextBlock({ text, singleLine }: { text: string; singleLine?: boolean
     )
   }
   return (
-    <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 px-2 py-1.5 font-mono text-xs">
+    <pre className="max-h-32 overflow-auto whitespace-pre rounded-md bg-muted/50 px-2 py-1.5 font-mono text-xs">
       {text}
     </pre>
   )
@@ -609,21 +658,19 @@ function renderBuiltinDirect(
   }
 
   let subject: string | undefined
-  switch (part.toolName) {
-    case 'execute_command':
+  const name = canonicalToolName(part.toolName)
+  switch (name) {
+    case 'bash':
       subject = str(input.command)
       break
-    case 'read_file':
-      subject = str(input.path)
+    case 'read':
+      subject = str(input.file_path) ?? str(input.path)
       break
-    case 'list_files':
-      subject = str(input.path) ?? '.'
-      break
-    case 'find_files':
+    case 'glob':
       subject = str(input.pattern) ?? str(input.query)
       break
-    case 'search_files':
-      subject = str(input.query) ?? str(input.pattern) ?? str(input.keyword)
+    case 'grep':
+      subject = str(input.pattern) ?? str(input.query) ?? str(input.keyword)
       break
     case 'read_skill':
       subject = str(input.name) ?? str(input.skill) ?? str(input.path)
@@ -639,16 +686,16 @@ function renderBuiltinDirect(
   }
   if (!subject) return null
 
-  const isExec = part.toolName === 'execute_command'
+  const isExec = name === 'bash'
   const detail = isExec ? `$ ${subject}` : subject
   // 结果文本：抠不出来（结构化对象 / 还没结果）就不硬造一块 —— 有结果才给
   const outputText = toolOutputText(output)
-  // execute_command 的结果文本**本身就以 `$ 命令` 开头**（`（退出码 N）` 也在里面，见
-  // tools.ts 的 runCommand.finish）——所以这里不能再 echo 一遍，否则卡片上同一行命令
-  // 会连着出现两次（用户实测反馈）。别的工具的结果不含主入参，才需要补那一行。
+  // bash 的结果文本只有 stdout / stderr / 退出码标记（与 dsh 的 renderResult 一致），
+  // 不带命令行 —— 所以这里必须补一行 `$ 命令`，否则用户看不出这条输出来自哪条命令。
   const echo = isExec ? `$ ${subject}` : ''
   if (outputText) {
-    return { content: <AcpTextBlock text={outputText} singleLine />, detail }
+    const text = isExec ? `${echo}\n${outputText}` : outputText
+    return { content: <AcpTextBlock text={text} singleLine />, detail }
   }
   if (hasOutput && !isToolResultEmpty(output)) {
     // 结果在但抠不出人话：回退折叠卡，别丢信息

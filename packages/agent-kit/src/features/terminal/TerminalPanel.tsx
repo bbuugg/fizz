@@ -22,6 +22,8 @@ import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { History, Loader2, Trash2, Upload, X } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { toast } from 'sonner'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 import type { CommandHistoryEntry, SshConnectProgress } from '@fizz/contracts/agent-api'
 import type { SshCharset } from '@fizz/contracts/types'
 import { createZmodemController, type ZmodemController, type ZmodemState } from './zmodem-controller'
@@ -255,6 +257,9 @@ export function TerminalPanel({
    * 细横栏；粘成功不打扰。
    */
   const [pasteHint, setPasteHint] = useState<string | null>(null)
+  /** 手机上长按划出的选区：显示「复制选中文本」条（xterm 的选区是自己的模型，走 getSelection） */
+  const [hasTouchSelection, setHasTouchSelection] = useState(false)
+  const tr = useT()
   /** 主题 revision：保存自定义主题颜色时 `<style>` 被重写、`data-theme` 不变，MutationObserver 看不到 */
   const themeRevision = useThemeRevision()
   const containerRef = useRef<HTMLDivElement>(null)
@@ -262,6 +267,43 @@ export function TerminalPanel({
   const processRef = useRef<TerminalProcess | null>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+
+  /** 写剪贴板：`navigator.clipboard` 在部分安卓 WebView 里不可用，退回 execCommand */
+  const writeClipboard = useCallback(async (text: string): Promise<void> => {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return
+    }
+    const area = document.createElement('textarea')
+    area.value = text
+    area.style.position = 'fixed'
+    area.style.opacity = '0'
+    document.body.appendChild(area)
+    area.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(area)
+    if (!ok) throw new Error('clipboard unavailable')
+  }, [])
+
+  /** 手机长按划词后的「复制选中文本」 */
+  const copyTouchSelection = useCallback(async (): Promise<void> => {
+    const term = termRef.current
+    const text = term?.getSelection() ?? ''
+    if (!text) {
+      term?.clearSelection()
+      setHasTouchSelection(false)
+      return
+    }
+    try {
+      await writeClipboard(text)
+      toast.success(tr('已复制选中文本'))
+    } catch {
+      toast.error(tr('复制失败，请检查剪贴板权限'))
+      return
+    }
+    term?.clearSelection()
+    setHasTouchSelection(false)
+  }, [tr, writeClipboard])
   /**
    * 输出活动（收到多少段 + 最后一段什么时候来的）：登记给 AI 工具，`run_in_terminal`
    * 靠它判「命令的输出停了没有」，替代从前固定 sleep 3 秒的做法。
@@ -1127,7 +1169,9 @@ export function TerminalPanel({
     const detachTouchScroll = supportsTouch()
       ? attachTerminalTouchScroll(term, container, {
           getFontSize: () => fontSizeRef.current,
-          onZoom: (size) => applyFontSize(size)
+          onZoom: (size) => applyFontSize(size),
+          // 长按选中 / 选区清掉 → 顶部那条「复制选中文本」
+          onSelectionChange: setHasTouchSelection
         })
       : null
 
@@ -1507,7 +1551,7 @@ export function TerminalPanel({
      *
      * 下面的 `pasteHint` / 连接浮层 / 底部工具栏各自带底色，不受这条影响。
      */
-    <div className="flex h-full min-h-0 flex-col bg-transparent">
+    <div className="relative flex h-full min-h-0 flex-col bg-transparent">
       {/* 右键粘贴失败提示：几秒后自己消失，点一下就关（不拦终端本身的交互） */}
       {pasteHint && (
         <div className="flex items-center justify-between gap-2 border-b bg-amber-500/10 px-2 py-1 text-xs text-amber-600 dark:text-amber-400">
@@ -1519,6 +1563,33 @@ export function TerminalPanel({
           >
             知道了
           </button>
+        </div>
+      )}
+      {/* 手机长按划词：选区在 xterm 自己的模型里，复制走 getSelection()，不是浏览器原生选区。
+          这条不盖终端内容、也不抢触摸手势（手指还在终端上划时它在上方，不接收 touch）。 */}
+      {hasTouchSelection && (
+        <div className="absolute inset-x-0 top-0 z-30 flex items-center justify-between gap-2 border-b bg-background/95 px-2 py-1 text-xs shadow-sm backdrop-blur-sm">
+          <span className="truncate text-muted-foreground">{tr('拖动可继续选择，松手后点复制')}</span>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              className="rounded bg-primary px-2 py-1 text-primary-foreground"
+              onClick={() => void copyTouchSelection()}
+            >
+              {tr('复制选中文本')}
+            </button>
+            <button
+              type="button"
+              aria-label={tr('清除选区')}
+              className="rounded p-1 text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                termRef.current?.clearSelection()
+                setHasTouchSelection(false)
+              }}
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
         </div>
       )}
       {/* 容器不随可见性卸载：xterm 重建会丢渲染状态（会话在宿主 / 服务端活着） */}

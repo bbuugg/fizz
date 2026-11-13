@@ -23,10 +23,19 @@
  * ⚠️ 这里刻意**只放内存**：run 随进程重启丢失，本来也没有历史需要保留。
  */
 import type { AssistantSendInput } from '@fizz/contracts/agent-api'
-import { resolveContextWindow } from '@fizz/contracts/types'
+import { isRemoteWorkspace, resolveContextWindow } from '@fizz/contracts/types'
 import type { AgentChatMessage, AgentStreamEvent, AiPermissionMode, TurnUsage } from '@fizz/contracts/types'
 import { defaultContextWindowFromEnv, runAgent, type RunAgentResult } from '@fizz/agent'
-import { buildMcpTools, buildModelTools, buildProjectTools } from '@fizz/tools'
+import { homedir } from 'node:os'
+import {
+  buildAcpTools,
+  buildAgentTools,
+  buildMcpTools,
+  buildModelTools,
+  buildProjectTools,
+  buildWebFetchTool
+} from '@fizz/tools'
+import { probeAcpModels } from '@fizz/acp'
 import { probeMcpServerTools } from '@fizz/mcp'
 import { domain, markDirty } from './state'
 import { probeModelsFromUpstream } from './model-probe'
@@ -45,12 +54,27 @@ import {
   updateTaskTriggerFromTool
 } from './task-triggers'
 import { createPluginFile } from './plugin-create'
+import { detectAcpAgents } from './acp-detect'
 import { createRun, emit, findActiveByConversation, finishRun, type ChatRun } from './chat-run'
 import { describeError } from './lib/http'
 
 export type StartAssistantTurnResult =
   | { ok: true; run: ChatRun }
   | { ok: false; status: 400 | 404 | 409 | 500; message: string }
+
+/**
+ * 助手里 `bash` 的默认工作目录：第一个已登记且有路径的项目，否则用户主目录。
+ * 提示词与工具装配共用这一份 —— 两处各算一遍的话，模型以为的 cwd 和真正的 cwd 会不一致。
+ */
+function assistantBashRoot(): string {
+  // 远端工作区的 path 是 SSH 主机上的 POSIX 路径，本地后端根本到不了；
+  // dirMissing 的目录已经不在了，spawn 会直接 ENOENT。两者都跳过。
+  return (
+    domain
+      .listWorkspaces()
+      .find((w) => !!w.path && !isRemoteWorkspace(w) && !w.dirMissing)?.path || homedir()
+  )
+}
 
 /**
  * 助手的系统提示词:**每轮现算**,把当前项目清单快照与默认根目录注进去 ——
@@ -60,7 +84,7 @@ export function buildAssistantInstructions(): string {
   const workspaces = domain.listWorkspaces()
   const now = new Date().toLocaleString('zh-CN', { hour12: false })
   const lines = [
-    '你是 Fizz 的项目管理助手,负责帮用户管理 Fizz 里的项目(工作区):查看清单、登记已有目录、新建目录、从 Git 克隆、打开项目、给项目建会话、创建 / 删除 worktree、删除项目、查看 / 创建 / 修改 / 删除 / 启停定时任务、给项目写插件,以及管理全局的模型配置(列 / 增 / 改 / 删网关与模型)与 MCP 配置(列 / 增 / 改 / 删外部工具服务)。',
+    '你是 Fizz 的项目管理助手,负责帮用户管理 Fizz 里的项目(工作区):查看清单、登记已有目录、新建目录、从 Git 克隆、打开项目、给项目建会话、创建 / 删除 worktree、删除项目、查看 / 创建 / 修改 / 删除 / 启停定时任务、给项目写插件,以及管理全局的模型配置(列 / 增 / 改 / 删网关与模型)、MCP 配置(列 / 增 / 改 / 删外部工具服务)与外部 Agent 配置(列 / 探测本机已装 / 增 / 改 / 删 ACP agent);也能用 bash 执行命令、web_fetch 查网页文档、todo_write 给多步骤任务列一份清单,bash 输出超长时用 read 续读。',
     `默认项目根目录:${getDefaultProjectsRoot()}。建议用户把项目放这里(根内创建免审批);用户明确要放别处时照做(根外创建会弹审批卡)。`,
     `当前时间:${now}(需要算 at 这一类一次性触发时刻时以它为准)。`,
     workspaces.length
@@ -83,6 +107,12 @@ export function buildAssistantInstructions(): string {
     '- MCP(外部工具服务)配置也能管:list_mcp_servers 看现状(拿 id)、list_mcp_server_tools 连上它列一遍工具(用来验证配置对不对,连不上会把原因带回来)、create_mcp_server / update_mcp_server / delete_mcp_server 管配置本身(stdio 填命令 / 参数 / 环境变量,http·sse 填地址 / 请求头);',
     '- **MCP 配好不等于生效**:它是**按会话启用**的 —— 配完要让用户去会话输入框上方的扳手(MCP)里勾选,那个会话下一轮才会连接;你这一轮不会因此多出那些工具。别向用户承诺「已经能用了」,要明确说「已保存,去会话里勾选一下」;',
     '- MCP 的 stdio 命令是在**跑 Agent 的机器**上执行的,配错就是起不来:先问清用户要接哪个 server(本地命令还是远端地址),别自己编 npx 包名;环境变量 / 请求头里的 token 只在用户明确给出时写,回复里不要回显(工具结果也只给键名);',
+    `- bash 能执行 shell 命令,默认工作目录是「第一个本机且存在的项目」(${assistantBashRoot()},没有可用项目时是用户主目录);命令里要读别的项目就用绝对路径或 cwd 参数,别猜相对路径。危险命令(rm -rf / git push --force 等)执行前先用一句话讲清影响:confirm 档会弹审批卡等用户点头,readonly 档直接拒绝。长输出会被落盘到工作区的 .fizz/tool-output/,结果里给出路径,用 read 加 offset / limit 续读。`,
+    '- **只有 bash + read,没有写文件 / 编辑类工具**:助手是跨项目的,没有唯一工作区根目录,所以 write / edit / glob / grep / git_read 都不挂;要改某个项目里的文件,让用户去那个项目的会话里做。bash 的 run_in_background 在助手里没有后台通道,显式传 true 会被回绝;',
+    '- web_fetch 抓网页(只认 http(s),超长正文会截断不落盘);查某个 CLI 的参数 / 排错时可以用它翻官方文档。todo_write 只在确实有三步以上时建清单,每次传完整清单;',
+    '- 外部 Agent(ACP)配置也能管:list_acp_agents 看现状(拿 id)、detect_acp_agents 扫本机 PATH 上装了哪些(只读,不会装东西;用户说「我装了 Claude Code / Codex」但不确定命令时先用它)、probe_acp_models 连上某条列出它广告的模型(只读,但会起一次进程)、create_acp_agent / update_acp_agent / delete_acp_agent 管配置本身;',
+    '- ACP 的启动命令在**跑 Agent 的机器**上 spawn 成子进程,args 必须是该 CLI 真实的 ACP 入口(gemini --acp / copilot --acp / opencode acp / codex-acp / claude-agent-acp 之类);不确定就别猜,先 detect 或问用户;Windows 上 npm 装的 CLI 常要 .cmd 后缀;',
+    '- **ACP 配好也不等于用上**:它是**会话级**的后端选择 —— 要让用户**新建**一个会话、后端选「外部 Agent」、再挑这一条(已有会话的后端不能改)。「会话模型下拉里暴露哪几个模型」用 probe_acp_models 拿到候选后把选中的几条交给 update_acp_agent 的 models(空数组 = 一个都不列,不传 = 沿用);',
     '- 定时任务的创建 / 修改 / 删除 / 启停与写插件都会弹审批卡,且产出或改动的是「以后会自动执行」的东西 —— 动手前先用一句话向用户讲清你要做什么;改 / 删定时任务前先 list 出来确认是哪一条;',
     '- 根目录外的创建、删除、worktree 变更都会弹审批卡等用户点头;',
     '- remove_project 缺省只移除登记、不删磁盘文件;deleteFiles=true 只对 worktree 项目生效;删之前必须向用户复述一次要删什么;',
@@ -353,6 +383,95 @@ export async function startAssistantTurn(input: AssistantSendInput): Promise<Sta
         })
       : {}
 
+  /**
+   * 外部 Agent（ACP）配置工具：与模型 / MCP 配置同一批 —— 同样只挂 `project` 作用域，
+   * 因为写的是**全局设置**（`agent-core.json` 的 `acpAgents`），不属于任何工作区。
+   *
+   * 注意它只管**配置**，不起 agent 进程：真正用它要新建一个后端为 ACP 的会话。
+   */
+  const acpTools =
+    scope === 'project'
+      ? buildAcpTools({
+          acp: {
+            list: () => domain.listAcpAgents(),
+            save: (input) => domain.saveAcpAgent(input),
+            remove: (id) => domain.deleteAcpAgent(id),
+            // 与设置页「一键添加」同一份探测（见 ./acp-detect.ts）
+            detect: detectAcpAgents,
+            // 一次性起 agent 进程问模型清单（问完就收掉），与设置页的能力探针同源
+            probeModels: async (id) => {
+              const agent = domain.resolveAcpAgent(id)
+              const workspacePath = domain.listWorkspaces()[0]?.path
+              const result = await probeAcpModels({
+                agent,
+                ...(workspacePath ? { workspacePath } : {})
+              })
+              return result.options
+            }
+          },
+          permissionMode,
+          getPermissionMode: () => run.permissionMode,
+          requestConfirm: gate.requestConfirm
+        })
+      : {}
+
+  /**
+   * 全局工具 + `bash`。
+   *
+   * ## 命令跑在哪个目录
+   *
+   * 助手是「跨项目」的，本身没有工作区。取**第一个已登记且有路径的项目**作为命令的
+   * 默认 cwd（与 `probeAcpModels` 的口径一致）；一个都没登记就退回用户主目录。
+   * `bash` 的 `cwd` 入参仍可覆盖，但那个目录必须存在。
+   *
+   * ## 为什么只挑这几个
+   *
+   * `includeTools` 是**白名单**（多一个 key 直接抛错，见 `filterToolSet`）：
+   * - `bash`：执行命令（用户明确要求）；
+   * - `read`：`bash` 输出超长会落盘到 `.fizz/tool-output/`，结果里让模型「用 read 接着读」，
+   *   没有 read 就成死路；
+   * - `todo_write`：多步任务清单（本轮内存状态，不碰磁盘）。
+   *
+   * `write` / `edit` / `str_replace_editor` / `delete_file` / `glob` / `grep` / `git_read`
+   * 一律不挂 —— 助手没有唯一工作区，给它写文件的能力等于替用户猜「该动哪个项目」。
+   * 只读的 `read` 仅作命令输出的续读口子，是这条约束里唯一的例外。
+   *
+   * 审批：`bash` 走 `guardWrite`，`confirm` 档 + `gate.requestConfirm` 会弹审批卡；
+   * `readonly` 档直接拒；档位用 getter 现取（用户中途切档立刻生效）。
+   * 单条停止接在 `run.commandStops` 上，实时输出走 `tool-output-delta` 发到助手面板。
+   * 没接 `onBackgroundCommand` —— `run_in_background` 会如实回绝，别在提示词里承诺。
+   *
+   * `web_fetch` 的 root 传空串：超长正文只截断、不落盘（见 `spillToWorkspace`），
+   * 与「未绑定工作区的任务会话」同一份口径。
+   */
+  const bashRoot = assistantBashRoot()
+  const globalTools =
+    scope === 'project'
+      ? {
+          ...buildWebFetchTool('', {}),
+          ...buildAgentTools(bashRoot, {
+            permissionMode,
+            getPermissionMode: () => run.permissionMode,
+            requestConfirm: gate.requestConfirm,
+            skills: [],
+            includeTools: ['bash', 'read', 'todo_write'],
+            onCommandStart: (toolCallId, stop) => {
+              run.commandStops.set(toolCallId, stop)
+            },
+            onCommandEnd: (toolCallId) => {
+              run.commandStops.delete(toolCallId)
+            },
+            onCommandOutput: (toolCallId, stream, delta) => {
+              emit(run, {
+                type: 'event',
+                requestId: run.requestId,
+                event: { type: 'tool-output-delta', toolCallId, stream, delta }
+              })
+            }
+          })
+        }
+      : {}
+
   const onEvent = (event: AgentStreamEvent): void => {
     if (event.type === 'finish' && event.usage) turnUsage = event.usage
     foldEventIntoParts(assistantParts, event)
@@ -378,7 +497,10 @@ export async function startAssistantTurn(input: AssistantSendInput): Promise<Sta
           ? buildTerminalAssistantInstructions() + terminalHint
           : buildAssistantInstructions(),
       // 工具集**按作用域二选一**,不再合并 —— 两组能力互斥(见 scope 的说明)
-      tools: scope === 'terminal' ? clientTools : { ...projectTools, ...modelTools, ...mcpTools }
+      tools:
+        scope === 'terminal'
+          ? clientTools
+          : { ...projectTools, ...modelTools, ...mcpTools, ...acpTools, ...globalTools }
     },
     contextWindow: resolveContextWindow(
       modelConfig.models,

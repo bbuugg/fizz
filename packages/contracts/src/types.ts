@@ -711,18 +711,17 @@ export interface ContainerImagesSnapshot {
  * `mcp__*`、以及 `project-tools.ts` 的全部工具（它们的作业面在宿主、不在容器里）。
  */
 export const CONTAINER_AGENT_TOOL_KEYS: readonly string[] = [
-  'list_files',
-  'read_file',
-  'write_file',
-  'edit_file',
-  'search_files',
-  'find_files',
-  'execute_command',
-  'delete_file',
+  'read',
+  'write',
+  'edit',
+  'glob',
+  'grep',
+  'bash',
   'todo_write',
   'read_skill',
   'web_fetch',
-  'ask_followup_question'
+  'ask_followup_question',
+  'str_replace_editor'
 ]
 
 /**
@@ -1341,7 +1340,7 @@ export interface CollabAgentConfig {
   permissionMode: AiPermissionMode
   /**
    * 允许使用的工具 key 白名单；缺省 = 只读基础集。
-   * key 与 `@fizz/tools` 的 `buildAgentTools` 输出一致（如 `read_file` / `write_file`）。
+   * key 与 `@fizz/tools` 的 `buildAgentTools` 输出一致（如 `read` / `write`）。
    */
   tools: string[]
   /** 单个任务最多跑多少步（工具轮）；缺省 12，服务端收敛到 1~40 */
@@ -1376,7 +1375,27 @@ export const DEFAULT_COLLAB_SETTINGS: CollabSettings = {
   maxTasksPerTurn: 16
 }
 
-const COLLAB_DEFAULT_TOOLS = ['read_file', 'list_files', 'search_files', 'find_files', 'web_fetch']
+/**
+ * 旧工具名 → 对齐 dsh 之后的新名。
+ *
+ * 持久化配置（`config.json` 的 `collab.agents[].tools`）里存的是**当时的工具名**，改名单后
+ * 老配置会指向一个不存在的 key，而 `pickCollabTools` 对未知 key 是**静默丢弃**的 ——
+ * 不迁移的话老协作 Agent 会悄悄失去全部文件工具。这里在归一化时统一换算。
+ *
+ * `list_files` / `delete_file` 在 dsh 里没有对应工具，就近映射到能力最接近的 `glob` / `bash`。
+ */
+export const LEGACY_TOOL_ALIASES: Record<string, string> = {
+  read_file: 'read',
+  write_file: 'write',
+  edit_file: 'edit',
+  search_files: 'grep',
+  find_files: 'glob',
+  list_files: 'glob',
+  execute_command: 'bash',
+  delete_file: 'bash'
+}
+
+const COLLAB_DEFAULT_TOOLS = ['read', 'glob', 'grep', 'web_fetch']
 
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {
   const n = typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : fallback
@@ -1398,7 +1417,13 @@ export function normalizeCollabSettings(value: unknown): CollabSettings {
     const role = typeof item.role === 'string' ? item.role.trim() : ''
     const instructions = typeof item.instructions === 'string' ? item.instructions : ''
     const tools = Array.isArray(item.tools)
-      ? [...new Set(item.tools.filter((t): t is string => typeof t === 'string' && !!t.trim()))]
+      ? [
+          ...new Set(
+            item.tools
+              .filter((t): t is string => typeof t === 'string' && !!t.trim())
+              .map((t) => LEGACY_TOOL_ALIASES[t] ?? t)
+          )
+        ]
       : [...COLLAB_DEFAULT_TOOLS]
     const permissionMode: AiPermissionMode =
       item.permissionMode === 'full' || item.permissionMode === 'confirm'
@@ -2007,8 +2032,15 @@ export type SubagentRunStatus = 'running' | 'done' | 'empty' | 'failed' | 'abort
  * 思考条、工具卡，不需要为子任务再写一套 UI。
  */
 export interface SubagentDelegation {
-  /** 子任务类型（`explorer` / `reviewer` …） */
+  /** 子任务 id（内置 `explorer` / `reviewer`，或自建的 `custom-<8hex>`） */
   subagentId: SubagentId
+  /**
+   * 派活那一刻的**显示名**（内置是「侦察」「审查」，自建是用户起的名字）。
+   *
+   * 必须随消息落盘：用户删掉自定义子智能体之后，历史消息仍要显示当时的名字，
+   * 而不是变成一串 `custom-1a2b3c4d`。
+   */
+  name?: string
   /** 派出去的任务原文（父模型写的 task） */
   task: string
   /** 子 agent 的完整过程（思考 / 工具调用 / 正文） */
@@ -2056,7 +2088,14 @@ export type AgentStreamEvent =
    * 前缀再拆 input，等于在两处维护同一份约定；派活方本来就知道 `subagentId` 和 task，
    * 直接说一声最省事、也不会因为父侧 input 还没收口而丢字段。
    */
-  | { type: 'subagent-start'; toolCallId: string; subagentId: SubagentId; task: string }
+  | {
+      type: 'subagent-start'
+      toolCallId: string
+      subagentId: SubagentId
+      /** 派活那一刻的显示名（自定义子智能体删掉后，历史消息仍靠它显示） */
+      name?: string
+      task: string
+    }
   /**
    * 子任务**过程事件**：子 run 的原始流事件（思考 / 正文 / 工具调用 / 工具结果）原样转发。
    *
@@ -2960,17 +2999,61 @@ export interface SshTunnelInput {
 // ---------------------------------------------------------------------------
 
 /**
- * 可派活的子任务 id（新增是显式动作：改这个联合类型 + `packages/agent` 的
- * `SUBAGENT_SPECS` 一条）。
+ * 可派活的子智能体 id。
  *
- * ⚠️ 刻意放在 `contracts`：这个字符串联合被渲染端（展示清单 / 开关）与主进程
- * （建 subagent）共用，而 `contracts` 必须保持**零引擎依赖**——从 `@fizz/agent`
- * import 会把整条 provider 依赖链带进浏览器产物（同 `resolve-model` 不进根入口的原因）。
+ * 内置两个（`explorer` / `reviewer`，定义在 `packages/agent` 的 `SUBAGENT_SPECS`），
+ * 其余是用户在设置页自建的（`custom-<8hex>`，定义随设置落盘，见 `SubagentDefinition`）。
+ *
+ * ⚠️ 刻意放在 `contracts`：这个类型被渲染端（展示清单 / 开关）与主进程（建 subagent）
+ * 共用，而 `contracts` 必须保持**零引擎依赖**——从 `@fizz/agent` import 会把整条
+ * provider 依赖链带进浏览器产物（同 `resolve-model` 不进根入口的原因）。
  */
-export type SubagentId = 'explorer' | 'reviewer'
+export type SubagentId = string
 
-/** 合法 id 清单（归一化用；从 `SubagentId` 派生，别手抄） */
-export const SUBAGENT_IDS: readonly SubagentId[] = ['explorer', 'reviewer']
+/** 内置子智能体 id（它们的指令 / 工具白名单在代码里，不随设置落盘） */
+export const BUILTIN_SUBAGENT_IDS: readonly string[] = ['explorer', 'reviewer']
+
+/**
+ * 子智能体可以使用的**只读**工具。
+ *
+ * 为什么只有这几个：子 run 恒为 `readonly` 且没有审批通道（见 `buildDelegationTools`），
+ * 给它 `write` / `edit` / `bash` 只会得到「当前是只读模式」的拒绝 —— 那是假能力。
+ *
+ * 顺序即设置页里的展示顺序。
+ */
+export const SUBAGENT_TOOL_KEYS = ['read', 'glob', 'grep', 'git_read', 'web_fetch'] as const
+export type SubagentToolKey = (typeof SUBAGENT_TOOL_KEYS)[number]
+
+/** 最多允许几个自定义子智能体（防止设置页长成一片森林） */
+export const SUBAGENT_MAX_DEFINITIONS = 20
+/** 名称 / 用途 / 指令的长度上限（超长直接截断，不报错 —— 手改坏的数据也要能读） */
+export const SUBAGENT_NAME_MAX = 40
+export const SUBAGENT_DESCRIPTION_MAX = 500
+export const SUBAGENT_INSTRUCTIONS_MAX = 4000
+
+/**
+ * 用户自建的子智能体。
+ *
+ * `description` 就是派活工具（`agent-<id>`）发给父模型的 description ——
+ * 父模型靠它决定「什么时候该把活派给谁」，所以它比名称重要得多。
+ */
+export interface SubagentDefinition {
+  /** `custom-<8hex>`，客户端生成、服务端校验（不撞内置、不重复） */
+  id: string
+  /** 显示名（派活卡 / 设置页 / 过程面板）；也会随 `subagent-start` 事件落盘 */
+  name: string
+  /** 用途：派活工具的 description，写清「什么活派给它」 */
+  description: string
+  /** 子 agent 的系统提示词补充（边界、输出格式）；内置那套只读约束仍会加上 */
+  instructions?: string
+  /** 只读工具白名单（`SUBAGENT_TOOL_KEYS` 的子集） */
+  tools: string[]
+  /** 步数上限；缺省 = 80 */
+  maxSteps?: number
+  /** 专用模型（成对出现才生效；缺省 = 全局子任务模型 → 父模型） */
+  modelConfigId?: string | null
+  modelId?: string | null
+}
 
 /**
  * 子任务步数上限的可设范围。
@@ -2992,13 +3075,16 @@ export const SUBAGENT_MAX_STEPS = 128
  * 与 `SkillSettings` 同款定位：技能内容在磁盘上，这里只记用户选了什么。
  */
 export interface SubagentSettings {
-  /** 启用的子任务 id；空 = 一个都不派（缺省） */
+  /** 启用的子任务 id（内置 ∪ 自定义）；空 = 一个都不派（缺省） */
   enabled: SubagentId[]
+  /** 用户自建的子智能体（内置两个不在这里） */
+  definitions?: SubagentDefinition[]
   /**
    * 子任务专用模型（可选）：某个模型配置下的某个模型。
    *
    * `null` / 缺省 = 沿用父会话模型。两个字段必须同时存在才生效；配置被删 / 模型被移除时
    * 服务端**退回父模型**并记一条日志（不因为子任务的偏好不可用而拖垮整轮）。
+   * 自定义子智能体自己有模型时，以它为准，这里的值只作兜底。
    */
   modelConfigId?: string | null
   /** 见 `modelConfigId`；两者成对使用 */
@@ -3006,11 +3092,7 @@ export interface SubagentSettings {
   /**
    * 每个子任务自己的步数上限（搜索 / 读文件 / 每次工具调用各算一步）。
    *
-   * 缺省 = 用 `SUBAGENT_META[id].defaultMaxSteps`。这是**按 id 分开**的，因为侦察和审查
-   * 的步数需求不一样（审查要「读改动 + 读被调用方」两遍）。
-   *
-   * 为什么给用户调：步数是「能想多深」与「花多少钱」之间唯一的旋钮 —— 步数不够会在
-   * 中途停下（那时只能交回半成品结论），太多则可能对着一个死胡同反复试。
+   * 缺省 = 内置用 `SUBAGENT_META[id].defaultMaxSteps`、自定义用定义里的值。
    */
   maxSteps?: Partial<Record<SubagentId, number>>
 }
@@ -3021,11 +3103,13 @@ export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = { enabled: [] }
  * 给 UI 用的展示元数据（名称 + 一句话说明）。
  *
  * ⚠️ 刻意**放在 contracts** 而不是 `packages/agent`：渲染端（web / desktop 共用
- * `@fizz/agent-kit`）不能依赖 `@fizz/agent` —— 那会 引擎 + 整条 provider
+ * `@fizz/agent-kit`）不能依赖 `@fizz/agent` —— 那会把引擎 + 整条 provider
  * 依赖链进浏览器产物。agent 侧的真源是 `SUBAGENT_SPECS`，两边新增时同步改。
+ *
+ * 只含**内置**两项；自定义子智能体的名称在 `SubagentSettings.definitions` 里。
  */
 export const SUBAGENT_META: Record<
-  SubagentId,
+  string,
   {
     name: string
     hint: string
@@ -3052,17 +3136,83 @@ export const SUBAGENT_META: Record<
   }
 }
 
+/** 单个自定义子智能体的归一化：手改坏的数据文件也要能读，一律收敛而不是抛错 */
+function normalizeDefinition(raw: unknown): SubagentDefinition | null {
+  if (!raw || typeof raw !== 'object') return null
+  const item = raw as Partial<SubagentDefinition> & Record<string, unknown>
+  const id = typeof item.id === 'string' ? item.id.trim().toLowerCase() : ''
+  // 只认自定义前缀 + 安全字符：内置 id 由代码定义，不允许被设置里的数据顶替
+  if (!/^custom-[a-z0-9-]{1,32}$/.test(id)) return null
+  if (BUILTIN_SUBAGENT_IDS.includes(id)) return null
+  const name = typeof item.name === 'string' ? item.name.trim().slice(0, SUBAGENT_NAME_MAX) : ''
+  const description =
+    typeof item.description === 'string'
+      ? item.description.trim().slice(0, SUBAGENT_DESCRIPTION_MAX)
+      : ''
+  if (!name || !description) return null
+  const instructions =
+    typeof item.instructions === 'string' && item.instructions.trim()
+      ? item.instructions.slice(0, SUBAGENT_INSTRUCTIONS_MAX)
+      : undefined
+  const rawTools = Array.isArray(item.tools) ? item.tools : []
+  const picked = new Set(rawTools.filter((t): t is string => typeof t === 'string'))
+  // 按白名单顺序输出：UI 的勾选顺序与落盘顺序一致，diff 才稳定
+  const tools = SUBAGENT_TOOL_KEYS.filter((key) => picked.has(key))
+  const maxStepsRaw = typeof item.maxSteps === 'number' ? Math.trunc(item.maxSteps) : undefined
+  const maxSteps =
+    maxStepsRaw !== undefined &&
+    Number.isFinite(maxStepsRaw) &&
+    maxStepsRaw >= SUBAGENT_MIN_STEPS &&
+    maxStepsRaw <= SUBAGENT_MAX_STEPS
+      ? maxStepsRaw
+      : undefined
+  const modelConfigId =
+    typeof item.modelConfigId === 'string' && item.modelConfigId.trim()
+      ? item.modelConfigId.trim()
+      : null
+  const modelId =
+    typeof item.modelId === 'string' && item.modelId.trim() ? item.modelId.trim() : null
+  return {
+    id,
+    name,
+    description,
+    ...(instructions !== undefined ? { instructions } : {}),
+    // 一个工具都没选 = 只能靠模型自己答，给一份最小可用集
+    tools: tools.length > 0 ? tools : ['read', 'glob', 'grep'],
+    ...(maxSteps !== undefined ? { maxSteps } : {}),
+    ...(modelConfigId && modelId ? { modelConfigId, modelId } : {})
+  }
+}
+
+/** 归一化整份自定义清单：去重、限量、丢掉坏条目 */
+export function normalizeSubagentDefinitions(value: unknown): SubagentDefinition[] {
+  if (!Array.isArray(value)) return []
+  const out: SubagentDefinition[] = []
+  const seen = new Set<string>()
+  for (const raw of value) {
+    const def = normalizeDefinition(raw)
+    if (!def || seen.has(def.id)) continue
+    seen.add(def.id)
+    out.push(def)
+    if (out.length >= SUBAGENT_MAX_DEFINITIONS) break
+  }
+  return out
+}
+
 /**
  * 步数收敛：只留合法 id + `[SUBAGENT_MIN_STEPS, SUBAGENT_MAX_STEPS]` 内的整数。
  *
  * 越界的整条**丢掉**（回到默认值），而不是夹到最近边界 —— 用户填 500 想要的是「更多」，
  * 悄悄给 64 会让他以为设置生效了却依旧中途停下。
  */
-function normalizeMaxSteps(value: unknown): Partial<Record<SubagentId, number>> | undefined {
+function normalizeMaxSteps(
+  value: unknown,
+  validIds: ReadonlySet<string>
+): Partial<Record<SubagentId, number>> | undefined {
   if (!value || typeof value !== 'object') return undefined
   const input = value as Record<string, unknown>
   const out: Partial<Record<SubagentId, number>> = {}
-  for (const id of SUBAGENT_IDS) {
+  for (const id of validIds) {
     const raw = input[id]
     if (typeof raw !== 'number' || !Number.isFinite(raw)) continue
     const steps = Math.trunc(raw)
@@ -3075,16 +3225,25 @@ function normalizeMaxSteps(value: unknown): Partial<Record<SubagentId, number>> 
 /** 收敛：手改坏的数据文件 / 老版本缺字段都不该让读接口抛错 */
 export function normalizeSubagentSettings(value: unknown): SubagentSettings {
   const input = (value ?? {}) as SubagentSettings
+  const definitions = normalizeSubagentDefinitions(input.definitions)
+  const validIds = new Set<string>([
+    ...BUILTIN_SUBAGENT_IDS,
+    ...definitions.map((d) => d.id)
+  ])
   const raw = input.enabled
+  const enabled = Array.isArray(raw)
+    ? [...new Set(raw.filter((id): id is string => typeof id === 'string' && validIds.has(id)))]
+    : []
   const modelConfigId =
     typeof input.modelConfigId === 'string' && input.modelConfigId.trim()
       ? input.modelConfigId.trim()
       : null
   const modelId =
     typeof input.modelId === 'string' && input.modelId.trim() ? input.modelId.trim() : null
-  const maxSteps = normalizeMaxSteps(input.maxSteps)
+  const maxSteps = normalizeMaxSteps(input.maxSteps, validIds)
   return {
-    enabled: Array.isArray(raw) ? raw.filter((id) => SUBAGENT_IDS.includes(id)) : [],
+    enabled,
+    ...(definitions.length > 0 ? { definitions } : {}),
     // 成对才生效：只有一半时服务端会退回父模型，这里也直接收敛成「没配」
     ...(modelConfigId && modelId ? { modelConfigId, modelId } : {}),
     ...(maxSteps ? { maxSteps } : {})

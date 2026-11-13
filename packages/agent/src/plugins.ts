@@ -2,7 +2,7 @@
  * 内置能力 → 插件。
  *
  * 这里把「系统原本手工塞进工具集的东西」改写成 **priority 0 的内置插件**：
- * 文件 / 命令工具、web_fetch / screenshot，以及「把一批现成工具挂进注册表」的通用袋子
+ * 文件 / 命令工具、web_fetch，以及「把一批现成工具挂进注册表」的通用袋子
  * （extraTools、已构建好的 MCP 工具集都走它）。装配入口仍是 `buildAgentSetup`，
  * 只是它现在**只消费注册表产出的结果**，不再手工 `Object.assign` 拼工具集。
  *
@@ -13,9 +13,7 @@
  * 见 `@fizz/plugin` 的 ToolsService 注释。
  */
 import {
-  browserRuntimeInfo,
   buildAgentTools,
-  buildScreenshotTool,
   buildWebFetchTool,
   type AgentToolOptions
 } from '@fizz/tools'
@@ -52,14 +50,15 @@ export function fileToolsPlugin(root: string, options: AgentToolOptions): Plugin
 }
 
 /**
- * 全局只读的联网工具插件：web_fetch + screenshot。不依赖工作区，任何会话都可用
+ * 全局只读的联网工具插件：`web_fetch`。不依赖工作区，任何会话都可用
  * （无工作区时 `root` 传空串 = 超长正文只截断不落盘，见 spillToWorkspace）。
  *
- * 两个工具的**挂载条件不同**，别一起当成「总是挂」：
- * - `web_fetch`：总是挂（fetch 引擎不需要浏览器）；装没装浏览器由它自己决定要不要暴露
- *   `engine` 这个入参，见 `buildWebFetchTool`。
- * - `screenshot`：整个工具都靠无头浏览器，**没装运行时就不挂**。挂上去只有一种结果 ——
- *   每次调用都回一句「请先去设置里装」，白占 schema 与步数，模型还可能反复试。
+ * 只有 `web_fetch` 一个工具，且**总是挂**：fetch 引擎不需要浏览器，装没装浏览器由它自己
+ * 决定要不要暴露 `engine` 这个入参（见 `buildWebFetchTool`）。
+ *
+ * 曾经的 `screenshot` 工具已移除（截图对模型的价值不如 browser_snapshot 的文本快照，
+ * 而且它依赖无头浏览器，没装就只剩一句「先去设置里装」）。历史会话里的旧卡片仍按
+ * `TOOL_LABELS` 的 `screenshot` 条目渲染。
  */
 export function webToolsPlugin(
   root: string,
@@ -75,14 +74,6 @@ export function webToolsPlugin(
         priority: 0,
         origin: BUILTIN_ORIGIN,
         source: 'builtin:web_fetch'
-      })
-      // 装配期现读（与 chat-turn 里 browser_* 的装配闸同源判据）：装好后下一轮自然挂上，
-      // 不用重启；卸掉运行时则下一轮就不挂了。
-      if (!browserRuntimeInfo().installed) return
-      ctx.tools.registerAll(buildScreenshotTool(), {
-        priority: 0,
-        origin: BUILTIN_ORIGIN,
-        source: 'builtin:screenshot'
       })
     }
   }

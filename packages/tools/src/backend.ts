@@ -28,6 +28,7 @@ import {
 } from '@fizz/contracts/workspace'
 import { createAnsiStripper } from './ansi'
 import { createOutputDecoder } from './output-decoder'
+import { ripgrepFind, ripgrepSearch } from './ripgrep'
 
 /** 搜索文件的大小上限（1MB，跳过大文件避免卡死） */
 export const MAX_SEARCH_FILE_SIZE = 1_048_576
@@ -295,11 +296,32 @@ export function createLocalBackend(root: string): WorkspaceBackend {
     ignoreChecker: () => createIgnoreChecker(base),
 
     async search(opts: WorkspaceSearchOptions): Promise<WorkspaceSearchFile[]> {
+      const start = resolveInside(base, opts.subPath)
+      // 有随包 ripgrep 就走它（与 dsh 同源）；context > 0 的形态 rg 这条简单管道不出，退回 JS
+      if (opts.context === 0) {
+        const viaRg = await ripgrepSearch({
+          pattern: opts.pattern,
+          caseInsensitive: opts.caseInsensitive,
+          root: base,
+          start,
+          ...(opts.includeGlob ? { includeGlob: opts.includeGlob } : {}),
+          maxResults: opts.maxResults,
+          maxFileBytes: opts.maxFileBytes
+        })
+        if (viaRg) {
+          return viaRg.map((f) => ({
+            file: f.file,
+            hits: f.hits.map((h) => ({
+              line: h.line,
+              text: h.text.trimEnd().slice(0, MAX_LINE_CHARS)
+            }))
+          }))
+        }
+      }
       const re = new RegExp(opts.pattern, opts.caseInsensitive ? 'i' : '')
       const fileRe = opts.filePattern
         ? new RegExp(opts.filePattern, opts.caseInsensitive ? 'i' : '')
         : null
-      const start = resolveInside(base, opts.subPath)
       const st = await fs.stat(start).catch(() => null)
       if (!st) throw new Error(`路径不存在：${opts.subPath || '.'}（相对于工作区根）`)
       const acc: WorkspaceSearchFile[] = []
@@ -353,8 +375,16 @@ export function createLocalBackend(root: string): WorkspaceBackend {
     },
 
     async find(opts: WorkspaceFindOptions): Promise<string[]> {
-      const re = globToRegExp(opts.pattern)
       const start = resolveInside(base, opts.subPath)
+      const viaRg = await ripgrepFind({
+        pattern: opts.pattern,
+        root: base,
+        start,
+        includeIgnored: opts.includeIgnored === true,
+        maxResults: opts.maxResults
+      })
+      if (viaRg) return viaRg
+      const re = globToRegExp(opts.pattern)
       const st = await fs.stat(start).catch(() => null)
       if (!st) throw new Error(`路径不存在：${opts.subPath || '.'}（相对于工作区根）`)
       const out: string[] = []

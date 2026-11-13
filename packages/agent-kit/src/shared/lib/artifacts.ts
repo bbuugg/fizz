@@ -28,8 +28,8 @@ export interface PresentedDoc {
   title: string
 }
 
-/** 会产生 markdown 文档的写文件工具（其它工具不改文件，不参与识别） */
-const DOC_TOOL_NAMES = new Set(['write_file', 'edit_file'])
+/** 会产生 markdown 文档的写文件工具（其它工具不改文件，不参与识别；旧名留给历史会话） */
+const DOC_TOOL_NAMES = new Set(['write', 'edit', 'write_file', 'edit_file'])
 
 /** 工具调用 part 运行时携带的字段（合同类型没声明结果回填字段，与 `parts.ts` 同口径收窄） */
 type ToolCallPart = Extract<AgentMessagePart, { type: 'tool-call' }> & {
@@ -48,7 +48,8 @@ function docPathOfCall(part: ToolCallPart): string | null {
   if (!DOC_TOOL_NAMES.has(part.toolName)) return null
   const input = part.input
   if (!input || typeof input !== 'object') return null
-  const raw = (input as Record<string, unknown>).path
+  const fields = input as Record<string, unknown>
+  const raw = fields.file_path ?? fields.path
   if (typeof raw !== 'string') return null
   const rel = raw.trim().replace(/\\/g, '/')
   if (!rel || !isDocPath(rel)) return null
@@ -84,12 +85,14 @@ function unwrapToolOutput(output: unknown): unknown {
  *
  * 只认成功：`guardWrite` 的拒绝（只读模式 / 用户点拒绝）也是一条正常返回的文本结果
  * （不是 error），不判一下会把「没写成的文档」也挂上入口 —— 点开是空的。成功结果一律
- * 以「已写入 / 已应用」开头（见 `packages/tools` 的 write_file / edit_file）。
+ * 以 `Created file` / `Updated file` / `The file … has been updated` 开头，旧历史里则是
+ * 「已写入 / 已应用」（见 `packages/tools` 的 write / edit）。
  */
 function callSucceeded(part: ToolCallPart): boolean {
   if (part.isError) return false
   const output = unwrapToolOutput(part.output)
-  return typeof output === 'string' && /^已(写入|应用)/.test(output)
+  if (typeof output !== 'string') return false
+  return /^已(写入|应用)/.test(output) || /<content>\n(Created file|Updated file)\n<\/content>/.test(output) || /^The file .+ has been updated/.test(output)
 }
 
 /** 路径末段（两种分隔符都认 —— 数据从服务端来，Windows 上可能带反斜杠） */

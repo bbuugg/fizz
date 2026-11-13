@@ -192,9 +192,9 @@ export async function summarizeLongOutput(
     meta.detail ? `- 来源：${meta.tool} ${meta.detail}` : `- 来源：${meta.tool}`,
     `- 本次返回：第 1–${headLines} 行，以及第 ${tailStartLine}–${spilled.totalLines} 行；` +
       '其余行没有出现在这条结果里。',
-    `- 读其余部分：用 read_file(path="${spilled.relPath}", offset=<起始行号>, limit=<行数>) 一段段往下翻` +
+    `- 读其余部分：用 read(file_path="${spilled.relPath}", offset=<起始行号>, limit=<行数>) 一段段往下翻` +
       `（例如 offset=${headLines + 1}, limit=200），直到读完 ${spilled.totalLines} 行；` +
-      `也可以 search_files(pattern="<关键词>", filePattern="*${stem}*") 直接定位。`,
+      `也可以 grep(pattern="<关键词>", include="*${stem}*") 直接定位。`,
     ...(meta.extra ? [`- 补充：${meta.extra}`] : [])
   ].join('\n')
 

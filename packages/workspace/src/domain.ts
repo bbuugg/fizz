@@ -2575,7 +2575,9 @@ export class AgentDomain {
         modelConfigId: patch.modelConfigId !== undefined ? patch.modelConfigId : prev.modelConfigId,
         modelId: patch.modelId !== undefined ? patch.modelId : prev.modelId,
         // 步数整体替换：调用方（设置页）先合并好要留的 id 再传，缺 id = 该子任务回默认
-        maxSteps: patch.maxSteps !== undefined ? patch.maxSteps : prev.maxSteps
+        maxSteps: patch.maxSteps !== undefined ? patch.maxSteps : prev.maxSteps,
+        // 定义也整体替换：新建 / 编辑 / 删除都是前端算好整份再传
+        definitions: patch.definitions !== undefined ? patch.definitions : prev.definitions
       })
     })
     return this.store.snapshot().subagentSettings

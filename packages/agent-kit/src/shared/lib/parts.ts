@@ -190,6 +190,7 @@ export function applyEvent(parts: AgentMessagePart[], event: AgentStreamEvent): 
         ...call,
         delegation: {
           subagentId: event.subagentId,
+          ...(event.name ? { name: event.name } : {}),
           task: event.task,
           parts: [],
           status: 'running',
@@ -437,7 +438,7 @@ export function toolState(part: AgentMessagePart): {
  * （`input-streaming` 时命令还没开始跑，该走「正在写入参」那个预览）。
  */
 export function isCommandRunning(part: AgentMessagePart): boolean {
-  if (part.type !== 'tool-call' || part.toolName !== 'execute_command') return false
+  if (part.type !== 'tool-call' || canonicalToolName(part.toolName) !== 'bash') return false
   const { hasOutput, streamingInput } = toolState(part)
   return !hasOutput && !streamingInput
 }
@@ -450,11 +451,11 @@ export function isCommandRunning(part: AgentMessagePart): boolean {
  * 工具自己在执行期登记 stop**，不需要新接口、也不需要新按钮。
  *
  * 目前三类：
- * - `execute_command`：杀那一棵进程树；
+ * - `bash`（旧名 `execute_command`）：杀那一棵进程树；
  * - `web_fetch`：abort 这一次抓取（抓境外站点动辄等 30s，不该为它废掉整轮）；
  * - 派活工具 `agent-<id>`：abort 这一个子 run（见 `isStoppableToolName` 的说明）。
  */
-export const STOPPABLE_TOOLS: ReadonlySet<string> = new Set(['execute_command', 'web_fetch'])
+export const STOPPABLE_TOOLS: ReadonlySet<string> = new Set(['bash', 'execute_command', 'web_fetch'])
 
 /**
  * 派活工具（`agent-<id>`）也支持单条停止 —— 前缀判定，**不要**把 id 一个个塞进
@@ -494,6 +495,15 @@ export function textOf(message: AgentChatMessage): string {
  * 列出来的每个 key 都该在下面有一条。
  */
 export const TOOL_LABELS: Record<string, string> = {
+  // 对齐 DeepSeek Harness 后的名字（read / write / edit / glob / grep / bash）
+  read: '读取文件',
+  write: '写入文件',
+  edit: '编辑文件',
+  glob: '查找文件',
+  grep: '搜索内容',
+  bash: '执行命令',
+  str_replace_editor: '查看与编辑文件',
+  // 旧名保留：历史会话里存的是当时的工具名，去掉这些 key 会让旧卡片变成裸英文
   list_files: '列出目录',
   find_files: '查找文件',
   search_files: '搜索内容',
@@ -517,6 +527,13 @@ export const TOOL_LABELS: Record<string, string> = {
   git_read: '读取 Git',
   read_skill: '读取技能',
   ask_followup_question: '向用户提问',
+  // ACP 外部 Agent 配置（只挂项目助手；改的是全局设置）
+  list_acp_agents: '列出外部 Agent',
+  detect_acp_agents: '探测外部 Agent',
+  probe_acp_models: '探测 Agent 模型',
+  create_acp_agent: '添加外部 Agent',
+  update_acp_agent: '修改外部 Agent',
+  delete_acp_agent: '删除外部 Agent',
   // Fizz 自己的项目管理工具（agent 在会话里查 / 建工作区、会话、worktree 用）
   list_projects: '列出项目',
   list_dirs: '浏览目录',
@@ -546,6 +563,25 @@ export const TOOL_LABELS: Record<string, string> = {
   // 一张卡 + 「子任务 · xxx」的标题已经够读。
   'agent-explorer': '子任务 · 侦察',
   'agent-reviewer': '子任务 · 审查'
+}
+
+/**
+ * 旧工具名 → 新名。历史会话（`conversation.json`）里存的是当时的名字，不做映射的话
+ * 旧卡片会掉进通用 JSON 分支；新名字一律走 canonical 后再判定。
+ */
+const LEGACY_TOOL_NAMES: Record<string, string> = {
+  read_file: 'read',
+  write_file: 'write',
+  edit_file: 'edit',
+  search_files: 'grep',
+  find_files: 'glob',
+  list_files: 'glob',
+  execute_command: 'bash'
+}
+
+/** 把历史工具名折算成当前名字（未知名字原样返回） */
+export function canonicalToolName(name: string): string {
+  return LEGACY_TOOL_NAMES[name] ?? name
 }
 
 /** ACP agent 不给 name 时的占位工具名（与 @fizz/acp 的 acp.ts 里 ACP_UNNAMED_TOOL 一致） */
@@ -654,7 +690,12 @@ export function toolCardHead(
    */
   showIntent = true
 ): { title: string; detail?: string } {
-  const label = toolCardTitle(part.toolName, part.acpKind)
+  // 派活卡：用「子任务 · <显示名>」。自定义子智能体的名字随 delegation 落盘，
+  // 所以定义被删掉之后历史卡片仍显示当时的名字，而不是 `agent-custom-1a2b3c4d`。
+  const delegationName = part.toolName.startsWith('agent-') ? part.delegation?.name : undefined
+  const label = delegationName
+    ? t('子任务 · {name}', { name: delegationName })
+    : toolCardTitle(part.toolName, part.acpKind)
   const intent = showIntent ? toolIntentOf(part) : ''
   if (!intent) return detail ? { title: label, detail } : { title: label }
   const extra = detail?.trim()

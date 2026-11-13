@@ -318,7 +318,7 @@ export async function readNestedProjectDocs(
       const file = join(current, name)
       const rel = toPosixRelative(root, file)
       if (loaded.has(rel)) continue
-      // 先占位再读：同一批并行的 read_file / list_files 不该各注入一份同样的规则
+      // 先占位再读：同一批并行的 read / glob 不该各注入一份同样的规则
       loaded.add(rel)
       const raw = await readDocFile(file)
       if (!raw) {
@@ -337,7 +337,7 @@ export async function readNestedProjectDocs(
         text.length < expanded.length
           ? `\n\n（该文档过长，以上为前 ${Math.round((text.length / expanded.length) * 100)}%` +
             (section ? `（截至「${section}」）` : '') +
-            `；需要时用 read_file 读 ${rel} 补全。）`
+            `；需要时用 read 读 ${rel} 补全。）`
           : ''
       blocks.push(
         `<nested-project-doc path="${rel}" dir="${dirLabel}">\n` +
@@ -398,10 +398,10 @@ export function buildProjectDocSection(doc: ProjectDoc): string {
       en
         ? `⚠️ This document is too long (${doc.totalChars} chars); the text above is only the first ${percent}%` +
             (doc.section ? ` (up to “${doc.section}”)` : '') +
-            `. If this task may touch later sections, read ${doc.file} with read_file first — do not guess.`
+            `. If this task may touch later sections, read ${doc.file} with read first — do not guess.`
         : `⚠️ 该文档过长（共 ${doc.totalChars} 字符），以上只是前 ${percent}%` +
             (doc.section ? `（截至「${doc.section}」）` : '') +
-            `。若这次任务可能涉及后面的章节，先用 read_file 读 ${doc.file} 补全，别凭猜测动手。`
+            `。若这次任务可能涉及后面的章节，先用 read 读 ${doc.file} 补全，别凭猜测动手。`
     )
   }
   return lines.join('\n')

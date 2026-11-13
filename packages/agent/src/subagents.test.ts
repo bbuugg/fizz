@@ -219,3 +219,52 @@ describe('子任务单条停止', () => {
     expect(end && end.type === 'subagent-end' ? end.status : null).toBe('aborted')
   })
 })
+
+describe('自定义子智能体', () => {
+  const def = {
+    id: 'custom-ab12cd34',
+    name: '文档核对',
+    description: '核对文档与代码是否一致',
+    tools: ['read', 'grep'],
+    maxSteps: 12
+  }
+
+  function build(
+    ids: string[],
+    definitions = [def],
+    emit: (event: AgentStreamEvent) => void = () => {}
+  ) {
+    return buildDelegationTools(ids, {
+      workspacePath: 'D:/fake-workspace',
+      workspaceName: 'fake',
+      model: {} as AiModelConfig,
+      definitions,
+      emit,
+      stats: makeDelegationStats()
+    })
+  }
+
+  it('按定义生成 agent-<id>；未定义的 id 被跳过而不是抛错', () => {
+    const tools = build(['explorer', def.id, 'ghost'])
+    expect(Object.keys(tools)).toEqual(['agent-explorer', 'agent-custom-ab12cd34'])
+  })
+
+  it('派活事件带上显示名（删掉定义后历史仍能显示）', async () => {
+    const events: AgentStreamEvent[] = []
+    const tools = build([def.id], [def], (event) => events.push(event))
+    vi.mocked(streamText).mockClear()
+    vi.mocked(streamText).mockReturnValue(fakeStream('结论') as never)
+    await (tools[`agent-${def.id}`] as DelegationTool).execute(
+      { task: '核对一下' },
+      { toolCallId: 'parent-2' }
+    )
+    const start = events.find((e) => e.type === 'subagent-start')
+    expect(start && start.type === 'subagent-start' ? start.name : undefined).toBe('文档核对')
+  })
+
+  it('步数优先级：设置页覆盖 > 定义值 > 默认', () => {
+    expect(resolveMaxSteps(def.id, { [def.id]: 30 }, 12)).toBe(30)
+    expect(resolveMaxSteps(def.id, undefined, 12)).toBe(12)
+    expect(resolveMaxSteps('custom-unknown', undefined)).toBe(SUBAGENT_META.explorer.defaultMaxSteps)
+  })
+})

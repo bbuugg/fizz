@@ -77,6 +77,7 @@ import type {
   AiPermissionMode,
   AiReasoningEffort,
   RunAgentResult,
+  SubagentDefinition,
   SubagentTurnUsage,
   TurnUsage
 } from '@fizz/contracts/types'
@@ -125,6 +126,13 @@ export interface RunAgentOptions {
    * docs/superpowers/specs/2026-10-06-subagent-integration-design.md 的 §8。
    */
   subagents?: SubagentId[]
+  /** 用户自定义的子智能体（内置两个在代码里，不在这里） */
+  subagentDefs?: SubagentDefinition[]
+  /**
+   * 自定义子智能体各自的模型（server 已按定义里的 modelConfigId/modelId 解析好）。
+   * 缺省 / 没命中 = 退回全局 `subagentModel` → 父模型。
+   */
+  subagentDefinitionModels?: Record<string, AiModelConfig>
   /**
    * 子任务专用模型（完整配置：含明文 key / baseURL）。不传 = 沿用父会话模型；
    * 传了但某个子任务自己的 `preferredModelId` 在父配置里命中时，仍以子任务规格为准。
@@ -1212,6 +1220,17 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
                 ? { subagentModel: withModelApiStyle(opts.subagentModel) }
                 : {}),
               ...(opts.subagentMaxSteps ? { maxSteps: opts.subagentMaxSteps } : {}),
+              ...(opts.subagentDefs ? { definitions: opts.subagentDefs } : {}),
+              ...(opts.subagentDefinitionModels
+                ? {
+                    definitionModels: Object.fromEntries(
+                      Object.entries(opts.subagentDefinitionModels).map(([id, config]) => [
+                        id,
+                        withModelApiStyle(config)
+                      ])
+                    )
+                  }
+                : {}),
               /**
                * 子 run 的事件**不经过父流**（它是工具里自己起的流），所以看门狗的心跳
                * 必须在这里刷新 —— 否则一个跑了 3 分钟但一直在吐字的子任务会被当成卡死。

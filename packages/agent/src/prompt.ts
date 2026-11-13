@@ -225,10 +225,10 @@ export function buildAgentSystemPrompt(
         'Conventions:',
         '- Always use paths relative to the workspace root;',
         '- Call tools directly. Never narrate calls or results in prose such as “[calling tool xxx]”;',
-        '- For oversized output (execute_command / web_fetch), return only the beginning and end. The full text is saved to a workspace file under .fizz/tool-output/ and the result includes its path, total lines, and which lines were returned. ' +
-          'To read the middle, call read_file on that path with offset/limit, or search it with search_files — do not stop at the summary and do not re-run the command or re-fetch the page for the same content;',
+        '- For oversized output (bash / web_fetch), return only the beginning and end. The full text is saved to a workspace file under .fizz/tool-output/ and the result includes its path, total lines, and which lines were returned. ' +
+          'To read the middle, call read on that path with offset/limit, or search it with grep — do not stop at the summary and do not re-run the command or re-fetch the page for the same content;',
         '- Before dangerous operations (rm -rf, git push --force, deleting/overwriting files), explain the impact first;',
-        '- After editing, verify with execute_command when possible — prefer the project’s own typecheck/lint, the fastest static check;',
+        '- After editing, verify with bash when possible — prefer the project’s own typecheck/lint, the fastest static check;',
         '- When done, summarize concisely what you did, how you verified it, and what remains.'
       ]
     : [
@@ -237,12 +237,12 @@ export function buildAgentSystemPrompt(
         '使用约定：',
         '- 所有路径一律使用相对工作区根目录的路径；',
         '- 需要工具时直接调用，不要在正文里用「[调用工具 xxx]」这类文字复述调用过程或结果；',
-        '- 超长输出（execute_command / web_fetch）只回「开头 + 结尾」，但全文已落盘到结果里给出的那' +
+        '- 超长输出（bash / web_fetch）只回「开头 + 结尾」，但全文已落盘到结果里给出的那' +
           '个工作区文件（.fizz/tool-output/ 下），里面写着路径、全文行数与本次返回了哪几行。' +
-          '需要中段时用 read_file 传那个 path 加 offset / limit 按行读回来，或 search_files 检索它 ——' +
+          '需要中段时用 read 传那个 file_path 加 offset / limit 按行读回来，或 grep 检索它 ——' +
           '不要停在摘要上、也不要为同一段内容反复重跑命令或重新抓页面；',
         '- 危险操作（rm -rf、git push --force、删除 / 覆盖文件）先说明影响再执行；',
-        '- 改完文件后尽量用 execute_command 验证 —— 优先跑项目自带的类型检查 / lint，这是最快的静态验证；',
+        '- 改完文件后尽量用 bash 验证 —— 优先跑项目自带的类型检查 / lint，这是最快的静态验证；',
         '- 任务完成时用简洁的中文总结做了什么、验证结果如何、有何遗留。'
       ]
   lines.push('', buildPlanningSection())

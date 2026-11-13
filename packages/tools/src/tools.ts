@@ -1,17 +1,26 @@
 /**
- * 工作区 Agent 工具集：文件读取 / 查找 / 写入 / 编辑 / 删除 / 执行命令。
+ * 工作区 Agent 工具集：读 / 写 / 编辑 / 查文件（glob）/ 查内容（grep）/ 执行命令（bash）。
  *
- * 所有工具都绑定一个工作区根目录（root），文件路径一律相对工作区，
- * 经 resolveInside 越界校验后落盘，防止 Agent 逃出工作区。
+ * 工具面与 DeepSeek Harness（`@deepseek-ai/dsh-tool-fs` / `dsh-tool-fs-search` /
+ * `dsh-tool-bash`）**逐字对齐**：工具名、参数名、默认值、返回值信封、错误文案都照抄。
+ * 这样同一段提示词、同一套模型习惯在两个运行时之间可以直接搬。
  *
- * 权限：**会改动东西的工具**（write_file / edit_file / delete_file / execute_command）
- * 统一走 `guardWrite` 一道闸 ——
+ * 与 dsh 的**刻意偏差**（搬提示词时要知道）：
+ * - 路径用**相对工作区**的写法（dsh 用执行世界里的绝对路径）：Fizz 的模型一直按
+ *   「路径相对工作区根」工作，改绝对路径会让它把服务器路径写进文件内容里；
+ * - 读 / 查 / 执行结果后面还会追加一段「子目录 AGENTS.md 规则」（`nestedDocs`），
+ *   这是 Fizz 的项目规则加载机制，dsh 没有；
+ * - 每个工具多一个 `intent` 字段（`@fizz/agent` 的 `withToolIntent` 注入，用于审批文案）。
+ *
+ * 所有工具都绑定一个工作区根目录（root），文件路径经 `resolveInside` 越界校验后落盘。
+ *
+ * 权限：**会改动东西的工具**（write / edit / bash）统一走 `guardWrite` 一道闸 ——
  * - `readonly`：直接回绝（不落盘、不执行），并告诉模型让用户去切换模式；
  * - `confirm`：经 requestConfirm 弹卡片等用户点「允许」，被拒绝就当次调用放弃；
  *   没有可用的 requestConfirm 通道时**按拒绝处理**（fail-closed）；
  * - `full`：放行。
  *
- * 只读类工具（list/read/search/find/read_skill）在任何模式下都不拦。
+ * 只读类工具（read / glob / grep / read_skill）在任何模式下都不拦。
  */
 import { spawn } from 'node:child_process'
 import { tool, type ToolSet } from 'ai'
@@ -24,7 +33,6 @@ import type {
   WorkspaceSearchFile
 } from '@fizz/contracts/workspace'
 import { tr } from '@fizz/i18n'
-import { applyTolerantEdit } from './edit-match'
 import { stripAnsi } from './ansi'
 import { createOutputDecoder } from './output-decoder'
 import {
@@ -33,11 +41,8 @@ import {
   MAX_SEARCH_FILE_SIZE,
   resolveShellSpawn
 } from './backend'
-import {
-  clipToBudget,
-  MAX_TOOL_RESULT_CHARS,
-  summarizeLongOutput
-} from './output-log'
+import { summarizeLongOutput } from './output-log'
+import { buildStrReplaceEditorTool } from './str-replace-editor'
 
 export type AgentPermissionMode = 'full' | 'confirm' | 'readonly'
 
@@ -45,9 +50,29 @@ export type AgentPermissionMode = 'full' | 'confirm' | 'readonly'
  * 单个文件整体读入的上限（字节）：超过就不当文本处理。
  *
  * 超限只有「读不动」这一个理由（模型自己也读不动这么大一段），按行分段用
- * read_file 的 offset/limit 即可，不走 output-log（那里只留给 execute_command）。
+ * read 的 offset/limit 即可，不走 output-log（那里只留给 bash）。
  */
 const MAX_FILE_BYTES = 8_000_000
+
+/** 一次 read 的**默认且最大**行数（与 dsh 一致：传更大的值是错误，不是夹取） */
+const READ_LIMIT = 2000
+/** 单行最长返回多少字符（超出截断并标注） */
+const READ_MAX_LINE_LENGTH = 2000
+/** 一次 read 最多返回多少字节（UTF-8，含行间的换行） */
+const READ_MAX_BYTES = 50 * 1024
+
+/** grep 一次最多保留多少条命中 */
+const GREP_MAX_MATCHES = 250
+/** grep 单行预览最多多少字符 */
+const GREP_MAX_LINE_BYTES = 2000
+
+/** glob 一次最多返回多少条路径 */
+const GLOB_MAX_RESULTS = 100
+
+/** 后端 stat 拼出的「版本」：文件变了这两个值一定有一个会动 */
+function versionOf(stat: { size: number; mtimeMs?: number }): string {
+  return `${stat.size}:${stat.mtimeMs ?? 0}`
+}
 
 export interface AgentToolOptions {
   /** 确认模式下 execute_command 执行前需用户批准（整轮固定的静态档） */
@@ -66,8 +91,8 @@ export interface AgentToolOptions {
     command: string
   }) => Promise<boolean>
   /**
-   * `execute_command` 每次**启动命令前**调用：`stop` 由调用方持有，调用即杀
-   * 这条命令的进程树（工具结果收尾成「（已中止）」）。整轮 abort 仍走
+   * `bash` 每次**启动命令前**调用：`stop` 由调用方持有，调用即杀
+   * 这条命令的进程树（工具结果收尾成「已中止」）。整轮 abort 仍走
    * `options.abortSignal`（tools 内部把它联动到同一个 per-command controller）。
    * 不传 = 没有单条停止能力（行为与加这些回调之前逐字节一致）。
    */
@@ -77,20 +102,13 @@ export interface AgentToolOptions {
   /** 命令执行期间的 stdout / stderr 实时增量（纯转发，不缓存） */
   onCommandOutput?: (toolCallId: string, stream: 'stdout' | 'stderr', chunk: string) => void
   /**
-   * `execute_command` 带 `runInBackground: true` 时调用：把它登记成一条**后台任务**，
-   * 立刻返回任务 id（进程归调用方持有，不占本轮的取消表、不设超时）。
-   *
-   * 由服务端注入 —— 只有它知道任务登记表在哪、这条命令属于哪个会话。**不传 = 不提供
-   * 后台执行**：工具会如实回绝并让模型别等输出，而不是假装命令起来了。
+   * `bash` 带 `run_in_background: true` 时调用：把它登记成一条**后台任务**。
+   * 不传 = 没有后台执行能力（工具会如实回绝）。
    */
-  onBackgroundCommand?: (req: {
-    command: string
-    /** 已解析好的绝对路径（调用方不用再算一次 cwd） */
-    cwd: string
-    /** 一行标题：就是命令原文，任务列表里显示这一行 */
-    title: string
-  }) => Promise<{ id: string }>
-  /** 可用技能（见 skills.ts）；有值时额外暴露 read_skill 工具，空值不暴露 */
+  onBackgroundCommand?: (req: { command: string; cwd: string; title: string }) => Promise<{
+    id: string
+  }>
+  /** 可用技能：给了才挂 `read_skill`（否则模型拿着一份空清单乱试） */
   skills?: AgentSkill[]
   /**
    * 只暴露这些工具（按 key 白名单）；缺省 = 全给。
@@ -101,8 +119,8 @@ export interface AgentToolOptions {
    */
   includeTools?: string[]
   /**
-   * **子目录规则**的按需加载钩子：`read_file` / `list_files` 每次调用后带上
-   * 目标路径（绝对）与是否目录，返回非空文本就追加到工具结果后面。
+   * **子目录规则**的按需加载钩子：`read` 每次调用后带上目标路径（绝对）与是否目录，
+   * 返回非空文本就追加到工具结果后面。
    *
    * 由 `@fizz/agent` 注入（读 `<目录>/AGENTS.md`，按会话去重）；不传 = 行为与从前一致。
    * 钩子抛错不影响工具结果本身（规则只是补充说明）。
@@ -143,75 +161,102 @@ function clampInt(v: number | undefined, min: number, max: number, fallback: num
  * 读取文本文件：二进制（含 NUL）与超大文件直接报错。
  *
  * 超大文件报错的理由只剩「读不动」这一个（`MAX_FILE_BYTES`），不再是因为「太大不适合
- * 一次返回」—— 后者由 read_file 的 offset/limit 分段读解决。
+ * 一次返回」—— 后者由 read 的 offset/limit 分段读解决。
  */
-async function readTextFile(backend: WorkspaceBackend, abs: string): Promise<string> {
+async function readTextFile(
+  backend: WorkspaceBackend,
+  abs: string,
+  display: string
+): Promise<string> {
   const stat = await backend.stat(abs)
-  if (!stat) throw new Error(`文件不存在：${backend.rel(abs)}`)
-  if (stat.type === 'dir') throw new Error(`不是文件：${backend.basename(abs)}`)
+  if (!stat) throw new Error(`cannot read "${display}": not found`)
+  if (stat.type !== 'file') throw new Error(`cannot read "${display}": not a regular file`)
   if (stat.size > MAX_FILE_BYTES) {
-    throw new Error(
-      `文件过大（${stat.size} 字节，超过 ${MAX_FILE_BYTES} 字节上限），无法整体按文本读取。` +
-        '请先用 search_files 定位关键内容，再用 read_file 的 offset/limit 分段读取'
-    )
+    throw new Error(`cannot read "${display}": ${stat.size} bytes exceeds the ${MAX_FILE_BYTES}-byte limit`)
   }
   const buf = await backend.readFile(abs, { maxBytes: MAX_FILE_BYTES })
-  if (buf.includes(0)) throw new Error('二进制文件，无法以文本方式读取')
+  if (buf.includes(0)) throw new Error(`cannot read "${display}": binary file`)
   return buf.toString('utf8')
 }
 
-// ---------- 文件系统遍历 ----------
+// ---------- 结果信封（与 dsh 的 formatXxxOutput 逐字一致） ----------
 
-async function listDir(
-  backend: WorkspaceBackend,
-  dir: string,
-  depth: number,
-  ignored: (rel: string, isDir: boolean) => boolean,
-  lines: string[]
-): Promise<void> {
-  // 远端 SFTP 的 readdir 顺序不保证，统一在这里排序（目录在前、同类按名称）
-  const entries = [...(await backend.readDir(dir))].sort((a, b) => {
-    const ad = a.type === 'dir' ? 0 : 1
-    const bd = b.type === 'dir' ? 0 : 1
-    return ad === bd ? a.name.localeCompare(b.name) : ad - bd
-  })
-  for (const ent of entries) {
-    const abs = backend.join(dir, ent.name)
-    const rel = backend.rel(abs)
-    if (ignored(rel, ent.type === 'dir')) continue
-    if (ent.type === 'dir') {
-      lines.push(`${rel}/`)
-      if (depth > 0) await listDir(backend, abs, depth - 1, ignored, lines)
-    } else if (ent.type === 'file') {
-      lines.push(`${rel}\t${ent.size ?? 0}B`)
-    }
+/** read 的模型可见文本：`<path>/<type>/<content>` 信封 + `N: 行内容` + 分页脚注 */
+function formatReadOutput(
+  display: string,
+  lines: Array<{ number: number; text: string }>,
+  offset: number,
+  totalLines: number,
+  truncatedByBytes: boolean
+): string {
+  const endLine = lines.at(-1)?.number ?? Math.max(0, offset - 1)
+  let footer: string
+  if (truncatedByBytes) {
+    footer = `(Output capped. Showing lines ${offset}-${endLine}. Use offset=${endLine + 1} to continue.)`
+  } else if (endLine < totalLines) {
+    footer = `(Showing lines ${offset}-${endLine} of ${totalLines}. Use offset=${endLine + 1} to continue.)`
+  } else {
+    footer = `(End of file - total ${totalLines} lines)`
   }
+  const body =
+    lines.length > 0
+      ? `${lines.map((line) => `${line.number}: ${line.text}`).join('\n')}\n\n${footer}`
+      : footer
+  return `<path>${display}</path>
+<type>file</type>
+<content>
+${body}
+</content>`
 }
 
-/** 把内容命中格式化成模型友好的文本 */
-function formatSearchHits(files: WorkspaceSearchFile[], context: number): string {
-  if (!files.length) return '（未找到匹配）'
-  const out: string[] = []
-  if (context <= 0) {
-    // 保持 ripgrep 的 `路径:行号: 内容` 风格 —— 模型对这种格式最熟
-    for (const f of files) {
-      for (const h of f.hits) out.push(`${f.file}:${h.line}: ${h.text}`)
-    }
-    return out.join('\n')
+/** write 的模型可见文本 */
+function formatWriteOutput(display: string, created: boolean): string {
+  return `<path>${display}</path>
+<type>file</type>
+<content>
+${created ? 'Created file' : 'Updated file'}
+</content>`
+}
+
+/** edit 的模型可见文本 */
+function formatEditOutput(display: string, replaceAll: boolean): string {
+  return replaceAll
+    ? `The file ${display} has been updated. All occurrences were successfully replaced.`
+    : `The file ${display} has been updated successfully.`
+}
+
+// ---------- 编辑 ----------
+
+/**
+ * 字面量替换（与 dsh 的 `editText` 同语义）。
+ *
+ * - 在 **LF 归一化**的文本上匹配，最后按原文的主流行尾还原（CRLF 文件改完还是 CRLF）；
+ * - 默认**必须唯一命中**：0 处报「没找到」，多处要求 `replace_all`（模型自己决定）；
+ * - 不存在「近似匹配」：行尾 / 缩进 / 行号前缀的差异都要模型自己抄对，这是 dsh 的取舍。
+ */
+export function applyLiteralEdit(
+  text: string,
+  oldString: string,
+  newString: string,
+  replaceAll: boolean,
+  display: string
+): { text: string; count: number } {
+  const crlf = (text.match(/\r\n/g)?.length ?? 0) > 0 && (text.match(/\r\n/g)?.length ?? 0) * 2 >= (text.match(/\n/g)?.length ?? 0)
+  const lf = text.replace(/\r\n/g, '\n')
+  const needle = oldString.replace(/\r\n/g, '\n')
+  const replacement = newString.replace(/\r\n/g, '\n')
+  if (needle.length === 0) throw new Error('old_string must be a non-empty string')
+
+  const count = lf.split(needle).length - 1
+  if (count === 0) throw new Error(`old_string was not found in "${display}"`)
+  if (count > 1 && !replaceAll) {
+    throw new Error(
+      `old_string matched ${count} times in "${display}"; provide a more specific old_string or set replace_all to true`
+    )
   }
-  for (const f of files) {
-    if (!f.context) continue
-    out.push(`${f.file}:`)
-    for (const c of f.context) {
-      // line=0 是后端插入的分组分隔（见 contracts/workspace 的 WorkspaceSearchFile）
-      if (c.line === 0) {
-        out.push('--')
-        continue
-      }
-      out.push(`${c.line}${c.hit ? ':' : '-'} ${c.text}`)
-    }
-  }
-  return out.join('\n')
+
+  const next = replaceAll ? lf.split(needle).join(replacement) : lf.replace(needle, replacement)
+  return { text: crlf ? next.replace(/\n/g, '\r\n') : next, count }
 }
 
 // ---------- 命令执行 ----------
@@ -334,32 +379,42 @@ function intentOf(input: unknown): string {
 }
 
 /**
- * 把后端执行结果拼成 `execute_command` 的模型可见文本。
+ * 把后端执行结果拼成 `bash` 的模型可见文本（与 dsh 的 `renderResult` 同格式）：
+ * stdout、`[stderr]` 段、`[exit code: N]` 标记；全空写 `(no output)`。
  *
- * 格式与改造前的 `runCommand` 逐字对齐：`$ 命令\n（收场说明）\nstdout\nstderr`；
- * 超预算交给 `summarizeLongOutput` 落盘（后端决定落本地还是远端工作区）。
+ * 非 0 退出码**不是**工具错误（模型自己决定怎么办）；只有启动失败这种基础设施问题才抛错。
  */
-async function formatExecResult(
+async function formatBashOutput(
   backend: WorkspaceBackend,
   command: string,
   result: WorkspaceExecResult,
   timeoutMs: number
 ): Promise<string> {
-  const info =
-    result.reason === 'exit'
-      ? `（退出码 ${result.exitCode}）`
-      : result.reason === 'timeout'
-        ? `（超时 ${timeoutMs}ms，已终止进程树）`
-        : result.reason === 'aborted'
-          ? '（已中止）'
-          : `（命令启动失败：${result.error ?? '未知错误'}）`
-  // 先剥 ANSI 再 trim：`npm run` 会给脚本注入 FORCE_COLOR，vite / tsc / jest 照样吐颜色
-  const out = stripAnsi(result.stdout).trim()
-  const err = stripAnsi(result.stderr).trim()
-  const full = `$ ${command}\n${info}\n${out}${err ? `\n${err}` : ''}`
+  // 先剥 ANSI：`npm run` 会给脚本注入 FORCE_COLOR，vite / tsc / jest 照样吐颜色
+  const out = stripAnsi(result.stdout)
+  const err = stripAnsi(result.stderr)
+  if (result.reason === 'error') {
+    throw new Error(`command failed to start: ${result.error ?? 'unknown error'}`)
+  }
+
+  let body = out
+  if (err.length > 0) {
+    // stdout 通常自带结尾换行；没有的话补一个，别把两段粘成一行
+    if (body.length > 0 && !body.endsWith('\n')) body += '\n'
+    body += `[stderr]\n${err}`
+  }
+  if (body.trim().length === 0) body = '(no output)'
+
+  const markers: string[] = []
+  if (result.reason === 'timeout') markers.push(`[timed out after ${timeoutMs}ms]`)
+  if (result.reason === 'aborted') markers.push('[stopped: cancelled]')
+  if (result.reason === 'exit' && result.exitCode !== 0) {
+    markers.push(`[exit code: ${result.exitCode}]`)
+  }
+  const full = markers.length ? `${body.trimEnd()}\n${markers.join('\n')}` : body.trimEnd()
   return summarizeLongOutput(full, {
     backend,
-    tool: 'execute_command',
+    tool: 'bash',
     detail: command.slice(0, 200)
   })
 }
@@ -391,13 +446,20 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
         : 'Commands run in bash.'
 
   /**
+   * 观察表：本次工具集生命周期内「模型读过哪些文件、读到的版本是什么」。
+   *
+   * 对应 dsh 的 `fs-observation-policy`：write / edit 只能改「读过且没被别人改过」的文件。
+   * 与 dsh 的差别：工具集一轮建一次，所以这张表只活在**一轮**里（跨轮要重读）；
+   * 校验是写前再 stat 一次，不是后端层的原子 CAS —— 中间被外部改掉的极小窗口仍存在。
+   */
+  const observed = new Map<string, string>()
+
+  /**
    * 改动类工具的统一闸门。
    *
    * 返回 `null` = 放行；返回字符串 = 这个字符串就是**工具结果**（回绝说明），
    * 直接 return 回去即可 —— 不用抛错：回绝是「预期内的结果」，让模型看到原因后
    * 能向用户解释，而不是变成一个工具报错把整轮打断。
-   *
-   * `denied` 用来拼文案，写成「文件未写入」这类短句。
    */
   const guardWrite = async (
     denied: string,
@@ -420,6 +482,31 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
       : `用户拒绝了这次调用：${denied}。请询问用户接下来希望怎么做，不要擅自重试同一步。`
   }
 
+  /**
+   * 读后写校验：没读过 → 明确让模型先读；读之后被外部改过 → 让它重读。
+   * 返回 `null` = 放行。
+   */
+  const checkObserved = async (abs: string, display: string): Promise<string | null> => {
+    const prior = observed.get(abs)
+    const stat = await backend.stat(abs)
+    if (!prior) {
+      // 文件本来就不存在 = 新建，不需要「先读」
+      if (!stat) return null
+      return `cannot modify "${display}": file has not been read — read the file, then retry`
+    }
+    if (!stat) return `cannot write "${display}": file no longer exists — re-read the file, then retry`
+    if (versionOf(stat) !== prior) {
+      return `cannot write "${display}": file changed since it was read — re-read the file, then retry`
+    }
+    return null
+  }
+
+  /** 记下「这个文件现在是什么版本」（读成功 / 刚写完） */
+  const recordObserved = async (abs: string): Promise<void> => {
+    const stat = await backend.stat(abs)
+    if (stat) observed.set(abs, versionOf(stat))
+  }
+
   /** 把按需加载的子目录规则附在工具结果后面（没有规则 / 钩子抛错就原样返回） */
   const withNestedDocs = async (text: string, abs: string, isDirectory: boolean): Promise<string> => {
     if (!opts.nestedDocs) return text
@@ -428,338 +515,330 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
   }
 
   const all = {
-    list_files: tool({
+    read: tool({
       description:
-        tr(
-          '列出工作区目录内容（自动忽略 .git、node_modules、构建产物与 .gitignore 规则）。返回每个条目的相对路径，目录带 / 后缀，文件附大小。适合先了解项目结构。',
-          'List workspace directory contents (ignores .git, node_modules, build outputs, and .gitignore rules). Returns relative paths; directories end with /, files include size. Useful for getting oriented in a project.'
-        ),
+        'Read a UTF-8 text file and return line-numbered content.',
       inputSchema: z.object({
-        path: z.string().optional().describe(tr('相对工作区的目录路径，缺省为工作区根目录', 'Directory path relative to the workspace; defaults to the workspace root')),
-        depth: z.number().optional().describe(tr('递归深度，默认 0（仅当前目录），最大 4', 'Recursion depth; default 0 (current directory only), max 4'))
+        file_path: z.string().describe('Path to read, resolved by the filesystem backend.'),
+        offset: z.number().optional().describe('1-based first line to return. Defaults to 1.'),
+        limit: z
+          .number()
+          .optional()
+          .describe(`Maximum number of lines to return. Defaults to ${READ_LIMIT}.`)
       }),
-      execute: async ({ path = '', depth = 0 }) => {
-        const absDir = backend.resolve(path)
-        const stat = await backend.stat(absDir)
-        if (!stat) throw new Error(`路径不存在：${path || '.'}（相对于工作区根）`)
-        if (stat.type !== 'dir') throw new Error(`不是目录：${path || '.'}（list_dir 的 path 必须是目录）`)
-        const ignored = await backend.ignoreChecker()
-        const lines: string[] = []
-        await listDir(backend, absDir, clampInt(depth, 0, 4, 0), ignored, lines)
-        return withNestedDocs(lines.length ? lines.join('\n') : '（空目录）', absDir, true)
-      }
-    }),
+      execute: async ({ file_path, offset, limit }) => {
+        if (file_path.trim().length === 0) throw new Error('file_path must be a non-empty string')
+        const startLine = offset === undefined ? 1 : Math.trunc(offset)
+        if (!Number.isFinite(startLine) || startLine < 1) {
+          throw new Error('offset must be a positive integer')
+        }
+        const maxLines = limit === undefined ? READ_LIMIT : Math.trunc(limit)
+        if (!Number.isFinite(maxLines) || maxLines < 1) {
+          throw new Error('limit must be a positive integer')
+        }
+        if (maxLines > READ_LIMIT) throw new Error(`limit must be less than or equal to ${READ_LIMIT}`)
 
-    read_file: tool({
-      description:
-        tr(
-          '读取文件内容并附行号，用于理解源码 / 配置 / 文档。路径相对工作区根目录。' +
-            '默认只读前 200 行（上限 2000）：大文件请用 offset/limit 按需分段读，不要一次拉全文。' +
-            '超出预算时会按行裁剪并告诉你还有哪些行没显示。' +
-            '⚠️ 行号只是给你定位用的（格式 `  42 | 代码`），**不要**把它复制进 edit_file 的 oldText。',
-          'Read a file with line numbers for understanding source, config, or docs. Paths are relative to the workspace root. ' +
-            'By default it reads the first 200 lines (max 2000): for large files use offset/limit instead of fetching everything at once. ' +
-            'When over budget it trims by line and tells you which lines were omitted. ' +
-            '⚠️ Line numbers are only for navigation (`  42 | code`); do NOT copy them into edit_file oldText.'
-        ),
-      inputSchema: z.object({
-        path: z.string().describe(tr('相对工作区的文件路径', 'File path relative to the workspace')),
-        offset: z.number().optional().describe(tr('起始行号（1 起），缺省 1', 'Starting line number (1-based); defaults to 1')),
-        limit: z.number().optional().describe(tr('返回行数上限，默认 200，最大 2000', 'Maximum lines to return; default 200, max 2000'))
-      }),
-      execute: async ({ path, offset = 1, limit = 200 }) => {
-        const abs = backend.resolve(path)
-        const text = await readTextFile(backend, abs)
-        const rel = backend.rel(abs)
-        const lines = text.split('\n')
-        const start = Math.max(0, offset - 1)
-        const slice = lines.slice(start, start + clampInt(limit, 1, 2000, 200))
-        const body = slice
-          .map((l, i) => `${String(start + i + 1).padStart(5)} | ${l}`)
-          .join('\n')
-        const header = `${rel}（共 ${lines.length} 行 / ${text.length} 字符）`
-        const endLine = start + slice.length
+        const abs = backend.resolve(file_path)
+        const display = backend.rel(abs)
+        const text = await readTextFile(backend, abs, display)
+        const stat = await backend.stat(abs)
+        // 读成功就记下版本：之后 write / edit 的依据（dsh 的 read 也会发一条 present 观察）
+        if (stat) observed.set(abs, versionOf(stat))
 
-        // 小文件：一行给全，靠 offset/limit 翻页就够了
-        if (text.length <= MAX_TOOL_RESULT_CHARS) {
-          const more = endLine < lines.length ? `\n…（本段到第 ${endLine} 行，offset=${endLine + 1} 继续）` : ''
-          return withNestedDocs(`${header}\n${body}${more}`, abs, false)
+        const all = text.split('\n').map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line))
+        const totalLines = all.length
+        if (startLine > totalLines && !(totalLines === 1 && all[0] === '')) {
+          throw new Error(`offset ${startLine} is out of range for "${display}" (${totalLines} lines)`)
         }
 
-        /*
-          * 大文件：本次只回预算内的一段（按行窗口），并说清还剩哪些行没显示。
-          *
-          * 关键信息往往不在头几行（构建日志的第一条 error、文件末尾的导出表），所以提示
-          * 里必须写清「这次给的是哪一段、下一段从哪行开始」，模型才能按行翻到位，而不是
-          * 只看到一句「已截断」后反复从头读。文件本身不落盘（output-log 只留给
-          * execute_command），用 offset/limit 翻即可。
-         */
-        return withNestedDocs(
-          [
-            header,
-            clipToBudget(body),
-            `…（本次返回第 ${start + 1}–${endLine} 行；文件还有第 ${endLine + 1}–${lines.length} 行没显示，用 offset=${endLine + 1} 继续）…`
-          ].join('\n'),
-          abs,
-          false
-        )
+        const rows: Array<{ number: number; text: string }> = []
+        let bytes = 0
+        let truncatedByBytes = false
+        for (let i = startLine - 1; i < totalLines && rows.length < maxLines; i += 1) {
+          const raw = all[i]
+          const line =
+            raw.length > READ_MAX_LINE_LENGTH
+              ? `${raw.slice(0, READ_MAX_LINE_LENGTH)}... (line truncated to ${READ_MAX_LINE_LENGTH} chars)`
+              : raw
+          const cost = Buffer.byteLength(line, 'utf8') + 1
+          if (bytes + cost > READ_MAX_BYTES && rows.length > 0) {
+            truncatedByBytes = true
+            break
+          }
+          bytes += cost
+          rows.push({ number: i + 1, text: line })
+        }
+        const out = formatReadOutput(display, rows, startLine, totalLines, truncatedByBytes)
+        return withNestedDocs(out, abs, false)
       }
     }),
 
-    write_file: tool({
+    write: tool({
       description:
-        tr(
-          '创建或整体覆盖写入一个文件（自动创建父目录）。会覆盖已有内容，写入前请先 read_file 确认原文。路径相对工作区根目录。',
-          'Create or fully overwrite a file (parent directories are created automatically). Existing content is replaced; use read_file first to confirm. Paths are relative to the workspace root.'
-        ),
+        'Create or fully replace a UTF-8 text file.',
       inputSchema: z.object({
-        path: z.string().describe(tr('相对工作区的文件路径', 'File path relative to the workspace')),
-        content: z.string().describe(tr('完整文件内容', 'Full file contents'))
+        file_path: z
+          .string()
+          .describe(
+            'Path to write, resolved by the filesystem backend. Provide `file_path` before `content` in the arguments.'
+          ),
+        content: z.string().describe('Full UTF-8 text content to write.')
       }),
       execute: async (input, options) => {
-        const { path, content } = input
+        const { file_path, content } = input
+        if (file_path.trim().length === 0) throw new Error('file_path must be a non-empty string')
+        const abs = backend.resolve(file_path)
+        const display = backend.rel(abs)
+        const refuse = await checkObserved(abs, display)
+        if (refuse) throw new Error(refuse)
+
         const refused = await guardWrite('文件未写入', {
           toolCallId: options.toolCallId,
-          toolName: 'write_file',
-          command: `写入文件 ${path}（${content.length} 字符）`,
+          toolName: 'write',
+          command: `写入文件 ${display}（${content.length} 字符）`,
           intent: intentOf(input)
         })
         if (refused) return refused
-        const abs = backend.resolve(path)
-        await backend.writeFile(abs, content)
-        return `已写入 ${backend.rel(abs)}（${content.length} 字符）`
+
+        const existed = (await backend.stat(abs)) !== null
+        await backend.writeFile(abs, content, { createParents: true })
+        const after = await backend.stat(abs)
+        if (after) observed.set(abs, versionOf(after))
+        return formatWriteOutput(display, !existed)
       }
     }),
 
-    edit_file: tool({
+    edit: tool({
       description:
-        tr(
-          '对文件做多处查找替换编辑（只改局部，不整体重写）。oldText 直接用 read_file 看到的原文内容：不要带输出里的「行号 | 」前缀，也不要自己加工转义符。' +
-            '系统已容忍行尾（CRLF/LF）、缩进、行尾空白的细微差异，但替换范围以 oldText 为准，所以仍要带上足够上下文、避免误伤相似片段。' +
-            '同一段文本出现多处时全部替换；一处都找不到则报错且不落盘（错误里会指出 oldText 首行在文件第几行出现过）。',
-          'Apply multiple search/replace edits to a file (local changes only, no full rewrite). oldText must be the exact text seen in read_file: no “line | ” prefix and no escaping changes. ' +
-            'Minor differences in line endings (CRLF/LF), indentation, and trailing whitespace are tolerated, but the replacement range follows oldText — include enough context to avoid hitting similar snippets. ' +
-            'Every occurrence is replaced; if none is found the call errors and nothing is written (the error reports where oldText’s first line occurs).'
-        ),
+        'Edit an existing UTF-8 text file by replacing literal text.',
       inputSchema: z.object({
-        path: z.string().describe(tr('相对工作区的文件路径', 'File path relative to the workspace')),
-        edits: z
-          .array(
-            z.object({
-              oldText: z.string().describe(tr('要查找的原文片段（照抄 read_file 的内容，不含行号前缀）', 'Exact source text to find (copy read_file output without line-number prefixes)')),
-              newText: z.string().describe(tr('替换后的文本', 'Replacement text'))
-            })
+        file_path: z
+          .string()
+          .describe(
+            'Path to edit, resolved by the filesystem backend. Provide `file_path` before `old_string` and `new_string` in the arguments.'
+          ),
+        old_string: z.string().describe('Literal text to replace.'),
+        new_string: z
+          .string()
+          .describe('Literal replacement text. Use an empty string to delete the match.'),
+        replace_all: z
+          .boolean()
+          .optional()
+          .describe(
+            'Replace all matches. Defaults to false; when false, old_string must appear exactly once.'
           )
-          .describe(tr('按顺序应用的替换列表', 'List of replacements applied in order'))
       }),
       execute: async (input, options) => {
-        const { path, edits } = input
-        if (edits.length === 0) throw new Error('edits 是空的：至少给一处 oldText/newText')
-        const abs = backend.resolve(path)
-        // 文件不存在给一句人话：模型常常拿一个猜的路径来 edit（原始 ENOENT 看不出该怎么办）
-        if (!(await backend.stat(abs))) {
-          throw new Error(`文件不存在：${path}（edit_file 只能改已存在的文件，新建请用 write_file）`)
-        }
-        let text = await readTextFile(backend, abs)
+        const { file_path, old_string, new_string } = input
+        const replaceAll = input.replace_all ?? false
+        if (file_path.trim().length === 0) throw new Error('file_path must be a non-empty string')
+        if (old_string.length === 0) throw new Error('old_string must be a non-empty string')
+        if (old_string === new_string) throw new Error('old_string and new_string must differ')
 
-        /*
-         * 先在**内存里**把替换全部跑通，再走审批闸门。
-         * 顺序很重要：匹配失败是「这段 oldText 根本没对上」这种**注定失败**的调用，
-         * 让用户在确认弹窗上点一次「允许」再去报错，纯属白打扰；反过来确认被拒
-         * （只读模式 / 用户点拒绝）时我们一个字节都没落盘，也不会有副作用。
-         */
-        const applied: string[] = []
-        for (const { oldText, newText } of edits) {
-          const result = applyTolerantEdit(text, oldText, newText)
-          text = result.text
-          // 摘要取 oldText 的第一行有效内容（多行 oldText 直接 trim 会把换行也带进结果文案）
-          const head = oldText
-            .split('\n')
-            .map((line) => line.trim())
-            .find((line) => line.length > 0) ?? ''
-          const brief = `${head.slice(0, 40)}${head.length > 40 ? '…' : ''}`
-          applied.push(`${brief}（${result.count} 处${result.note ? `，${result.note}` : ''}）`)
-        }
+        const abs = backend.resolve(file_path)
+        const display = backend.rel(abs)
+        const refuse = await checkObserved(abs, display)
+        if (refuse) throw new Error(refuse)
+
+        // 先在内存里算完再走审批：匹配失败是注定失败的调用，不该先打扰用户
+        const before = await readTextFile(backend, abs, display)
+        const { text, count } = applyLiteralEdit(before, old_string, new_string, replaceAll, display)
 
         const refused = await guardWrite('文件未被编辑', {
           toolCallId: options.toolCallId,
-          toolName: 'edit_file',
-          command: `编辑文件 ${path}（${edits.length} 处替换）`,
+          toolName: 'edit',
+          command: `编辑文件 ${display}（${count} 处替换）`,
           intent: intentOf(input)
         })
         if (refused) return refused
 
-        await backend.writeFile(abs, text)
-        return `已应用 ${applied.length} 处编辑（${backend.rel(abs)}）：${applied.join('；')}`
+        await backend.writeFile(abs, text, { createParents: true })
+        const after = await backend.stat(abs)
+        if (after) observed.set(abs, versionOf(after))
+        return formatEditOutput(display, replaceAll)
       }
     }),
 
-    search_files: tool({
+    glob: tool({
       description:
-        tr(
-          '在工作区中按正则搜索文件内容（自动跳过忽略目录、二进制与大文件）。返回命中文件的相对路径、行号与行内容。用于定位符号、关键配置与错误来源。结果很多时用 filesOnly 只拿「文件:命中数」省上下文；要看代码上下文用 context。',
-          'Search file contents in the workspace by regex (skips ignored directories, binaries, and large files). Returns relative paths, line numbers, and matching lines. Use it to locate symbols, key config, and error sources. For many results use filesOnly to get “file:count” and save context; use context to see surrounding code.'
-        ),
-      inputSchema: z.object({
-        pattern: z.string().describe(tr('正则表达式（默认区分大小写）', 'Regular expression (case-sensitive by default)')),
-        path: z
-          .string()
-          .optional()
-          .describe(tr('搜索起点（相对工作区的文件或目录）：给目录递归搜，给文件只搜这一个，缺省为根目录', 'Search root (file or directory relative to the workspace): directories are searched recursively, a file only itself; defaults to root')),
-        filePattern: z.string().optional().describe(tr('限定文件名正则，如 "\\.(ts|tsx|json)$"', 'Optional file-name regex, e.g. "\\.(ts|tsx|json)$"')),
-        caseInsensitive: z
-          .boolean()
-          .optional()
-          .describe(tr('忽略大小写（同时作用于 pattern 与 filePattern），默认 false', 'Case-insensitive (applies to pattern and filePattern); default false')),
-        filesOnly: z
-          .boolean()
-          .optional()
-          .describe(tr('只返回命中的文件及其命中数（每行 `路径:命中数`），不返回行内容', 'Return only matching files and hit counts (`path:count` per line), not line contents')),
-        context: z
-          .number()
-          .optional()
-          .describe(tr('每条命中附带的前后上下文行数（0–5），默认 0。适合需要看清代码结构的场景', 'Context lines around each hit (0–5); default 0. Useful when code structure matters')),
-        maxResults: z.number().optional().describe(tr('最大命中行数，默认 200，最大 1000', 'Maximum matching lines; default 200, max 1000'))
-      }),
-      execute: async ({
-        pattern,
-        path = '',
-        filePattern,
-        caseInsensitive = false,
-        filesOnly = false,
-        context = 0,
-        maxResults = 200
-      }) => {
-        const flags = caseInsensitive ? 'i' : ''
-        // 先在 JS 侧预检正则：远端 rg/grep 的方言差异会给出难读的报错，语法错在这里就说清
-        try {
-          new RegExp(pattern, flags)
-        } catch (e) {
-          throw new Error(`无效的正则：${(e as Error).message}`)
-        }
-        if (filePattern) {
-          try {
-            new RegExp(filePattern, flags)
-          } catch (e) {
-            throw new Error(`无效的文件名正则：${(e as Error).message}`)
-          }
-        }
-        const absPath = backend.resolve(path)
-        if (!(await backend.stat(absPath))) {
-          throw new Error(`路径不存在：${path || '.'}（相对于工作区根）`)
-        }
-        const ctx = clampInt(context, 0, 5, 0)
-        const max = clampInt(maxResults, 1, 1000, 200)
-        // path 显式指向文件时由后端只搜这一个（不走忽略规则 —— 显式点名 = 明确意图）
-        const files = await backend.search({
-          pattern,
-          caseInsensitive,
-          subPath: path,
-          ...(filePattern ? { filePattern } : {}),
-          context: ctx,
-          maxResults: max,
-          maxFileBytes: MAX_SEARCH_FILE_SIZE,
-          ignore: await backend.ignoreChecker()
-        })
-        if (!files.length) return '（未找到匹配）'
-        const totalHits = files.reduce((n, f) => n + f.hits.length, 0)
-        if (filesOnly) {
-          const rows = files.map((f) => `${f.file}:${f.hits.length}`)
-          return `${rows.join('\n')}\n（${files.length} 个文件，共 ${totalHits} 处匹配）`
-        }
-        const full = formatSearchHits(files, ctx)
-        // 超预算就按预算裁剪，但必须说清「还有匹配没查完」与怎么把范围收窄，
-        // 而不是让模型以为「只有这些命中」
-        const tail =
-          totalHits >= max
-            ? `\n…（本轮已到 ${max} 行命中上限，还有匹配没查完：想看更多就提高 maxResults（上限 1000）、缩小 path / filePattern，或换更精确的 pattern）…`
-            : ''
-        return `${clipToBudget(full, MAX_TOOL_RESULT_CHARS)}${tail}`
-      }
-    }),
-
-    find_files: tool({
-      description:
-        tr(
-          '按文件名 / 通配符查找文件（如 "*.ts"、"**/*.test.tsx"、"src/**/index.*"）。只匹配文件名，不搜内容（搜内容用 search_files）。自动跳过忽略目录。用于「项目里有哪些 X 文件」这类问题。',
-          'Find files by name or glob (e.g. "*.ts", "**/*.test.tsx", "src/**/index.*"). Matches file names only, not contents (use search_files for contents). Ignored directories are skipped. Useful for “which X files exist in this project?”.'
-        ),
+        `Find files, not directories, whose paths match a glob pattern, including hidden and ignored files. Returns up to ${GLOB_MAX_RESULTS} paths.`,
       inputSchema: z.object({
         pattern: z
           .string()
-          .describe(tr('文件名通配符：* 匹配单层任意字符，? 匹配单个字符，** 跨目录；不含 / 时匹配任意层级下的文件名', 'File-name glob: * matches any characters in one segment, ? one character, ** across directories; without / it matches file names at any depth')),
+          .describe(
+            'Glob pattern to match file paths against (e.g. "**/*.ts", "src/**/*.test.js"). A pattern with no "/" matches the basename at any depth, so "*" and "*.ts" both search the whole tree; include a separator to anchor the depth.'
+          ),
         path: z
           .string()
           .optional()
-          .describe(tr('搜索起点（相对工作区的文件或目录）：给目录递归找，给文件只检查这一个，缺省为根目录', 'Search root (file or directory relative to the workspace): directories are searched recursively, a file only itself; defaults to root')),
-        maxResults: z.number().optional().describe(tr('最大返回条数，默认 200，最大 1000', 'Maximum results; default 200, max 1000'))
+          .describe(
+            'Directory to search in. Defaults to the session workspace; a relative path resolves against it.'
+          )
       }),
-      execute: async ({ pattern, path = '', maxResults = 200 }) => {
+      execute: async ({ pattern, path = '' }) => {
+        if (pattern.trim().length === 0) throw new Error('pattern must be a non-empty string')
+        if (path.length > 0 && path.trim().length === 0) {
+          throw new Error('path must be a non-empty string when given')
+        }
         const absPath = backend.resolve(path)
         if (!(await backend.stat(absPath))) {
-          throw new Error(`路径不存在：${path || '.'}（相对于工作区根）`)
+          throw new Error(`cannot list "${path || '.'}": not found`)
         }
-        const max = clampInt(maxResults, 1, 1000, 200)
-        // path 显式指向文件时由后端只检查这一个（借 ripgrep --files 的语义）
+        /**
+         * 与 dsh 一致：**包含**隐藏文件与被 .gitignore 忽略的文件，只排除版本库元数据目录。
+         * 这条与 grep 相反（grep 遵守 .gitignore），是 dsh 刻意的取舍。
+         */
         const out = await backend.find({
           pattern,
           subPath: path,
-          maxResults: max,
-          ignore: await backend.ignoreChecker()
+          maxResults: GLOB_MAX_RESULTS,
+          includeIgnored: true,
+          ignore: (_rel, isDir) => {
+            if (!isDir) return false
+            const name = _rel.split('/').pop() ?? _rel
+            return name === '.git' || name === '.svn' || name === '.hg' || name === '.bzr'
+          }
         })
-        if (!out.length) return `（没有匹配 ${pattern} 的文件）`
-        const more = out.length >= max ? `\n…（已达上限 ${max}，可能有更多）` : ''
-        return `${out.length} 个文件：\n${out.join('\n')}${more}`
+        if (!out.length) return 'No files found'
+        const head = out.slice(0, GLOB_MAX_RESULTS)
+        const more =
+          out.length >= GLOB_MAX_RESULTS
+            ? `\n\n(Showing ${head.length} paths. Narrow pattern or path to see more.)`
+            : ''
+        return `${head.join('\n')}${more}`
       }
     }),
 
-    execute_command: tool({
+    grep: tool({
+      description:
+        `Search file contents with a regular expression. Returns matching lines with line numbers, grouped by file. Returns up to ${GREP_MAX_MATCHES} matches.`,
+      inputSchema: z.object({
+        pattern: z.string().describe('Regular expression to search for.'),
+        path: z
+          .string()
+          .optional()
+          .describe(
+            'File or directory to search. Defaults to the session workspace; a relative path resolves against it.'
+          ),
+        include: z
+          .string()
+          .optional()
+          .describe(
+            'One glob filter for which files to search (e.g. "*.ts", "*.{js,jsx}"). Not a list; negation is not supported.'
+          )
+      }),
+      execute: async ({ pattern, path = '', include }) => {
+        if (pattern.length === 0) throw new Error('pattern must be a non-empty string')
+        if (path.length > 0 && path.trim().length === 0) {
+          throw new Error('path must be a non-empty string when given')
+        }
+        if (include !== undefined) {
+          if (include.trim().length === 0) throw new Error('include must be a non-empty glob when given')
+          if (include.startsWith('!')) {
+            throw new Error('include must be a positive glob filter; negated patterns ("!…") are not supported')
+          }
+        }
+        // ripgrep 的内联不区分大小写写法在 JS RegExp 里不存在：拆出来当下面的 flag 用
+        const insensitive = pattern.startsWith('(?i)')
+        const source = insensitive ? pattern.slice(4) : pattern
+        try {
+          new RegExp(source, insensitive ? 'i' : '')
+        } catch (e) {
+          throw new Error(`invalid pattern: ${(e as Error).message}`)
+        }
+        const filePattern = include === undefined ? undefined : globToRegExpSource(include)
+        if (filePattern) {
+          try {
+            new RegExp(filePattern, insensitive ? 'i' : '')
+          } catch (e) {
+            throw new Error(`invalid include glob: ${(e as Error).message}`)
+          }
+        }
+
+        const absPath = backend.resolve(path)
+        if (!(await backend.stat(absPath))) {
+          throw new Error(`cannot search "${path || '.'}": not found`)
+        }
+        const files = await backend.search({
+          pattern: source,
+          caseInsensitive: insensitive,
+          subPath: path,
+          ...(filePattern ? { filePattern } : {}),
+          ...(include !== undefined ? { includeGlob: include } : {}),
+          context: 0,
+          maxResults: GREP_MAX_MATCHES,
+          maxFileBytes: MAX_SEARCH_FILE_SIZE,
+          ignore: await backend.ignoreChecker()
+        })
+        const matches = files.flatMap((f) => f.hits.map((h) => ({ path: f.file, ...h })))
+        if (!matches.length) return 'No matches found'
+        return formatGrepOutput(files, matches.length)
+      }
+    }),
+
+    bash: tool({
       description:
         tr(
           '在工作区目录下执行 shell 命令并返回输出（stdout + stderr）。适用于运行构建 / 测试 / git 操作 / 安装依赖 / 启动服务等。命令默认超时 120 秒。' +
             '输出超过一个工具结果的预算时会被完整落盘到工作区的 .fizz/tool-output/ 下，结果里给出相对路径、全文行数与本次返回了哪几行；' +
-            '其余部分用 read_file 传那个 path 加 offset / limit 按行接着读，也可以用 search_files 检索（常见于构建 / 测试的完整日志）。' +
+            '其余部分用 read 传那个 path 加 offset / limit 按行接着读，也可以用 grep 检索（常见于构建 / 测试的完整日志）。' +
             '注意这是真实执行环境，删除、覆盖、危险命令（rm -rf、git push --force 等）前先说明影响。' +
-            '需要在**本轮结束后继续跑**的进程（dev server / watch / 长构建）把 runInBackground 设为 true：' +
+            '需要在**本轮结束后继续跑**的进程（dev server / watch / 长构建）把 run_in_background 设为 true：' +
             '调用会立刻返回一个后台任务 id，它不受本轮超时与停止影响，输出显示在输入框上方的任务面板里；' +
             '当前这一轮就要用它的输出时**不要**开这个开关。' +
             shellNote,
           'Run a shell command in the workspace and return stdout + stderr. Use it for builds, tests, git, installing dependencies, starting services, etc. Default timeout is 120 seconds. ' +
             'If output exceeds one tool result, the full text is saved under .fizz/tool-output/ and the result includes the relative path, total lines, and which lines were returned; ' +
-            'read the rest with read_file offset/limit on that path, or search it with search_files (common for full build/test logs). ' +
+            'read the rest with read offset/limit on that path, or search it with grep (common for full build/test logs). ' +
             'This is a real execution environment: explain the impact before deleting, overwriting, or running dangerous commands (rm -rf, git push --force, etc.). ' +
-            'Set runInBackground: true for processes that must keep running after this turn (dev servers, watchers, long builds): the call returns a background task id immediately, ' +
+            'Set run_in_background: true for processes that must keep running after this turn (dev servers, watchers, long builds): the call returns a background task id immediately, ' +
             'it is not affected by this turn\'s timeout or stop, and its output shows in the task panel above the input box; do NOT set it when the current turn needs the output.' +
             shellNoteEn
         ),
       inputSchema: z.object({
-        command: z.string().describe(tr('要执行的命令', 'Command to run')),
-        timeoutMs: z.number().optional().describe(tr('超时毫秒数，默认 120000，最大 300000', 'Timeout in milliseconds; default 120000, max 300000')),
-        cwd: z.string().optional().describe(tr('执行目录（相对工作区），缺省为工作区根目录', 'Working directory (relative to the workspace); defaults to the workspace root')),
-        runInBackground: z
+        description: z
+          .string()
+          .describe(
+            'Clear, concise description of what this command does in active voice, e.g. "List files in the workspace".'
+          ),
+        command: z.string().describe('The command to execute.'),
+        timeoutMs: z
+          .number()
+          .optional()
+          .describe('Timeout in milliseconds; default 120000, max 300000.'),
+        workdir: z
+          .string()
+          .optional()
+          .describe(
+            'Working directory for this command. Defaults to the session workspace; a relative path is resolved against it.'
+          ),
+        run_in_background: z
           .boolean()
           .optional()
           .describe(
-            tr(
-              '设为 true 时把命令丢到后台：立刻返回任务 id，进程在本轮结束后继续跑（dev server / watch / 长构建）。本轮需要它的输出时不要开',
-              'Set true to run the command in the background: returns a task id immediately and the process keeps running after this turn (dev servers, watchers, long builds). Do not set it when this turn needs the output'
-            )
+            'Run in the background and return a job id immediately. No timeout applies. Do not set it when this turn needs the output.'
           )
       }),
       execute: async (input, options) => {
-        const { command, timeoutMs, cwd = '', runInBackground } = input
+        const { command } = input
+        if (command.trim().length === 0) throw new Error('invalid command: expected a non-empty string')
+        const runInBackground = input.run_in_background ?? false
+        const cwd = input.workdir ?? ''
+
         const refused = await guardWrite('命令未运行', {
           toolCallId: options.toolCallId,
-          toolName: 'execute_command',
+          toolName: 'bash',
           command,
           intent: intentOf(input)
         })
         if (refused) return refused
+
         const execDir = backend.resolve(cwd)
         const stat = await backend.stat(execDir)
-        if (!stat) throw new Error(`执行目录不存在：${cwd || '.'}（相对于工作区根）`)
-        if (stat.type !== 'dir')
-          throw new Error(`执行目录不是目录：${cwd || '.'}（cwd 必须是目录；要操作某个文件请把路径写进命令里）`)
+        if (!stat) throw new Error(`cannot run "${command}": working directory not found: ${cwd || '.'}`)
+        if (stat.type !== 'dir') {
+          throw new Error(`cannot run "${command}": workdir is not a directory: ${cwd || '.'}`)
+        }
 
         /**
          * 后台执行：**先过权限闸、再登记**，与前台同一条口径（后台不等于免审批）。
@@ -770,7 +849,7 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
         if (runInBackground) {
           // 后台进程归本地任务登记表持有；远端工作区没有对应的进程表（首期不支持）
           if (backend.kind === 'remote') {
-            return '远端工作区首期不支持后台执行（runInBackground），命令**没有**启动。请改为普通执行（受本轮超时约束），或让用户在远端自己开一个终端。'
+            return '远端工作区首期不支持后台执行（run_in_background），命令**没有**启动。请改为普通执行（受本轮超时约束），或让用户在远端自己开一个终端。'
           }
           if (!opts.onBackgroundCommand) {
             return '当前环境不支持后台执行（没有任务登记通道），命令**没有**启动。请改为普通执行，或让用户自己开一个终端。'
@@ -788,11 +867,10 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
           ].join('\n')
         }
 
-        const t = clampInt(timeoutMs, 1000, 300_000, 120_000)
+        const t = clampInt(input.timeoutMs, 1000, 300_000, 120_000)
         /**
          * per-command 停止器：单条停止（调用方持有的 `stop()`）与整轮停止
-         * （`options.abortSignal`）都只 abort 这一个 controller —— 互不影响：
-         * 单条停不动 run，整轮停照旧杀进程树（原来的 signal 分支就是它）。
+         * （`options.abortSignal`）都只 abort 这一个 controller —— 互不影响。
          */
         const ctrl = new AbortController()
         const stop = () => ctrl.abort()
@@ -809,12 +887,26 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
             signal: ctrl.signal,
             onOutput: (stream, chunk) => opts.onCommandOutput?.(toolCallId, stream, chunk)
           })
-          return await formatExecResult(backend, command, result, t)
+          return await formatBashOutput(backend, command, result, t)
         } finally {
           opts.onCommandEnd?.(toolCallId)
           options.abortSignal?.removeEventListener('abort', stop)
         }
       }
+    }),
+
+    /**
+     * Anthropic 风格的兼容编辑器（`view` / `create` / `str_replace` / `insert`）。
+     *
+     * 它与 `read` / `write` / `edit` 并存而不是替代：从 Claude Code 搬来的技能与提示词
+     * 会直接点名它。语义细节见 `str-replace-editor.ts` 的文件头。
+     */
+    str_replace_editor: buildStrReplaceEditorTool({
+      backend,
+      guardWrite,
+      checkObserved,
+      recordObserved,
+      ...(opts.nestedDocs ? { nestedDocs: opts.nestedDocs } : {})
     }),
 
     /**
@@ -877,53 +969,84 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
       }
     }),
 
-    /**
-     * 删除文件。存在的意义不只是「省得拼 rm」—— 更重要的是把删除收敛成
-     * 一个「单路径 + resolveInside 校验 + 同一道确认闸」的动作：
-     * 让模型拼 `rm -rf xxx` 才删，误伤面比单文件大得多。
-     */
-    delete_file: tool({
-      description:
-        tr(
-          '删除工作区内的文件。默认只删单个文件；path 是目录时必须显式传 recursive=true（会连同目录内所有内容一起删）。路径不存在会报错，不会静默成功。不可恢复操作，调用前请确认路径。',
-          'Delete a file in the workspace. By default only a single file is deleted; if path is a directory you must pass recursive=true (deletes all contents too). Missing paths error instead of silently succeeding. This is irreversible — confirm the path before calling.'
-        ),
-      inputSchema: z.object({
-        path: z.string().describe(tr('相对工作区的路径', 'Path relative to the workspace')),
-        recursive: z
-          .boolean()
-          .optional()
-          .describe(tr('path 是目录时必须显式传 true 才允许删除，默认 false（此时传目录会报错）', 'When path is a directory, explicitly pass true to allow deletion; default false (passing a directory then errors)'))
-      }),
-      execute: async (input, options) => {
-        const { path, recursive = false } = input
-        const abs = backend.resolve(path)
-        // 先确认存在：删一个不存在的路径直接报错，避免「静默成功」让模型误以为已删除
-        const stat = await backend.stat(abs)
-        if (!stat) throw new Error(`路径不存在：${path}`)
-        const isDir = stat.type === 'dir'
-        if (isDir && !recursive) {
-          throw new Error(
-            `${path} 是目录。删除目录必须显式传 recursive: true（会连同目录内所有内容一起删除）。`
-          )
-        }
-        // 破坏性操作：与 execute_command / write_file 同一道闸，不能绕
-        const refused = await guardWrite('内容未被删除', {
-          toolCallId: options.toolCallId,
-          toolName: 'delete_file',
-          command: isDir ? `删除目录（含全部内容）：${path}` : `删除文件：${path}`,
-          intent: intentOf(input)
-        })
-        if (refused) return refused
-        await backend.remove(abs, { recursive: isDir, force: true })
-        return `已删除${isDir ? '目录' : '文件'} ${path}`
-      }
-    }),
-
-    // 技能说明通常在**工作区之外**（用户级 / Claude 兼容目录），read_file 的
+    // 技能说明通常在**工作区之外**（用户级 / Claude 兼容目录），read 的
     // resolveInside 够不着，所以单独给一个只读工具（范围限制在已发现的技能目录内）。
     // 没有可用技能时干脆不暴露这个工具，免得模型拿着空清单乱试。
     ...(opts.skills?.length ? buildReadSkillTool(opts.skills) : {})
   }
   return filterToolSet(all as ToolSet, opts.includeTools)
 }
+
+/**
+ * grep 结果：与 dsh 的 `formatGrepOutput` 同格式。
+ *
+ * ```
+ * Found 3 matches
+ *
+ * a.ts
+ * Line 3: const x = 1
+ * ```
+ */
+function formatGrepOutput(files: WorkspaceSearchFile[], total: number): string {
+  const header =
+    total > GREP_MAX_MATCHES ? `Found ${GREP_MAX_MATCHES} of ${total} matches` : `Found ${total} match(es)`
+  const groups = files.map((f) => {
+    const lines = f.hits.map((h) => {
+      const text =
+        h.text.length > GREP_MAX_LINE_BYTES
+          ? `${h.text.slice(0, GREP_MAX_LINE_BYTES)} (line truncated)`
+          : h.text
+      return `Line ${h.line}: ${text}`
+    })
+    return `${f.file}\n${lines.join('\n')}`
+  })
+  return `${header}\n\n${groups.join('\n\n')}`
+}
+
+/**
+ * `include` 是 dsh / ripgrep 的 glob（`*.ts`、`*.{js,jsx}`），而 Fizz 的本地搜索后端
+ * 收的是**文件名正则**。这里做一层最小转换：`**` → `.*`、`*` → `[^/]*`、`?` → `.`、
+ * `{a,b}` → `(a|b)`。远端后端本来就把 filePattern 当正则用，两边一致。
+ *
+ * ⚠️ P4 换成随包 ripgrep 之后，这段可以删掉（rg 直接吃 glob）。
+ */
+export function globToRegExpSource(glob: string): string {
+  let out = ''
+  for (let i = 0; i < glob.length; i += 1) {
+    const ch = glob[i]
+    if (ch === '*') {
+      if (glob[i + 1] === '*') {
+        out += '.*'
+        i += 1
+        if (glob[i + 1] === '/') i += 1
+      } else {
+        out += '[^/]*'
+      }
+      continue
+    }
+    if (ch === '?') {
+      out += '.'
+      continue
+    }
+    if (ch === '{') {
+      const end = glob.indexOf('}', i)
+      if (end > i) {
+        const options = glob.slice(i + 1, end).split(',')
+        out += `(${options.map((o) => o.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`
+        i = end
+        continue
+      }
+    }
+    out += /[.*+?^${}()|[\]\\]/.test(ch) ? `\\${ch}` : ch
+  }
+  return `^${out}$`
+}
+
+/** 供 UI / 其他层复用的常量（与 dsh 的上限一致） */
+export const TOOL_LIMITS = {
+  readLimit: READ_LIMIT,
+  readMaxLineLength: READ_MAX_LINE_LENGTH,
+  readMaxBytes: READ_MAX_BYTES,
+  grepMaxMatches: GREP_MAX_MATCHES,
+  globMaxResults: GLOB_MAX_RESULTS
+} as const

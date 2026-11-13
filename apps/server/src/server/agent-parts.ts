@@ -100,6 +100,7 @@ export function foldEventIntoParts(parts: AgentMessagePart[], event: AgentStream
       ...call,
       delegation: {
         subagentId: event.subagentId,
+        ...(event.name ? { name: event.name } : {}),
         task: event.task,
         parts: [],
         status: 'running',

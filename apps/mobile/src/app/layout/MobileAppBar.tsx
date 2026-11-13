@@ -22,10 +22,13 @@
  *
  * ## 手机版不做的两件事
  *
- * **AI 助手**：整屏浮层与顶栏入口一起撤掉（共享的 `AssistantPanel` 还在，本工程不挂）。
  * **应用日志**：原先在「更多」菜单里，入口与面板一起移除（`PanelView` 不再渲染
  * `LogsPanel`）。设置走抽屉左下角那一颗，不在这条顶栏上 —— 同一个动作两个入口，
  * 点了一个的人会以为另一个没反应。
+ *
+ * **AI 助手**是**有**的（曾经撤掉过，用户要回来了）：整屏浮层挂在 `app-shell` 的
+ * `main` 里，开关就是这条顶栏右侧那颗 Sparkles —— 与桌面共用同一份模块级状态
+ * （`assistant-panel.ts`），所以「手机开着的助手，桌面端刷新也是开着的」。
  *
  * ⚠️ 别再在顶栏上挂「标签 / 多窗口」那类按钮：一旦有入口，用户就会以为后台还有别的
  * 标签在跑 —— 而单标签模式下它们真的不存在（`openTab` 已经把旧的收起了）。
@@ -40,7 +43,7 @@
  * ⚠️ 本工程是**手机壳**：从 `app-shell.tsx` 到这里都按手机形态写死，不再按窗口宽度
  * 分岔（共享组件内部的 `useIsMobile` 是它们自己的事，真机上同样落在手机分支）。
  */
-import { Menu, Plus } from 'lucide-react'
+import { Menu, Plus, Sparkles } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
 import {
   setMobileSidebarOpen,
@@ -51,6 +54,12 @@ import { NEW_TAB_KEY } from '@fizz/agent-kit/shared/lib/panel-tabs'
 import { BackgroundTasksBadge } from '@fizz/agent-kit/shared/components/BackgroundTasksBadge'
 import { TransferBadge } from '@fizz/agent-kit/shared/components/TransferBadge'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
+import {
+  setAssistantPanelOpen,
+  useAssistantPanelOpen
+} from '@fizz/agent-kit/shared/lib/assistant-panel'
+import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { useTabMeta } from '@/app/layout/use-tab-meta'
 
 /** 顶栏上按钮的统一尺寸：`size-10` 在 18px 根字号下约 45px，够触摸目标推荐值 */
@@ -62,6 +71,8 @@ export function MobileAppBar() {
   const tabMeta = useTabMeta()
   const { app } = useAppContext()
   const sidebarOpen = useMobileSidebarOpen()
+  const assistantOpen = useAssistantPanelOpen()
+  const tr = useT()
 
   /**
    * 当前标签：单标签模式下它恒等于「唯一开着的那一个」，标题直接取它的元数据。
@@ -128,7 +139,23 @@ export function MobileAppBar() {
       */}
       <TransferBadge side="bottom" contentClassName="w-[calc(100vw-1rem)]" />
 
-      {/* 新建对话：与侧栏「项目行 → 新建会话」同一条路；手机版没有 AI 助手，右侧只留它 */}
+      {/*
+        AI 助手开关：放在新建对话**左侧**。颜色即状态（收起灰 / 展开主题色），
+        与桌面那颗 `AiAssistantButton` 同一套语义，只是尺寸按手机的触摸目标放大。
+        助手是整屏浮层、只盖正文，所以这颗键开着也点得到（收起走它）。
+      */}
+      <Button
+        variant="ghost"
+        className={cn(BAR_BUTTON, assistantOpen && 'text-primary hover:text-primary')}
+        aria-label={assistantOpen ? tr('关闭 AI 助手') : tr('打开 AI 助手')}
+        aria-expanded={assistantOpen}
+        title={assistantOpen ? tr('关闭 AI 助手') : tr('打开 AI 助手')}
+        onClick={() => setAssistantPanelOpen(!assistantOpen)}
+      >
+        <Sparkles className="size-5" />
+      </Button>
+
+      {/* 新建对话：与侧栏「项目行 → 新建会话」同一条路 */}
       <Button
         variant="ghost"
         className={BAR_BUTTON}

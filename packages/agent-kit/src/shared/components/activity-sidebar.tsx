@@ -124,15 +124,13 @@ export function ActivitySidebar({
           'flex min-w-0 flex-col',
           isMobile
             ? cn(
-              // 抽屉关着时**投影必须一起收掉**：宿主的投影（手机壳那份是
-              // `apps/mobile/src/styles.css` 里 `[data-fizz-sidebar]::after` 的右侧渐变）
-              // 画在元素右缘之外，元素本身被 `-translate-x-full` 推出屏幕了，影子还留在
-              // 视口左缘 —— 手机版页面左边那条灰带就是这么来的。
+              // 抽屉关着时必须整个 `invisible`：原来只是把抽屉 `-translate-x-full` 推出
+              // 屏幕，Tab / 读屏仍然能碰到里面的按钮（宿主的投影也同理 —— 画在元素右缘
+              // 之外，抽屉走了影子还留在视口左缘）。
               //
-              // 用 `invisible` 而不是把 shadow 写成条件类：`visibility` 会跟着过渡走
+              // 用 `invisible` 而不是干脆不渲染：`visibility` 会跟着过渡走
               // （规范：只要有一端是 visible，过渡期间都按 visible 渲染，最后一刻才翻成 hidden），
-              // 所以滑出动画期间影子还在、滑完才消失，不会出现「影子比抽屉先没」。
-              // 顺带修掉另一个问题：关着的抽屉原来只是移出屏幕，Tab / 读屏仍然能碰到里面的按钮。
+              // 所以滑出动画完整播完才彻底消失，不会「刷」一下没。
               // ⚠️ 过渡属性必须把 `translate` 带上：`-translate-x-full` 用的是 CSS 的
               // **`translate`** 属性（不是 `transform`），而 Tailwind v4 的 `transition-transform`
               // 展开是 `transform, translate, scale, rotate` 四个 —— 直接写

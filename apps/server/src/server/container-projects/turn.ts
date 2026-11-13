@@ -241,7 +241,7 @@ async function pumpContainerRun(ctx: ContainerPumpContext): Promise<RunAgentResu
        */
       if (
         frame.event.type === 'tool-call' &&
-        (frame.event.toolName === 'execute_command' || frame.event.toolName === 'web_fetch')
+        (frame.event.toolName === 'bash' || frame.event.toolName === 'web_fetch')
       ) {
         const toolCallId = frame.event.toolCallId
         run.commandStops.set(toolCallId, () => {
@@ -497,7 +497,7 @@ export async function startContainerTurn(
    * 合并同一轮里的连续写文件：一次改 5 个文件只刷一次（500ms 窗口）；轮次收尾时 flush，
    * 免得最后一批改动要等窗口结束才通知。
    */
-  const FILE_WRITE_TOOLS = new Set(['write_file', 'edit_file', 'delete_file'])
+  const FILE_WRITE_TOOLS = new Set(['write', 'edit'])
   let filesChangedTimer: ReturnType<typeof setTimeout> | undefined
   const flushFilesChanged = (): void => {
     if (!filesChangedTimer) return

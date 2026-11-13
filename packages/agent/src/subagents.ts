@@ -18,7 +18,12 @@
 import { stepCountIs, streamText, type ToolSet } from 'ai'
 import { z } from 'zod'
 import { buildAgentTools, buildWebFetchTool, buildGitReadTool, filterToolSet } from '@fizz/tools'
-import { SUBAGENT_MAX_STEPS, SUBAGENT_META, SUBAGENT_MIN_STEPS } from '@fizz/contracts/types'
+import {
+  SUBAGENT_MAX_STEPS,
+  SUBAGENT_META,
+  SUBAGENT_MIN_STEPS,
+  type SubagentDefinition
+} from '@fizz/contracts/types'
 import type { WorkspaceBackend } from '@fizz/contracts/workspace'
 import type {
   AgentStreamEvent,
@@ -39,19 +44,15 @@ import { stepBudgetHint } from './prompt'
  *
  * ⚠️ 刻意**不含**技能工具：技能可能在别的工作区路径上，派出去反而读错东西；侦察只看代码。
  */
-export const READONLY_TOOLS = [
-  'list_files',
-  'find_files',
-  'search_files',
-  'read_file',
-  'git_read'
-] as const
+export const READONLY_TOOLS = ['glob', 'grep', 'read', 'git_read'] as const
 
 /** 可派活的子任务 id（新增是显式动作：见 contracts 的 SubagentId + 下面 SUBAGENT_SPECS 一条） */
 export type { SubagentId }
 
 export interface SubagentSpec {
   id: SubagentId
+  /** 显示名（派活卡的标题 / 过程面板）；自定义的来自用户输入 */
+  name: string
   /** 父模型看到的工具描述 = 派活工具（agent-<id>）的 description，写清「什么时候该派」 */
   description: string
   /** 给子 agent 的系统提示词 */
@@ -126,9 +127,10 @@ const MAX_FALLBACK_ANSWER_CHARS = 4_000
 /** 同一个 subagentId 连续失败这么多次就不再派（否则父模型会无限换姿势重试） */
 const MAX_CONSECUTIVE_FAILURES = 3
 
-export const SUBAGENT_SPECS: Record<SubagentId, SubagentSpec> = {
+export const SUBAGENT_SPECS: Record<string, SubagentSpec> = {
   explorer: {
     id: 'explorer',
+    name: SUBAGENT_META.explorer.name,
     description:
       '只读侦察：定位符号在哪定义 / 查找用法与引用 / 读若干文件并汇总。适合"只需要读、产出很长、结论能压成一页"的活。不能改文件。',
     instructions:
@@ -141,6 +143,7 @@ export const SUBAGENT_SPECS: Record<SubagentId, SubagentSpec> = {
   },
   reviewer: {
     id: 'reviewer',
+    name: SUBAGENT_META.reviewer.name,
     description:
       '只读审查：读当前改动（工作区里的代码）并给问题清单，适合"改完了想找人复核一遍"。不能改文件。',
     instructions:
@@ -161,13 +164,34 @@ export const SUBAGENT_SPECS: Record<SubagentId, SubagentSpec> = {
  */
 export function resolveMaxSteps(
   id: SubagentId,
-  override?: Partial<Record<SubagentId, number>>
+  override?: Partial<Record<SubagentId, number>>,
+  fallbackSteps = SUBAGENT_META.explorer.defaultMaxSteps
 ): number {
-  const fallback = SUBAGENT_META[id].defaultMaxSteps
+  const fallback = fallbackSteps
   const raw = override?.[id]
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return fallback
   const steps = Math.trunc(raw)
   return steps < SUBAGENT_MIN_STEPS || steps > SUBAGENT_MAX_STEPS ? fallback : steps
+}
+
+/**
+ * 用户自定义的子智能体 → 引擎认的规格。
+ *
+ * `description` 直接就是派活工具的描述（父模型靠它决定派给谁）；`instructions` 只补
+ * **业务边界**，只读 / 不给用户提问 / 结论格式这些硬约束仍由 `DELEGATION_PROMPT_SUFFIX` 兜底。
+ */
+export function specFromDefinition(def: SubagentDefinition): SubagentSpec {
+  return {
+    id: def.id,
+    name: def.name,
+    description: def.description,
+    instructions:
+      def.instructions?.trim() ||
+      `你是 Fizz 的子任务「${def.name}」。按任务要求用只读工具完成工作，并给出结论。`,
+    includeTools: def.tools,
+    maxSteps: def.maxSteps ?? SUBAGENT_META.explorer.defaultMaxSteps,
+    preferredModelId: undefined
+  }
 }
 
 /**
@@ -250,6 +274,13 @@ export interface BuildDelegationToolsOptions {
    * 设置页给的步数上限（按 id）。缺省 = 用规格默认值，见 `resolveMaxSteps`。
    */
   maxSteps?: Partial<Record<SubagentId, number>>
+  /** 用户自定义的子智能体（内置两个不在这里） */
+  definitions?: SubagentDefinition[]
+  /**
+   * 自定义子智能体各自的模型（服务端已解析成完整配置）。
+   * 缺省 = 全局 `subagentModel` → 父模型。
+   */
+  definitionModels?: Record<string, AiModelConfig>
   /** 子 run 的进度事件出口（父流的同一通道） */
   emit: (event: AgentStreamEvent) => void
   /** 父轮的 signal：父被中止时子 run 也要停 */
@@ -294,20 +325,37 @@ export function buildDelegationTools(
     ...(remote ? {} : buildGitReadTool(opts.workspacePath))
   }
 
+  /** 内置规格 + 用户定义 */
+  const specs = new Map<string, SubagentSpec>(Object.entries(SUBAGENT_SPECS))
+  for (const def of opts.definitions ?? []) specs.set(def.id, specFromDefinition(def))
+
   for (const id of ids) {
-    const spec = SUBAGENT_SPECS[id]
-    if (!spec) throw new Error(`未知的 subagent id：${id}`)
+    const spec = specs.get(id)
+    // 定义被删掉 / 老配置里留了个不存在的 id：**跳过**而不是抛错 ——
+    // 抛错会让这一整轮对话起不来，而用户只是删了一个子智能体
+    if (!spec) {
+      console.warn(`[subagent] 跳过未定义的子智能体 id：${id}`)
+      continue
+    }
+    const builtin = id in SUBAGENT_SPECS
     const include = remote
       ? spec.includeTools.filter((name) => name !== 'git_read')
       : [...spec.includeTools]
-    const tools = filterToolSet(allTools, [...include, 'web_fetch'])
-    /** 这一轮这个子任务的步数上限（设置页可覆盖） */
-    const maxSteps = resolveMaxSteps(id, opts.maxSteps)
-    // 优先级：规格里的 preferredModelId（父配置内的便宜档）> 设置页的子任务模型 > 父模型
+    // 内置两个始终带 web_fetch（它们的活经常要查文档）；自定义严格按用户勾的来
+    const wanted = builtin ? [...include, 'web_fetch'] : include
+    const tools = filterToolSet(allTools, [...new Set(wanted)])
+    /** 这一轮这个子任务的步数上限（设置页可覆盖，其次才是规格 / 定义里的值） */
+    const maxSteps = resolveMaxSteps(id, opts.maxSteps, spec.maxSteps)
+    /**
+     * 模型优先级：定义里给这个子智能体单独配的模型 > 规格里的 preferredModelId
+     * （父配置内的便宜档）> 设置页的全局子任务模型 > 父模型。
+     */
+    const definitionModel = opts.definitionModels?.[id]
     const model = resolveModel(
-      spec.preferredModelId
-        ? subagentModel(opts.model, spec.preferredModelId)
-        : (opts.subagentModel ?? opts.model)
+      definitionModel ??
+        (spec.preferredModelId
+          ? subagentModel(opts.model, spec.preferredModelId)
+          : (opts.subagentModel ?? opts.model))
     )
 
     out[`agent-${id}`] = {
@@ -352,7 +400,7 @@ export function buildDelegationTools(
             durationMs: Date.now() - startedAt
           })
         }
-        opts.emit({ type: 'subagent-start', toolCallId, subagentId: id, task })
+        opts.emit({ type: 'subagent-start', toolCallId, subagentId: id, name: spec.name, task })
         // 登记在 start 之后：前端要到这一帧之后才画得出派活卡与停止钮
         if (toolCallId && opts.commandStops) {
           opts.commandStops.set(toolCallId, () => own.abort())

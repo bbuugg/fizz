@@ -29,6 +29,7 @@ import type {
 import type { McpServerConfig, McpServerInput } from '@fizz/mcp'
 import type { SkillListResult } from '@fizz/skills'
 import type {
+  SubagentDefinition,
   SubagentId,
   SubagentSettings,
   HostConfig,
@@ -357,6 +358,13 @@ export interface ServerListsSlice {
    * 只传 `maxSteps`，服务端「缺字段 = 保留」，所以不会把启停与模型改掉。
    */
   setSubagentMaxSteps: (id: SubagentId, steps: number | null) => Promise<boolean>
+  /**
+   * 保存**自定义子智能体的整份清单**（新建 / 编辑 / 删除都是算好新数组再传）。
+   *
+   * 服务端做整份替换：少传一个就是删除。归一化会丢掉非法项，所以调用方只需要保证
+   * 「传的是它希望最终存在的那些」。
+   */
+  saveSubagentDefinitions: (definitions: SubagentDefinition[]) => Promise<boolean>
   /**
    * 保存系统监控偏好（只传要改的字段）。关掉后服务端停采、状态栏也不再渲染监控条；
    * 走 `withRefresh`，保存成功后靠全量刷新把 store 里的 `systemMonitorSettings` 写回。
@@ -1101,6 +1109,8 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
       else next[id] = steps
       return withRefresh(() => requireApi().saveSubagents({ maxSteps: next }))
     },
+    saveSubagentDefinitions: (definitions) =>
+      withRefresh(() => requireApi().saveSubagents({ definitions })),
     /**
      * 系统监控偏好：与浏览器偏好同款 —— 原样透传要改的字段（服务端「缺字段 = 保留」），
      * 保存成功后服务端会同步采样器启停，`withRefresh` 再把新的 `systemMonitorSettings`

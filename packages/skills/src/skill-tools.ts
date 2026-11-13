@@ -79,7 +79,7 @@ function findSkill(skills: AgentSkill[], name: string): AgentSkill {
 /**
  * `read_skill`：读取某个技能的说明（默认 SKILL.md 本身）。
  *
- * 技能目录通常在工作区之外（用户级 / Claude 兼容目录），工作区的 read_file 够不着，
+ * 技能目录通常在工作区之外（用户级 / Claude 兼容目录），工作区的 read 够不着，
  * 所以单独给一个工具 —— 它的读写范围被限制在**已发现的技能目录**内。
  */
 export function buildReadSkillTool(skills: AgentSkill[]): ToolSet {
@@ -140,7 +140,7 @@ export function buildSkillsPromptSection(skills: AgentSkill[]): string {
       ...skills.map((s) => `- ${s.name}：${s.description}`),
       '使用约定：',
       '- 判断任务与某个技能相关时，**先调用 read_skill 读它的完整说明，再严格按说明执行**；不要凭技能名猜做法；',
-      '- 技能说明里提到的脚本 / 参考资料，用 read_skill 的 file 参数读取，或用 execute_command 以绝对路径执行；',
+      '- 技能说明里提到的脚本 / 参考资料，用 read_skill 的 file 参数读取，或用 bash 以绝对路径执行；',
       '- 技能与当前任务无关时不要提及，也不要在正文里罗列技能清单。'
     ].join('\n'),
     [
@@ -149,7 +149,7 @@ export function buildSkillsPromptSection(skills: AgentSkill[]): string {
       ...skills.map((s) => `- ${s.name}: ${s.description}`),
       'Conventions:',
       '- When a task relates to a skill, **first call read_skill to read its full instructions, then follow them strictly**; do not guess from the name;',
-      '- Read scripts/references mentioned by a skill with read_skill’s file parameter, or run them via execute_command with an absolute path;',
+      '- Read scripts/references mentioned by a skill with read_skill’s file parameter, or run them via bash with an absolute path;',
       '- Do not mention skills unrelated to the current task and do not list them in the reply.'
     ].join('\n')
   )

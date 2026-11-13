@@ -73,7 +73,7 @@
    * `foreground` 接近白，30% 白罩在深色正文上是一整片发灰的雾，用户直接报「很难看」。
    *
    * 遮罩层本身仍然渲染（保留「点一下收起」与「点不到底下的内容」），只是透明。
-   * 不压暗不等于没分界：分界由抽屉右缘那条投影负责（见下面那段）。
+   * 不压暗不等于没分界：分界由抽屉与正文的底色差负责（见下面「手机侧栏」那段）。
    */
   --sidebar-scrim: transparent;
   /*
@@ -103,32 +103,25 @@
  * - 侧栏宽度收窄到 `--mobile-sidebar-width`：共享默认 `w-64`（16rem）在 18px 根字号
  *   下是 288px，推挤后正文只剩一条缝；72vw（390px 屏约 281px）兼顾侧栏内容与
  *   露出的正文。觉得窄 / 宽就只改这一个值。
- * - 抽屉底色改成 `--background`：共享 `ActivitySidebar` 是 `bg-sidebar`，而手机的外壳
- *   顶栏 / 设置页 / 主区全是 `bg-background`；暗色主题下 `--sidebar`（0.205）
- *   比 `--background`（0.145）亮一档，抽屉滑出来就是一块更浅的色块，跟外壳分家。
- *   改成同色后抽屉从顶到底是一整块面板，与正文的分界靠**右侧投影**（不靠底色差，
- *   也不压暗正文）。
+ * - 抽屉底色**保留共享的 `--sidebar`**（不要改成 `--background`）：侧栏是独立的一块
+ *   面板，亮暗两套主题下都该比正文的 `--background` 略浅一档。早先为了「看起来跟
+ *   外壳连成一片」把它压成 `--background`，暗色主题下两者明度几乎相同，抽屉滑出来
+ *   与正文完全分不出（用户报的就是这个）。分界只靠这一档底色差。
  * - `main` 在抽屉打开时右移**同一个 token** —— 宽度只有一份，改一处两边同步。
  * - **不套 `max-width: 767px`**（早先套过，是个 bug）：本工程的外壳是手机形态写死的，
  *   侧栏靠 `forceDrawer` 强制抽屉、与视口宽度无关（见 `layout/Sidebar.tsx` 与
  *   `activity-sidebar.tsx` 的同名 prop）。样式若还按断点生效，窗口一旦更宽
  *   （Chrome 扩展的侧栏被拖宽 / 大屏上开成标签页），抽屉会滑出来但**不推挤正文、
- *   不换底色、没有右侧投影** —— 而遮罩又是透明的，视觉上就是「抽屉飘在正文上、
+ *   不换底色** —— 而遮罩又是透明的，视觉上就是「抽屉飘在正文上、
  *   分不出边界」。三件事必须同生同死：判定交给 JS，样式无条件跟上。
  *
  * ⚠️ 遮罩仍由共享组件渲染（读 `--sidebar-scrim`，本工程覆盖成 `transparent`）：
  * 露出来的正文不再压暗，但**点击遮罩区域仍然收起抽屉**。
  *
- * ⚠️ 分界靠**右侧投影**（两边同底色，没投影就看不出抽屉到哪儿为止）。投影**不用
- * `box-shadow`**：它的 blur 是对称的，spread 再负也盖不住上下两端 —— 早先那版
- * `10px 0 24px -14px` 顶上就漏出一条灰边（用户报「上、右都有阴影」）；改成往下
- * 偏 25px（`shadow-2xl` 的几何）只是把尾巴挪到顶边以下，并没有真的消掉，浅色主题
- * 下仍糊一层淡灰。这里改成抽屉右边挂着的一条渐变（`::after` + `left: 100%`）：
- * 只存在于右侧，上下都干净，宽度 / 峰值就是两个数。
- *
- * 注：共享组件里原来那个 `shadow-2xl` 被写成了 `shadow-l-2xl`（Tailwind v4 里不存在，
- * 产物 CSS 里搜不到，从来没生效过），已删掉；投影由本工程这一条负责，
- * 抽屉关着时跟随 `invisible` 一起收掉（见 `activity-sidebar.tsx` 的注释）。
+ * ⚠️ **右侧不画投影**：抽屉底色是 `--sidebar`、正文是 `--background`，这一档色差
+ * 已经把边界分开了，再加阴影就是「抽屉边上糊一条灰」。早先那版是因为两边同底色
+ * 才需要一条 `::after` 渐变补边界 —— 底色改回 `--sidebar` 后它就成了多余装饰，
+ * 已删。想加回来先想清楚：为什么色差不够。
  *
  * ⚠️ `[data-fizz-sidebar]` 是 `ActivitySidebar` 的稳定钩子（主题层也用它）。这份文件
  * 只属于手机壳，web / desktop 不受影响。
@@ -139,19 +132,7 @@
  */
 [data-fizz-sidebar] {
   width: var(--mobile-sidebar-width);
-  background-color: var(--background);
-}
-/* 右侧投影：只画在抽屉右边（`left: 100%`），上下不会漏灰边（见上面那段注释）。
-   `absolute` 挂到 `fixed` 的抽屉上，宽度跟着 `--mobile-sidebar-width` 走。 */
-[data-fizz-sidebar]::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 100%;
-  width: 20px;
-  pointer-events: none;
-  background: linear-gradient(to right, rgb(0 0 0 / 0.06), rgb(0 0 0 / 0.05) 45%, transparent);
+  background-color: var(--sidebar);
 }
 
 /*
@@ -335,6 +316,9 @@
  * ⚠️ xterm（`.xterm`）与 Monaco（`.monaco-editor`）**刻意不在这里管**：两者都自带选区模型
  * 与 `user-select` 声明（xterm.css 自己就写了 `.xterm{user-select:none}`），靠自己的 DOM 层
  * 做选中与复制，外部规则别去碰（xterm 的复制走 `term.getSelection()`，与浏览器原生选区无关）。
+ * 手机上「长按划词」是 `lib/terminal-touch-scroll.ts` 直接驱动 `term.select()` 实现的，
+ * **不是**放开 `user-select` 的结果 —— 给 `.xterm` 加 `user-select:text` 不会让原生长按生效，
+ * 只会把浏览器合成的鼠标事件放进来，跟单指滚动手势打架。
  * `FileHtmlPreview` 是 sandbox iframe（独立文档，宿主 CSS 到不了里面）、`BrowserPane` 是
  * screencast 图片帧（根本没有文本），两者天然不受影响。
  */

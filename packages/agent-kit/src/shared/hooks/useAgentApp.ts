@@ -629,14 +629,16 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     /** 保存技能页「额外发现目录」（全量清单；技能页的添加 / 移除目录走这里） */
     setSkillDirs: s.setSkillDirs,
     /**
-     * 启 / 停一个子任务（subagent）。子任务的定义在服务端（工具白名单 / 模型 / 步数），
-     * 客户端只知道「有哪几个 id 可切」—— 见 `GeneralTab` 的「子任务」开关。
+     * 启 / 停一个子任务（subagent）。内置两个的定义在服务端代码里，自定义的随设置落盘
+     * （`subagentSettings.definitions`）—— 见 `AiPreferencesTab` 的「子任务」区。
      */
     toggleSubagent: s.toggleSubagent,
     /** 设置子任务专用模型（`null` = 沿用父会话模型） */
     setSubagentModel: s.setSubagentModel,
     /** 设置某个子任务的步数上限（`null` = 回到规格默认值） */
     setSubagentMaxSteps: s.setSubagentMaxSteps,
+    /** 保存自定义子智能体的整份清单（新建 / 编辑 / 删除都走它） */
+    saveSubagentDefinitions: s.saveSubagentDefinitions,
     /**
      * 保存**这个视图的会话**的浏览器偏好（总开关 / 来源）。只传要改的字段，与当前值合并后
      * 整体落库到会话（下一轮生效）。每个会话各记一份 —— 分屏时两个标签互不覆盖。

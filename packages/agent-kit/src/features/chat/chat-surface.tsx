@@ -1102,6 +1102,7 @@ function RunningSubagents({
     <div className="flex flex-wrap items-center gap-1.5">
       {items.map((item) => {
         const meta = SUBAGENT_META[item.delegation.subagentId]
+        const displayName = item.delegation.name ?? meta?.name ?? item.delegation.subagentId
         const seconds = Math.max(0, Math.floor((now - item.delegation.startedAt) / 1000))
         const isStopping = stopping.has(item.toolCallId)
         return (
@@ -1125,7 +1126,7 @@ function RunningSubagents({
             >
               <Loader2 className="size-3.5 shrink-0 animate-spin" />
               <span className="shrink-0">
-                {tr('子任务 · {name}', { name: meta?.name ?? item.delegation.subagentId })}
+                {tr('子任务 · {name}', { name: displayName })}
               </span>
               {item.tool ? (
                 <span className="min-w-0 truncate text-muted-foreground">
@@ -1176,7 +1177,7 @@ function SubagentTranscript({
   onBack: () => void
 }) {
   const tr = useT()
-  const { subagentId, task, parts, status, startedAt, endedAt } = delegation
+  const { subagentId, name, task, parts, status, startedAt, endedAt } = delegation
   const running = status === 'running'
   const elapsed = endedAt != null ? endedAt - startedAt : undefined
   /** 一句话说清「它现在 / 最后怎么了」—— `empty` / `failed` 就是用户最想知道的两种 */
@@ -1207,7 +1208,7 @@ function SubagentTranscript({
         </Button>
         <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
           <span className="shrink-0 text-xs font-medium text-foreground">
-            {tr('子任务 · {name}', { name: SUBAGENT_META[subagentId]?.name ?? subagentId })}
+            {tr('子任务 · {name}', { name: name ?? SUBAGENT_META[subagentId]?.name ?? subagentId })}
           </span>
           <span className="truncate text-xs text-muted-foreground">{stateText}</span>
         </div>

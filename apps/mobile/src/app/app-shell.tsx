@@ -35,6 +35,11 @@ import {
 } from "@fizz/agent-kit/shared/lib/shortcuts";
 import { setPendingDraft } from "@fizz/agent-kit/shared/lib/pending-draft";
 import type { ProjectUiAction } from "@fizz/agent-kit/shared/lib/tool-actions";
+import {
+  setAssistantPanelOpen,
+  useAssistantPanelOpen,
+} from "@fizz/agent-kit/shared/lib/assistant-panel";
+import { AssistantPanel } from "@fizz/agent-kit/features/projects/AssistantPanel";
 import { Sidebar } from "@/app/layout/Sidebar";
 import { useAndroidBackHandler } from "@/app/android-back";
 import { useSidebarSwipe } from "@/app/use-sidebar-swipe";
@@ -47,7 +52,11 @@ import {
   useDirtyTabCountSync,
   useExternalFileOpen,
 } from "@/app/layout/use-external-file-open";
-import { openTab } from "@fizz/agent-kit/shared/lib/panel-store";
+import {
+  activeTabKey,
+  openTab,
+  usePanelState,
+} from "@fizz/agent-kit/shared/lib/panel-store";
 import { NEW_TAB_KEY } from "@fizz/agent-kit/shared/lib/panel-tabs";
 import type { NewInWorkspaceKind } from "@fizz/agent-kit/shared/lib/new-in-workspace";
 import { CommandPalette } from "@/app/CommandPalette";
@@ -276,6 +285,36 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   /** 侧栏抽屉开合：手机版侧栏**恒为覆盖抽屉**，开合状态在 Provider（对话工具条的汉堡键也读写它） */
   const mobileSidebarOpen = useMobileSidebarOpen();
+  /** AI 助手浮层：状态是模块级的（顶栏那颗开关读写同一份） */
+  const assistantOpen = useAssistantPanelOpen();
+
+  /**
+   * 换视图（切会话 / 开工具标签）时收起助手浮层。
+   *
+   * 手机上助手是**整屏**的：留着它，用户从抽屉里点开的会话会被盖住，看起来像「点了没反应」。
+   * 桌面是右侧停靠，不存在这个问题，所以这条只在手机壳里。首次渲染不触发 ——
+   * 上次退出时开着的助手要能原样恢复。
+   */
+  const panelState = usePanelState();
+  const activeKey = activeTabKey(panelState);
+  const lastActiveKey = useRef(activeKey);
+  useEffect(() => {
+    if (lastActiveKey.current === activeKey) return;
+    lastActiveKey.current = activeKey;
+    setAssistantPanelOpen(false);
+  }, [activeKey]);
+
+  /**
+   * 安卓返回：助手浮层盖在正文上时，先收浮层。
+   *
+   * 注册在抽屉那条**之前** —— 处理器栈是「后注册的先问」，抽屉要压在助手之上
+   * （抽屉开着时返回先收抽屉，见下面那条）。两条都是浮层，谁在上面谁先被问。
+   */
+  useAndroidBackHandler(() => {
+    if (!assistantOpen) return false;
+    setAssistantPanelOpen(false);
+    return true;
+  });
 
   /**
    * 安卓返回（见 `android-back.ts`）：抽屉开着时先收抽屉，别直接回桌面。
@@ -597,12 +636,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         */}
               <main
                 data-mobile-push=""
-                className="flex min-w-0 flex-1 flex-col bg-background transition-transform duration-200"
+                // `relative` 是助手浮层的定位基准（`absolute inset-0` 盖住正文，
+                // **盖不到**顶栏 —— 收起交给顶栏那颗开关，与共享外壳同一套形态）
+                className="relative flex min-w-0 flex-1 flex-col bg-background transition-transform duration-200"
                 // 底部手势条安全区由画布自己让：没有底部导航条了，这里补上原来那条的
                 // padding-bottom，内容不会压在系统手势条下面。
                 style={{ paddingBottom: "var(--safe-area-inset-bottom, 0px)" }}
               >
                 {children}
+                {/*
+                AI 助手：手机版是**整屏浮层**，只盖正文（顶栏那颗 Sparkles 开关随时点得到）。
+                ⚠️ 用 `absolute` 而不是 `fixed`：`fixed inset-0` 会把顶栏一起盖掉，
+                开关跟着消失，界面上像「整块换了」。
+              */}
+                {assistantOpen && (
+                  <div className="absolute inset-0 z-50 flex flex-col bg-background">
+                    <AssistantPanel
+                      className="flex min-h-0 flex-1 flex-col overflow-hidden"
+                      scope="project"
+                    />
+                  </div>
+                )}
               </main>
             </div>
 

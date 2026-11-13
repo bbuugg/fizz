@@ -323,6 +323,11 @@ export interface WorkspaceSearchOptions {
   subPath: string
   /** 文件名正则（与本地同一套 JS RegExp 语义，由实现自行编译/后置过滤） */
   filePattern?: string
+  /**
+   * dsh 语义的 `include`：单个 glob（`*.ts` / `*.{js,jsx}`）。
+   * 有 rg 的实现直接喂给 `--glob`；没有的实现退回 `filePattern` 正则。
+   */
+  includeGlob?: string
   /** 每条命中附带的前后行数（0–5） */
   context: number
   maxResults: number
@@ -336,6 +341,11 @@ export interface WorkspaceFindOptions {
   subPath: string
   maxResults: number
   ignore: (rel: string, isDir: boolean) => boolean
+  /**
+   * true = **连隐藏与被忽略的文件一起找**（dsh 的 glob 语义：只排除版本库元数据）。
+   * false / 缺省 = 走 `ignore` 回调那套忽略规则。
+   */
+  includeIgnored?: boolean
 }
 
 /**

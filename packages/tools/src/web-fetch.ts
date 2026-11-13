@@ -9,7 +9,7 @@
  * 设计要点：
  * - 只读 / 无副作用：不写文件、不改系统，任何权限模式下都可用，相当于「读一个网页」。
  *   （唯一例外：正文超长时会把**全文**落一份到工作区 `.fizz/tool-output/`，
- *   那是 Fizz 自己的缓存目录 —— 文件树与 git 都忽略它，且只有这样 read_file
+ *   那是 Fizz 自己的缓存目录 —— 文件树与 git 都忽略它，且只有这样 read
  *   才能把中段读回来。见 output-log.ts 的形状说明。）
  * - 正文 HTML 用 turndown 转成 Markdown，链接单独列出便于 Agent 继续深挖；
  * - 输出有上限（默认 20000 字符），超长截断并标注，避免把整页塞爆上下文。
@@ -52,7 +52,7 @@ import { abortableSleep, launchHeadlessChromium, pageErrorMessage } from './head
  * 取 8000 而不是更大的值：正文超过一个工具结果的预算时，`formatPage` 会把**全文**
  * 落盘并把开头结尾返回给模型（见 output-log.ts）—— 也就是说默认值给大了并不会让
  * 模型看到更多有用内容，只会让它在摘要之外还多背一段正文。真需要细读某一段时，
- * 模型可以按落盘文件的行号位置 read_file，或显式调大 maxChars 重抓。
+ * 模型可以按落盘文件的行号位置 read，或显式调大 maxChars 重抓。
  */
 const DEFAULT_MAX_CHARS = 8_000
 /** 最多列出的页面内链接条数 */
@@ -211,7 +211,7 @@ async function formatPage(
     tool: 'web_fetch',
     detail: p.finalUrl,
     extra: clipped
-      ? `正文按你给的 maxChars=${clampedMax} 裁到了开头这段；想要更靠后的内容就用 read_file 的 offset/limit 翻落盘文件，或把 maxChars 调大（上限 100000）重抓。`
+      ? `正文按你给的 maxChars=${clampedMax} 裁到了开头这段；想要更靠后的内容就用 read 的 offset/limit 翻落盘文件，或把 maxChars 调大（上限 100000）重抓。`
       : undefined
   })
 }
@@ -321,10 +321,10 @@ async function fetchByHttp(
  * 构建 web_fetch 工具（返回单键 ToolSet，便于在 agent 端与其它工具合并）。
  *
  * `root` = 工作区根，只用于「正文过长时把全文落进 `.fizz/tool-output/`」——
- * 落在工作区内 read_file 才读得回来（数据目录在 resolveInside 边界外，见 output-log.ts）。
+ * 落在工作区内 read 才读得回来（数据目录在 resolveInside 边界外，见 output-log.ts）。
  */
 /**
- * 单条抓取的停止钩子（与 `execute_command` 的 `onCommandStart/End` 同一形状）：
+ * 单条抓取的停止钩子（与 `bash` 的 `onCommandStart/End` 同一形状）：
  * 登记 `toolCallId → 中止这一条的函数`，宿主据此让「停止」只停这一次抓取，整轮继续。
  */
 export interface WebFetchStopHooks {
@@ -368,8 +368,8 @@ export function buildWebFetchTool(
   return {
     web_fetch: tool({
       description: browserEngine
-        ? '抓取网页并整理成结构化 Markdown 返回给模型。默认用 Node 原生 fetch 取静态 HTML（更快更轻量）；设置 engine="browser" 则改用 Playwright 无头浏览器跑 JS 渲染（适合 SPA / 动态内容、搜索结果页）。适合：联网查资料、读文档 / 博客 / 文章、从网页提取链接继续深挖。页面过长时会只回开头结尾，并把全文落盘到工作区文件（结果里给出相对路径与行号）；其余部分用 read_file 的 offset/limit 接着读，也可以用 search_files 检索。只读、不写任何文件。browser 引擎需要内置浏览器运行时（headless shell），由用户在「设置 → 浏览器」里安装 —— 没装时这个引擎会直接告诉你改用 fetch，不会自行下载。'
-        : '抓取网页并整理成结构化 Markdown 返回给模型。用 Node 原生 fetch 取静态 HTML（这台机器没装内置浏览器，所以只有这一个引擎，不需要浏览器）。适合：联网查资料、读文档 / 博客 / 文章、从网页提取链接继续深挖。拿不到 JS 渲染后的内容（SPA / 纯前端渲染的页面）—— 抓到正文为空时不要反复重试同一个地址，换可达的静态页面或镜像。页面过长时会只回开头结尾，并把全文落盘到工作区文件（结果里给出相对路径与行号）；其余部分用 read_file 的 offset/limit 接着读，也可以用 search_files 检索。只读、不写任何文件。',
+        ? '抓取网页并整理成结构化 Markdown 返回给模型。默认用 Node 原生 fetch 取静态 HTML（更快更轻量）；设置 engine="browser" 则改用 Playwright 无头浏览器跑 JS 渲染（适合 SPA / 动态内容、搜索结果页）。适合：联网查资料、读文档 / 博客 / 文章、从网页提取链接继续深挖。页面过长时会只回开头结尾，并把全文落盘到工作区文件（结果里给出相对路径与行号）；其余部分用 read 的 offset/limit 接着读，也可以用 grep 检索。只读、不写任何文件。browser 引擎需要内置浏览器运行时（headless shell），由用户在「设置 → 浏览器」里安装 —— 没装时这个引擎会直接告诉你改用 fetch，不会自行下载。'
+        : '抓取网页并整理成结构化 Markdown 返回给模型。用 Node 原生 fetch 取静态 HTML（这台机器没装内置浏览器，所以只有这一个引擎，不需要浏览器）。适合：联网查资料、读文档 / 博客 / 文章、从网页提取链接继续深挖。拿不到 JS 渲染后的内容（SPA / 纯前端渲染的页面）—— 抓到正文为空时不要反复重试同一个地址，换可达的静态页面或镜像。页面过长时会只回开头结尾，并把全文落盘到工作区文件（结果里给出相对路径与行号）；其余部分用 read 的 offset/limit 接着读，也可以用 grep 检索。只读、不写任何文件。',
       // 两个 schema 是**不同形状**（有没有 engine 取决运行时），所以 execute 里显式标注入参
       inputSchema: browserEngine
         ? z.object({
@@ -440,7 +440,7 @@ export function buildWebFetchTool(
           }
           // 先剥掉 playwright 附带的终端样式（Call log 是灰字），再做超时判定：
           // 判据看的是错误码与 timeout 字样，样式字节对正则没影响，但多余的 ESC 会让
-          // 模型看到 `[2m` 这种残渣（与 execute_command 同一个问题，见 ansi.ts）
+          // 模型看到 `[2m` 这种残渣（与 bash 同一个问题，见 ansi.ts）
           const msg = pageErrorMessage(err)
           // 用户主动点了「停止」（单条或整轮）：别当成抓取失败，模型据此直接收场、不要重试
           if (signal.aborted) {

@@ -61,3 +61,74 @@ describe('normalizeSubagentSettings · 步数上限', () => {
     expect('maxSteps' in normalizeSubagentSettings({ enabled: ['explorer'] })).toBe(false)
   })
 })
+
+describe('normalizeSubagentSettings · 自定义子智能体', () => {
+  const valid = {
+    id: 'custom-ab12cd34',
+    name: '文档核对',
+    description: '核对文档与代码是否一致',
+    instructions: '先读 README',
+    tools: ['read', 'bash', 'grep', 'read']
+  }
+
+  it('保留合法定义，工具取交集并去重（越界的 write / bash 被丢掉）', () => {
+    const settings = normalizeSubagentSettings({ definitions: [valid] })
+    expect(settings.definitions).toHaveLength(1)
+    expect(settings.definitions?.[0]).toMatchObject({
+      id: 'custom-ab12cd34',
+      name: '文档核对',
+      instructions: '先读 README'
+    })
+    // 按白名单顺序输出：read 在 grep 前面
+    expect(settings.definitions?.[0].tools).toEqual(['read', 'grep'])
+  })
+
+  it('id 不合法 / 撞内置 / 重复的一律丢掉', () => {
+    const settings = normalizeSubagentSettings({
+      definitions: [
+        { ...valid, id: 'explorer' },
+        { ...valid, id: 'bad id!' },
+        valid,
+        { ...valid }
+      ]
+    })
+    expect(settings.definitions).toHaveLength(1)
+  })
+
+  it('缺名称 / 缺用途的定义丢掉；超长文本截断', () => {
+    const settings = normalizeSubagentSettings({
+      definitions: [
+        { ...valid, id: 'custom-1', name: '' },
+        { ...valid, id: 'custom-2', description: '' },
+        { ...valid, id: 'custom-3', name: 'x'.repeat(200) }
+      ]
+    })
+    expect(settings.definitions).toHaveLength(1)
+    expect(settings.definitions?.[0].name.length).toBe(40)
+  })
+
+  it('enabled 认自定义 id，定义删掉后同一份数据里会自动摘掉', () => {
+    const withDef = normalizeSubagentSettings({
+      enabled: ['explorer', valid.id],
+      definitions: [valid]
+    })
+    expect(withDef.enabled).toEqual(['explorer', 'custom-ab12cd34'])
+
+    const withoutDef = normalizeSubagentSettings({ enabled: ['explorer', valid.id] })
+    expect(withoutDef.enabled).toEqual(['explorer'])
+  })
+
+  it('一个工具都没选时给一份最小可用集', () => {
+    const settings = normalizeSubagentSettings({
+      definitions: [{ ...valid, tools: [] }]
+    })
+    expect(settings.definitions?.[0].tools).toEqual(['read', 'glob', 'grep'])
+  })
+
+  it('步数越界的定义保留但丢掉步数（回到默认）', () => {
+    const settings = normalizeSubagentSettings({
+      definitions: [{ ...valid, maxSteps: SUBAGENT_MAX_STEPS + 1 }]
+    })
+    expect(settings.definitions?.[0].maxSteps).toBeUndefined()
+  })
+})

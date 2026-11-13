@@ -11,12 +11,12 @@ export function defaultCollabSettings(): CollabSettings {
     createCollabAgent({
       name: '调研员',
       role: '检索代码与文档，给出带文件 / 行号出处的结论',
-      tools: ['read_file', 'list_files', 'search_files', 'find_files', 'web_fetch']
+      tools: ['read', 'glob', 'grep', 'web_fetch']
     }),
     createCollabAgent({
       name: '审查员',
       role: '审查方案与改动，找风险、遗漏与不一致',
-      tools: ['read_file', 'list_files', 'search_files', 'find_files']
+      tools: ['read', 'glob', 'grep']
     })
   ]
   return {

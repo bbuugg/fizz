@@ -455,10 +455,10 @@ function extractModelFileOps(messages: ModelMessage[], ops: FileOperations): voi
     for (const raw of content) {
       const part = raw as { type?: string; toolName?: string; input?: Record<string, unknown> }
       if (part.type !== 'tool-call') continue
-      const path = typeof part.input?.path === 'string' ? part.input.path : undefined
+      const path = inputPathOf(part.input)
       if (!path) continue
-      if (part.toolName === 'read_file') ops.read.add(path)
-      else if (part.toolName === 'write_file' || part.toolName === 'edit_file') ops.modified.add(path)
+      if (part.toolName === 'read' || part.toolName === 'read_file') ops.read.add(path)
+      else if (WRITE_TOOL_NAMES.has(part.toolName ?? '')) ops.modified.add(path)
     }
   }
 }
@@ -787,16 +787,25 @@ function createFileOps(): FileOperations {
   return { read: new Set(), modified: new Set() }
 }
 
-/** fizz 的工具名：`read_file` / `write_file` / `edit_file`（入参都是 `path`） */
+/** 会改文件的工具名：新名（dsh 对齐后的 `write` / `edit`）与历史里的旧名都认 */
+const WRITE_TOOL_NAMES = new Set(['write', 'edit', 'write_file', 'edit_file'])
+
+/** 工具入参里的路径：新 schema 叫 `file_path`，旧历史里叫 `path` */
+function inputPathOf(input: Record<string, unknown> | undefined): string | undefined {
+  const value = input?.file_path ?? input?.path
+  return typeof value === 'string' ? value : undefined
+}
+
+/** fizz 的工具名：`read` / `write` / `edit`（旧历史里是 `read_file` 等） */
 function extractFileOps(history: AgentChatMessage[], ops: FileOperations): void {
   for (const m of history) {
     for (const part of m.parts) {
       if (part.type !== 'tool-call') continue
-      const call = part as unknown as { toolName?: string; input?: { path?: unknown } }
-      const path = typeof call.input?.path === 'string' ? call.input.path : undefined
+      const call = part as unknown as { toolName?: string; input?: Record<string, unknown> }
+      const path = inputPathOf(call.input)
       if (!path) continue
-      if (call.toolName === 'read_file') ops.read.add(path)
-      else if (call.toolName === 'write_file' || call.toolName === 'edit_file') ops.modified.add(path)
+      if (call.toolName === 'read' || call.toolName === 'read_file') ops.read.add(path)
+      else if (WRITE_TOOL_NAMES.has(call.toolName ?? '')) ops.modified.add(path)
     }
   }
 }
