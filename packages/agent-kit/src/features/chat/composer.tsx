@@ -14,6 +14,7 @@
  * 工作台那边是「权限 / 容器 Agent 的模型」—— 语义不同，所以做成槽位而不是写死。
  */
 import { getAgentHost } from '@fizz/agent-client/host'
+import { WorkBars } from '@fizz/agent-kit/shared/ai-elements/work-bars'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { useVoiceInput } from '@fizz/agent-kit/shared/hooks/useVoiceInput'
 import { APP_EVENTS } from '@fizz/agent-kit/shared/lib/app-events'
@@ -609,22 +610,25 @@ export function Composer({
               {trailing}
               {!isDesktopHost && voice.supported && (
                 <IconTip label={voice.listening ? tr('停止录音') : tr('语音输入（也可按住 Alt+V 说话）')}>
-                  <button
-                    type="button"
+                  {/*
+                    与停止 / 发送同一套材质（`LiquidGlassButton`），开没开都是玻璃：
+                    - 没开：`contrast` 档 —— 这颗压在 `bg-card/70` 的卡片里，纯白玻璃在浅色主题
+                      下等于隐形（和白色 popover / 顶栏一个道理，见 liquid-glass.tsx）。
+                    - 录音中：`accent` 档（主色底 + 玻璃高光）继续当「状态」用；里面换成
+                      `WorkBars` 那三根竖条，和消息流里「正在工作」同一个记号 —— 比一颗
+                      `Mic` 加整颗按钮 `animate-pulse` 更能说明「正在收声音」。
+                      竖条自己就在跳，按钮就不再叠一层呼吸动画。
+                  */}
+                  <LiquidGlassButton
+                    tone={voice.listening ? 'accent' : 'contrast'}
                     aria-label={voice.listening ? tr('停止录音') : tr('语音输入')}
+                    aria-pressed={voice.listening}
                     disabled={disabled}
                     onClick={voice.listening ? voice.stop : voice.start}
-                    className={cn(
-                      'flex size-8 shrink-0 items-center justify-center rounded-full transition-colors',
-                      // 录音中那颗是**状态**（主色实底），与 hover 无关，保留；
-                      // 未录音时与这一排 pill 同款：hover 不加底色，只把图标染成主题色
-                      voice.listening
-                        ? 'bg-primary text-primary-foreground animate-pulse'
-                        : 'border border-border bg-transparent text-muted-foreground hover:text-primary'
-                    )}
+                    className="inline-flex size-8 shrink-0 items-center justify-center rounded-full p-0"
                   >
-                    <Mic className="size-4" />
-                  </button>
+                    {voice.listening ? <WorkBars className="size-4" /> : <Mic className="size-4" />}
+                  </LiquidGlassButton>
                 </IconTip>
               )}
               {/*
