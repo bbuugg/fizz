@@ -109,7 +109,7 @@ function ActionRow({
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm">{action.label}</div>
         <div className="truncate text-xs text-muted-foreground" title={action.target}>
-          {QUICK_ACTION_KIND_LABELS[action.kind]} · {action.target}
+          {tr(QUICK_ACTION_KIND_LABELS[action.kind])} · {action.target}
         </div>
       </div>
       <button
@@ -283,7 +283,11 @@ export function QuickActionsDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={(next) => (next ? undefined : onClose())}>
-        <DialogContent className="flex h-[480px] max-h-[85dvh] flex-col overflow-hidden sm:max-w-md">
+        <DialogContent
+          className="flex h-[480px] max-h-[85dvh] flex-col overflow-hidden sm:max-w-md"
+          // 打开时不抢焦点（用户要求）：Radix 默认会聚焦第一个可聚焦元素
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
           <DialogTitle>{tr('快捷功能')}</DialogTitle>
 
           {/* 列表区：`min-h-0 flex-1` + 内部滚动（见文件头「排版」） */}
@@ -368,7 +372,11 @@ export function QuickActionsDialog({
         只有内部滚动 —— 表单再长也不用滚到底才能看到「取消 / 保存」。
       */}
       <Dialog open={draft !== null} onOpenChange={(next) => (next ? undefined : setDraft(null))}>
-        <DialogContent className="flex h-[480px] max-h-[85dvh] flex-col overflow-hidden sm:max-w-[480px]">
+        <DialogContent
+          className="flex h-[480px] max-h-[85dvh] flex-col overflow-hidden sm:max-w-[480px]"
+          // 编辑弹窗同样不自动聚焦：下面的名称输入框也不挂 autoFocus
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
           <DialogTitle>
             {actions.some((a) => a.id === draft?.id) ? tr('编辑快捷功能') : tr('添加快捷功能')}
           </DialogTitle>
@@ -392,7 +400,7 @@ export function QuickActionsDialog({
                           return (
                             <TabsTrigger key={kind} value={kind}>
                               <Icon className="size-3.5" />
-                              {QUICK_ACTION_KIND_LABELS[kind]}
+                              {tr(QUICK_ACTION_KIND_LABELS[kind])}
                             </TabsTrigger>
                           )
                         })}
@@ -403,7 +411,6 @@ export function QuickActionsDialog({
                 <div>
                   <div className="mb-1 text-xs text-muted-foreground">{tr('名称')}</div>
                   <Input
-                    autoFocus
                     placeholder={tr('按钮上的文字，例如「项目看板」')}
                     value={draft.label}
                     onChange={(e) => setDraft({ ...draft, label: e.target.value })}
@@ -418,7 +425,7 @@ export function QuickActionsDialog({
                   </div>
                   <textarea
                     rows={draft.kind === 'command' ? 2 : 1}
-                    placeholder={QUICK_ACTION_TARGET_HINTS[draft.kind]}
+                    placeholder={tr(QUICK_ACTION_TARGET_HINTS[draft.kind])}
                     value={draft.target}
                     onChange={(e) => setDraft({ ...draft, target: e.target.value })}
                     className="flex w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring"

@@ -171,6 +171,8 @@ export const CHAT: Record<string, string> = {
   '查看与编辑文件': 'View & edit files',
   '打开 AI 助手': 'Open AI assistant',
   '关闭 AI 助手': 'Close AI assistant',
+  '让助手执行 / 读取这个终端…': 'Ask the assistant to run / read this terminal…',
+  '让助手创建 / 打开 / 删除项目…': 'Ask the assistant to create / open / delete projects…',
   '在终端执行': 'Run in terminal',
   '读取终端输出': 'Read terminal output',
   '发送按键': 'Send keys',

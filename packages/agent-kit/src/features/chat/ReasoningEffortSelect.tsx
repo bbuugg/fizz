@@ -14,6 +14,7 @@ import {
   PopoverTrigger,
 } from '@fizz/ui/popover'
 import { Slider } from '@fizz/ui/slider'
+import { LiquidGlassSurface } from '@fizz/ui/liquid-glass'
 import type { AiReasoningEffort } from '@fizz/contracts/types'
 import { CHAT_ICON_PILL } from '@fizz/agent-kit/features/chat/composer'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
@@ -117,30 +118,59 @@ export function ReasoningEffortSelect({ app }: { app: AgentApp }) {
           <span className="text-xs text-muted-foreground">{t(currentLabel)}</span>
         </div>
         <div className="px-1 pt-1">
-          <Slider
-            min={0}
-            max={LEVELS.length - 1}
-            // 细步长让拖动连续顺滑，松手时再按最近档位吸附
-            step={0.01}
-            value={[sliderValue]}
-            onValueChange={(next) => {
-              setDragging(true)
-              setDraftValue(next[0] ?? 0)
-            }}
-            onValueCommit={(next) => {
-              setDragging(false)
-              commit(Math.round(next[0] ?? 0))
-            }}
-            aria-label={t('思考强度')}
-            className="h-7 cursor-pointer"
-            trackClassName="data-horizontal:h-7 rounded-full bg-muted"
-            rangeClassName={cn(
-              'rounded-full shadow-[inset_0_1px_1px_rgba(255,255,255,0.3)]',
-              !dragging && 'transition-[width,background-size] duration-200 ease-out',
-            )}
-            rangeStyle={rangeStyle}
-            thumbClassName="size-6 border-0 bg-transparent opacity-0 shadow-none ring-0 hover:ring-0 focus-visible:opacity-100 focus-visible:ring-2 active:ring-0"
-          />
+          {/* 液态玻璃条：材质与跟随指针的扫光 / 光圈都收在 `LiquidGlassSurface` 里，
+              与终端悬浮球（`LiquidGlassButton`）共用同一份配方。
+              鼠标指向时只加深投影，不做位移 —— 滑条是交互控件，指向时整条上下跳 1px
+              会让人以为指针没对准（用户反馈）。 */}
+          <LiquidGlassSurface
+            tone="contrast"
+            className="transition-shadow duration-200 ease-out hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_22px_50px_-16px_rgba(15,23,42,0.3)]"
+          >
+            {/* 挡位点：两端不放（条的两头就是端点），只标中间 6 个挡位。
+                放在 Slider **之前** = 压在渐变层下面；已填充到的挡位直接**不渲染** ——
+                渐变边缘正好落在点的圆心上，留着的话总会有半个点露在右侧（用户反馈）。
+                判据用连续的 `sliderValue` 而不是取整后的 `valueIndex`：后者在拖动到
+                2.51 时就把第 3 档的点藏掉，而渐变边缘还没走到那里。
+                `pointer-events-none` 别去掉 —— 点在条上，必须让指针事件穿过去才能拖动。 */}
+            <div aria-hidden className="pointer-events-none absolute inset-0">
+              {LEVELS.slice(1, -1).map((level, offset) => {
+                const index = offset + 1
+                if (index <= sliderValue) return null
+                return (
+                  <span
+                    key={level.value ?? 'default'}
+                    className="absolute top-1/2 size-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-foreground/25 transition-colors"
+                    style={{ left: `${(index / (LEVELS.length - 1)) * 100}%` }}
+                  />
+                )
+              })}
+            </div>
+            <Slider
+              min={0}
+              max={LEVELS.length - 1}
+              // 细步长让拖动连续顺滑，松手时再按最近档位吸附
+              step={0.01}
+              value={[sliderValue]}
+              onValueChange={(next) => {
+                setDragging(true)
+                setDraftValue(next[0] ?? 0)
+              }}
+              onValueCommit={(next) => {
+                setDragging(false)
+                commit(Math.round(next[0] ?? 0))
+              }}
+              aria-label={t('思考强度')}
+              className="h-7 cursor-pointer"
+              // 轨道本身透明：底色由上面那层玻璃给，未填充部分直接透出玻璃材质
+              trackClassName="data-horizontal:h-7 rounded-full bg-transparent"
+              rangeClassName={cn(
+                'rounded-full shadow-[inset_0_1px_1px_rgba(255,255,255,0.3)]',
+                !dragging && 'transition-[width,background-size] duration-200 ease-out',
+              )}
+              rangeStyle={rangeStyle}
+              thumbClassName="size-6 border-0 bg-transparent opacity-0 shadow-none ring-0 hover:ring-0 focus-visible:opacity-100 focus-visible:ring-2 active:ring-0"
+            />
+          </LiquidGlassSurface>
         </div>
         <div className="grid grid-cols-8 gap-0.5 px-0.5">
           {LEVELS.map((level, index) => (

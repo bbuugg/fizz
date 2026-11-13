@@ -25,6 +25,7 @@ import { filterCommands, parseSlashInput } from '@fizz/agent-kit/shared/lib/slas
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { useVoiceSilenceTimeout } from '@fizz/agent-kit/shared/lib/voice-prefs'
 import { Popover, PopoverAnchor, PopoverContent } from '@fizz/ui/popover'
+import { LiquidGlassButton } from '@fizz/ui/liquid-glass'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@fizz/ui/select'
 import type { AiPermissionMode } from '@fizz/contracts/types'
 import {
@@ -627,20 +628,20 @@ export function Composer({
                 </IconTip>
               )}
               {/*
-            停止：红底白方块。跑着且草稿为空时占最右那颗钮的位置；一旦输入了新内容，
+            停止：危险色玻璃圆钮 + 白色方块。跑着且草稿为空时占最右那颗钮的位置；一旦输入了新内容，
             这个位置让给发送 / 发送方式选择器（同一位置只保留一颗钮）。
           */}
               {showStop && (
                 <IconTip label={tr('停止本轮')}>
-                  <button
-                    type="button"
+                  <LiquidGlassButton
+                    tone="danger"
                     aria-label={tr('停止')}
                     disabled={disabled}
                     onClick={onCancel}
-                    className="flex size-8 shrink-0 items-center justify-center rounded-full bg-destructive text-white transition-colors hover:bg-destructive/90 disabled:opacity-40"
+                    className="inline-flex size-8 shrink-0 items-center justify-center rounded-full p-0"
                   >
                     <Square className="size-4 fill-current" />
-                  </button>
+                  </LiquidGlassButton>
                 </IconTip>
               )}
               {showSending ? (
@@ -650,29 +651,29 @@ export function Composer({
                   空窗结束切回来时这颗位置不会跳。`aria-busy` 让读屏也知道「正在提交」。
                 */
                 <IconTip label={tr('正在创建会话…')}>
-                  <button
-                    type="button"
+                  <LiquidGlassButton
+                    tone="accent"
                     aria-label={tr('正在创建会话')}
                     aria-busy
                     disabled
-                    className="flex size-8 shrink-0 cursor-default items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-100"
+                    className="inline-flex size-8 shrink-0 cursor-default items-center justify-center rounded-full p-0 disabled:opacity-100"
                   >
                     <Loader2 className="size-4 animate-spin" />
-                  </button>
+                  </LiquidGlassButton>
                 </IconTip>
               ) : showSend ? (
-                // 发送：主色圆钮，空草稿禁用（空草稿 + 跑着时这个位置是停止钮，见 showStop）；
+                // 发送：主色玻璃圆钮，空草稿禁用（空草稿 + 跑着时这个位置是停止钮，见 showStop）；
                 // sendDisabled（压缩进行中）只灰发送钮，不影响打字
                 <IconTip label={sendDisabled ? (sendDisabledHint ?? tr('上下文压缩中，稍后再发')) : sendTitle}>
-                  <button
-                    type="button"
+                  <LiquidGlassButton
+                    tone="accent"
                     aria-label={tr('发送')}
                     disabled={disabled || sendDisabled || (!hasDraft && !allowEmptySend)}
                     onClick={onSubmit}
-                    className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="inline-flex size-8 shrink-0 items-center justify-center rounded-full p-0"
                   >
                     <Send className="size-4" />
-                  </button>
+                  </LiquidGlassButton>
                 </IconTip>
               ) : null}
             </div>

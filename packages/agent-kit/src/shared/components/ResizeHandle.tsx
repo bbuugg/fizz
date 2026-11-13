@@ -166,7 +166,7 @@ export function ResizeHandle({
  * 拖拽分隔条的**指针管线**（触摸安全的唯一实现）。
  *
  * `ResizeHandle` 是「改宽度」的现成组件，但改高度的几条分隔条（API 页响应区、WS 页发送区、
- * 侧栏分区、`PanelView` 分隔条）位置与定位方式各不相同、套不进同一个 JSX，于是各自抄了一份
+ * 侧栏内容组标题行、`PanelView` 分隔条）位置与定位方式各不相同、套不进同一个 JSX，于是各自抄了一份
  * `pointerdown + window pointermove` —— 抄的都是**桌面鼠标那一版**：缺 `touch-action`，
  * 手机上手指一动就被浏览器当成滚动手势抢走，紧接着一个 `pointercancel` 把拖拽打断，
  * 表现就是「一次只能拖一点点」。这里把文件头 1 / 2 两条（`touch-action` + 幂等收尾）收进来，
@@ -182,11 +182,14 @@ export function ResizeHandle({
  */
 export function useDragResize<C>({
   axis,
+  cursor,
   onStart,
   onMove,
   onEnd
 }: {
   axis: 'x' | 'y'
+  /** 拖动期间 body 上的光标；缺省按轴用 `col-resize` / `row-resize` */
+  cursor?: string
   onStart?: (e: ReactPointerEvent<HTMLDivElement>) => C | null
   onMove: (delta: number, ctx: C) => void
   onEnd?: () => void
@@ -241,7 +244,7 @@ export function useDragResize<C>({
       } catch {
         // 合成事件没有真实指针，退化为 window 监听即可
       }
-      document.body.style.cursor = axis === 'x' ? 'col-resize' : 'row-resize'
+      document.body.style.cursor = cursor ?? (axis === 'x' ? 'col-resize' : 'row-resize')
       document.body.style.userSelect = 'none'
       // 手势起点已有 touch-none，这里在 body 上再关一次：手指滑出抓手后 iOS 仍可能开始橡皮筋回弹
       document.body.style.touchAction = 'none'
@@ -250,6 +253,6 @@ export function useDragResize<C>({
       window.addEventListener('pointercancel', cleanup)
       window.addEventListener('blur', cleanup)
     },
-    [axis]
+    [axis, cursor]
   )
 }

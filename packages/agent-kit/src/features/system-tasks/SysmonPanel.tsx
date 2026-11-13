@@ -37,6 +37,9 @@
  * 所以窄屏只留「名称 / PID / CPU % / 内存 % / 结束」，且数值列宽降一档（`w-12`/`w-14`）、
  * 名称列内边距收成 `px-1.5`。加列 / 加宽之前先按 360px 算一遍总宽，别再往表里塞绝对
  * 值列（内存 / 状态 / 累计 CPU / 用户都是 `sm:` / `md:` / `lg:` 才回来的）。
+ * ⚠️ **表头与表体的列必须同进同出**：`ProcessTableHead` 的每颗 `<th>` 要和 `ProcessTable` /
+ * 骨架屏里对应的 `<td>` 用同一套 `hidden …:table-cell`。少藏一个表头列，窄屏下表比表体
+ * 多一列，表格算法就会在右侧留一条空白列 —— 表现为「右边一大块边距、左边没有」。
  *
  * ## CPU 百分比的口径
  *
@@ -636,7 +639,7 @@ function ProcessTableHead({ sysmon }: { sysmon: SysmonController }): React.JSX.E
           title="单核 100% 为满；多线程进程可以超过 100"
         />
         <SortHeader label="内存 %" sortKey="mem" sysmon={sysmon} align="right" className="w-16" />
-        <SortHeader label="内存" sortKey="rss" sysmon={sysmon} align="right" className="w-20" />
+        <SortHeader label="内存" sortKey="rss" sysmon={sysmon} align="right" className="hidden w-20 sm:table-cell" />
         <SortHeader label="状态" sysmon={sysmon} className="hidden w-16 sm:table-cell" />
         <SortHeader label="累计 CPU" sysmon={sysmon} align="right" className="hidden w-20 lg:table-cell" />
         <th className="w-10 px-1 py-1.5" />

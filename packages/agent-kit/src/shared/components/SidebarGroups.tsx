@@ -46,8 +46,8 @@
  * - 只展开上面那组：下面那组的标题被挤到底部；
  * - 只展开下面那组：上面那组只剩一行标题留在原位（顺序不变），下面那组吃满；
  * - 两组都展开：**按上次的位置分** —— 没拖过就按 `grow` 权重（调用方都传 1，即
- *   1:1；刻意不做「刚展开的组拿 3/4」，那会让收起再展开时高度变一档）；交界处可以
- *   上下拖改比例（上面那组传 `height` / `onResizeHeight`），拖过之后按记住的像素走。
+ *   1:1；刻意不做「刚展开的组拿 3/4」，那会让收起再展开时高度变一档）；拖动**下面那组
+ *   的标题行**改比例（它传 `resizeAbove`），拖过之后按记住的像素走。
  *
  * ⚠️ 拖过的组记住的高度**必须一直传**（另一组收起时也传，另加 `solo` 让它吃满）：
  * 只在「两组都展开」时才传、只剩一组时清成 `undefined` 的写法会让 basis 在 0 ↔ H
@@ -64,14 +64,21 @@
  * 「收起来」而不是整块消失。收起时挂 `inert`，内容里的输入框 / 按钮不会被 Tab 到。
  *
  * ⚠️ 过渡里**包含 `flex-basis`**（拖动改的是它），而拖动时每帧都在改它 —— 所以拖动
- * 期间要关掉过渡（`dragging` 由 `SidebarGroupResizer` 上报），否则高度会追着指针
- * 慢慢滑，手感发黏。
+ * 期间要关掉过渡（`dragging` 由本组上报、`resizing` 由父组件从另一组的回调接过来），
+ * 否则高度会追着指针慢慢滑，手感发黏。
  *
- * ## 组与组之间有一条**常显**的分隔线
+ * ## 拖**下面那组**的标题行改高度（交界处不再画线）
  *
- * 多组同时展开时，交界处的拖拽条画一条 1px 的 `bg-border`（选中 / 悬停变主色）：
- * 默认透明的话没人知道那里能拖，而这里的分组是「同一个滚动区里的两段列表」，
- * 没有分区外壳那种看得见的边界，线就是唯一的抓手提示。
+ * 多组同时展开时，交界处的抓手就是下面那组的标题行本身：在它上面上下拖，改的是
+ * **上面那组**内容的高度，差额由下面那组吸收。不再单独画一条 1px 的分隔线 ——
+ * 悬停光标保持折叠按钮原来的 pointer（不换成 row-resize），能拖靠 `title` 提示；
+ * 真正拖起来之后才把光标切成 `grab`。
+ *
+ * - 方向**跟手**：往下拖，标题跟着指针走 = 上面那组长高、本组变矮（与原先拖那条线
+ *   完全一致 —— 线本来就是上组的底边）；
+ * - 标题行同时是折叠按钮，所以有 `DRAG_THRESHOLD` 死区：没超过几像素就只当点击；
+ *   拖动结束后紧跟的那次 `click` 要吞掉，否则松手会顺带折叠/展开一次；
+ * - `extra` 里的按钮不参与拖动（指针事件在那一层就 `stopPropagation`）。
  *
  * ## 空态
  *
@@ -79,6 +86,7 @@
  * 就会先闪一句「还没有项目」。需要骨架屏的调用方自己判断，把它放进 `children`。
  */
 import {
+  useRef,
   useState,
   type ComponentType,
   type CSSProperties,
@@ -86,12 +94,23 @@ import {
 } from 'react'
 import { Skeleton } from '@fizz/ui/skeleton'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
-import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { useDragResize } from '@fizz/agent-kit/shared/components/ResizeHandle'
 import { SectionHeader } from '@fizz/agent-kit/shared/components/StackedSections'
 
-/** `size="fill"` 的内容区最小高度（px）；拖动分隔条时也按它给下组留位置 */
+/** `size="fill"` 的内容区最小高度（px）；拖动标题行改高度时也按它给本组留位置 */
 const FILL_MIN_HEIGHT = 96
+
+/** 拖动标题行的位移死区（px）：没超过它就算点击，标题行同时是折叠按钮 */
+const DRAG_THRESHOLD = 4
+
+/**
+ * 拖动结束后吞掉紧跟的那次 `click` 的时间窗（ms）。
+ *
+ * 指针在标题行上松手时浏览器还会补一个 `click`，不吞掉就会「拖完顺带折叠」。
+ * 用时间戳而不是布尔量：松手位置在标题行外时那个 `click` 根本不会来，布尔量会一直
+ * 留着把下一次正常点击也吞掉；时间戳只覆盖松手后的这一小段。
+ */
+const CLICK_SUPPRESS_MS = 300
 
 /**
  * 顶部动作区：贴在清单最上方、与下面各内容组分开的一排**整行动作**。
@@ -179,11 +198,19 @@ export interface SidebarGroupProps {
    */
   solo?: boolean
   /**
-   * 传了才渲染**底部分隔条**：上下拖动改的是本组展开内容的高度，差额由下面那组
-   * （同样的 `fill`）自动吸收。只在「下面还有一组也展开」时才传 —— 否则本组本来
-   * 就吃满剩余高度，拖了也没意义。
+   * 传了本组**标题行**就是高度拖拽把手：上下拖动改的是**上方相邻组**的展开内容高度，
+   * 差额由本组自动吸收（方向跟手：往下拖 = 上组长高、本组变矮）。
+   *
+   * 只在「上面那组也展开」时传 —— 否则上面那组本来就吃满剩余高度，拖了也没意义。
    */
-  onResizeHeight?: (height: number) => void
+  resizeAbove?: (height: number) => void
+  /** `resizeAbove` 的拖动起止：**上方那组**据此关掉自己的高度过渡（被改高度的是它） */
+  onResizeDraggingChange?: (dragging: boolean) => void
+  /**
+   * 本组内容高度正被别处的拖动改变（父组件把另一组的 `onResizeDraggingChange` 接过来）：
+   * 期间同样要关掉高度过渡，否则 `flex-basis` 的动画会追着指针慢慢滑。
+   */
+  resizing?: boolean
   className?: string
   children?: ReactNode
 }
@@ -208,7 +235,9 @@ export function SidebarGroup({
   empty,
   height,
   solo,
-  onResizeHeight,
+  resizeAbove,
+  onResizeDraggingChange,
+  resizing,
   className,
   children
 }: SidebarGroupProps) {
@@ -218,6 +247,78 @@ export function SidebarGroup({
   const toggle = onToggle ?? (() => setInternalOpen((v) => !v))
   /** 正在拖高度：期间关掉过渡，否则 `flex-basis` 的动画会追着指针慢慢滑 */
   const [dragging, setDragging] = useState(false)
+  /** 被别处（另一组的标题行）拖着：同样要关过渡 */
+  const busy = dragging || resizing
+  /** 拖动结束的时刻：紧跟的那次 `click` 要吞掉（见 `CLICK_SUPPRESS_MS`） */
+  const suppressClickUntil = useRef(0)
+
+  /**
+   * 标题行拖动（本组标题就是两组交界处的抓手，见文件头）。
+   *
+   * 起点状态（上组内容高度 / 上限）同样从 DOM 量：`SectionHeader` 的前一个兄弟节点
+   * 正是上面那组的内容容器（收起时它也在 DOM 里，只是高度为 0）。
+   */
+  const moved = useRef(false)
+  const onHeaderPointerDown = useDragResize<{ startHeight: number; maxHeight: number }>({
+    axis: 'y',
+    // 悬停仍是折叠按钮的 pointer；只有真的拖起来才把光标换成 grab
+    cursor: 'grab',
+    onStart: (e) => {
+      if (!resizeAbove) return null
+      const content = e.currentTarget.previousElementSibling as HTMLElement | null
+      const container = e.currentTarget.parentElement
+      if (!content || !container || !content.hasAttribute('data-sidebar-group-content')) {
+        return null
+      }
+      /**
+       * 上限 = 容器高度 - 各组标题行 - 本组最小高度。
+       * 标题行（含顶部动作区）高度由「容器高度 - 所有内容高度」反推，不必知道有几组。
+       */
+      const contents = Array.from(
+        container.querySelectorAll<HTMLElement>('[data-sidebar-group-content]')
+      )
+      const contentHeight = contents.reduce(
+        (sum, el) => sum + el.getBoundingClientRect().height,
+        0
+      )
+      const headersHeight = Math.max(0, container.clientHeight - contentHeight)
+      moved.current = false
+      // 新的一次按下：上一次拖动残留的「吞点击」窗口不该再算数
+      suppressClickUntil.current = 0
+      return {
+        startHeight: content.getBoundingClientRect().height,
+        maxHeight: Math.max(
+          FILL_MIN_HEIGHT,
+          container.clientHeight - headersHeight - FILL_MIN_HEIGHT
+        )
+      }
+    },
+    onMove: (delta, drag) => {
+      // 没超死区就摆动几像素不算拖：标题行同时是折叠按钮
+      if (!moved.current) {
+        if (Math.abs(delta) < DRAG_THRESHOLD) return
+        moved.current = true
+        setDragging(true)
+        onResizeDraggingChange?.(true)
+      }
+      // 往下拖 = 本组标题跟着指针走 = 上组变高、本组变矮
+      resizeAbove?.(
+        Math.max(FILL_MIN_HEIGHT, Math.min(drag.maxHeight, drag.startHeight + delta))
+      )
+    },
+    onEnd: () => {
+      if (!moved.current) return
+      suppressClickUntil.current = Date.now() + CLICK_SUPPRESS_MS
+      setDragging(false)
+      onResizeDraggingChange?.(false)
+    }
+  })
+
+  /** 点标题折叠：拖动刚结束时那次 `click` 不能顺带折叠一下 */
+  const handleToggle = (): void => {
+    if (Date.now() < suppressClickUntil.current) return
+    toggle()
+  }
 
   /**
    * 高度样式（展开 / 收起两套，靠 `transition` 过渡出动画）。
@@ -258,10 +359,12 @@ export function SidebarGroup({
         alignIndent={alignIndent}
         extra={extra}
         open={expanded}
-        onToggle={toggle}
+        onToggle={handleToggle}
+        onPointerDown={resizeAbove ? onHeaderPointerDown : undefined}
+        dragging={dragging}
       />
       <div
-        // 拖动分隔条靠它量「这一组占多高」（见 `SidebarGroupResizer`）
+        // 拖动标题行时靠它量「这一组占多高」（见上方 onHeaderPointerDown）
         data-sidebar-group-content=""
         // 收起后内容仍挂载（动画需要），用 inert 把它从 Tab / 读屏里摘出去
         inert={!expanded}
@@ -272,7 +375,7 @@ export function SidebarGroup({
           size === 'max' && 'shrink-0',
           // 收起（或正在收起）时必须是 `overflow-hidden`：内容盒已经缩到 0，不裁剪会画到组外面
           expanded ? scroll && 'overflow-auto no-scrollbar' : 'overflow-hidden',
-          !dragging &&
+          !busy &&
             'transition-[flex-grow,flex-basis,min-height,max-height,opacity] duration-200 ease-out motion-reduce:transition-none',
           className
         )}
@@ -284,87 +387,7 @@ export function SidebarGroup({
           children
         )}
       </div>
-      {expanded && onResizeHeight && (
-        <SidebarGroupResizer onResize={onResizeHeight} onDragStateChange={setDragging} />
-      )}
     </>
-  )
-}
-
-/**
- * 组与组之间的高度拖拽条（多组同时展开时才有意义，见 `SidebarGroup` 的 `onResizeHeight`）。
- *
- * 用 `h-0` 的兄弟节点 + 绝对定位的抓手：不参与 flex 高度分配，抓手的中心线正好压在
- * 两组内容的交界线上。拖动改的是**上面那组内容**的像素高度，下面那组是 `fill`，
- * 自动吃掉差额 —— 和 `StackedSections` 的分区分隔条同一套交互，但这里的高度存在
- * 调用方内存里（组不是分区，没有全局 id）。
- *
- * 视觉上常显一条 1px 的线（悬停 / 拖动变主色）：不画线就没人知道那里能拖。
- *
- * `onDragStateChange` 上报拖动起止：拖动期间上面的组要关掉高度过渡，否则每一步都
- * 在追动画，手感发黏。
- *
- * 指针管线走 `useDragResize`（`touch-action` + 幂等收尾），别手写 `pointermove`。
- */
-function SidebarGroupResizer({
-  onResize,
-  onDragStateChange
-}: {
-  onResize: (height: number) => void
-  onDragStateChange: (dragging: boolean) => void
-}) {
-  const tr = useT()
-  const onPointerDown = useDragResize<{ startHeight: number; maxHeight: number }>({
-    axis: 'y',
-    onStart: (e) => {
-      const content = e.currentTarget.previousElementSibling as HTMLElement | null
-      const container = e.currentTarget.parentElement
-      if (!content || !container) return null
-      /**
-       * 上限 = 容器高度 - 各组标题行 - 下组最小高度。
-       * 标题行高度由「容器高度 - 所有展开内容高度」反推，不必知道有几组。
-       */
-      const contents = Array.from(
-        container.querySelectorAll<HTMLElement>('[data-sidebar-group-content]')
-      )
-      const contentHeight = contents.reduce(
-        (sum, el) => sum + el.getBoundingClientRect().height,
-        0
-      )
-      const headersHeight = Math.max(0, container.clientHeight - contentHeight)
-      // 放在校验之后：起点无效时 hook 会直接 return，`onEnd` 不会触发，这里不能先置 true
-      onDragStateChange(true)
-      return {
-        startHeight: content.getBoundingClientRect().height,
-        maxHeight: Math.max(
-          FILL_MIN_HEIGHT,
-          container.clientHeight - headersHeight - FILL_MIN_HEIGHT
-        )
-      }
-    },
-    // 拖动的是**分隔线本身**：向上拖（delta 为负）= 上面那组变矮、下面那组变高，
-    // 分隔线跟着指针走（反过来会让线朝手指的反方向跑，像「拖反了」）
-    onMove: (delta, drag) =>
-      onResize(
-        Math.max(
-          FILL_MIN_HEIGHT,
-          Math.min(drag.maxHeight, drag.startHeight + delta)
-        )
-      ),
-    onEnd: () => onDragStateChange(false)
-  })
-
-  return (
-    <div
-      onPointerDown={onPointerDown}
-      title={tr('拖动调整高度')}
-      className="group/resize relative z-20 h-0 shrink-0 cursor-row-resize touch-none select-none [-webkit-touch-callout:none]"
-    >
-      <div className="absolute inset-x-0 top-0 h-3 -translate-y-1/2 sm:h-2">
-        {/* 常显：不画线就没人知道这里能拖（选中 / 悬停时变成主色） */}
-        <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border transition-colors group-hover/resize:bg-primary group-active/resize:bg-primary" />
-      </div>
-    </div>
   )
 }
 

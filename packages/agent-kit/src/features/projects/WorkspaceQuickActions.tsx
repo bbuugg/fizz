@@ -15,16 +15,14 @@
  * 菜单结构固定成两段：上面是能直接点的动作（0 条时整段不渲染），下面一条分隔线 +
  * 「管理快捷功能…」。管理项**永远在最底部**，不会随条目多少上下漂。
  *
- * ⚠️ 触发器必须用 `<Button variant="outline">` + `DropdownMenuTrigger asChild`，**不要手写
- * Tailwind 类**：手写那版（`rounded text-foreground/80 hover:bg-foreground/10`）的圆角是
- * `rounded`=4px，而 `Button` 走的是 `rounded-md`=`calc(var(--radius) - 2px)`=12px，
- * 与同排的「打开 / 终端 / 文件」对不上（也少了 focus 环与 disabled 态）。
- * 同排那个「打开」下拉就是这套写法，照抄它。
+ * ⚠️ 触发器统一用 `LiquidGlassButton` + `DropdownMenuTrigger asChild`：与同排的
+ * 「终端 / 浏览器 / 文件」共用同一套液态玻璃材质与 `rounded-md` 圆角，
+ * 也保留 focus 环与 disabled 态。别再换回普通 `Button variant="outline"`。
  */
 import { useEffect, useRef, useState } from 'react'
 import { Loader2, Settings2, Zap } from 'lucide-react'
 import { toast } from 'sonner'
-import { Button } from '@fizz/ui/button'
+import { LiquidGlassButton } from '@fizz/ui/liquid-glass'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -34,6 +32,7 @@ import {
 } from '@fizz/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@fizz/ui/tooltip'
 import { QUICK_ACTION_ICONS, runQuickAction } from '@fizz/agent-kit/shared/lib/quick-actions'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 import type { QuickAction } from '@fizz/contracts/workspace-config'
 
 export function WorkspaceQuickActions({
@@ -57,6 +56,7 @@ export function WorkspaceQuickActions({
   /** 打开「快捷功能」管理弹窗（增删改 / 排序；AgentApp 提供） */
   onManage: () => void
 }) {
+  const tr = useT()
   /** 执行中标记：挡住连续点击（菜单点完就收） */
   const runningRef = useRef(false)
   /** 执行中才显示的小转圈，给用户一个「点了，正在跑」的反馈 */
@@ -82,7 +82,7 @@ export function WorkspaceQuickActions({
         openPath: onOpenPath
       })
       // 成功不提示：浏览器 / 终端 / 资源管理器本身就是反馈
-      if (error) toast.error(`「${action.label}」执行失败：${error}`)
+      if (error) toast.error(tr('「{name}」执行失败：{error}', { name: action.label, error }))
     } finally {
       runningRef.current = false
       setRunning(false)
@@ -99,16 +99,15 @@ export function WorkspaceQuickActions({
       <Tooltip>
         <TooltipTrigger asChild>
           <DropdownMenuTrigger asChild>
-            <Button
-              variant="outline"
-              className="h-7! w-8! p-0! data-[state=open]:bg-accent"
-              aria-label="工作区快捷功能"
+            <LiquidGlassButton tone="contrast"
+              className="inline-flex h-7 w-8 items-center justify-center rounded-md p-0 focus-visible:ring-2 focus-visible:ring-ring/50"
+              aria-label={tr('工作区快捷功能')}
             >
               {running ? <Loader2 className="size-4 animate-spin text-primary" /> : <Zap className="size-4" />}
-            </Button>
+            </LiquidGlassButton>
           </DropdownMenuTrigger>
         </TooltipTrigger>
-        <TooltipContent side="bottom">工作区快捷功能</TooltipContent>
+        <TooltipContent side="bottom">{tr('工作区快捷功能')}</TooltipContent>
       </Tooltip>
       {/* align="end"（与顶栏「打开」下拉一致）：菜单右缘对齐按钮右缘、向左展开，
           不会从窗口右缘溢出去；max-w 限制长说明被 truncate，避免菜单横向拉太宽 */}
@@ -131,7 +130,7 @@ export function WorkspaceQuickActions({
         {actions.length > 0 && <DropdownMenuSeparator />}
         <DropdownMenuItem onSelect={onManage}>
           <Settings2 className="size-3.5 text-muted-foreground" />
-          <span className="truncate">管理快捷功能…</span>
+          <span className="truncate">{tr('管理快捷功能…')}</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

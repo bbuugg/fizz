@@ -128,7 +128,6 @@ import {
   SidebarActions,
   SidebarGroup
 } from '@fizz/agent-kit/shared/components/SidebarGroups'
-import { API_REQUESTS_SECTION } from '@fizz/agent-kit/shared/lib/section-ids'
 import { openApiDraftTab, openApiTab, openWsDraftTab } from '@fizz/agent-kit/shared/lib/tool-tabs'
 import { activeTabKey, usePanelState } from '@fizz/agent-kit/shared/lib/panel-store'
 import { treeIndent } from '@fizz/agent-kit/shared/lib/tree-indent'
@@ -317,7 +316,12 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
   const [requestsOpen, setRequestsOpen] = useState(true)
   const [historyOpen, setHistoryOpen] = useState(true)
   const [requestsHeight, setRequestsHeight] = useState<number | undefined>(undefined)
-  /** 只有两组都展开时「请求」组才需要「固定高度 + 分隔条」（只剩它时吃满剩余高度） */
+  /**
+   * 正在拖「历史记录」的标题行：请求组才是被改高度的那组，据此关掉它的高度过渡。
+   * 手势发生在下面那组上，所以这份状态只能放在父组件这一层。
+   */
+  const [groupsResizing, setGroupsResizing] = useState(false)
+  /** 只有两组都展开时「请求」组才需要「固定高度 + 可拖标题行」（只剩它时吃满剩余高度） */
   const requestsResizable = requestsOpen && historyOpen
 
   /** 点组标题：只切展开态 —— 拖出来的高度不清，再展开时要回到那个位置 */
@@ -644,7 +648,7 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
    * 两块内容组按**固定顺序**渲染（请求在前、历史记录在后）：展开 / 收起不会重排，
    * 与 VSCode 侧栏一致。展开组吃剩余高度，所以只展开「请求」时「历史记录」的标题
    * 会被挤到底部；两组都展开时按上次的位置分（没拖过就 1:1，拖过按记住的像素
-   * 高度），请求组底部出现可拖的分隔条。
+   * 高度），拖「历史记录」那行标题即可改比例。
    */
   const requestsGroup = (
     <SidebarGroup
@@ -661,7 +665,8 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
       height={requestsHeight}
       // 历史记录收起时本组是唯一展开的组：吃满剩余高度
       solo={!requestsResizable}
-      onResizeHeight={requestsResizable ? setRequestsHeight : undefined}
+      // 被「历史记录」标题行的拖动改高度时关掉过渡
+      resizing={groupsResizing}
       // 搜索框常驻在组内、不跟着列表滚 —— 所以容器不滚，由 children 自己分：
       // 「搜索框（shrink-0） + 列表（flex-1 自己滚）」，见 `SidebarGroup` 的 `scroll`
       scroll={false}
@@ -760,11 +765,18 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
 
   /** 第二块：请求历史（与请求组同一个滚动区、同一套组标题与行样式，见 `HistorySection`） */
   const historyGroup = (
-    <HistorySection app={app} open={historyOpen} onToggle={toggleHistory} />
+    <HistorySection
+      app={app}
+      open={historyOpen}
+      onToggle={toggleHistory}
+      // 两组都展开时，本组标题行就是交界处的抓手：上下拖改请求组的高度
+      resizeAbove={requestsResizable ? setRequestsHeight : undefined}
+      onResizeDraggingChange={setGroupsResizing}
+    />
   )
 
   return (
-    <SectionShell spec={API_REQUESTS_SECTION} minHeight={280}>
+    <SectionShell minHeight={280}>
       {/*
         版式与 AI Agent / 主机 / 笔记侧栏**同构**（`shared/components/SidebarGroups`）：
         一个 `SectionShell` 里自上而下是「顶部动作 → 请求组 → 历史记录组」，两块组共用
@@ -1399,12 +1411,18 @@ function RequestRow({
 function HistorySection({
   app,
   open,
-  onToggle
+  onToggle,
+  resizeAbove,
+  onResizeDraggingChange
 }: {
   app: AgentApp
   /** 展开态由父组件控：两组固定顺序、各自独立展开 */
   open: boolean
   onToggle: () => void
+  /** 两组都展开时传：本组标题行当抓手，上下拖改请求组的高度（见 `SidebarGroup`） */
+  resizeAbove?: (height: number) => void
+  /** 拖动起止：请求组据此关掉自己的高度过渡 */
+  onResizeDraggingChange?: (dragging: boolean) => void
 }) {
   const history = app.apiHistory
   const confirm = useConfirm()
@@ -1445,6 +1463,8 @@ function HistorySection({
       onToggle={onToggle}
       // 展开时吃剩余高度、超出才在组内滚（只展开请求组时本组只剩标题行）
       size="fill"
+      resizeAbove={resizeAbove}
+      onResizeDraggingChange={onResizeDraggingChange}
       className="pb-2"
       // 「清空历史」跟着**这一组**走：与「请求」组那颗「新建分组」同一个位置、同一种
       // 小按钮（`RowActionButton`）—— 标题行只有 32px 高，28px 的 ghost Button 会喧宾夺主。

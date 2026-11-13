@@ -423,6 +423,7 @@ export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
               return (
                 <IconTip key={action.key} label={action.label}>
                   <LiquidGlassButton
+                    tone="contrast"
                     aria-label={action.label}
                     // 不让按钮 / 终端抢焦点：移动端一点就弹软键盘。
                     onPointerDown={(e) => {
@@ -449,6 +450,7 @@ export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
               玻璃感保留，只是不跑 backdrop-filter）—— 外层的 transform 只跑位置
               （拖动 / 贴边），玻璃层的缩放与描边、投影、图标都归内层管。 */}
           <LiquidGlassButton
+            tone="contrast"
             ref={ballRef}
             aria-label="终端操作"
             aria-expanded={open}

@@ -189,3 +189,33 @@
 .markdown-editor .milkdown .crepe-placeholder::before {
   color: var(--muted-foreground);
 }
+
+/* ------------------------------------------------------------------ */
+/* 表格单元格选中                                                        */
+/* ------------------------------------------------------------------ */
+
+/*
+  Crepe 的 `reset.css` 会给编辑器内**所有** `*::selection` 强设
+  `background: var(--crepe-color-selected)`（半透明主色），但它只管背景、不管文字色。
+  全局 `::selection` 的文字色是 `var(--primary-foreground)`，落到这层接近底色的浅底上
+  就会看不清。这里把编辑器内的选中统一成主色底 + 主色前景字：多挂一层 `.markdown-editor`
+  提高特异性，稳定压过 Crepe 的 `.milkdown .ProseMirror *::selection`。
+*/
+.markdown-editor .milkdown .ProseMirror *::selection {
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+
+/*
+  表格单元格选中：Crepe 原本靠 `.selectedCell::after` 的半透明主色覆盖层，
+  与文本选中的主色不是同一套，点了之后一格浅紫、选中文字又是另一种颜色。
+  这里直接让整格用主色底 + 主色前景字，并关掉那层覆盖层。
+*/
+.markdown-editor .milkdown .milkdown-table-block .selectedCell {
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.markdown-editor .milkdown .milkdown-table-block .selectedCell::after {
+  display: none;
+}

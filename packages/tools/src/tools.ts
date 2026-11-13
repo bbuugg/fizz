@@ -1,15 +1,14 @@
 /**
  * 工作区 Agent 工具集：读 / 写 / 编辑 / 查文件（glob）/ 查内容（grep）/ 执行命令（bash）。
  *
- * 工具面与 DeepSeek Harness（`@deepseek-ai/dsh-tool-fs` / `dsh-tool-fs-search` /
- * `dsh-tool-bash`）**逐字对齐**：工具名、参数名、默认值、返回值信封、错误文案都照抄。
- * 这样同一段提示词、同一套模型习惯在两个运行时之间可以直接搬。
+ * 工具名、参数名、默认值、返回值信封与错误文案保持固定形状：同一段提示词、
+ * 同一套模型习惯可以直接沿用。
  *
- * 与 dsh 的**刻意偏差**（搬提示词时要知道）：
- * - 路径用**相对工作区**的写法（dsh 用执行世界里的绝对路径）：Fizz 的模型一直按
- *   「路径相对工作区根」工作，改绝对路径会让它把服务器路径写进文件内容里；
+ * 几条刻意的约定：
+ * - 路径用**相对工作区**的写法：Fizz 的模型一直按「路径相对工作区根」工作，
+ *   改绝对路径会让它把服务器路径写进文件内容里；
  * - 读 / 查 / 执行结果后面还会追加一段「子目录 AGENTS.md 规则」（`nestedDocs`），
- *   这是 Fizz 的项目规则加载机制，dsh 没有；
+ *   这是 Fizz 的项目规则加载机制；
  * - 每个工具多一个 `intent` 字段（`@fizz/agent` 的 `withToolIntent` 注入，用于审批文案）。
  *
  * 所有工具都绑定一个工作区根目录（root），文件路径经 `resolveInside` 越界校验后落盘。
@@ -54,7 +53,7 @@ export type AgentPermissionMode = 'full' | 'confirm' | 'readonly'
  */
 const MAX_FILE_BYTES = 8_000_000
 
-/** 一次 read 的**默认且最大**行数（与 dsh 一致：传更大的值是错误，不是夹取） */
+/** 一次 read 的**默认且最大**行数（传更大的值是错误，不是夹取） */
 const READ_LIMIT = 2000
 /** 单行最长返回多少字符（超出截断并标注） */
 const READ_MAX_LINE_LENGTH = 2000
@@ -179,7 +178,7 @@ async function readTextFile(
   return buf.toString('utf8')
 }
 
-// ---------- 结果信封（与 dsh 的 formatXxxOutput 逐字一致） ----------
+// ---------- 结果信封（格式固定） ----------
 
 /** read 的模型可见文本：`<path>/<type>/<content>` 信封 + `N: 行内容` + 分页脚注 */
 function formatReadOutput(
@@ -228,11 +227,11 @@ function formatEditOutput(display: string, replaceAll: boolean): string {
 // ---------- 编辑 ----------
 
 /**
- * 字面量替换（与 dsh 的 `editText` 同语义）。
+ * 字面量替换（精确匹配）。
  *
  * - 在 **LF 归一化**的文本上匹配，最后按原文的主流行尾还原（CRLF 文件改完还是 CRLF）；
  * - 默认**必须唯一命中**：0 处报「没找到」，多处要求 `replace_all`（模型自己决定）；
- * - 不存在「近似匹配」：行尾 / 缩进 / 行号前缀的差异都要模型自己抄对，这是 dsh 的取舍。
+ * - 不存在「近似匹配」：行尾 / 缩进 / 行号前缀的差异都要模型自己抄对。
  */
 export function applyLiteralEdit(
   text: string,
@@ -379,7 +378,7 @@ function intentOf(input: unknown): string {
 }
 
 /**
- * 把后端执行结果拼成 `bash` 的模型可见文本（与 dsh 的 `renderResult` 同格式）：
+ * 把后端执行结果拼成 `bash` 的模型可见文本：
  * stdout、`[stderr]` 段、`[exit code: N]` 标记；全空写 `(no output)`。
  *
  * 非 0 退出码**不是**工具错误（模型自己决定怎么办）；只有启动失败这种基础设施问题才抛错。
@@ -448,8 +447,8 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
   /**
    * 观察表：本次工具集生命周期内「模型读过哪些文件、读到的版本是什么」。
    *
-   * 对应 dsh 的 `fs-observation-policy`：write / edit 只能改「读过且没被别人改过」的文件。
-   * 与 dsh 的差别：工具集一轮建一次，所以这张表只活在**一轮**里（跨轮要重读）；
+   * 读后写保护：write / edit 只能改「读过且没被别人改过」的文件。
+   * 工具集一轮建一次，所以这张表只活在**一轮**里（跨轮要重读）；
    * 校验是写前再 stat 一次，不是后端层的原子 CAS —— 中间被外部改掉的极小窗口仍存在。
    */
   const observed = new Map<string, string>()
@@ -542,7 +541,7 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
         const display = backend.rel(abs)
         const text = await readTextFile(backend, abs, display)
         const stat = await backend.stat(abs)
-        // 读成功就记下版本：之后 write / edit 的依据（dsh 的 read 也会发一条 present 观察）
+        // 读成功就记下版本：之后 write / edit 的依据
         if (stat) observed.set(abs, versionOf(stat))
 
         const all = text.split('\n').map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line))
@@ -685,8 +684,8 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
           throw new Error(`cannot list "${path || '.'}": not found`)
         }
         /**
-         * 与 dsh 一致：**包含**隐藏文件与被 .gitignore 忽略的文件，只排除版本库元数据目录。
-         * 这条与 grep 相反（grep 遵守 .gitignore），是 dsh 刻意的取舍。
+         * **包含**隐藏文件与被 .gitignore 忽略的文件，只排除版本库元数据目录。
+         * 这条与 grep 相反（grep 遵守 .gitignore）。
          */
         const out = await backend.find({
           pattern,
@@ -796,11 +795,8 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
             shellNoteEn
         ),
       inputSchema: z.object({
-        description: z
-          .string()
-          .describe(
-            'Clear, concise description of what this command does in active voice, e.g. "List files in the workspace".'
-          ),
+        // 不设 description：「这一步做什么」统一由引擎注入的 `intent` 表达，
+        // 两个字段并存时模型只会填一个，另一个必填就会把整次调用卡在校验阶段。
         command: z.string().describe('The command to execute.'),
         timeoutMs: z
           .number()
@@ -978,7 +974,7 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
 }
 
 /**
- * grep 结果：与 dsh 的 `formatGrepOutput` 同格式。
+ * grep 结果（格式固定）：
  *
  * ```
  * Found 3 matches
@@ -1004,7 +1000,7 @@ function formatGrepOutput(files: WorkspaceSearchFile[], total: number): string {
 }
 
 /**
- * `include` 是 dsh / ripgrep 的 glob（`*.ts`、`*.{js,jsx}`），而 Fizz 的本地搜索后端
+ * `include` 是 glob（`*.ts`、`*.{js,jsx}`），而 Fizz 的本地搜索后端
  * 收的是**文件名正则**。这里做一层最小转换：`**` → `.*`、`*` → `[^/]*`、`?` → `.`、
  * `{a,b}` → `(a|b)`。远端后端本来就把 filePattern 当正则用，两边一致。
  *
@@ -1042,7 +1038,7 @@ export function globToRegExpSource(glob: string): string {
   return `^${out}$`
 }
 
-/** 供 UI / 其他层复用的常量（与 dsh 的上限一致） */
+/** 供 UI / 其他层复用的常量 */
 export const TOOL_LIMITS = {
   readLimit: READ_LIMIT,
   readMaxLineLength: READ_MAX_LINE_LENGTH,

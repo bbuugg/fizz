@@ -60,7 +60,7 @@ describe('buildFindArgs', () => {
     expect(args).not.toContain('--hidden')
   })
 
-  it('includeIgnored（dsh 的 glob 语义）打开隐藏与被忽略文件，但仍排除版本库元数据', () => {
+  it('includeIgnored（glob 语义）打开隐藏与被忽略文件，但仍排除版本库元数据', () => {
     const args = buildFindArgs({ ...findOpts, includeIgnored: true })
     expect(args).toContain('--no-ignore')
     expect(args).toContain('--hidden')

@@ -1,6 +1,5 @@
 /**
- * `str_replace_editor`：Anthropic 风格的「一个工具四个子命令」（与 dsh 的
- * `@deepseek-ai/dsh-tool-str-replace-editor` 同源）。
+ * `str_replace_editor`：Anthropic 风格的「一个工具四个子命令」。
  *
  * 存在的意义不是再抄一遍 `read` / `write` / `edit`，而是**兼容**：很多提示词、技能、
  * 从 Claude Code 搬来的工作流都会直接调这个名字。语义上它是一个独立面：
@@ -9,9 +8,9 @@
  * - `str_replace`：`old_str` 必须**唯一命中**，`new_str` 省略 = 删掉；
  * - `insert`：在 `insert_line` 那行**之后**插入。
  *
- * 与 dsh 的差别只有一处，且是刻意的：dsh 要求**绝对路径**（它的执行世界没有「工作区根」
- * 这个概念），Fizz 的模型一直按「相对工作区根」工作 —— 所以这里相对路径按工作区解析，
- * 绝对路径只要落在工作区内也接受。错误文案仍保持 dsh 原样。
+ * 唯一一处刻意偏差：这个工具原本要求**绝对路径**，而 Fizz 的模型一直按
+ * 「相对工作区根」工作 —— 所以这里相对路径按工作区解析，绝对路径只要落在工作区内
+ * 也接受。错误文案保持原样。
  *
  * 读后写：`str_replace` / `insert` 与内置 `edit` 走同一张观察表（改之前必须读过），
  * 否则「唯一命中」这条硬要求会让模型在没看过文件时反复瞎猜。
@@ -21,7 +20,7 @@ import { z } from 'zod'
 import type { Tool } from 'ai'
 import type { WorkspaceBackend } from '@fizz/contracts/workspace'
 
-/** view 的默认输出上限（与 dsh 一致） */
+/** view 的默认输出上限 */
 export const VIEW_MAX_OUTPUT_CHARS = 16_000
 
 const TRUNCATED_MESSAGE =
@@ -94,7 +93,7 @@ export function formatFileView(
   return maybeTruncate(`${prompt}:\n${numbered}\n`, maxOutputChars)
 }
 
-/** 唯一命中才替换；返回替换后的全文（dsh 的 `str_replace` 语义） */
+/** 唯一命中才替换；返回替换后的全文 */
 export function replaceUnique(before: string, oldStr: string, newStr: string, path: string): string {
   const offset = before.indexOf(oldStr)
   if (offset < 0) {
@@ -149,7 +148,7 @@ export interface StrReplaceEditorDeps {
   description?: string
 }
 
-/** 组装 `str_replace_editor` 工具（注册名与 dsh 一致） */
+/** 组装 `str_replace_editor` 工具 */
 export function buildStrReplaceEditorTool(deps: StrReplaceEditorDeps): Tool {
   const { backend } = deps
   const maxOutputChars = deps.maxOutputChars ?? VIEW_MAX_OUTPUT_CHARS
@@ -161,7 +160,7 @@ export function buildStrReplaceEditorTool(deps: StrReplaceEditorDeps): Tool {
     return { abs, display: backend.rel(abs) }
   }
 
-  /** 目录树：最多两层，跳过隐藏项 / node_modules / __pycache__（与 dsh 一致） */
+  /** 目录树：最多两层，跳过隐藏项 / node_modules / __pycache__ */
   const listDirectory = async (abs: string, display: string): Promise<string> => {
     const rows: string[] = [`d\t${display}`]
     const visit = async (dir: string, depth: number): Promise<void> => {

@@ -23,12 +23,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle
 } from '@fizz/ui/alert-dialog'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 
 export function ConfirmDeleteDialog({
   open,
   title,
   description,
-  confirmLabel = '删除',
+  confirmLabel,
   onCancel,
   onConfirm
 }: {
@@ -41,6 +42,7 @@ export function ConfirmDeleteDialog({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const t = useT()
   return (
     <AlertDialog
       open={open}
@@ -56,11 +58,12 @@ export function ConfirmDeleteDialog({
           <AlertDialogDescription className="wrap-anywhere">{description}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>取消</AlertDialogCancel>
+          {/* 默认文案也走翻译：英文界面下以前回落成硬编码中文（用户反馈） */}
+          <AlertDialogCancel>{t('取消')}</AlertDialogCancel>
           {/* Action 点完 Radix 会自动关闭弹窗，关闭又会走 onOpenChange(false) → onCancel；
               调用方在 onConfirm 里自己清掉待删状态即可，不必手动关 */}
           <AlertDialogAction variant="destructive" onClick={onConfirm}>
-            {confirmLabel}
+            {confirmLabel ?? t('删除')}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

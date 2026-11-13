@@ -4,8 +4,9 @@
  * 侧栏「分区」模块（从 dogi 的 `shared/components/StackedSections.tsx` 平移）。
  *
  * 把一条侧栏纵向切成若干段，每段由一段**静态标签 + 内容**组成。**侧栏面板只负责往插槽里
- * 填东西**，「空间怎么分、能不能拖高度」全部由这里统一负责 —— 免得每加一个面板就抄一遍
- * 那串 flex / min-height 的类名。
+ * 填东西**，「空间怎么分」全部由这里统一负责 —— 免得每加一个面板就抄一遍
+ * 那串 flex / min-height 的类名。（分区级的高度拖拽已移除；内容组之间的拖动见
+ * `shared/components/SidebarGroups`。）
  *
  * ## 分区**不折叠**（曾经可以，已移除）
  *
@@ -24,42 +25,34 @@
  * 2. 侧栏里已经有「项目行」的展开 / 收起，两套长得一样的箭头干不同的事；
  * 3. 标题的视觉语言和列表行打架 —— 15px 深色 + 悬停变深，看着比清单本身还重。
  *
- * 高度仍然可以拖（`resizableAbove`），那是**布局**上的调整，与「看不看得到」无关。
+ * 分区**不可拖高度**（曾经可以，已移除）：拖拽改高度是**内容组**的事（标题行就是抓手，
+ * 见 `SidebarGroups`），分区只按 `grow` 权重瓜分空间。
  *
  * ## 空间分配规则
  *
  * - 每个分区按 `grow` 权重瓜分剩余空间，但永远不小于 `minHeight` —— 空间不够时先吃掉
  *   弹性部分，最小高度始终保留，任何分区都不会被挤出可视区；
- * - 声明了 `resizableAbove` 的分区，顶部多出一条横向拖拽条，可自由拖动改高度
- *   （高度存 `shared/lib/sidebar-sections.ts`）；
  * - 极端情况下（窗口很矮、所有分区的最小高度之和超过侧栏）由容器整体滚动兜底。
  *
  * ## 用法（每个分区三段式，顺序固定）
  *
  * ```tsx
  * <StackedSections>
- *   <SectionShell spec={FOO_SECTION} grow={2} minHeight={200}>
+ *   <SectionShell grow={2} minHeight={200}>
  *     <SectionHeader title="主机" count={n} extra={<Button …/>} />
  *     <SectionContent>…列表…</SectionContent>
  *   </SectionShell>
- *   <SectionShell spec={BAR_SECTION} resizableAbove={FOO_SECTION}>…</SectionShell>
+ *   <SectionShell>…</SectionShell>
  * </StackedSections>
  * ```
  *
- * ⚠️ `spec` 只给 `SectionShell`（它要拿 id 存拖出来的高度）；`SectionHeader` /
- * `SectionContent` **不再收 spec** —— 它们没有状态要读了。
+ * `SectionShell` 只收布局参数；`SectionHeader` / `SectionContent` 不需要任何状态。
  */
-import type { ReactNode } from "react";
+import type { PointerEventHandler, ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { cn } from "@fizz/agent-kit/shared/lib/utils";
-import { useDragResize } from "@fizz/agent-kit/shared/components/ResizeHandle";
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { ROW_ACTION_CLASS } from "@fizz/agent-kit/shared/components/RowAction";
-import {
-  setSectionHeight,
-  useSectionHeight,
-  type SectionSpec,
-} from "@fizz/agent-kit/shared/lib/sidebar-sections";
 
 /**
  * 分区容器：纵向排列 + 整体滚动兜底（每个分区的滚动由自己的 SectionContent 负责）。
@@ -95,113 +88,31 @@ export function StackedSections({
 /**
  * 分区外壳：负责弹性尺寸与最小高度约束。
  *
- * `spec` 现在只有一个用途：**拖出来的高度按 id 落盘**。折叠态已经移除（见文件头），
- * 所以这里不再订阅折叠、也不再因为折叠而切成 `shrink-0`。
+ * 分区**不可拖高度、不折叠**（见文件头）：高度完全由 `grow` 权重分配。
  */
 export function SectionShell({
-  spec,
   grow = 1,
   minHeight = 160,
-  resizableAbove,
   className,
   children,
 }: {
-  /** 分区身份（id 唯一，见 `shared/lib/section-ids.ts`），只用来存拖出来的高度 */
-  spec: SectionSpec;
   /** 参与瓜分剩余空间的权重（同一容器内相对值），默认 1 */
   grow?: number;
   /** 最小高度（px），空间被挤压时也不会小于它，默认 160 */
   minHeight?: number;
-  /**
-   * 上方相邻分区的 spec：声明后，本分区顶部出现一条横向拖拽条，拖动即可自由调整高度。
-   * 要的是 spec 而不是裸 id —— 与 `spec` 同一个类型，调用方不必在两套写法之间切。
-   */
-  resizableAbove?: SectionSpec;
   className?: string;
   children: ReactNode;
 }) {
-  /** 用户拖过的高度（无值 = 还没拖过，按 flex 权重自动分配） */
-  const height = useSectionHeight(spec.id);
-  const fixed = Boolean(resizableAbove) && height !== undefined;
-
   return (
     <section
       className={cn(
         "relative flex min-h-0 flex-col",
         className,
       )}
-      style={
-        fixed
-          ? // 拖过之后高度固定，剩余空间全部让给其它分区
-            { flex: `0 0 ${height}px`, minHeight }
-          : { flex: `${grow} 1 0`, minHeight }
-      }
+      style={{ flex: `${grow} 1 0`, minHeight }}
     >
-      {resizableAbove && (
-        <SectionResizer belowId={spec.id} minHeight={minHeight} />
-      )}
       {children}
     </section>
-  );
-}
-
-/**
- * 分区之间的横向拖拽条：向上拖本分区变高、向下拖变矮。
- *
- * 用绝对定位压在两个分区的边界线上（不占布局高度），所以它自身的高度
- * 不会参与 SectionShell 的 flex 计算 —— 拖出来的高度就是分区真实高度。
- */
-function SectionResizer({
-  belowId,
-  minHeight,
-}: {
-  belowId: string;
-  minHeight: number;
-}) {
-  /**
-   * 指针管线走 `useDragResize`（`touch-action` + 幂等收尾，见该 hook 的文件头）。
-   * 这里原先手写 `pointerdown + window pointermove`：缺 `touch-action`，手机上手指一动就被
-   * 浏览器当成滚动手势抢走（`pointercancel`），而且**连 `pointercancel` 都没监听** ——
-   * 一旦被取消，挂在 window 上的 `pointermove` 就永远留着（之后鼠标在页面上随便一动都在改高度）。
-   */
-  const tr = useT();
-  const onPointerDown = useDragResize<{
-    startHeight: number;
-    maxHeight: number;
-  }>({
-    axis: "y",
-    onStart: (e) => {
-      const section = e.currentTarget.parentElement;
-      const above = section?.previousElementSibling as HTMLElement | null;
-      const container = section?.parentElement;
-      if (!section || !container) return null;
-      /**
-       * 上方分区至少要留住它自己的 minHeight —— 该值由 SectionShell 写成内联样式，
-       * 直接读它比再往调用方要一次参数更省事，也保证与布局用的是同一份数字。
-       */
-      const aboveMinHeight =
-        Number.parseFloat(above?.style.minHeight ?? "") || 0;
-      return {
-        startHeight: section.getBoundingClientRect().height,
-        maxHeight: container.clientHeight - aboveMinHeight,
-      };
-    },
-    // 向上拖（delta 为负）= 本分区变高
-    onMove: (delta, drag) =>
-      setSectionHeight(
-        belowId,
-        Math.max(minHeight, Math.min(drag.maxHeight, drag.startHeight - delta)),
-      ),
-  });
-
-  return (
-    <div
-      onPointerDown={onPointerDown}
-      title={tr('拖动调整高度')}
-      className="group/resize absolute inset-x-0 top-0 z-20 h-4 -translate-y-1/2 cursor-row-resize touch-none select-none [-webkit-touch-callout:none] sm:h-2"
-    >
-      <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border transition-colors group-hover/resize:bg-primary" />
-    </div>
   );
 }
 
@@ -228,6 +139,14 @@ function SectionResizer({
  *
  * 所以别把它当成「分区折叠回来了」：`SectionShell` 依然没有折叠能力，高度也不参与分配。
  * 有 `onToggle` 时整行可点，`extra` 里的按钮会 `stopPropagation`，避免点刷新顺带收起。
+ *
+ * ## 传 `onPointerDown` 就兼作高度拖拽把手
+ *
+ * `SidebarGroup` 把**下面那组**的标题行当两组交界处的抓手（见 `SidebarGroups` 文件头）：
+ * 指针管线由调用方给（`useDragResize`），这里只负责挂上去 + 关掉触摸滚动。
+ * 悬停光标**保持折叠按钮原来的 pointer**（不预先变成 resize 光标），只有 `dragging`
+ * 期间才切成 `grab`。点击折叠照旧 —— 拖动与点击的区分（位移死区、吞掉松手那次 click）
+ * 在调用方，标题行本身不掺和。
  *
  * ## 和顶部动作左对齐靠 `ps-10`，不摆图标
  *
@@ -257,6 +176,8 @@ export function SectionHeader({
   className,
   open = true,
   onToggle,
+  onPointerDown,
+  dragging = false,
 }: {
   title: string;
   /** 标题后的数量（不传、**或为 0** 都不显示括号，见渲染处注释） */
@@ -281,22 +202,38 @@ export function SectionHeader({
   open?: boolean;
   /** 传了才可折叠：点整行切换（见上方说明） */
   onToggle?: () => void;
+  /**
+   * 标题行兼作高度拖拽把手时传入（指针管线由调用方提供，见上方说明）。
+   * 传了会关掉触摸滚动。
+   */
+  onPointerDown?: PointerEventHandler<HTMLDivElement>;
+  /** 正在拖这个把手：光标切成 `grab`（悬停时仍是折叠按钮的 pointer） */
+  dragging?: boolean;
 }) {
   const tr = useT();
   const collapsible = Boolean(onToggle);
+  const draggable = Boolean(onPointerDown);
   return (
     <div
       className={cn(
         "group/header flex h-8 shrink-0 items-center gap-1.5 px-2",
         // 可折叠时整行是个按钮：圆角 + 悬停底色，视觉上才认得出「这里能点」
         collapsible &&
-          "cursor-pointer rounded-md transition-colors hover:bg-primary-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
+          "rounded-md transition-colors hover:bg-primary-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
+        // 光标三态互斥（两个 cursor 工具类同时写，谁生效取决于产物 CSS 顺序，
+        // 见 `ResizeHandle` 里同类注释，不能靠「后写的赢」）：
+        // 平时 = 折叠按钮的 pointer；拖动中 = grab
+        collapsible && !dragging && "cursor-pointer",
+        dragging && "cursor-grab",
+        draggable && "touch-none select-none [-webkit-touch-callout:none]",
         className,
       )}
       // 用 div + role 而不是 <button>：`extra` 里就是按钮，button 套 button 是非法结构
       role={collapsible ? "button" : undefined}
       tabIndex={collapsible ? 0 : undefined}
       aria-expanded={collapsible ? open : undefined}
+      title={draggable ? tr('拖动调整高度') : undefined}
+      onPointerDown={onPointerDown}
       onClick={onToggle}
       onKeyDown={
         collapsible
@@ -361,7 +298,8 @@ export function SectionHeader({
       {extra && (
         <div
           className="ml-auto flex shrink-0 items-center"
-          // 操作区自己的点击不该冒泡成「折叠 / 展开」
+          // 操作区自己的点击不该冒泡成「折叠 / 展开」，按按钮也不该起拖高度
+          onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => e.stopPropagation()}
         >

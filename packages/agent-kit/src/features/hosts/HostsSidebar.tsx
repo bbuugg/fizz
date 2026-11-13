@@ -148,7 +148,6 @@ import {
   SidebarGroup,
   SidebarRowsSkeleton
 } from '@fizz/agent-kit/shared/components/SidebarGroups'
-import { HOSTS_LIST_SECTION } from '@fizz/agent-kit/shared/lib/section-ids'
 import {
   openHostTab,
   openLocalTerminalTab,
@@ -604,7 +603,7 @@ export function HostsSidebar({
           所以这块组自己吃满剩下的高度 —— `size="fill"` + `grow={1}`，不再需要与别的组
           按权重分。
         */}
-        <SectionShell spec={HOSTS_LIST_SECTION} minHeight={200}>
+        <SectionShell minHeight={200}>
           {/*
             顶部动作：新建主机 / 隧道 / 脚本。原先这几颗挤在「主机与终端」的标题行右侧
             —— 标题行本来就只有 260px 宽，几颗图标把标题挤得只剩几个字。现在与 AI Agent

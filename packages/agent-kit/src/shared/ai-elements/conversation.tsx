@@ -25,7 +25,7 @@
  *    从 resetKey 变化（含挂载）起算一小段窗口，窗口内把 resize 强制成瞬时；窗口在内容
  *    高度稳定后（或到硬上限）结束，流式追更的平滑跟随不受影响。
  */
-import { Button } from "@fizz/ui/button";
+import { LiquidGlassButton } from "@fizz/ui/liquid-glass";
 import { cn } from "@fizz/agent-kit/shared/lib/utils";
 import {
   PullToRefreshIndicator,
@@ -647,7 +647,7 @@ export const ConversationEmptyState = ({
   </div>
 );
 
-export type ConversationScrollButtonProps = ComponentProps<typeof Button>;
+export type ConversationScrollButtonProps = ComponentProps<typeof LiquidGlassButton>;
 
 export const ConversationScrollButton = ({
   className,
@@ -659,24 +659,16 @@ export const ConversationScrollButton = ({
     !isAtBottom && (
       // sticky（而不是 absolute）：按钮在滚动容器**里面**，用 sticky 才能一直贴在可视区底部
       <div className="pointer-events-none sticky bottom-4 z-10 -mt-12 flex justify-center">
-        <Button
-          // outline 变体在暗色下是 `dark:bg-input/30`、悬停 `dark:hover:bg-input/50`，而 `--input`
-          // 本身就是 15% 透明的白，浮在消息上看不清；这里换成不透明的 popover / accent 背景，
-          // 保留边框与阴影。
-          // 背景本来就是不透明的（bg-background / dark:bg-popover），别再叠 backdrop-blur：
-          // 磨砂对纯色底毫无视觉贡献，却让这颗按钮在**上滚浏览时**每帧多做一次背景采样。
-          className={cn(
-            "pointer-events-auto rounded-full bg-background text-foreground shadow-lg hover:bg-accent dark:bg-popover dark:hover:bg-accent",
-            className
-          )}
+        <LiquidGlassButton
+          // 浮在消息上：亮色会话背景用 contrast 档，暗色主题仍是原来的淡白玻璃。
+          tone="contrast"
+          className={cn("pointer-events-auto size-9 rounded-full p-0", className)}
           onClick={scrollToBottom}
-          size="icon"
           type="button"
-          variant="outline"
           {...props}
         >
           <ArrowDownIcon className="size-4" />
-        </Button>
+        </LiquidGlassButton>
       </div>
     )
   );

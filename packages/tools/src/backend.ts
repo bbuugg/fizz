@@ -297,7 +297,7 @@ export function createLocalBackend(root: string): WorkspaceBackend {
 
     async search(opts: WorkspaceSearchOptions): Promise<WorkspaceSearchFile[]> {
       const start = resolveInside(base, opts.subPath)
-      // 有随包 ripgrep 就走它（与 dsh 同源）；context > 0 的形态 rg 这条简单管道不出，退回 JS
+      // 有随包 ripgrep 就走它；context > 0 的形态 rg 这条简单管道不出，退回 JS
       if (opts.context === 0) {
         const viaRg = await ripgrepSearch({
           pattern: opts.pattern,

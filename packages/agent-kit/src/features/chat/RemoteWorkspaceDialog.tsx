@@ -6,11 +6,12 @@
  * `POST /api/workspaces` 现探一次，失败原因（主机不可达 / 目录不存在）就地显示，
  * 用户改完路径直接重试，不必关掉弹窗。
  *
- * 「浏览」只是顺手给的一层：基于同一个 SFTP 列目录接口，不支持的服务器 / 没权限时
- * 报错留在面板里，手填路径永远可用。
+ * 「浏览」只是顺手给的一层：复用「选择目录」弹窗（`ServerDirPicker`）的浏览界面，
+ * 只把数据源换成这台 SSH 主机的 SFTP（列目录 / 新建目录），不另写一套浏览器。
+ * 不支持的服务器 / 没权限时报错留在那个弹窗里，手填路径永远可用。
  */
-import { useEffect, useRef, useState } from 'react'
-import { Folder, FolderUp, Loader2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Loader2 } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -23,10 +24,19 @@ import { Button } from '@fizz/ui/button'
 import { Input } from '@fizz/ui/input'
 import { Label } from '@fizz/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@fizz/ui/select'
-import type { AgentWorkspace, SftpEntry } from '@fizz/contracts/agent-api'
+import { ServerDirPicker, type DirPickerSource } from '@fizz/agent-kit/shared/components/ServerDirPicker'
+import type { AgentWorkspace } from '@fizz/contracts/agent-api'
 import type { SshHostConfig } from '@fizz/contracts/types'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
+
+/** 远端 POSIX 路径的上级目录；`/` 没有上级 */
+function remoteParent(path: string): string | null {
+  const normalized = path.replace(/\/+$/, '') || '/'
+  if (normalized === '/') return null
+  const slash = normalized.lastIndexOf('/')
+  return slash <= 0 ? '/' : normalized.slice(0, slash)
+}
 
 export function RemoteWorkspaceDialog({
   app,
@@ -48,14 +58,26 @@ export function RemoteWorkspaceDialog({
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  /** 目录浏览面板：只列目录（文件选了也不能当工作区根） */
-  const [browsing, setBrowsing] = useState(false)
-  const [browsePath, setBrowsePath] = useState('')
-  const [browseEntries, setBrowseEntries] = useState<SftpEntry[]>([])
-  const [browseBusy, setBrowseBusy] = useState(false)
-  const [browseError, setBrowseError] = useState<string | null>(null)
-  /** 只认最后一次加载的回包（连续切目录时旧回包可能后到） */
-  const browseSeq = useRef(0)
+  /** 目录选择弹窗（复用 `ServerDirPicker`，数据源是当前主机的 SFTP） */
+  const [pickerOpen, setPickerOpen] = useState(false)
+  /** 只列目录（文件选了也不能当工作区根）；路径由 SFTP 返回的规范化结果回填 */
+  const remoteSource: DirPickerSource = {
+    list: async (dir) => {
+      const result = await app.sftpList(hostId, dir || '/')
+      return {
+        path: result.path,
+        parent: remoteParent(result.path),
+        entries: result.entries
+          .filter((entry) => entry.isDir)
+          .map((entry) => ({ name: entry.name, path: entry.path }))
+      }
+    },
+    mkdir: async (parent, name) => {
+      const next = parent === '/' ? `/${name}` : `${parent.replace(/\/+$/, '')}/${name}`
+      await app.sftpMkdir(hostId, next)
+      return next
+    }
+  }
 
   // 每次打开都重置：别残留上次的主机 / 路径（与其它项目弹窗一致）
   useEffect(() => {
@@ -66,43 +88,10 @@ export function RemoteWorkspaceDialog({
     setName('')
     setBusy(false)
     setError(null)
-    setBrowsing(false)
-    setBrowsePath('')
-    setBrowseEntries([])
-    setBrowseError(null)
+    setPickerOpen(false)
     // app 每帧都是新对象，不能进依赖；只在「打开」这一刻重置
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
-
-  const loadDir = (dir: string): void => {
-    if (!hostId) return
-    const seq = ++browseSeq.current
-    setBrowseBusy(true)
-    setBrowseError(null)
-    void app
-      .sftpList(hostId, dir)
-      .then((result) => {
-        if (seq !== browseSeq.current) return
-        setBrowsePath(result.path)
-        setBrowseEntries(result.entries.filter((entry) => entry.isDir))
-      })
-      .catch((e: unknown) => {
-        if (seq !== browseSeq.current) return
-        setBrowseError(e instanceof Error ? e.message : String(e))
-      })
-      .finally(() => {
-        if (seq === browseSeq.current) setBrowseBusy(false)
-      })
-  }
-
-  const toggleBrowse = (): void => {
-    if (browsing) {
-      setBrowsing(false)
-      return
-    }
-    setBrowsing(true)
-    loadDir(path.trim().startsWith('/') ? path.trim() : '/')
-  }
 
   const trimmedPath = path.trim()
   const pathLooksAbsolute = trimmedPath.startsWith('/')
@@ -188,61 +177,15 @@ export function RemoteWorkspaceDialog({
                     variant="outline"
                     className="shrink-0"
                     disabled={busy || !hostId}
-                    onClick={toggleBrowse}
+                    onClick={() => setPickerOpen(true)}
                   >
-                    {browsing ? tr('收起') : tr('浏览')}
+                    {tr('浏览')}
                   </Button>
                 </div>
                 {trimmedPath && !pathLooksAbsolute ? (
                   <p className="text-xs text-destructive">{tr('请填写以 / 开头的绝对路径。')}</p>
                 ) : null}
               </div>
-
-              {browsing ? (
-                <div className="rounded-md border">
-                  <div className="flex items-center gap-1 border-b px-1 py-1">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 px-1.5 text-xs"
-                      disabled={browseBusy || browsePath === '/'}
-                      onClick={() => loadDir(browsePath.replace(/\/[^/]+\/?$/, '') || '/')}
-                    >
-                      <FolderUp className="size-3.5" />
-                      {tr('上一级')}
-                    </Button>
-                    <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                      {browsePath || '/'}
-                    </span>
-                    {browseBusy ? <Loader2 className="size-3.5 animate-spin text-muted-foreground" /> : null}
-                  </div>
-                  <div className="max-h-40 overflow-auto py-1">
-                    {browseError ? (
-                      <p className="px-2 py-1 text-xs text-destructive">{browseError}</p>
-                    ) : browseEntries.length === 0 ? (
-                      <p className="px-2 py-1 text-xs text-muted-foreground">
-                        {browseBusy ? tr('正在读取…') : tr('这里没有子目录')}
-                      </p>
-                    ) : (
-                      browseEntries.map((entry) => (
-                        <button
-                          key={entry.path}
-                          type="button"
-                          className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-xs hover:bg-accent"
-                          onClick={() => {
-                            setPath(entry.path)
-                            loadDir(entry.path)
-                          }}
-                        >
-                          <Folder className="size-3.5 shrink-0 text-muted-foreground" />
-                          <span className="truncate">{entry.name}</span>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                </div>
-              ) : null}
 
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="remote-workspace-name">{tr('项目名（可选）')}</Label>
@@ -275,6 +218,18 @@ export function RemoteWorkspaceDialog({
             {busy ? tr('连接中…') : tr('添加')}
           </Button>
         </DialogFooter>
+
+        {/* 目录选择：复用「选择目录」弹窗，只把数据源换成当前主机的 SFTP。
+            `open` 带上父弹窗的开关：父弹窗一关（Esc / 取消），这层也必须跟着收。 */}
+        <ServerDirPicker
+          source={remoteSource}
+          open={open && pickerOpen && !!hostId}
+          onOpenChange={setPickerOpen}
+          initialPath={path.trim().startsWith('/') ? path.trim() : '/'}
+          title={tr('选择远端目录')}
+          description={tr('只列出目录；选中的目录会作为这个远端工作区的根。')}
+          onPick={(picked) => setPath(picked)}
+        />
       </DialogContent>
     </Dialog>
   )

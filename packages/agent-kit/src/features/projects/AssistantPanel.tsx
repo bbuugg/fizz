@@ -55,6 +55,7 @@ import { MessageActionRow } from '@fizz/agent-kit/features/chat/message-parts'
 import { ModelPicker } from '@fizz/agent-kit/features/chat/ModelPicker'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { textOf } from '@fizz/agent-kit/shared/lib/parts'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 import type { AgentChatMessage } from '@fizz/contracts/agent-api'
 import { Button } from '@fizz/ui/button'
 import {
@@ -98,6 +99,7 @@ export function AssistantPanel({
   boundTerminalTabKey?: string
   onClose?: () => void
 }) {
+  const tr = useT()
   const embedded = scope === 'terminal'
   const conversations = useAgentStore((s) => s.assistantConversations)
   const activeId = useAgentStore((s) => s.assistantActiveId)
@@ -458,7 +460,9 @@ export function AssistantPanel({
           // 「(Enter 发送,Shift+Enter 换行)」会折成两行 —— 而紧凑态空态高度被钉成一行，
           // 折行的那半截就被裁掉了。Enter 发送 / Shift+Enter 换行是 Composer 的固定行为
           // （见其文件头注释），面板里不再用占位文案复述。
-          placeholder: embedded ? '让助手执行 / 读取这个终端…' : '让助手创建 / 打开 / 删除项目…',
+          placeholder: embedded
+            ? tr('让助手执行 / 读取这个终端…')
+            : tr('让助手创建 / 打开 / 删除项目…'),
           /**
            * 卡片内（`header` 槽）：编辑重发时那条「编辑消息」提示条 —— 与消息列表里
            * 该条的描边压暗是一对标识，写明「重发会删掉本条及其后的消息」。

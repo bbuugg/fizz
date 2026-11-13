@@ -1,5 +1,5 @@
 /**
- * 随包 ripgrep：给本地工作区的 `grep` / `glob` 用（与 dsh 的实现同源）。
+ * 随包 ripgrep：给本地工作区的 `grep` / `glob` 用。
  *
  * 为什么不用系统 `rg`：Windows / macOS 用户机器上通常没有；而 Node 侧自己遍历
  * （`backend.ts` 里那套）在大仓库上慢一个数量级，且正则方言与 rg 有出入。
@@ -112,7 +112,7 @@ export interface RipgrepSearchOptions {
   root: string
   /** 搜索起点（绝对路径，可以是文件或目录） */
   start: string
-  /** dsh 的 `include`：单个 glob（`*.ts` / `*.{js,jsx}`） */
+  /** 搜索的 glob：单个模式（`*.ts` / `*.{js,jsx}`） */
   includeGlob?: string
   maxResults: number
   maxFileBytes: number
@@ -127,7 +127,7 @@ export interface RipgrepMatchFile {
 /**
  * 用 rg 搜内容。返回 `null` = 没有可用的 rg（调用方退回 JS 实现）。
  *
- * 与 dsh 的 grep 一致：遵守 `.gitignore`、不搜隐藏文件、跳过二进制；
+ * 搜索规则：遵守 `.gitignore`、不搜隐藏文件、跳过二进制；
  * 额外附上 Fizz 的默认忽略目录（`dist` / `node_modules` 等没写进 .gitignore 的也算）。
  */
 export function buildSearchArgs(opts: RipgrepSearchOptions): string[] {
@@ -207,7 +207,7 @@ export function buildFindArgs(opts: RipgrepFindOptions): string[] {
   return [
     '--files',
     `--glob=${opts.pattern}`,
-    // 与 dsh 一致：glob **包含**隐藏与被忽略的文件，只排除版本库元数据
+    // glob **包含**隐藏与被忽略的文件，只排除版本库元数据
     ...(opts.includeIgnored ? ['--no-ignore', '--hidden'] : []),
     '--glob=!**/.git/**',
     '--glob=!**/.svn/**',

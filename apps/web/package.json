@@ -1,6 +1,6 @@
 {
   "name": "@fizz/web",
-  "version": "0.0.25",
+  "version": "0.0.26",
   "description": "Fizz Web 端：浏览器里的 Agent（只做 AI Agent 能力）。外壳在 src/app，零件来自 @fizz/agent-kit",
   "private": true,
   "type": "module",

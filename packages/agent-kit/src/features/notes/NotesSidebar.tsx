@@ -51,7 +51,6 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import type { NotesEntry, NotesRoot } from '@fizz/contracts/types'
-import { NOTES_ROOTS_SECTION } from '@fizz/agent-kit/shared/lib/section-ids'
 import { openNoteTab, noteTabKeyOf, retargetNoteTab } from '@fizz/agent-kit/shared/lib/tool-tabs'
 import { closeTab } from '@fizz/agent-kit/shared/lib/panel-store'
 import { SectionContent, SectionShell } from '@fizz/agent-kit/shared/components/StackedSections'
@@ -382,7 +381,7 @@ export function NotesSidebar({
         mobileOpen={mobileOpen}
         onMobileOpenChange={onMobileOpenChange}
       >
-        <SectionShell spec={NOTES_ROOTS_SECTION} grow={1} minHeight={200}>
+        <SectionShell grow={1} minHeight={200}>
           {/*
             版式见文件头「版式与 AI Agent 侧栏同构」。这里只留一条约束：
 

@@ -1,13 +1,13 @@
 /**
  * 工具层路由基线：每个文件 / 搜索 / 命令工具都必须经 `WorkspaceBackend`，
- * 而不是偷偷摸本地 `node:fs` / `spawn`；返回值与错误文案必须与 dsh 的工具集一致。
+ * 而不是偷偷摸本地 `node:fs` / `spawn`；返回值与错误文案必须保持固定形状。
  *
  * 用一份全 vi.fn 的假后端断言调用点与可见输出格式 —— 远端后端只要实现同一份
  * contracts 接口，就能复用这些工具；这里漏掉一条路由，远端工作区就会悄悄读写
  * 服务器本地盘。
  *
- * 另有一条**语义**基线：write / edit 只能改「本次读过且没被改过」的文件
- * （dsh 的 fs-observation-policy），读后写 / 严格唯一匹配的行为都在下面钉住。
+ * 另有一条**语义**基线：write / edit 只能改「本次读过且没被改过」的文件，
+ * 读后写 / 严格唯一匹配的行为都在下面钉住。
  */
 import { describe, expect, it, vi } from 'vitest'
 import type { WorkspaceBackend } from '@fizz/contracts/workspace'
@@ -65,7 +65,7 @@ async function run(tools: ReturnType<typeof toolsWith>, name: string, input: unk
 }
 
 describe('buildAgentTools · 全部经后端路由', () => {
-  it('read 走 stat / readFile，返回 dsh 的信封与行号', async () => {
+  it('read 走 stat / readFile，返回固定信封与行号', async () => {
     const backend = fakeBackend()
     const out = await run(toolsWith(backend), 'read', { file_path: 'a.txt' })
     expect(out).toContain('<path>a.txt</path>')
@@ -76,7 +76,7 @@ describe('buildAgentTools · 全部经后端路由', () => {
     expect(backend.readFile).toHaveBeenCalledWith(`${ROOT}/a.txt`, { maxBytes: 8_000_000 })
   })
 
-  it('read 的 limit 超过 2000 直接报错（与 dsh 一致：上限不是夹取）', async () => {
+  it('read 的 limit 超过 2000 直接报错（上限不是夹取）', async () => {
     const backend = fakeBackend()
     await expect(run(toolsWith(backend), 'read', { file_path: 'a.txt', limit: 5000 })).rejects.toThrow(
       'limit must be less than or equal to 2000'
@@ -146,7 +146,7 @@ describe('buildAgentTools · 全部经后端路由', () => {
     ).rejects.toThrow('old_string and new_string must differ')
   })
 
-  it('grep 走 backend.search，输出 dsh 的 Found N matches 格式', async () => {
+  it('grep 走 backend.search，输出 Found N matches 格式', async () => {
     const backend = fakeBackend()
     const out = await run(toolsWith(backend), 'grep', { pattern: 'needle' })
     expect(out).toBe('Found 1 match(es)\n\nsrc/a.ts\nLine 2: needle')
@@ -178,7 +178,7 @@ describe('buildAgentTools · 全部经后端路由', () => {
 
   it('bash 走 backend.exec，退出码以 `[exit code: N]` 标注', async () => {
     const backend = fakeBackend()
-    const out = await run(toolsWith(backend), 'bash', { command: 'echo hi', description: 'say hi' })
+    const out = await run(toolsWith(backend), 'bash', { command: 'echo hi', intent: 'say hi' })
     expect(out).toBe('ok')
     expect(backend.exec).toHaveBeenCalledWith(
       'echo hi',
@@ -195,7 +195,7 @@ describe('buildAgentTools · 全部经后端路由', () => {
       reason: 'exit' as const,
       truncated: false
     }))
-    const out = await run(toolsWith(backend), 'bash', { command: 'false', description: 'fail' })
+    const out = await run(toolsWith(backend), 'bash', { command: 'false', intent: 'fail' })
     expect(out).toContain('[stderr]\nboom')
     expect(out).toContain('[exit code: 2]')
   })
@@ -204,7 +204,7 @@ describe('buildAgentTools · 全部经后端路由', () => {
     const backend = fakeBackend('remote')
     const out = await run(toolsWith(backend), 'bash', {
       command: 'npm run dev',
-      description: 'dev server',
+      intent: 'dev server',
       run_in_background: true
     })
     expect(out).toContain('首期不支持后台执行')

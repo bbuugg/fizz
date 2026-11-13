@@ -50,7 +50,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@fizz/ui/dropdown-menu'
-import { Button } from '@fizz/ui/button'
+import { LiquidGlassButton } from '@fizz/ui/liquid-glass'
 import { Skeleton } from '@fizz/ui/skeleton'
 import { ChatPanel } from '@fizz/agent-kit/features/chat/ChatPanel'
 import { CollabWorkspace } from '@fizz/agent-kit/features/collab/CollabWorkspace'
@@ -92,6 +92,10 @@ import {
 } from '@fizz/agent-kit/shared/lib/collab-chat-width'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
+
+/** 会话详情顶栏的快捷按钮：液态玻璃 + 紧凑尺寸（同终端悬浮球，见 `LiquidGlassButton`） */
+const HEADER_GLASS_BUTTON =
+  'inline-flex h-7 w-8 items-center justify-center rounded-md p-0 focus-visible:ring-2 focus-visible:ring-ring/50'
 
 export function ConversationTab({
   conversationId,
@@ -529,13 +533,13 @@ export function ConversationTab({
               <div className="flex items-center">
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
+                    <LiquidGlassButton tone="contrast"
                       className={cn(
-                        'relative h-7! w-8! p-0!',
+                        HEADER_GLASS_BUTTON,
+                        'relative',
                         // 远端工作区只有一种终端（SSH 到那台主机），没有 shell 可选，
                         // 右侧箭头下拉不渲染 —— 这一颗就按整颗按钮的圆角收口
-                        isRemote ? undefined : 'rounded-r-none border-r-0',
+                        isRemote ? undefined : 'rounded-l-md rounded-r-none',
                         isTerminalTabKey(sideTab) ? 'text-primary' : undefined
                       )}
                       aria-label={isRemote ? tr('远端终端') : tr('终端')}
@@ -549,7 +553,7 @@ export function ConversationTab({
                           {terminalCount}
                         </span>
                       )}
-                    </Button>
+                    </LiquidGlassButton>
                   </TooltipTrigger>
                   <TooltipContent side="bottom">
                     {isTerminalTabKey(sideTab)
@@ -570,14 +574,13 @@ export function ConversationTab({
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <DropdownMenuTrigger asChild>
-                          <Button
-                            variant="outline"
-                            className="h-7! w-5! rounded-l-none p-0! data-[state=open]:bg-accent"
+                          <LiquidGlassButton tone="contrast"
+                            className={cn(HEADER_GLASS_BUTTON, '-ml-px w-5 rounded-l-none')}
                             aria-label={tr('选择终端')}
                             disabled={!workspaceId}
                           >
                             <ChevronDown className="size-3.5" />
-                          </Button>
+                          </LiquidGlassButton>
                         </DropdownMenuTrigger>
                       </TooltipTrigger>
                       <TooltipContent side="bottom">{tr('选择终端')}</TooltipContent>
@@ -648,15 +651,14 @@ export function ConversationTab({
               <div className="hidden sm:flex">
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn('h-7! w-8! p-0!', sideTab === 'browser' && 'text-primary')}
+                    <LiquidGlassButton tone="contrast"
+                      className={cn(HEADER_GLASS_BUTTON, sideTab === 'browser' && 'text-primary')}
                       aria-label={tr('浏览器')}
                       disabled={!workspaceId}
                       onClick={() => toggleSideTabOf(key, 'browser')}
                     >
                       <Globe className="size-4" />
-                    </Button>
+                    </LiquidGlassButton>
                   </TooltipTrigger>
                   <TooltipContent side="bottom">
                     {sideTab === 'browser' ? tr('收起面板') : tr('浏览器画面')}
@@ -670,15 +672,14 @@ export function ConversationTab({
               <div className="hidden sm:flex">
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn('h-7! w-8! p-0!', sideTab === 'preview' && 'text-primary')}
+                    <LiquidGlassButton tone="contrast"
+                      className={cn(HEADER_GLASS_BUTTON, sideTab === 'preview' && 'text-primary')}
                       aria-label={tr('预览')}
                       disabled={!workspaceId}
                       onClick={() => toggleSideTabOf(key, 'preview')}
                     >
                       <MonitorPlay className="size-4" />
-                    </Button>
+                    </LiquidGlassButton>
                   </TooltipTrigger>
                   <TooltipContent side="bottom">
                     {sideTab === 'preview' ? tr('收起面板') : tr('预览（容器页面）')}
@@ -698,15 +699,14 @@ export function ConversationTab({
               <div className="hidden sm:flex">
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn('h-7! w-8! p-0!', sideTab === 'files' && 'text-primary')}
+                    <LiquidGlassButton tone="contrast"
+                      className={cn(HEADER_GLASS_BUTTON, sideTab === 'files' && 'text-primary')}
                       aria-label={tr('工作区文件')}
                       disabled={!workspaceId}
                       onClick={() => toggleSideTabOf(key, 'files')}
                     >
                       <Files className="size-4" />
-                    </Button>
+                    </LiquidGlassButton>
                   </TooltipTrigger>
                   <TooltipContent side="bottom">
                     {sideTab === 'files' ? tr('收起面板') : tr('工作区文件')}
@@ -718,9 +718,8 @@ export function ConversationTab({
               <div className="hidden sm:flex">
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn('relative h-7! w-8! p-0!', sideTab === 'git' && 'text-primary')}
+                    <LiquidGlassButton tone="contrast"
+                      className={cn(HEADER_GLASS_BUTTON, sideTab === 'git' && 'text-primary')}
                       aria-label={tr('源代码管理')}
                       disabled={!workspaceId}
                       onClick={() => toggleSideTabOf(key, 'git')}
@@ -731,7 +730,7 @@ export function ConversationTab({
                           {gitBadge}
                         </span>
                       )}
-                    </Button>
+                    </LiquidGlassButton>
                   </TooltipTrigger>
                   <TooltipContent side="bottom">
                     {sideTab === 'git'
@@ -748,9 +747,8 @@ export function ConversationTab({
               <div className="hidden sm:flex">
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn('h-7! w-8! p-0!', sideTab !== null && 'text-primary')}
+                    <LiquidGlassButton tone="contrast"
+                      className={cn(HEADER_GLASS_BUTTON, sideTab !== null && 'text-primary')}
                       aria-label={tr('展开/收起面板')}
                       aria-pressed={sideTab !== null}
                       onClick={() => toggleSidePanelOf(key)}
@@ -760,7 +758,7 @@ export function ConversationTab({
                       ) : (
                         <PanelRightOpen className="size-4" />
                       )}
-                    </Button>
+                    </LiquidGlassButton>
                   </TooltipTrigger>
                   <TooltipContent side="bottom">
                     {sideTab !== null ? tr('收起面板') : tr('展开面板')}

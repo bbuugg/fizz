@@ -1,5 +1,5 @@
 /**
- * `str_replace_editor` 的语义基线（与 dsh 的同名工具对齐）。
+ * `str_replace_editor` 的语义基线。
  *
  * 防的回归：
  * - `view` 的行号宽度 / 总数说明被改（模型按行号定位，错一位就换错行）；
@@ -137,7 +137,7 @@ describe('str_replace_editor · 接进工具集', () => {
     ).rejects.toThrow('File already exists at: a.txt')
   })
 
-  it('create 新建后返回 dsh 的原文案', async () => {
+  it('create 新建后返回预期的文案', async () => {
     const backend = fakeBackend()
     const out = await run(toolsWith(backend), { command: 'create', path: 'new.txt', file_text: 'hi' })
     expect(out).toBe('New file created successfully at: new.txt')
@@ -154,7 +154,7 @@ describe('str_replace_editor · 接进工具集', () => {
     })
   })
 
-  it('view 不存在的路径用 dsh 的原文案', async () => {
+  it('view 不存在的路径返回预期的文案', async () => {
     await expect(run(toolsWith(fakeBackend()), { command: 'view', path: 'nope.txt' })).rejects.toThrow(
       'The path nope.txt does not exist. Please provide a valid path.'
     )

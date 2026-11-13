@@ -1,13 +1,15 @@
 /**
- * 「选择目录」弹窗：**web 端**的目录选择器。
+ * 「选择目录」弹窗：通用的目录浏览器。
  *
- * 浏览器碰不到服务端的文件系统，只能让 server 列目录（`GET /api/fs/dirs`）、
- * 代劳建目录（`POST /api/fs/mkdir`），所以这里自带一个目录浏览器：路径可直接编辑后回车跳转，
+ * 默认数据源是**服务端本机**目录（web 端碰不到服务端文件系统，只能让 server 列目录
+ * `GET /api/fs/dirs`、代劳建目录 `POST /api/fs/mkdir`），所以路径可直接编辑后回车跳转，
  * 也能进子目录 / 回上级 / 跳到某个盘符根 / **在当前目录下新建文件夹**。
+ *
+ * 也接受一个 `source` 适配器（`DirPickerSource`）：远端工作区（SFTP）那种「目录在另一台
+ * 机器上」的场景复用**同一个弹窗**，只换列目录 / 建目录的实现，不另写一套浏览器。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowUp, Folder, FolderPlus, Loader2 } from 'lucide-react'
-import type { FsDirsResult } from '@fizz/contracts/agent-api'
 import {
   Dialog,
   DialogContent,
@@ -19,28 +21,68 @@ import {
 import { Button } from '@fizz/ui/button'
 import { Input } from '@fizz/ui/input'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
+
+/** 目录项（只列目录；文件选了也不能当工作区根） */
+export interface DirPickerEntry {
+  name: string
+  path: string
+}
+
+/** 一次列目录的结果 */
+export interface DirPickerListing {
+  /** 当前目录的绝对路径 */
+  path: string
+  /** 上级目录；null = 已经在根 */
+  parent: string | null
+  /** 可跳转的根（多盘符才显示那一排） */
+  roots?: DirPickerEntry[]
+  /** 当前目录下的子目录 */
+  entries: DirPickerEntry[]
+}
+
+/**
+ * 目录浏览的数据源。默认实现读服务端本机文件系统；远端工作区传 SFTP 版本。
+ */
+export interface DirPickerSource {
+  /** 列目录；`path` 为空串时由数据源决定起始目录（服务端是本机用户主目录） */
+  list: (path: string) => Promise<DirPickerListing>
+  /** 在 `parent` 下新建单层目录，返回新目录路径；不提供则不显示「新建文件夹」 */
+  mkdir?: (parent: string, name: string) => Promise<string>
+}
 
 export function ServerDirPicker({
   app,
+  source,
   open,
   onOpenChange,
   onPick,
-  description
+  title,
+  description,
+  initialPath
 }: {
-  app: AgentApp
+  /** 默认数据源用的 AgentApp；给了 `source` 时可以不传 */
+  app?: AgentApp
+  /** 自定义数据源（远端工作区用 SFTP）；不传则走 `app` 的服务端目录接口 */
+  source?: DirPickerSource
   open: boolean
   onOpenChange: (open: boolean) => void
-  /** 用户确认了当前目录（服务端上的绝对路径） */
+  /** 用户确认了当前目录（绝对路径） */
   onPick: (path: string) => void
   /**
-   * 副标题。默认文案是「登记为工作区」—— 但这个组件早就被**别的用途**复用了
-   * （笔记根、技能的额外目录、Git 导入的父目录），照默认写的那句话在那些地方是错的。
-   * 复用方都该传一句说清「选中的目录会被拿去干什么」。
+   * 副标题。默认文案是「登记为项目」—— 但这个组件早就被**别的用途**复用了
+   * （笔记根、技能的额外目录、Git 导入的父目录、远端工作区），照默认写的那句话
+   * 在那些地方是错的。复用方都该传一句说清「选中的目录会被拿去干什么」。
    */
   description?: string
+  /** 弹窗标题；默认「选择目录」 */
+  title?: string
+  /** 打开时从哪个目录开始；缺省交给数据源（服务端是本机用户主目录） */
+  initialPath?: string
 }) {
-  const [data, setData] = useState<FsDirsResult | null>(null)
+  const tr = useT()
+  const [data, setData] = useState<DirPickerListing | null>(null)
   /** 输入框里的路径：回车才跳转，免得边打字边发请求 */
   const [draft, setDraft] = useState('')
   const [loading, setLoading] = useState(false)
@@ -51,52 +93,62 @@ export function ServerDirPicker({
   /** 正在提交新建（期间禁掉输入与按钮，别让用户连点建出好几个） */
   const [creatingBusy, setCreatingBusy] = useState(false)
 
-  const load = useCallback(
-    async (path: string): Promise<void> => {
-      setLoading(true)
-      setError(null)
-      try {
-        const result = await app.listServerDirs(path)
-        setData(result)
-        setDraft(result.path)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
-      } finally {
-        setLoading(false)
-      }
-    },
-    [app]
-  )
+  /**
+   * 数据源放 ref：默认实现每次渲染都会重建（`app` 每次都是新对象），
+   * 直接进 `load` 的依赖会把「打开 → 请求 → setState → 新 source → 再请求」拖成死循环。
+   */
+  const sourceRef = useRef<DirPickerSource | null>(null)
+  sourceRef.current =
+    source ??
+    (app
+      ? {
+          list: (path) => app.listServerDirs(path),
+          mkdir: (parent, name) => app.createServerDir(parent, name)
+        }
+      : null)
+  /** 打开时下一次加载从哪开始（同样走 ref，effect 只在「打开」时跑一次） */
+  const initialPathRef = useRef(initialPath)
+  initialPathRef.current = initialPath
 
-  // `app` 每次渲染都是新对象（useAgentApp 返回字面量，方法都是内联箭头函数），把 `load`
-  // 直接挂进 effect 依赖会把「打开弹窗 → 请求 → setState 重渲染 → load 换新引用 → effect
-  // 再跑」拖成无限请求循环。与 GitPanel 的 refreshRef 同一个理由：ref 拿最新实现，effect
-  // 只在「打开」时跑一次。
-  const loadRef = useRef(load)
-  loadRef.current = load
+  const load = useCallback(async (path: string): Promise<void> => {
+    const src = sourceRef.current
+    if (!src) return
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await src.list(path)
+      setData(result)
+      setDraft(result.path)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
-  // 每次打开都从服务端用户主目录重新起（别留着上次的深层路径），顺手收起新建行
+  // 每次打开都从数据源给的起点重新起（别留着上次的深层路径），顺手收起新建行
   useEffect(() => {
     if (!open) return
     setData(null)
     setError(null)
     setCreating(false)
     setNewName('')
-    void loadRef.current('')
-  }, [open])
+    void load(initialPathRef.current ?? '')
+  }, [open, load])
 
   /**
    * 在当前目录下建文件夹，**建完直接进去**（省一次点击：刚建的空目录本来就是想去的地方）。
    * 失败时保留输入行，让用户改个名字重试 —— 错误信息显示在列表区，输入内容不丢。
    */
   const createFolder = async (): Promise<void> => {
-    if (!data) return
+    const src = sourceRef.current
+    if (!src?.mkdir || !data) return
     const name = newName.trim()
     if (!name) return
     setCreatingBusy(true)
     setError(null)
     try {
-      const created = await app.createServerDir(data.path, name)
+      const created = await src.mkdir(data.path, name)
       setCreating(false)
       setNewName('')
       await load(created)
@@ -106,6 +158,9 @@ export function ServerDirPicker({
       setCreatingBusy(false)
     }
   }
+
+  // 既没有 app 也没有 source：没有可用的目录来源，不画空弹窗
+  if (!sourceRef.current) return null
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -121,10 +176,10 @@ export function ServerDirPicker({
       */}
       <DialogContent className="flex h-[32rem] max-h-[85dvh] flex-col overflow-hidden sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>选择目录</DialogTitle>
+          <DialogTitle>{title ?? tr('选择目录')}</DialogTitle>
           <DialogDescription>
             {description ??
-              '这里列的是服务端上的目录（Agent 就跑在那台机器上）。选中的目录会登记为工作区。'}
+              tr('这里列的是服务端上的目录（Agent 就跑在那台机器上）。选中的目录会登记为项目。')}
           </DialogDescription>
         </DialogHeader>
 
@@ -133,7 +188,7 @@ export function ServerDirPicker({
             size="sm"
             variant="outline"
             className="size-8 shrink-0 p-0"
-            aria-label="上一级"
+            aria-label={tr('上一级')}
             disabled={!data?.parent || loading}
             onClick={() => {
               if (data?.parent) void load(data.parent)
@@ -147,38 +202,40 @@ export function ServerDirPicker({
             onKeyDown={(e) => {
               if (e.key === 'Enter') void load(draft.trim())
             }}
-            placeholder="绝对路径，回车跳转"
+            placeholder={tr('绝对路径，回车跳转')}
             className="min-w-0 flex-1 font-mono text-xs"
           />
           {/* 新建文件夹：在**当前目录**下建（列表顶部展开一行输入），不是建到某个子目录里 */}
-          <Button
-            size="sm"
-            variant="outline"
-            className="size-8 shrink-0 p-0"
-            aria-label="新建文件夹"
-            title="在当前目录下新建文件夹"
-            disabled={!data || loading || creating}
-            onClick={() => {
-              setCreating(true)
-              setNewName('')
-              setError(null)
-            }}
-          >
-            <FolderPlus className="size-4" />
-          </Button>
+          {sourceRef.current.mkdir ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="size-8 shrink-0 p-0"
+              aria-label={tr('新建文件夹')}
+              title={tr('在当前目录下新建文件夹')}
+              disabled={!data || loading || creating}
+              onClick={() => {
+                setCreating(true)
+                setNewName('')
+                setError(null)
+              }}
+            >
+              <FolderPlus className="size-4" />
+            </Button>
+          ) : null}
         </div>
 
-        {/* 多盘符（Windows）时给一排「跳到哪个盘」；单根（POSIX）不必占地方 */}
-        {data && data.roots.length > 1 && (
+        {/* 多盘符（Windows）时给一排「跳到哪个盘」；单根（POSIX / SFTP）不必占地方 */}
+        {(data?.roots?.length ?? 0) > 1 && (
           <div className="flex flex-wrap gap-1">
-            {data.roots.map((root) => (
+            {data?.roots?.map((root) => (
               <button
                 key={root.path}
                 type="button"
                 onClick={() => void load(root.path)}
                 className={cn(
                   'rounded-md px-2 py-0.5 text-xs transition-colors',
-                  root.path === data.path
+                  root.path === data?.path
                     ? 'bg-secondary text-foreground'
                     : 'text-muted-foreground hover:bg-secondary/60 hover:text-foreground'
                 )}
@@ -215,7 +272,7 @@ export function ServerDirPicker({
                   }
                 }}
                 disabled={creatingBusy}
-                placeholder="新文件夹名字，回车创建"
+                placeholder={tr('新文件夹名字，回车创建')}
                 className="h-7 min-w-0 flex-1 text-xs"
               />
               <Button
@@ -224,7 +281,7 @@ export function ServerDirPicker({
                 disabled={!newName.trim() || creatingBusy}
                 onClick={() => void createFolder()}
               >
-                创建
+                {tr('创建')}
               </Button>
               <Button
                 size="sm"
@@ -233,7 +290,7 @@ export function ServerDirPicker({
                 disabled={creatingBusy}
                 onClick={() => setCreating(false)}
               >
-                取消
+                {tr('取消')}
               </Button>
             </div>
           )}
@@ -242,7 +299,7 @@ export function ServerDirPicker({
           {loading && !data && (
             <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">
               <Loader2 className="size-3.5 animate-spin" />
-              读取目录…
+              {tr('读取目录…')}
             </div>
           )}
           {error && (
@@ -252,7 +309,7 @@ export function ServerDirPicker({
           )}
           {!loading && !error && data?.entries.length === 0 && (
             <p className="flex h-full items-center justify-center px-3 text-center text-xs text-muted-foreground">
-              这个目录下没有子目录
+              {tr('这个目录下没有子目录')}
             </p>
           )}
           {data?.entries.map((entry) => (
@@ -276,7 +333,7 @@ export function ServerDirPicker({
             {data?.path}
           </span>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            取消
+            {tr('取消')}
           </Button>
           <Button
             disabled={!data || loading}
@@ -286,7 +343,7 @@ export function ServerDirPicker({
               onOpenChange(false)
             }}
           >
-            选择此目录
+            {tr('选择此目录')}
           </Button>
         </DialogFooter>
       </DialogContent>

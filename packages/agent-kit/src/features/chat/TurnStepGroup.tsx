@@ -33,12 +33,12 @@
  * 一行不落地流着，抬头不需要再演示「还在跑」。折叠回去立刻恢复原样；一组落地后（不论开合）
  * 也退回纯文字 —— 历史消息里不会留一排还在跳的组，也不会留一排状态图标。
  *
- * **展开后的内容区限高**（与思考内容 `ReasoningContent` 同一档 `max-h-[20rem]`、内部滚动，
- * 并且同样用 `useStickToBottom` 贴底）：一组过程可能压着十几张工具卡，全铺开比整屏还高，
- * 抬头（含「正在工作…」）就被顶出视野。限高之后组本身高度有界，抬头始终留在组顶、
- * 内容在框内自己滚；组在跑的时候新卡片会从底部冒出来，贴底跟随才能一直看到最新那一步
- * （用户上滚即停跟、滚回底部自动恢复）。抬头本身**不吸顶** —— 免得多条历史消息各有一个
- * 吸顶条互相叠。
+ * **展开后的内容区限高**（比思考内容 `ReasoningContent` 的 `max-h-[20rem]` 再矮一档：
+ * `max-h-64` = 16rem，内部滚动，并且同样用 `useStickToBottom` 贴底）：一组过程可能压着
+ * 十几张工具卡，全铺开比整屏还高，抬头（含「正在工作…」）就被顶出视野。限高之后组本身
+ * 高度有界，抬头始终留在组顶、内容在框内自己滚；组在跑的时候新卡片会从底部冒出来，
+ * 贴底跟随才能一直看到最新那一步（用户上滚即停跟、滚回底部自动恢复）。抬头本身**不吸顶**
+ * —— 免得多条历史消息各有一个吸顶条互相叠。
  * 这句「正在工作」挂的是 `live` 而不是 `active`（差在「工具出结果 → 模型生成下一次调用」
  * 那几秒），否则这行字会在两种文案之间反复横跳。
  *
@@ -318,8 +318,9 @@ export function TurnStepGroup({
         </div>
       </div>
       <CollapsibleContent className="pt-2">
-        {/* 限高 + 内部滚动（口径与 `ReasoningContent` 一致）：折叠组里可能有十几张工具卡，
-            全铺开会把抬头顶出视野；限高后抬头恒在组顶，内容在框内自己滚。
+        {/* 限高 + 内部滚动（口径与 `ReasoningContent` 一致，但高度再矮一档 `max-h-64`）：
+            折叠组里可能有十几张工具卡，全铺开会把抬头顶出视野；限高后抬头恒在组顶，
+            内容在框内自己滚。
             滚动位置交给 `useStickToBottom`：组还在跑时新卡从底部冒出来要自动跟到底
             （`initial: 'instant'` 让展开那一刻就看见最新一步），用户上滚即停跟。
             `overflow-anchor: none` 关掉 Chromium 的滚动锚定 —— 它会在卡片变高时「帮忙」
@@ -331,7 +332,7 @@ export function TurnStepGroup({
             正好落在抬头左侧那颗图标的中心线上。 */}
         <div
           ref={scrollRef}
-          className="max-h-[20rem] overflow-y-auto ml-2 border-l border-border pr-2 pl-3 no-scrollbar"
+          className="max-h-64 overflow-y-auto ml-2 border-l border-border pr-2 pl-3 no-scrollbar"
           style={{ overflowAnchor: 'none' }}
         >
           <div ref={contentRef} className="flex flex-col gap-2">{children}</div>

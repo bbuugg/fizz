@@ -137,7 +137,6 @@ import {
   SidebarGroup,
   SidebarRowsSkeleton,
 } from "@fizz/agent-kit/shared/components/SidebarGroups";
-import { AGENT_PROJECTS_SECTION } from "@fizz/agent-kit/shared/lib/section-ids";
 // 侧栏骨架（外壳 + 顶部栏 + 分区容器）：与「主机 / 接口请求」共用同一份，
 // 见 `shared/components/SidebarScaffold`。本侧栏**不传 `label`** —— 顶部那条
 // 「工作区」栏已整条删除，于是它渲染出来就是「没有顶部栏」的那一支。
@@ -573,8 +572,8 @@ export function AgentSidebar({
    * 不会把组挪位置；两组可以同时展开，展开组都用 `size="fill"` 吃剩余高度，
    * 于是只展开上面那组时，下面那组的标题自然被挤到底部。
    *
-   * 两组都展开时：**还没拖过分隔条**就按 1:1 分；拖过任务组底部的分隔条之后，任务组
-   * 固定到拖出来的像素高度（`tasksHeight`），工作区自动吃掉剩余部分。
+   * 两组都展开时：**还没拖过**就按 1:1 分；拖过「工作区」那行标题之后，任务组固定到
+   * 拖出来的像素高度（`tasksHeight`），工作区自动吃掉剩余部分。
    *
    * **收起再展开另存的高度不变**：只剩任务组展开时高度值照传、由 `solo` 让它吃满
    * （basis 仍是记住的像素）；工作区再展开回来，两组仍按上次的位置分（没拖过就是
@@ -587,7 +586,12 @@ export function AgentSidebar({
   const [tasksOpen, setTasksOpen] = useState(true);
   const [workspacesOpen, setWorkspacesOpen] = useState(true);
   const [tasksHeight, setTasksHeight] = useState<number | undefined>(undefined);
-  /** 只有两组都展开时，任务组才需要「固定高度 + 分隔条」（只剩它时吃满剩余高度） */
+  /**
+   * 正在拖「工作区」的标题行：任务组才是被改高度的那组，据此关掉它的高度过渡。
+   * 手势发生在下面那组上，所以这份状态只能放在父组件这一层。
+   */
+  const [groupsResizing, setGroupsResizing] = useState(false);
+  /** 只有两组都展开时，任务组才需要「固定高度 + 可拖标题行」（只剩它时吃满剩余高度） */
   const tasksResizable = tasksOpen && workspacesOpen;
 
   /** 点组标题：只切展开态 —— 拖出来的高度不清，再展开时要回到那个位置 */
@@ -1645,7 +1649,7 @@ export function AgentSidebar({
    * 两块内容组按**固定顺序**渲染（任务在前、工作区在后）：展开 / 收起不会重排，
    * 与 VSCode 侧栏一致。展开组吃剩余高度，所以只展开上面那组时，下面那组的标题
    * 会被挤到底部；两组都展开时按上次的位置分（没拖过就 1:1，拖过按记住的像素
-   * 高度），任务组底部出现可拖的分隔条。
+   * 高度），拖「工作区」那行标题即可改比例。
    */
 
   /**
@@ -1676,7 +1680,8 @@ export function AgentSidebar({
       height={tasksHeight}
       // 工作区收起时本组是唯一展开的组：吃满剩余高度
       solo={!tasksResizable}
-      onResizeHeight={tasksResizable ? setTasksHeight : undefined}
+      // 被「工作区」标题行的拖动改高度时关掉过渡，否则 basis 会追着指针慢慢滑
+      resizing={groupsResizing}
       // 横向 padding 不在这里加：行自己带 `px-2`，容器也带 `px-2`，
       // 这里再叠一层就把行推到 24px、和 16px 的标签文字错开（见下方容器注释）
       className="pb-1"
@@ -1720,6 +1725,9 @@ export function AgentSidebar({
       onToggle={toggleWorkspaces}
       // 展开时吃剩余高度、超出才在组内滚；任务组拖高度时由它吸收差额
       size="fill"
+      // 两组都展开时，本组标题行就是交界处的抓手：上下拖改任务组的高度
+      resizeAbove={tasksResizable ? setTasksHeight : undefined}
+      onResizeDraggingChange={setGroupsResizing}
       className="pb-2"
       // 加载中不传空态：列表请求还没落地，摆「还没有项目」就是一次闪屏
       empty={
@@ -1790,16 +1798,16 @@ export function AgentSidebar({
       >
         {/*
           **一个分区**（`SectionShell`）装两块动作（顶部）+ 两块内容组：任务 → 工作区。
-          它们原先各是一个 `SectionShell`（按 `grow` 权重分高度、边界可拖、各滚各的），
-          现在合成一个：不传 `resizableAbove`（不可拖高度、不分权重），
-          高度只由「任务组按内容、最多一半 + 最后一块 `flex-1` + 外层兜底滚动」决定。
+          它们原先各是一个 `SectionShell`（按 `grow` 权重分高度、各滚各的），
+          现在合成一个：两块组都是 `fill`，两组都展开时默认 1:1，拖「工作区」那行
+          标题改比例（高度只存内存）。
 
           ⚠️ 外层仍然必须是 `SectionShell`，**不能换成裸 `div.flex-1`**：它提供的
           `flex: 1 1 0` 内联样式里还带着 `minHeight` 兜底，那是这条链上唯一的高度下限。
           裸 `flex-1 min-h-0` 一旦遇到高度链算不准（`StackedSections` 的 `flex-1`
           没拿到确定高度），会直接塌成 0 —— 表现就是「标题还在、里面的东西全没了」。
         */}
-        <SectionShell spec={AGENT_PROJECTS_SECTION} minHeight={200}>
+        <SectionShell minHeight={200}>
           {/*
             顶部两个动作入口（`SidebarActions`，贴在清单最上方、与下面两块内容组分开）：
 

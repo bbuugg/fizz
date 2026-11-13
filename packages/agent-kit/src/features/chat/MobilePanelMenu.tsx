@@ -7,7 +7,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
 } from 'lucide-react'
-import { Button } from '@fizz/ui/button'
+import { LiquidGlassButton } from '@fizz/ui/liquid-glass'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -62,13 +62,15 @@ export function MobilePanelMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button
-          variant="outline"
-          className={cn('h-7! w-8! p-0! sm:hidden', active && 'text-primary')}
+        <LiquidGlassButton tone="contrast"
+          className={cn(
+            'inline-flex h-7 w-8 items-center justify-center rounded-md p-0 focus-visible:ring-2 focus-visible:ring-ring/50 sm:hidden',
+            active && 'text-primary'
+          )}
           aria-label={tr('更多面板入口')}
         >
           <Ellipsis className="size-4" />
-        </Button>
+        </LiquidGlassButton>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-44">
         {showFiles && (

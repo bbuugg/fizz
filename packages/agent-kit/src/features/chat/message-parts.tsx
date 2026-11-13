@@ -12,6 +12,14 @@ import { memo, useMemo, useState, type ReactNode } from 'react'
 import { Check, Copy, ArrowRightLeft, GitBranch, Pencil, RotateCw, Trash2 } from 'lucide-react'
 import { ShimmerLabel } from '@fizz/agent-kit/shared/ai-elements/shimmer-label'
 import { Button } from '@fizz/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@fizz/ui/dialog'
 import { PartView } from '@fizz/agent-kit/features/chat/PartView'
 import { TurnStepGroup } from '@fizz/agent-kit/features/chat/TurnStepGroup'
 import {
@@ -771,42 +779,57 @@ export function MessageActionRow({
         </button>
       )}
 
-      {!onDelete ? null : confirming ? (
-        <span className="flex items-center gap-1 pr-0.5">
-          <span className="whitespace-nowrap text-xs text-muted-foreground">{tr('删除本条？')}</span>
-          <Button
-            size="sm"
-            variant="destructive"
-            className="h-6 px-2 text-xs"
-            onClick={() => onDelete('single')}
+      {!onDelete ? null : (
+        <>
+          <button
+            type="button"
+            title={tr('删除这条消息（可选是否连同其后的消息一起删）')}
+            aria-label={tr('删除这条消息')}
+            onClick={() => setConfirming(true)}
+            className={cn(actionButton, 'hover:bg-destructive/10 hover:text-destructive')}
           >
-            {tr('仅本条')}
-          </Button>
-          {/* 后面没有消息时「及后续」与「仅本条」等价，不重复给一个入口 */}
-          {deleteCount > 1 && (
-            <Button
-              size="sm"
-              variant="destructive"
-              className="h-6 px-2 text-xs"
-              onClick={() => onDelete('from')}
-            >
-              {tr('及后续 {count} 条', { count: deleteCount - 1 })}
-            </Button>
-          )}
-          <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setConfirming(false)}>
-            {tr('取消')}
-          </Button>
-        </span>
-      ) : (
-        <button
-          type="button"
-          title={tr('删除这条消息（可选是否连同其后的消息一起删）')}
-          aria-label={tr('删除这条消息')}
-          onClick={() => setConfirming(true)}
-          className={cn(actionButton, 'hover:bg-destructive/10 hover:text-destructive')}
-        >
-          <Trash2 className="size-4" />
-        </button>
+            <Trash2 className="size-4" />
+          </button>
+          {/*
+            二次确认用弹窗，不再在行内展开一排按钮：
+            行内确认会把操作行撑宽、把相邻消息挤动，在窄屏上还会盖住正文。
+            两个删除范围直接作为弹窗的确认动作 —— 用户点下去要选的本来就是「删多少」。
+          */}
+          <Dialog open={confirming} onOpenChange={setConfirming}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>{tr('删除本条？')}</DialogTitle>
+                <DialogDescription>{tr('删除后无法恢复。')}</DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button variant="ghost" onClick={() => setConfirming(false)}>
+                  {tr('取消')}
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    setConfirming(false)
+                    onDelete('single')
+                  }}
+                >
+                  {tr('仅本条')}
+                </Button>
+                {/* 后面没有消息时「及后续」与「仅本条」等价，不重复给一个入口 */}
+                {deleteCount > 1 && (
+                  <Button
+                    variant="destructive"
+                    onClick={() => {
+                      setConfirming(false)
+                      onDelete('from')
+                    }}
+                  >
+                    {tr('及后续 {count} 条', { count: deleteCount - 1 })}
+                  </Button>
+                )}
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </>
       )}
 
       {/* 助手消息的时刻压在按钮右侧（整排最后一个）：动作在前、时间在后，

@@ -74,7 +74,8 @@
 }
 
 ::selection {
-  color: var(--background);
+  /* 主色选中：与项目强调色一致 */
+  color: var(--primary-foreground);
   background-color: var(--primary);
 }
 

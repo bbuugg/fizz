@@ -495,9 +495,12 @@ export function AcpTab({ app }: { app: AgentApp }) {
             </DialogDescription>
           </DialogHeader>
 
-          {/* 包成 form：焦点在任一输入框时回车即保存 */}
+          {/* 包成 form：焦点在任一输入框时回车即保存。
+              `min-w-0` 不能省：DialogContent 是 grid，子项默认 `min-width: auto`，
+              权限策略那个 Select 的长文案（whitespace-nowrap）会把整条表单撑到
+              max-w 之外，溢出弹窗。 */}
           <form
-            className="space-y-3"
+            className="min-w-0 space-y-3"
             onSubmit={(e) => {
               e.preventDefault()
               void saveAcpAgent()
@@ -523,7 +526,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
                 {tr('类型（决定会话里的模式 UI：opencode → 权限档，pi → 思考档，通用 → 不显示）')}
               </div>
               <Select value={acpType} onValueChange={(v) => setAcpType(v as AcpAgentType)}>
-                <SelectTrigger className="h-9 w-full text-sm">
+                <SelectTrigger className="h-9 w-full min-w-0 overflow-hidden text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -538,7 +541,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
                 {tr('「完全放行」时的答复：缺省「仅允许一次」（下次仍会询问）；选「永久记住」后由 agent 自己记着不再问，届时切回「确认」也要不回询问')}
               </div>
               <Select value={acpAllow} onValueChange={(v) => setAcpAllow(v as AcpAllowStrategy)}>
-                <SelectTrigger className="h-9 w-full text-sm">
+                <SelectTrigger className="h-9 w-full min-w-0 overflow-hidden text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
