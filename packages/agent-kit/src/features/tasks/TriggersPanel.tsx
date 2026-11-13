@@ -25,7 +25,8 @@
  *
  * ## 布局
  *
- * 照 `LogsPanel` 的口径：顶部工具条固定（标题 + 统计 + 刷新 + 新建），下面才滚。
+ * 顶部工具条用 `PanelHeader`（标题 + 统计在左、刷新 / 新建在右，与脚本 / 日志 / 隧道同一套），
+ * 它固定不滚，下面才滚。
  * 主体**左列分组清单 / 右列详情**；宽度不够时退化成上下两块、清单在上。
  * 判据是**标签容器**的宽度（ResizeObserver），不是视口 —— 这一页会被拖进主区域的
  * 分栏 / 浮窗里，窗口仍宽但容器可能只有几百像素。
@@ -52,6 +53,10 @@ import { Button } from '@fizz/ui/button'
 import { Switch } from '@fizz/ui/switch'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
+import {
+  PanelHeader,
+  PanelHeaderActionLabel
+} from '@fizz/agent-kit/shared/components/PanelHeader'
 import { InlineDeleteButton } from '@fizz/agent-kit/shared/components/InlineDeleteButton'
 import { RowActionButton } from '@fizz/agent-kit/shared/components/RowAction'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
@@ -323,43 +328,33 @@ export function TriggersPanel() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/*
-        顶部工具条：容器窄时竖排、够宽时横排（与主体同一条判据，不看视口）。
-        不能一直是 `justify-between`：右边带字按钮是 `shrink-0`，标题块是 `min-w-0`，
-        窄容器下标题会被压到 0 宽（`LogsPanel` 同款处理）。
-      */}
-      <div
-        className={cn(
-          'flex shrink-0 gap-2 px-4 py-3 sm:px-5',
-          sideBySide ? 'flex-row items-center justify-between gap-4' : 'flex-col'
-        )}
-      >
-        <div className="min-w-0">
-          <h1 className="text-base font-semibold">{t('定时任务')}</h1>
-          <p className="text-xs text-muted-foreground">
-            {t('到点自动起一轮会话 · 共 {total} 条 · {enabledCount} 条启用中', {
-              total,
-              enabledCount
-            })}
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={refreshing}
-            onClick={() => void refresh()}
-          >
-            <RefreshCw className={cn('size-4', refreshing && 'animate-spin')} />
-            {t('刷新')}
-          </Button>
-          {/* 不再要求「先有项目」：不绑工作区也能建（每次触发自动建临时工作区） */}
-          <Button size="sm" onClick={openCreate}>
-            <Plus className="size-4" />
-            {t('新建定时任务')}
-          </Button>
-        </div>
-      </div>
+      {/* 顶部工具条：版式见 `PanelHeader`（标题在左、按钮在右，窄了按钮只留图标） */}
+      <PanelHeader
+        title={t('定时任务')}
+        description={t('到点自动起一轮会话 · 共 {total} 条 · {enabledCount} 条启用中', {
+          total,
+          enabledCount
+        })}
+        actions={
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={refreshing}
+              aria-label={t('刷新')}
+              onClick={() => void refresh()}
+            >
+              <RefreshCw className={cn('size-4', refreshing && 'animate-spin')} />
+              <PanelHeaderActionLabel>{t('刷新')}</PanelHeaderActionLabel>
+            </Button>
+            {/* 不再要求「先有项目」：不绑工作区也能建（每次触发自动建临时工作区） */}
+            <Button size="sm" aria-label={t('新建定时任务')} onClick={openCreate}>
+              <Plus className="size-4" />
+              <PanelHeaderActionLabel>{t('新建定时任务')}</PanelHeaderActionLabel>
+            </Button>
+          </>
+        }
+      />
 
       <div
         ref={bodyRef}
@@ -373,16 +368,18 @@ export function TriggersPanel() {
           className={cn(
             'min-h-0 flex-1 overflow-auto rounded-lg border',
             // 只有左右分栏时才限宽；上下叠放时让它占满容器
-            sideBySide && 'max-w-md'
+            sideBySide && 'max-w-md',
+            // 空态 / 加载中：变成立式 flex，好让提示占满这块高度再居中（见下面两个 `flex-1`）
+            total === 0 && 'flex flex-col'
           )}
         >
           {triggers.loading && total === 0 ? (
-            <div className="flex h-full items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
+            <div className="flex flex-1 items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" />
               {t('正在加载定时任务…')}
             </div>
           ) : total === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-10 text-center">
               <CalendarClock className="size-8 text-muted-foreground/50" />
               <div className="space-y-1">
                 <p className="text-sm font-medium">{t('还没有定时任务')}</p>

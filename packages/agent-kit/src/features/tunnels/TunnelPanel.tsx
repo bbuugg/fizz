@@ -69,6 +69,10 @@ import {
   AlertDialogTitle
 } from '@fizz/ui/alert-dialog'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
+import {
+  PanelHeader,
+  PanelHeaderActionLabel
+} from '@fizz/agent-kit/shared/components/PanelHeader'
 import { ConfirmDeleteDialog } from '@fizz/agent-kit/shared/components/ConfirmDeleteDialog'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { getToolTab } from '@fizz/agent-kit/shared/lib/tool-tabs'
@@ -214,41 +218,48 @@ export function TunnelPanel({ tabKey }: { tabKey: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* 头部：标题 + 当前服务端标识 + 新建 / 刷新 */}
-      <div className="flex shrink-0 items-center gap-2 px-3 py-2">
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium text-foreground">SSH 隧道</div>
-          <div className="truncate text-xs text-muted-foreground">
-            监听端口开在 {serverLabel}（服务端所在机器）上，不是当前浏览器这台
-          </div>
-        </div>
-        <IconTip label="刷新">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="刷新"
-            disabled={refreshing}
-            onClick={() => void refresh()}
-          >
-            <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} />
-          </Button>
-        </IconTip>
-        <Button
-          size="sm"
-          onClick={() => {
-            setEditing(null)
-            setPresetHostId(sshHosts[0]?.id ?? '')
-            setFormOpen(true)
-          }}
-        >
-          <Plus className="size-3.5" />
-          新建隧道
-        </Button>
-      </div>
+      {/* 头部：版式见 `PanelHeader`（与定时任务 / 脚本 / 日志同一套：左标题右按钮） */}
+      <PanelHeader
+        title="SSH 隧道"
+        description={`监听端口开在 ${serverLabel}（服务端所在机器）上，不是当前浏览器这台`}
+        actions={
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label="刷新"
+              disabled={refreshing}
+              onClick={() => void refresh()}
+            >
+              <RefreshCw className={cn('size-4', refreshing && 'animate-spin')} />
+              <PanelHeaderActionLabel>刷新</PanelHeaderActionLabel>
+            </Button>
+            <Button
+              size="sm"
+              aria-label="新建隧道"
+              onClick={() => {
+                setEditing(null)
+                setPresetHostId(sshHosts[0]?.id ?? '')
+                setFormOpen(true)
+              }}
+            >
+              <Plus className="size-4" />
+              <PanelHeaderActionLabel>新建隧道</PanelHeaderActionLabel>
+            </Button>
+          </>
+        }
+      />
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        className={cn(
+          'min-h-0 flex-1 overflow-y-auto',
+          // 空态时把这块变成立式 flex，好让提示占满剩余高度（见下面那个 `flex-1`）
+          app.sshTunnels.length === 0 && 'flex flex-col'
+        )}
+      >
         {exposed.length > 0 && (
-          <div className="mx-3 mt-3 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          // 左右边距跟着顶栏（`PanelHeader` 的 `px-4 sm:px-5`），否则这条提醒会比标题缩进 4px
+          <div className="mx-4 mt-3 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 sm:mx-5 dark:text-amber-400">
             <TriangleAlert className="mt-px size-3.5 shrink-0" />
             <div className="leading-5">
               有 {exposed.length} 条隧道的监听地址不是回环地址（{exposed.map((t) => t.bindHost).join('、')}）。
@@ -258,7 +269,11 @@ export function TunnelPanel({ tabKey }: { tabKey: string }) {
         )}
 
         {app.sshTunnels.length === 0 ? (
-          <div className="flex flex-col items-center gap-2 px-6 py-12 text-center">
+          /*
+            `flex-1` 撑满整块内容区再居中：只靠内容定高的话，`justify-center` 没有可分的
+            空间，提示会贴在顶部（横向倒是因为 `items-center` 看着是居中的）。
+          */
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 py-12 text-center">
             <MoveRight className="size-8 opacity-40" />
             <div className="text-sm font-medium">还没有隧道</div>
             <p className="max-w-xs text-xs leading-5 text-muted-foreground">
@@ -276,7 +291,8 @@ export function TunnelPanel({ tabKey }: { tabKey: string }) {
               const Icon = typeIcon(tunnel.type)
               const busy = busyId === tunnel.id
               return (
-                <li key={tunnel.id} className="px-3 py-2.5">
+                // 行首缩进与顶栏一致（`px-4 sm:px-5`），否则标题与列表看着对不齐
+                <li key={tunnel.id} className="px-4 py-2.5 sm:px-5">
                   <div className="flex items-start gap-2.5">
                     <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                     <div className="min-w-0 flex-1">

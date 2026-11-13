@@ -29,8 +29,8 @@
  *
  * ## 布局
  *
- * 照 `TriggersPanel` / `LogsPanel` 的口径：顶部工具条固定（标题 + 统计 + 新建分组 /
- * 新建脚本），下面「搜索框 + 自己滚的清单」。清单是**卡片网格**（一行多张，见
+ * 顶部工具条用 `PanelHeader`（与定时任务 / 日志 / 隧道同一套：标题 + 统计在左、动作在右），
+ * 下面「搜索框 + 自己滚的清单」。清单是**卡片网格**（一行多张，见
  * `SCRIPT_CARDS`）—— 不像定时任务那样分左列清单 / 右列详情，因为脚本的「详情」就是
  * 正文，而正文归编辑对话框管。
  *
@@ -70,6 +70,10 @@ import {
 } from '@fizz/ui/context-menu'
 import { ConfirmDeleteDialog } from '@fizz/agent-kit/shared/components/ConfirmDeleteDialog'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
+import {
+  PanelHeader,
+  PanelHeaderActionLabel
+} from '@fizz/agent-kit/shared/components/PanelHeader'
 import { ScriptEditDialog } from '@fizz/agent-kit/features/scripts/ScriptEditDialog'
 import { openRunScriptDialog } from '@fizz/agent-kit/shared/lib/script-run'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
@@ -309,28 +313,28 @@ export function ScriptsPanel() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/*
-        顶部工具条：窄屏竖排、宽屏横排（`sm:` 断点切换）。与 `TriggersPanel` 同一套 ——
-        不能一直是 `justify-between`：右边带字按钮是 `shrink-0`，窄屏下标题会被压到 0 宽。
-      */}
-      <div className="flex shrink-0 flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:px-5">
-        <div className="min-w-0">
-          <h1 className="text-base font-semibold">脚本</h1>
-          <p className="text-xs text-muted-foreground">
-            可复用的命令片段 · 共 {scripts.length} 个 · {groups.length} 个分组 · 选任意主机运行
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={() => setGroupEdit({ name: '' })}>
-            <FolderPlus className="size-4" />
-            新建分组
-          </Button>
-          <Button size="sm" onClick={() => openEdit(null)}>
-            <Plus className="size-4" />
-            新建脚本
-          </Button>
-        </div>
-      </div>
+      {/* 顶部工具条：版式见 `PanelHeader`（标题在左、按钮在右，窄了按钮只留图标） */}
+      <PanelHeader
+        title="脚本"
+        description={`可复用的命令片段 · 共 ${scripts.length} 个 · ${groups.length} 个分组 · 选任意主机运行`}
+        actions={
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label="新建分组"
+              onClick={() => setGroupEdit({ name: '' })}
+            >
+              <FolderPlus className="size-4" />
+              <PanelHeaderActionLabel>新建分组</PanelHeaderActionLabel>
+            </Button>
+            <Button size="sm" aria-label="新建脚本" onClick={() => openEdit(null)}>
+              <Plus className="size-4" />
+              <PanelHeaderActionLabel>新建脚本</PanelHeaderActionLabel>
+            </Button>
+          </>
+        }
+      />
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 px-4 pb-4 sm:px-5">
         {/* 搜索框：常驻在清单上方（不跟着清单滚）。一条脚本都没有时收起来 ——
@@ -345,29 +349,31 @@ export function ScriptsPanel() {
         )}
 
         {/*
-          列表容器**不画边框**：卡片自己带边框，外面再套一层就是「框里套框」（暗色主题下
-          两层半透明边框叠起来发灰）。`p-1` 只为了让卡片的 hover 边框不贴着滚动条。
+          空态**不进滚动容器**：`h-full` 是百分比，父级只保证「能用多少」而不是「一定
+          多高」，撑不起来时居中的内容就贴着顶部缩成一团。这里让它直接占 `flex-1` ——
+          高度和「有脚本时的卡片区」完全一致，只是里面换成了居中提示。
+          也不给「新建脚本」按钮：同一个动作顶栏已经有一颗，空态再摆就是重复。
         */}
-        <div className="min-h-0 flex-1 overflow-auto p-1">
-          {isEmpty ? (
-            <div className="flex h-full flex-col items-center justify-center gap-3 px-6 py-10 text-center">
-              <FileCode2 className="size-8 text-muted-foreground/50" />
-              <div className="space-y-1">
-                <p className="text-sm font-medium">还没有脚本</p>
-                <p className="text-xs text-muted-foreground">
-                  把常用的命令存成脚本，之后选一台主机直接跑。
-                </p>
-              </div>
-              <Button size="sm" onClick={() => openEdit(null)}>
-                <Plus className="size-4" />
-                新建脚本
-              </Button>
+        {isEmpty ? (
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+            <FileCode2 className="size-8 text-muted-foreground/50" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium">还没有脚本</p>
+              <p className="text-xs text-muted-foreground">
+                把常用的命令存成脚本，之后选一台主机直接跑。
+              </p>
             </div>
-          ) : noMatch ? (
-            <div className="flex h-full items-center justify-center px-6 py-10 text-center text-sm text-muted-foreground">
-              没有匹配「{search}」的脚本。
-            </div>
-          ) : (
+          </div>
+        ) : noMatch ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center px-6 py-10 text-center text-sm text-muted-foreground">
+            没有匹配「{search}」的脚本。
+          </div>
+        ) : (
+          /*
+            列表容器**不画边框**：卡片自己带边框，外面再套一层就是「框里套框」（暗色主题下
+            两层半透明边框叠起来发灰）。`p-1` 只为了让卡片的 hover 边框不贴着滚动条。
+          */
+          <div className="min-h-0 flex-1 overflow-auto p-1">
             <div className="flex flex-col gap-4">
               {/* 分组在前（可展开），未分组脚本排在最后；每组下面是**一排卡片** */}
               {viewGroups.map((b) => {
@@ -438,8 +444,8 @@ export function ScriptsPanel() {
                 </section>
               )}
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* 新建 / 编辑脚本：模态框里改完显式保存，清单在背后一直可见（不会开新标签） */}

@@ -29,6 +29,10 @@ import { Tabs, TabsList, TabsTrigger } from '@fizz/ui/tabs'
 import { Button } from '@fizz/ui/button'
 import { Input } from '@fizz/ui/input'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
+import {
+  PanelHeader,
+  PanelHeaderActionLabel
+} from '@fizz/agent-kit/shared/components/PanelHeader'
 import { ConfirmDeleteDialog } from '@fizz/agent-kit/shared/components/ConfirmDeleteDialog'
 import { getAgentHostOrNull } from '@fizz/agent-client/host'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
@@ -154,15 +158,10 @@ export function LogsPanel() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/*
-        顶部工具条：**窄屏竖排、宽屏横排**（`sm:` 断点切换）。
-        ⚠️ 不能一直是 `flex items-center justify-between`：右侧那三颗带字按钮是 `shrink-0`，
-        标题块是 `min-w-0`，手机窄屏下被压到 0 宽 —— 表现为「左侧标题被挤没」。竖排后
-        标题独占一行，按钮另起一行，谁都不挤谁。
-      */}
-      <div className="flex shrink-0 flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:px-5">
-        <div className="min-w-0">
-          <h1 className="flex items-center gap-1.5 text-base font-semibold">
+      {/* 顶部工具条：版式见 `PanelHeader`（标题在左、按钮在右，窄了按钮只留图标） */}
+      <PanelHeader
+        title={
+          <span className="inline-flex items-center gap-1.5">
             应用日志
             {/* 有「出现过但没注册」的命名空间时提示一下 —— 日志没丢，只是 Tab 名退化成 id，
                 这是提醒开发者去 `app-log-namespaces.ts` 补一行注册（见服务端那个文件） */}
@@ -173,61 +172,72 @@ export function LogsPanel() {
                 <TriangleAlert className="size-3.5 text-amber-500" />
               </IconTip>
             )}
-          </h1>
-          <p className="text-xs text-muted-foreground">
-            共 {state.entries.length} 条 · 错误 {errorCount} 条 ·{' '}
-            {state.status === 'live'
-              ? '实时同步中'
-              : state.status === 'loading'
-                ? '加载中…'
-                : (state.error ?? '未连接')}
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {/*
-            「打开日志目录」只在**桌面端**给：日志的落盘位置是 server 那台机器上的
-            （`FIZZ_DATA_DIR` 或 `~/.fizz-server/logs`）。桌面端 server 跑在进程内、
-            那台机器就是用户本机，`openPath` 能直接打开；web 端部署在 VPS 上时那是
-            VPS 的路径，浏览器碰不到 —— 这时把路径放进悬停提示，让用户自己上服务器看。
-          */}
-          {state.directory && (
+          </span>
+        }
+        description={`共 ${state.entries.length} 条 · 错误 ${errorCount} 条 · ${
+          state.status === 'live'
+            ? '实时同步中'
+            : state.status === 'loading'
+              ? '加载中…'
+              : (state.error ?? '未连接')
+        }`}
+        actions={
+          <>
+            {/*
+              「打开日志目录」只在**桌面端**给：日志的落盘位置是 server 那台机器上的
+              （`FIZZ_DATA_DIR` 或 `~/.fizz-server/logs`）。桌面端 server 跑在进程内、
+              那台机器就是用户本机，`openPath` 能直接打开；web 端部署在 VPS 上时那是
+              VPS 的路径，浏览器碰不到 —— 这时把路径放进悬停提示，让用户自己上服务器看。
+            */}
+            {state.directory && (
+              <Button
+                variant="ghost"
+                size="sm"
+                // 窄容器下这段文案会收成图标（`PanelHeaderActionLabel`），名字得挂在按钮上
+                aria-label={isDesktop ? '打开日志目录' : '复制日志目录路径'}
+                title={
+                  isDesktop
+                    ? '在文件管理器中打开日志目录'
+                    : `日志目录（在服务端所在机器上）：${state.directory}`
+                }
+                onClick={() => {
+                  if (isDesktop) {
+                    void getAgentHostOrNull()?.openPath?.(state.directory)
+                    return
+                  }
+                  // web 端没有本机文件系统：复制路径，用户自己上服务器看
+                  void navigator.clipboard?.writeText(state.directory)
+                  toast.success('日志目录路径已复制')
+                }}
+              >
+                <FolderOpen className="size-4" />
+                <PanelHeaderActionLabel>
+                  {isDesktop ? '打开目录' : '复制路径'}
+                </PanelHeaderActionLabel>
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
-              title={
-                isDesktop
-                  ? '在文件管理器中打开日志目录'
-                  : `日志目录（在服务端所在机器上）：${state.directory}`
-              }
-              onClick={() => {
-                if (isDesktop) {
-                  void getAgentHostOrNull()?.openPath?.(state.directory)
-                  return
-                }
-                // web 端没有本机文件系统：复制路径，用户自己上服务器看
-                void navigator.clipboard?.writeText(state.directory)
-                toast.success('日志目录路径已复制')
-              }}
+              disabled={refreshing}
+              aria-label="刷新"
+              onClick={() => void refresh()}
             >
-              <FolderOpen className="size-4" />
-              {isDesktop ? '打开目录' : '复制路径'}
+              <RefreshCw className={cn('size-4', refreshing && 'animate-spin')} />
+              <PanelHeaderActionLabel>刷新</PanelHeaderActionLabel>
             </Button>
-          )}
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={refreshing}
-            onClick={() => void refresh()}
-          >
-            <RefreshCw className={cn('size-4', refreshing && 'animate-spin')} />
-            刷新
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => setConfirmClear(true)}>
-            <Trash2 className="size-4" />
-            清空
-          </Button>
-        </div>
-      </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label="清空"
+              onClick={() => setConfirmClear(true)}
+            >
+              <Trash2 className="size-4" />
+              <PanelHeaderActionLabel>清空</PanelHeaderActionLabel>
+            </Button>
+          </>
+        }
+      />
 
       {/* 命名空间 Tab + 搜索 */}
       <div className="flex shrink-0 items-center gap-2 px-4 sm:gap-3 sm:px-5">
