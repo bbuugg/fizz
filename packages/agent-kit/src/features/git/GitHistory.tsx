@@ -22,14 +22,10 @@ import {
   ContextMenuTrigger
 } from '@fizz/ui/context-menu'
 import { FileDiffView } from '@fizz/agent-kit/features/git/FileDiffView'
-import { parseUnifiedDiff } from '@fizz/agent-kit/shared/lib/diff'
 import { splitDiffByFile } from '@fizz/agent-kit/shared/lib/git-commit-diff'
 import { statusTone } from '@fizz/agent-kit/features/git/ChangeRow'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
-
-/** unified diff 里切分文件的边界行（`diff --git a/x b/x`） */
-const FILE_HEADER = /^diff --git a\/(.*) b\/(.*)$/
 
 /** 复制提交哈希后的提示文案（导出来单测，不让文案散在 JSX 里） */
 export function copyHashToastLabel(kind: 'full' | 'short'): string {
@@ -69,7 +65,10 @@ function copyCommitMessage(subject: string): void {
 }
 
 /**
- * 一次提交的展开体：文件清单 + 逐文件 diff。
+ * 一次提交的展开体：文件清单 + 点开某个文件才渲染它的 diff。
+ *
+ * 不把整份 diff 一次铺出来：一次提交动几十个文件时，DOM 会直接被撑到几十万行。清单
+ * 始终全量显示，diff 按需展开，且**一次只展开一个**（与下面「更改」组同一套交互）。
  *
  * diff 按文件切分的逻辑在 `lib/git-commit-diff.ts`（零依赖，可单测直跑）：
  * ⚠️ 不能整段喂 `parseUnifiedDiff` —— 它只认 `@@`，多文件的 hunk 会被扁平成
@@ -77,6 +76,8 @@ function copyCommitMessage(subject: string): void {
  */
 function CommitDetail({ detail }: { detail: GitCommitDiffResult }) {
   const t = useT()
+  /** 这次提交里正在看哪个文件的 diff */
+  const [openPath, setOpenPath] = useState<string | null>(null)
   // 空提交 / 纯 merge：git 不给 diff。明说「没有文件改动」，别渲染一个空区让人以为加载失败
   if (detail.files.length === 0) {
     return (
@@ -85,35 +86,61 @@ function CommitDetail({ detail }: { detail: GitCommitDiffResult }) {
       </div>
     )
   }
-  const segments = splitDiffByFile(detail.diff)
+  /*
+   * 文件清单与 diff 段按路径对上：`splitDiffByFile` 的 path 取自 `diff --git a/x b/x`
+   * （rename 时是 `-M` 归一化之后的新路径），与 `files` 里的 `path` 同源。
+   * 对不上的（二进制 / 纯 mode 变更 / 被服务端截断的文件）给空 hunks ——
+   * `FileDiffView` 会自己说「没有可展示的文本差异」，不用这里另造一套文案。
+   */
+  const hunksByPath = new Map(splitDiffByFile(detail.diff).map((seg) => [seg.path, seg.hunks]))
   return (
     <div className="space-y-1 py-1">
-      {/* 文件清单：状态字母 + 路径 + 增删行数。点它滚到 / 定位到下面那段 diff（顺序一致） */}
+      {/* 文件清单：状态字母 + 路径 + 增删行数。点一行就展开它的 diff */}
       <div className="space-y-0.5">
-        {detail.files.map((f) => (
-          <div key={f.oldPath ? `${f.oldPath}→${f.path}` : f.path} className="flex items-center gap-2 px-2 text-xs">
-            <span className={statusTone(f.status) + ' w-3 shrink-0 text-center font-mono font-semibold'} title={f.status}>
-              {f.status}
-            </span>
-            <span className="min-w-0 flex-1 truncate font-mono" title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}>
-              {f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}
-            </span>
-            <span className="shrink-0 tabular-nums text-muted-foreground">
-              {f.binary ? (
-                <span className="text-muted-foreground">{t('二进制')}</span>
-              ) : (
-                <>
-                  <span className="text-emerald-500">+{f.insertions}</span>{' '}
-                  <span className="text-red-500">−{f.deletions}</span>
-                </>
+        {detail.files.map((f) => {
+          const expanded = openPath === f.path
+          const label = f.oldPath ? `${f.oldPath} → ${f.path}` : f.path
+          return (
+            <div key={label}>
+              <button
+                type="button"
+                aria-expanded={expanded}
+                aria-label={
+                  expanded
+                    ? t('收起 {path} 的改动', { path: label })
+                    : t('查看 {path} 在这次提交里的改动', { path: label })
+                }
+                onClick={() => setOpenPath(expanded ? null : f.path)}
+                className="flex w-full items-center gap-2 rounded py-0.5 pl-7 pr-2 text-left text-xs hover:bg-foreground/5"
+              >
+                <span className={statusTone(f.status) + ' w-3 shrink-0 text-center font-mono font-semibold'} title={f.status}>
+                  {f.status}
+                </span>
+                <span className="min-w-0 flex-1 truncate font-mono" title={label}>
+                  {label}
+                </span>
+                <span className="shrink-0 tabular-nums text-muted-foreground">
+                  {f.binary ? (
+                    <span className="text-muted-foreground">{t('二进制')}</span>
+                  ) : (
+                    <>
+                      <span className="text-emerald-500">+{f.insertions}</span>{' '}
+                      <span className="text-red-500">−{f.deletions}</span>
+                    </>
+                  )}
+                </span>
+              </button>
+              {expanded && (
+                // pl-12 = 行内 pl-7 + 状态字母 w-3 + gap-2：diff 正文与文件名左对齐
+                <div className="pl-12">
+                  <FileDiffView path={label} hunks={hunksByPath.get(f.path) ?? []} hideHeader />
+                </div>
               )}
-            </span>
-          </div>
-        ))}
+            </div>
+          )
+        })}
       </div>
-      {detail.diff ? (
-        segments.map((seg) => <FileDiffView key={seg.path} path={seg.path} hunks={seg.hunks} />)
-      ) : (
+      {!detail.diff && (
         <div className="px-2 py-1.5 text-xs text-muted-foreground">
           {t('这次提交没有可显示的文本改动（可能全是二进制文件或纯 mode 变更）。')}
         </div>

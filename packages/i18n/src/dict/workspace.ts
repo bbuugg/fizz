@@ -531,6 +531,8 @@ export const WORKSPACE: Record<string, string> = {
   '还没有提交': 'No commits yet',
   '查看 {short} 改了什么': 'Show what {short} changed',
   '收起 {short} 的改动': 'Collapse changes in {short}',
+  '查看 {path} 在这次提交里的改动': 'Show changes to {path} in this commit',
+  '收起 {path} 的改动': 'Collapse changes to {path}',
   '检出': 'Checkout',
   '检出这次提交（分离头指针）': 'Check out this commit (detached HEAD)',
   '复制完整哈希': 'Copy full hash',

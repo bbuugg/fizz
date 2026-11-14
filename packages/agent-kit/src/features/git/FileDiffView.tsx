@@ -31,12 +31,15 @@ function diffStat(hunks: DiffHunk[]): { adds: number; dels: number } {
 export function FileDiffView({
   path,
   hunks,
-  deleted
+  deleted,
+  hideHeader
 }: {
   path: string
   hunks: DiffHunk[]
   /** delete_file：入参没有内容，无法对比，只提示删了哪个文件 */
   deleted?: boolean
+  /** 调用方自己已展示路径与增删计数时（如提交详情的文件行）隐藏文件头 */
+  hideHeader?: boolean
 }) {
   const t = useT()
   const { adds, dels } = diffStat(hunks)
@@ -47,14 +50,16 @@ export function FileDiffView({
   return (
     <div className="overflow-hidden font-mono text-xs">
       {/* 文件头：路径 + 增删计数 */}
-      <div className="flex items-center justify-between gap-2 px-2 py-1 text-muted-foreground">
-        <span className="truncate" title={path}>
-          {path}
-        </span>
-        <span className="shrink-0 tabular-nums">
-          <span className="text-emerald-500">+{adds}</span> <span className="text-red-500">−{dels}</span>
-        </span>
-      </div>
+      {!hideHeader && (
+        <div className="flex items-center justify-between gap-2 px-2 py-1 text-muted-foreground">
+          <span className="truncate" title={path}>
+            {path}
+          </span>
+          <span className="shrink-0 tabular-nums">
+            <span className="text-emerald-500">+{adds}</span> <span className="text-red-500">−{dels}</span>
+          </span>
+        </div>
+      )}
 
       {deleted ? (
         <div className="px-2 py-1.5 text-muted-foreground">
