@@ -189,7 +189,7 @@ export function MobileSettingsPanel({
       */}
       <nav
         className={cn(
-          'absolute inset-y-0 left-0 flex w-full flex-col px-2 pb-2',
+          'absolute inset-y-0 left-0 flex w-full flex-col p-2',
           animate ? 'translate-x-0' : 'static w-44 shrink-0',
           // 进场 / 退场都播；常驻 `transition-transform`（见文件头：`translate` 属性靠它才有过渡）
           'transition-transform duration-250 ease-[cubic-bezier(0.32,0.72,0,1)]',
@@ -251,7 +251,7 @@ export function MobileSettingsPanel({
       */}
       <div
         className={cn(
-          'flex min-w-0 flex-col px-2 pb-2',
+          'flex min-w-0 flex-col p-2',
           animate
             ? cn(
                 // `bg-surface-1`：这一块是**盖在菜单上**的整屏面板，不铺底就是透明的
@@ -267,7 +267,7 @@ export function MobileSettingsPanel({
       >
         {/* 宿主没接管标题栏时（窄屏 web 的弹窗）才画在这里 */}
         {!onDetailChange && (
-          <div className="mb-3 flex shrink-0 items-center gap-1">
+          <div className="mb-1 flex shrink-0 items-center gap-1">
             <button
               type="button"
               aria-label={tr('返回设置')}

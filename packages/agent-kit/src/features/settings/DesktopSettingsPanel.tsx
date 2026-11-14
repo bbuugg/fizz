@@ -54,9 +54,10 @@ export function DesktopSettingsPanel({
   }
 
   return (
-    <div className={cn('flex min-h-0 flex-1 gap-2 px-2 pb-2', className)}>
-      {/* 菜单列：**分组列表可滚，底部那行不动**（版本号 / 仓库常驻可见，别跟着滚走） */}
-      <nav className="flex w-44 shrink-0 flex-col py-2 pr-1">
+    <div className={cn('flex min-h-0 flex-1 gap-2 pr-2', className)}>
+      {/* 菜单列：**分组列表可滚，底部那行不动**（版本号 / 仓库常驻可见，别跟着滚走）。
+          顶部与右侧内容卡片的 p-4 对齐；水平内边距也交给这一列，不再在根上叠一层。 */}
+      <nav className="flex w-44 shrink-0 flex-col pl-2 pr-1 py-2">
         <div className="min-h-0 flex-1 space-y-4 overflow-auto no-scrollbar">
           {groups.map((group) => (
             <div key={group.title}>
@@ -86,12 +87,12 @@ export function DesktopSettingsPanel({
         <SettingsFooter onOpenGeneral={() => selectTab('general')} />
       </nav>
 
-      <div className="flex min-w-0 flex-1 flex-col rounded-lg bg-background p-4">
+      <div className="flex min-w-0 flex-1 flex-col rounded-lg bg-background px-4 py-2">
         {/*
           `key={tab}`：**每个分组用自己那份滚动容器**（容器共用的话，在「通用」滚到底
           再切到「模型」，新分组会停在底部而不是顶部）。孩子本来就会随 tab 重挂。
         */}
-        <div key={tab} className="min-h-0 flex-1 overflow-auto no-scrollbar py-2">
+        <div key={tab} className="min-h-0 flex-1 overflow-auto no-scrollbar">
           <SettingsContent tab={tab} {...common} />
         </div>
       </div>
