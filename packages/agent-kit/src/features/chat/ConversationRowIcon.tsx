@@ -14,6 +14,7 @@
  * `kind === 'collab'` 才是协作会话。
  */
 import { Bot, MessageCircleQuestion, MessageSquare, Network, ShieldQuestion } from 'lucide-react'
+import { Loader } from '@fizz/agent-kit/shared/ai-elements/loader'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { TypingBubble } from '@fizz/agent-kit/features/chat/TypingBubble'
@@ -27,6 +28,8 @@ export function ConversationRowIcon({
   kind,
   waiting = null,
   running = false,
+  loading = false,
+  loadingLabel,
   className
 }: {
   backend?: 'builtin' | 'acp'
@@ -35,10 +38,23 @@ export function ConversationRowIcon({
   waiting?: ConversationWaiting | null
   /** 运行态：有一轮正在跑（已由调用方与 `waiting` 做过去重） */
   running?: boolean
+  /** 正在从 agent 侧重新拉取转录（重载会话）：优先盖掉所有状态，否则看起来像没反应 */
+  loading?: boolean
+  /** loading 的读屏标签：重载 / 重启语义不同，由调用方给 */
+  loadingLabel?: string
   /** **追加**的布局类（如重命名态要多一份左外边距）；不要用它改尺寸 / 颜色，会把状态色顶掉 */
   className?: string
 }) {
   const t = useT()
+  if (loading) {
+    return (
+      <Loader
+        size={16}
+        className={cn(ICON, 'text-muted-foreground', className)}
+        aria-label={loadingLabel ?? t('正在处理会话')}
+      />
+    )
+  }
   if (waiting) {
     // 区分两种「等你」：权限申请用盾牌、AI 提问用问号气泡
     const label = waiting.kind === 'confirm' ? t('等待确认') : t('等待回答')

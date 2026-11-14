@@ -495,6 +495,9 @@ interface AcpSessionEntry {
    * null = 这条连接还没 initialize 完。
    */
   promptCapabilities: acp.PromptCapabilities | null;
+  /** 建立 / 最近一次活动时间：空闲回收与诊断用 */
+  createdAt: number;
+  lastActiveAt: number;
   /** 同一会话的轮次串行链 */
   chain: Promise<unknown>;
   /** 当前轮次的审批上下文（requestPermission 时要用） */
@@ -525,6 +528,17 @@ interface AgentPermissionReply {
 
 /** agentId::conversationId → 常驻会话 */
 const sessions = new Map<string, AcpSessionEntry>();
+
+/**
+ * ACP agent 进程空闲多久后回收。
+ *
+ * 常驻进程是「下一轮复用」的前提，但开过的会话没人关就会一直挂着 —— 一轮结束后
+ * 不主动拆。这里兜住「开过就忘」的那批：超过 10 分钟没有任何活动、且当前没有轮次，
+ * 就 teardown；下一轮再按 `session/load` 重建（上下文不丢）。
+ */
+const ACP_IDLE_TIMEOUT_MS = 10 * 60_000;
+const ACP_IDLE_SWEEP_MS = 60_000;
+let acpIdleTimer: NodeJS.Timeout | null = null;
 
 /**
  * agentId → 是否收 `ContentBlock::Image`（`initialize` 里探测，**不过期**）。
@@ -793,7 +807,64 @@ function teardown(key: string): void {
 
 /** 服务端退出前清理：不留孤儿 agent 进程 */
 export function disposeAcpSessions(): void {
+  if (acpIdleTimer) {
+    clearInterval(acpIdleTimer);
+    acpIdleTimer = null;
+  }
   for (const key of [...sessions.keys()]) teardown(key);
+}
+
+/** 当前常驻的 ACP 进程快照（诊断 / `GET /api/acp/sessions` 用） */
+export interface AcpProcessInfo {
+  agentId: string;
+  conversationId: string;
+  pid: number | null;
+  /** agent 侧会话 id；还没建立会话时为 null */
+  sessionId: string | null;
+  /** 有一轮正在跑（空闲回收会跳过它） */
+  running: boolean;
+  /** 进程还活着（没退出 / 没被 kill） */
+  alive: boolean;
+  /** 距最近一次活动过了多久（毫秒） */
+  idleMs: number;
+  /** 这个进程从建立到现在多久（毫秒） */
+  uptimeMs: number;
+}
+
+/**
+ * 列出所有常驻 ACP 进程。
+ *
+ * 只读快照，不触发任何清理；面板 / curl 用它确认「开过的会话是不是都还挂着」。
+ * 空闲回收的计时器只在第一条会话建立时启动，避免模块加载即起定时器。
+ */
+export function listAcpProcesses(): AcpProcessInfo[] {
+  const now = Date.now();
+  return [...sessions.values()].map((entry) => ({
+    agentId: entry.agentId,
+    conversationId: entry.conversationId,
+    pid: entry.proc.pid ?? null,
+    sessionId: sessionIdOf(entry),
+    running: entry.turn !== null,
+    alive: entry.proc.exitCode === null && !entry.proc.killed,
+    idleMs: Math.max(0, now - entry.lastActiveAt),
+    uptimeMs: Math.max(0, now - entry.createdAt),
+  }));
+}
+
+/** 启动空闲回收（幂等；第一条 ACP 会话建立时调用） */
+function ensureAcpIdleTimer(): void {
+  if (acpIdleTimer) return;
+  acpIdleTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [key, entry] of sessions) {
+      // 有轮次在跑 / 正在等审批时绝不回收：`turn` 非空代表这条会话仍被占用
+      if (entry.turn) continue;
+      if (now - entry.lastActiveAt < ACP_IDLE_TIMEOUT_MS) continue;
+      teardown(key);
+    }
+  }, ACP_IDLE_SWEEP_MS);
+  // 别让这个定时器把服务端进程吊住（CLI / 测试进程尤其需要）
+  acpIdleTimer.unref?.();
 }
 
 /** 轮次里流动的一条消息：agent 的增量通知，或整轮的 stop */
@@ -1973,7 +2044,10 @@ function getOrCreateEntry(opts: {
     teardown(key);
     entry = undefined;
   }
-  if (entry) return entry;
+  if (entry) {
+    entry.lastActiveAt = Date.now();
+    return entry;
+  }
   // 「任务」会话没有工作区目录：agent 进程的 cwd 兜底到主目录
   const proc = spawnCommand(
     opts.agent.command,
@@ -1994,10 +2068,13 @@ function getOrCreateEntry(opts: {
     closeConnection: null,
     loadedSource: null,
     promptCapabilities: null,
+    createdAt: Date.now(),
+    lastActiveAt: Date.now(),
     chain: Promise.resolve(),
     turn: null,
   };
   sessions.set(key, entry);
+  ensureAcpIdleTimer();
   proc.on("exit", (code, signal) => {
     // 进程自己退了（崩溃 / 命令不存在）：会话不可复用，下一轮重建
     if (sessions.get(key) === entry) sessions.delete(key);
@@ -2056,6 +2133,8 @@ export async function runAcpAgent(
      * 前端靠这个数在折叠条抬头报「已工作 N 秒」（见 `AgentChatMessage.durationMs`）。
      */
     const turnStartedAt = Date.now();
+    // 有轮次在跑就不能被空闲回收：turn 也会在下面置上，这里先把活动时间顶到今天
+    current.lastActiveAt = turnStartedAt;
     const elapsedMs = (): number => Math.max(0, Date.now() - turnStartedAt);
     /**
      * 本轮内按 toolCallId 攒入参：agent 可能先发一半、后面 update 里再补全（见 mergeAcpInput）。
@@ -2200,6 +2279,8 @@ export async function runAcpAgent(
     } finally {
       opts.signal?.removeEventListener("abort", onAbort);
       current.turn = null;
+      // 轮次刚结束不算空闲：从现在开始重新计时
+      current.lastActiveAt = Date.now();
       if (opts.signal?.aborted) teardown(key);
     }
   };
@@ -2412,12 +2493,14 @@ async function replayAcpSessionOnce(opts: {
     conversationId: opts.conversationId,
     workspacePath: opts.workspacePath,
   });
+  entry.lastActiveAt = Date.now();
   const source = await loadTurnSource(
     entry,
     opts.agent,
     opts.workspacePath,
     opts.sessionId,
   );
+  entry.lastActiveAt = Date.now();
   const inputMemory: AcpInputMemory = new Map();
   const messages: AgentChatMessage[] = [];
   const now = Date.now();

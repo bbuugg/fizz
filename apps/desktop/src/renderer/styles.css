@@ -196,6 +196,16 @@ body {
     [data-message-scroll] {
       scrollbar-gutter: stable both-edges;
     }
+
+    /*
+     * Git 面板的变更 / 历史 / 贮藏列表：同样始终预留滚动条槽位。
+     * 展开历史或贮藏后内容超过一屏，滚动条一出现就会吃掉 10px 宽度，分组标题
+     * 和右侧图标跟着横缩一下（用户反馈）。这里只留右侧槽位 —— 面板是左对齐的，
+     * 不需要像消息列那样两边都留。
+     */
+    [data-git-scroll] {
+      scrollbar-gutter: stable;
+    }
   }
 
   @media (pointer: coarse),

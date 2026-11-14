@@ -56,6 +56,7 @@ import type {
   AgentStreamEvent,
   AcpAgentInput,
   AcpAgentView,
+  AcpProcessInfo,
   AgentChatMessage,
   AgentConversation,
   AgentFsFile,
@@ -1687,9 +1688,9 @@ export function createApi(
       request<GitBranchesResult>(
         `${API_ROUTES.workspaceGitBranches.replace(":id", id)}${prune ? "?prune=1" : ""}`,
       ),
-    gitLog: (id: string, limit = 30) =>
+    gitLog: (id: string, limit = 30, skip = 0) =>
       request<GitLogResult>(
-        `${API_ROUTES.workspaceGitLog.replace(":id", id)}?limit=${limit}`,
+        `${API_ROUTES.workspaceGitLog.replace(":id", id)}?limit=${limit}${skip > 0 ? `&skip=${skip}` : ""}`,
       ),
     /** 一次提交的元信息 + 文件清单 + unified 文本（历史面板点开某次提交时取） */
     gitCommit: (id: string, hash: string) =>
@@ -1708,6 +1709,15 @@ export function createApi(
 
     // ---------- ACP agent（外部 agent 进程，后端为 acp 的会话用） ----------
     listAcpAgents: () => request<AcpAgentView[]>(API_ROUTES.acpAgents),
+    /** 当前常驻的 ACP 进程（诊断页 / 设置页的「运行中」列表） */
+    listAcpProcesses: () =>
+      request<{ sessions: AcpProcessInfo[] }>(API_ROUTES.acpProcesses),
+    /** 结束某个常驻 ACP 进程（幂等；下一轮会 session/load 重建） */
+    killAcpProcess: (agentId: string, conversationId: string) =>
+      request<{ ok: true }>(API_ROUTES.acpProcesses, {
+        method: "DELETE",
+        body: JSON.stringify({ agentId, conversationId }),
+      }),
     saveAcpAgent: (input: AcpAgentInput) =>
       request<AcpAgentView>(API_ROUTES.acpAgents, {
         method: "POST",

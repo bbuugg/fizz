@@ -209,6 +209,16 @@ export const AGENT: Record<string, string> = {
   '移除模型 {name}': 'Remove model {name}',
   '检测已安装': 'Detect installed',
   '添加 ACP agent': 'Add ACP agent',
+  '运行中的 ACP 进程': 'Running ACP processes',
+  '空闲超过 10 分钟会自动回收；有轮次在跑的不回收。':
+    'Idle processes are reclaimed after 10 minutes; processes with a running turn are never reclaimed.',
+  '当前没有常驻的 ACP 进程': 'No resident ACP processes',
+  '空闲 {time}': 'Idle {time}',
+  '结束进程': 'End process',
+  '结束这个 ACP 进程？': 'End this ACP process?',
+  '运行中的轮次请先在输入框停止': 'Stop the running turn before ending the process',
+  '「{agent}」在「{conversation}」上的 agent 进程会被结束；下一轮会自动重新连接并恢复上下文。':
+    'The agent process for “{conversation}” under “{agent}” will be ended; the next turn reconnects automatically and restores context.',
   '编辑 ACP agent': 'Edit ACP agent',
   '命令在服务端上执行，工作目录是会话所属工作区。': 'Commands run on the server, with the conversation workspace as the working directory.',
   '改完保存即可，已挑好的模型清单不受影响。': 'Just save; the selected model list is unaffected.',

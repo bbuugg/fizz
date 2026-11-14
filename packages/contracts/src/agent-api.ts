@@ -397,13 +397,14 @@ export const API_ROUTES = {
   /**
    * 重启 acp 会话：POST /api/acp/agents/:id/restart（body: `{ conversationId }`）→ `{ ok, error? }`。
    *
-   * **只杀进程、保留 `acpSessionId`** —— 下一轮发消息时走 `session/load` 把原上下文接回来，
-   * 所以是「重连」不是「新建」：agent 侧会话与本地历史都不动，上下文也不丢，只是 agent
-   * 进程换了个新的。用途是让 agent 侧的变更生效（新装的 pi 权限扩展、改过的项目信任设置、
-   * agent 自己升级过）—— 这些东西只在进程启动时读一次。
-   * 会话本来就没在跑时是幂等空操作，照样返回 ok。
+   * **杀进程后立刻重连**：保留 `acpSessionId`，请求内走一次 `session/load` 把原上下文接回来，
+   * 返回时新进程已经就绪。agent 侧会话与本地历史都不动，上下文也不丢。
+   * 用途是让 agent 侧的变更生效（新装的 pi 权限扩展、改过的项目信任设置、agent 自己升级过）。
+   * 还没有 agent 侧 session（新会话没发过消息）时是幂等空操作。
    */
   acpAgentRestart: "/api/acp/agents/:id/restart",
+  /** 常驻 ACP 进程快照（诊断）：GET /api/acp/sessions → `{ sessions: AcpProcessInfo[] }` */
+  acpProcesses: "/api/acp/sessions",
   /** 清空会话（删掉全部消息）：DELETE /api/conversations/:id/messages */
   conversationClear: "/api/conversations/:id/messages",
   /** 删除会话里单条消息：DELETE /api/conversations/:id/messages/:messageId */
@@ -2426,6 +2427,23 @@ export type AcpAgentInput = {
 export type AcpAgentView = AcpAgentConfig & {
   imageInput?: boolean;
 };
+
+/** 一个常驻 ACP agent 进程（诊断用；GET /api/acp/sessions 的数组项） */
+export interface AcpProcessInfo {
+  agentId: string;
+  conversationId: string;
+  pid: number | null;
+  /** agent 侧会话 id；还没建立会话时为 null */
+  sessionId: string | null;
+  /** 有一轮正在跑（空闲回收会跳过它） */
+  running: boolean;
+  /** 进程还活着（没退出 / 没被 kill） */
+  alive: boolean;
+  /** 距最近一次活动过了多久（毫秒） */
+  idleMs: number;
+  /** 这个进程从建立到现在多久（毫秒） */
+  uptimeMs: number;
+}
 
 /**
  * ACP agent 的身份判据：**命令 + 参数**。

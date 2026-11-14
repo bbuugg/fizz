@@ -165,7 +165,7 @@ async function buildHealth(): Promise<{
   const skills = await listServerSkills(workspaces[0]?.path)
   return {
     name: 'fizz-server',
-    version: '0.0.26',
+    version: '0.0.27',
     hasModels: models.length > 0,
     workspaceCount: workspaces.length,
     conversationCount: conversations.length,

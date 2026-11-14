@@ -121,6 +121,7 @@ import { DeleteConversationDialog } from "@fizz/agent-kit/features/chat/DeleteCo
 import { ConvertAcpDialog } from "@fizz/agent-kit/features/chat/ConvertAcpDialog";
 import { TypingBubble } from "@fizz/agent-kit/features/chat/TypingBubble";
 import { ConversationRowIcon } from "@fizz/agent-kit/features/chat/ConversationRowIcon";
+import { Loader } from "@fizz/agent-kit/shared/ai-elements/loader";
 import { WorkspaceDeleteDialog } from "@fizz/agent-kit/features/projects/WorkspaceDeleteDialog";
 import { GitInstallDialog } from "@fizz/agent-kit/features/projects/GitInstallDialog";
 import { IconTip } from "@fizz/agent-kit/shared/components/IconTip";
@@ -390,6 +391,10 @@ export function AgentSidebar({
   const [pendingDeleteConversation, setPendingDeleteConversation] = useState<
     AgentApp["conversations"][number] | null
   >(null);
+  /** 正在从 agent 侧重新加载的会话 id（行首转圈；菜单项也据此禁用） */
+  const [reloadingIds, setReloadingIds] = useState<Set<string>>(() => new Set());
+  /** 正在重启的会话 id（同上，重启是一次重新连接，也要有反馈） */
+  const [restartingIds, setRestartingIds] = useState<Set<string>>(() => new Set());
   /** 要「转为内置 Agent 会话」的会话：非空 = 确认弹窗开着（见会话行「更多」那一项） */
   const [convertTarget, setConvertTarget] = useState<
     AgentApp["conversations"][number] | null
@@ -731,6 +736,10 @@ export function AgentSidebar({
       (activity.running || !!app.runningConversations[conversation.id]);
     /** 外部 ACP agent 驱动的会话：行尾「更多」里的重启 / 重新加载只给它 */
     const isAcp = conversation.backend === "acp";
+    /** 正在重新加载：行首转圈 + 更多菜单里那一项也禁用，避免重复点 */
+    const reloading = reloadingIds.has(conversation.id);
+    /** 正在重启：与重新加载同一种「没有即时产出」的等待，也要有转圈 */
+    const restarting = restartingIds.has(conversation.id);
     /**
      * 临时会话（`scratch` 工作区）的目录：`<数据目录>/conversations/<会话 id>`。
      *
@@ -743,13 +752,17 @@ export function AgentSidebar({
       : undefined;
     /** 归档确认态（第一次点变成勾，再点才真归档；鼠标移开该行 = 反悔） */
     const confirmingArchive = pendingArchiveId === conversation.id;
-    const statusText = waiting
-      ? waiting.kind === "confirm"
-        ? t("等待确认：{label}", { label: waiting.label })
-        : t("等待回答：{label}", { label: waiting.label })
-      : running
-        ? t("正在运行…")
-        : conversationTitle(conversation.title);
+    const statusText = reloading
+      ? t("正在重新加载会话…")
+      : restarting
+        ? t("正在重启会话…")
+        : waiting
+          ? waiting.kind === "confirm"
+            ? t("等待确认：{label}", { label: waiting.label })
+            : t("等待回答：{label}", { label: waiting.label })
+          : running
+            ? t("正在运行…")
+            : conversationTitle(conversation.title);
     return (
       <div
         key={conversation.id}
@@ -788,6 +801,8 @@ export function AgentSidebar({
           kind={conversation.kind}
           waiting={waiting}
           running={running}
+          loading={reloading || restarting}
+          loadingLabel={reloading ? t("正在重新加载会话") : t("正在重启会话")}
         />
         {/*
           定时任务跑出来的会话：**还没被点开过**就点一颗红点。
@@ -925,20 +940,35 @@ export function AgentSidebar({
                     // 在跑 / 在等答复时不给重启：那等于把这一轮掐了 —— 想掐用输入框那颗「停止」，
                     // 打着「重启」的旗号干这事只会让人误判（重启本该是无损的）。
                     // ⚠️ 等答复时 `running` 是 false（两者互斥，见上面的 `waiting`），必须一起判。
-                    disabled={running || !!waiting}
+                    // 重启进行中同样禁用：重新连接可能要好几百毫秒，别让人连点。
+                    disabled={running || !!waiting || restarting}
                     onSelect={() => {
+                      if (restarting) return;
                       const agentId = conversation.configId;
                       if (!agentId) return;
+                      setRestartingIds((prev) => new Set(prev).add(conversation.id));
                       void app
                         .restartAcpSession(agentId, conversation.id)
                         .then((ok) => {
-                          if (ok)
-                            toast.success(t("已重启会话，下一条消息会重新连接"));
+                          if (ok) toast.success(t("已重启会话并重新连接"));
+                          else toast.error(t("重启会话失败"));
+                        })
+                        .catch(() => {})
+                        .finally(() => {
+                          setRestartingIds((prev) => {
+                            const next = new Set(prev);
+                            next.delete(conversation.id);
+                            return next;
+                          });
                         });
                     }}
                   >
-                    <RefreshCw className="size-4" />
-                    {t("重启会话")}
+                    {restarting ? (
+                      <Loader size={16} className="size-4" />
+                    ) : (
+                      <RefreshCw className="size-4" />
+                    )}
+                    {restarting ? t("正在重启…") : t("重启会话")}
                   </DropdownMenuItem>
                 )}
                 {isAcp && (
@@ -946,15 +976,33 @@ export function AgentSidebar({
                     // 与「重启会话」同一个禁用判据：正在跑 / 正等答复时，agent 侧那份转录还是
                     // 半截的（这一轮没落回 session），重载回来会缺一段 —— 反而把好视图弄坏。
                     // ⚠️ 等答复时 `running` 是 false（两者互斥，见上面的 `waiting`），必须一起判。
-                    disabled={running || !!waiting}
+                    // 重载进行中同样禁用：网络慢的时候别让人连点。
+                    disabled={running || !!waiting || reloading}
                     onSelect={() => {
-                      void app.reloadAcpSession(conversation.id).then((ok) => {
-                        if (ok) toast.success(t("已重新加载会话"));
-                      });
+                      if (reloading) return
+                      setReloadingIds((prev) => new Set(prev).add(conversation.id))
+                      void app
+                        .reloadAcpSession(conversation.id)
+                        .then((ok) => {
+                          if (ok) toast.success(t("已重新加载会话"));
+                          else toast.error(t("重新加载会话失败"));
+                        })
+                        .catch(() => {})
+                        .finally(() => {
+                          setReloadingIds((prev) => {
+                            const next = new Set(prev);
+                            next.delete(conversation.id);
+                            return next;
+                          });
+                        });
                     }}
                   >
-                    <RotateCw className="size-4" />
-                    {t("重新加载会话")}
+                    {reloading ? (
+                      <Loader size={16} className="size-4" />
+                    ) : (
+                      <RotateCw className="size-4" />
+                    )}
+                    {reloading ? t("正在重新加载…") : t("重新加载会话")}
                   </DropdownMenuItem>
                 )}
                 {isAcp && (

@@ -6,7 +6,7 @@
  *
  * 面板自己那一行头部**不写标题**（标签条上已有「源码管理」）：左边是分支下拉与
  * 分离头指针 / ↑↓ / 上游，右边是刷新 / 树状切换 / 更多。拉取、推送（含「推送到…」挑远端）、
- * 贮藏当前更改、新建分支、管理远端（增 / 改地址 / 删）都在「更多」里 ——
+ * 新建分支、管理远端（增 / 改地址 / 删）都在「更多」里 ——
  * 没有远端时点推送 / 拉取会直接开管理远端；**工作区还不是仓库时推送一律只回一句话**
  * （见 `push-policy.ts`：非仓库 / 状态还没到都不许把「管理远端」弹出来）。
  *
@@ -196,6 +196,9 @@ function gitToastError(message: string): void {
 /** 「新建分支」里「起点 = 当前 HEAD」的哨兵值（Radix 的 SelectItem 不接受空字符串） */
 const NEW_BRANCH_HEAD = '__head__'
 
+/** 历史提交每页条数：点「加载更多」时按这个值用 `skip` 往后翻 */
+const HISTORY_PAGE_SIZE = 30
+
 export function GitPanel({
   app,
   workspaceId,
@@ -223,6 +226,12 @@ export function GitPanel({
   const [status, setStatus] = useState<GitStatusResult | null>(null)
   const [branches, setBranches] = useState<GitBranchesResult | null>(null)
   const [commits, setCommits] = useState<GitCommit[]>([])
+  /** 当前列表长度（刷新时用来判断用户是否已经「加载更多」，避免自动刷新把尾部丢掉） */
+  const commitsRef = useRef<GitCommit[]>([])
+  commitsRef.current = commits
+  /** 历史还有没有下一页（上一页恰好取满 `HISTORY_PAGE_SIZE` 就算有） */
+  const [historyHasMore, setHistoryHasMore] = useState(false)
+  const [historyLoadingMore, setHistoryLoadingMore] = useState(false)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -329,10 +338,22 @@ export function GitPanel({
       if (next.isRepo) {
         const [nextBranches, nextCommits] = await Promise.all([
           app.gitBranches(workspaceId, pruneRemote),
-          app.gitLog(workspaceId, 30)
+          // 首屏只要一页；「加载更多」按 skip 继续往后翻，不再一次性拉满
+          app.gitLog(workspaceId, HISTORY_PAGE_SIZE)
         ])
         setBranches(nextBranches)
-        setCommits(nextCommits)
+        /*
+         * 已经点过「加载更多」时别把尾部丢掉（自动刷新 / 轮询会频繁走到这里）：
+         * 第一页整体替换，后面的记录按哈希去重保留 —— 历史是往顶部追加的，
+         * 新提交只会出现在前面，旧尾部仍然有效。
+         */
+        if (commitsRef.current.length > HISTORY_PAGE_SIZE) {
+          const fresh = new Set(nextCommits.map((c) => c.hash))
+          setCommits([...nextCommits, ...commitsRef.current.filter((c) => !fresh.has(c.hash))])
+        } else {
+          setCommits(nextCommits)
+          setHistoryHasMore(nextCommits.length === HISTORY_PAGE_SIZE)
+        }
       }
     } catch (err) {
       setLoadError(errText(err))
@@ -341,6 +362,27 @@ export function GitPanel({
       if (pruneRemote) setRefreshing(false)
     }
   }, [app, workspaceId])
+
+  /**
+   * 历史提交「加载更多」：按当前已加载条数当 skip 取下一页，追加到列表末尾。
+   *
+   * 不去重：skip 是从 `commits.length` 算的，正常不会重叠；如果这期间刚好有人
+   * 提交了新记录，列表前面的哈希会整体位移一次，最多出现一条重复 —— 下一次刷新
+   * 就恢复了，不值得为此加一套合并逻辑。
+   */
+  const loadMoreHistory = useCallback(async (): Promise<void> => {
+    if (historyLoadingMore) return
+    setHistoryLoadingMore(true)
+    try {
+      const next = await app.gitLog(workspaceId, HISTORY_PAGE_SIZE, commits.length)
+      setCommits((prev) => [...prev, ...next])
+      setHistoryHasMore(next.length === HISTORY_PAGE_SIZE)
+    } catch (err) {
+      gitToastError(errText(err))
+    } finally {
+      setHistoryLoadingMore(false)
+    }
+  }, [app, workspaceId, commits.length, historyLoadingMore])
 
   // `app` 每次渲染都是新对象（useAgentApp 返回新对象），直接进依赖会
   // 「刷新 → setState → 重渲染 → 又刷新」死循环。用 ref 拿最新实现，只在**变可见**时拉一次。
@@ -1300,16 +1342,6 @@ export function GitPanel({
                   </DropdownMenuSub>
                 )}
                 <DropdownMenuSeparator />
-                {/* 贮藏：一个把当前改动收起来、把工作区弄干净的入口；列表在变更列表下方 */}
-                <DropdownMenuItem
-                  title={t('贮藏当前改动（git stash）：工作区清空，改动收进贮藏栈，之后可以再弹出来')}
-                  disabled={busy}
-                  onSelect={() => openStashDialog()}
-                >
-                  <Archive className="size-3.5" />
-                  {t('贮藏当前更改…')}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
                 <DropdownMenuItem
                   title={t('新建分支：从当前 HEAD 或任意分支切一条新分支出来')}
                   onSelect={() => {
@@ -1408,7 +1440,7 @@ export function GitPanel({
 
           {/* 变更列表 + 历史 */}
           {/* 只留左右 / 底部内边距：顶部不留 —— 否则 sticky 标题滚动时会被这条 padding 顶出一段空隙，看着像浮着 */}
-          <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2 space-y-2">
+          <div data-git-scroll className="min-h-0 flex-1 overflow-y-auto px-1 pb-2 space-y-2">
             {changes.length === 0 ? (
               <div className="px-3 py-2 text-xs text-muted-foreground">{t('没有未提交的改动')}</div>
             ) : (
@@ -1443,24 +1475,32 @@ export function GitPanel({
                         </span>
                       </button>
                       {collapseAllButton(true)}
-                      <SpinnerButton
-                        variant="ghost"
-                        className="h-5! gap-1 px-1.5! text-xs"
-                        spinnerClassName="size-3"
-                        loading={busyAction === 'unstage-all'}
-                        title={status.truncated ? t('改动过多、列表已截断，批量操作已停用') : t('全部取消暂存')}
-                        disabled={busy || status.truncated}
-                        onClick={() => void run(
-                          () => app.gitAction(workspaceId, {
-                            action: 'unstage',
-                            paths: stagedChanges.map((c) => c.path)
-                          }),
-                          t('已全部取消暂存'),
-                          'unstage-all'
-                        )}
+                      <IconTip
+                        label={
+                          status.truncated
+                            ? t('改动过多、列表已截断，批量操作已停用')
+                            : t('全部取消暂存')
+                        }
                       >
-                        {busyAction !== 'unstage-all' && <Minus className="size-3" />} {t('全部')}
-                      </SpinnerButton>
+                        <SpinnerButton
+                          variant="ghost"
+                          className="size-5! shrink-0 p-0! text-muted-foreground"
+                          spinnerClassName="size-3.5"
+                          loading={busyAction === 'unstage-all'}
+                          aria-label={t('全部取消暂存')}
+                          disabled={busy || status.truncated}
+                          onClick={() => void run(
+                            () => app.gitAction(workspaceId, {
+                              action: 'unstage',
+                              paths: stagedChanges.map((c) => c.path)
+                            }),
+                            t('已全部取消暂存'),
+                            'unstage-all'
+                          )}
+                        >
+                          {busyAction !== 'unstage-all' && <Minus className="size-4" />}
+                        </SpinnerButton>
+                      </IconTip>
                     </div>
                     {stagedOpen && (
                       <div className="pl-2">
@@ -1502,34 +1542,56 @@ export function GitPanel({
                         </span>
                       </button>
                       {collapseAllButton(false)}
+                      {/* 贮藏入口放在「更改」组标题上、回滚左侧：它操作的就是这一组的改动 */}
+                      <IconTip label={t('贮藏当前更改（git stash）：工作区清空，改动收进贮藏栈')}>
+                        <Button
+                          variant="ghost"
+                          className="size-5! shrink-0 p-0! text-muted-foreground hover:text-foreground"
+                          aria-label={t('贮藏当前更改')}
+                          disabled={busy}
+                          onClick={() => openStashDialog()}
+                        >
+                          <Archive className="size-3.5" />
+                        </Button>
+                      </IconTip>
                       {/* 这一组的回滚入口：只回滚列出在这一组里的文件（未暂存 + 未跟踪） */}
-                      <Button
-                        variant="ghost"
-                        className="h-5! gap-1 px-1.5! text-sm text-muted-foreground hover:text-destructive"
-                        title={t('回滚「更改」里列出的这些文件（未暂存 + 未跟踪）')}
-                        disabled={busy}
-                        onClick={() => setBulkRollback('unstaged')}
+                      <IconTip label={t('回滚「更改」里列出的这些文件（未暂存 + 未跟踪）')}>
+                        <Button
+                          variant="ghost"
+                          className="size-5! shrink-0 p-0! text-muted-foreground hover:text-destructive"
+                          aria-label={t('回滚「更改」里列出的这些文件')}
+                          disabled={busy}
+                          onClick={() => setBulkRollback('unstaged')}
+                        >
+                          <RotateCcw className="size-4" />
+                        </Button>
+                      </IconTip>
+                      <IconTip
+                        label={
+                          status.truncated
+                            ? t('改动过多、列表已截断，批量操作已停用')
+                            : t('全部暂存')
+                        }
                       >
-                        <RotateCcw className="size-4" /> {t('回滚')}
-                      </Button>
-                      <SpinnerButton
-                        variant="ghost"
-                        className="h-5! gap-1 px-1.5! text-sm"
-                        spinnerClassName="size-4"
-                        loading={busyAction === 'stage-all'}
-                        title={status.truncated ? t('改动过多、列表已截断，批量操作已停用') : t('全部暂存')}
-                        disabled={busy || status.truncated}
-                        onClick={() => void run(
-                          () => app.gitAction(workspaceId, {
-                            action: 'stage',
-                            paths: unstagedChanges.map((c) => c.path)
-                          }),
-                          t('已全部暂存'),
-                          'stage-all'
-                        )}
-                      >
-                        {busyAction !== 'stage-all' && <Plus className="size-4" />} {t('全部')}
-                      </SpinnerButton>
+                        <SpinnerButton
+                          variant="ghost"
+                          className="size-5! shrink-0 p-0! text-muted-foreground"
+                          spinnerClassName="size-3.5"
+                          loading={busyAction === 'stage-all'}
+                          aria-label={t('全部暂存')}
+                          disabled={busy || status.truncated}
+                          onClick={() => void run(
+                            () => app.gitAction(workspaceId, {
+                              action: 'stage',
+                              paths: unstagedChanges.map((c) => c.path)
+                            }),
+                            t('已全部暂存'),
+                            'stage-all'
+                          )}
+                        >
+                          {busyAction !== 'stage-all' && <Plus className="size-4" />}
+                        </SpinnerButton>
+                      </IconTip>
                     </div>
                     {unstagedOpen && (
                       <div className="pl-2">
@@ -1558,12 +1620,15 @@ export function GitPanel({
               workspaceId={workspaceId}
               commits={commits}
               busy={busy}
+              hasMore={historyHasMore}
+              loadingMore={historyLoadingMore}
+              onLoadMore={() => void loadMoreHistory()}
               onCheckout={(hash) => void run(() => app.gitAction(workspaceId, { action: 'checkout', ref: hash }))}
             />
 
             {/* 贮藏：与「历史提交」同一套折叠；每一行可弹出（pop）/ 应用（apply）/ 删除（drop） */}
             <div>
-              {/* 标题行 sticky：整行（含右侧「贮藏当前更改」）一起钉顶，免得滚动时只剩标题、按钮不见了 */}
+              {/* 标题行 sticky：滚动时整行钉顶，免得只剩标题 */}
               <div className="sticky top-0 z-10 -mx-1 flex items-center gap-1 bg-background px-1">
                 <button
                   type="button"
@@ -1577,18 +1642,6 @@ export function GitPanel({
                   )}
                   {t('贮藏')}
                 </button>
-                {/* 贮藏入口：只留图标（与「更多」菜单里那一条同一个 Archive 图标），文案挪到 tooltip */}
-                <IconTip label={t('贮藏当前更改（git stash）：工作区清空，改动收进贮藏栈')}>
-                  <Button
-                    variant="ghost"
-                    className="size-6! shrink-0 p-0! text-muted-foreground hover:text-foreground"
-                    aria-label={t('贮藏当前更改')}
-                    disabled={busy}
-                    onClick={() => openStashDialog()}
-                  >
-                    <Archive className="size-3.5" />
-                  </Button>
-                </IconTip>
               </div>
               {stashesOpen && (
                 <div className="pl-2">

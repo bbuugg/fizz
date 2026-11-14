@@ -53,6 +53,21 @@ function copyHash(text: string, kind: 'full' | 'short'): void {
   )
 }
 
+/** 复制提交信息（subject）；空 subject 与剪贴板失败都明确提示 */
+function copyCommitMessage(subject: string): void {
+  if (!subject) {
+    toast.error(t('没有可复制的提交信息'))
+    return
+  }
+  navigator.clipboard.writeText(subject).then(
+    () => toast.success(t('已复制提交信息')),
+    (err: unknown) =>
+      toast.error(
+        t('复制失败：{error}', { error: err instanceof Error ? err.message : String(err) })
+      )
+  )
+}
+
 /**
  * 一次提交的展开体：文件清单 + 逐文件 diff。
  *
@@ -113,6 +128,9 @@ export function GitHistory({
   workspaceId,
   commits,
   busy,
+  hasMore,
+  loadingMore,
+  onLoadMore,
   onCheckout
 }: {
   app: AgentApp
@@ -120,6 +138,11 @@ export function GitHistory({
   commits: GitCommit[]
   /** 整个面板正在忙（提交 / 推送…）：禁用检出按钮，别在一次操作中途再发一次 */
   busy: boolean
+  /** 还有下一页历史 */
+  hasMore: boolean
+  /** 正在取下一页 */
+  loadingMore: boolean
+  onLoadMore: () => void
   onCheckout: (hash: string) => void
 }) {
   const t = useT()
@@ -194,7 +217,8 @@ export function GitHistory({
       {open && (
         <div className="pl-2">
           {commits.length ? (
-            commits.map((c) => {
+            <>
+              {commits.map((c) => {
               const expanded = openHash === c.hash
               return (
                 <div key={c.hash}>
@@ -255,6 +279,10 @@ export function GitHistory({
                         <Copy className="size-3.5" />
                         {t('复制短哈希（{short}）', { short: c.short })}
                       </ContextMenuItem>
+                      <ContextMenuItem onSelect={() => copyCommitMessage(c.subject)}>
+                        <Copy className="size-3.5" />
+                        {t('复制提交信息')}
+                      </ContextMenuItem>
                       <ContextMenuSeparator />
                       <ContextMenuItem disabled={busy} onSelect={() => onCheckout(c.hash)}>
                         {t('检出这次提交（分离头指针）')}
@@ -275,7 +303,26 @@ export function GitHistory({
                     ) : null)}
                 </div>
               )
-            })
+            })}
+            {hasMore && (
+              <div className="px-2 pb-1 pt-0.5">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 w-full justify-center text-xs text-muted-foreground"
+                  disabled={loadingMore}
+                  onClick={onLoadMore}
+                >
+                  {loadingMore ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <ChevronDown className="size-3.5" />
+                  )}
+                  {loadingMore ? t('加载中…') : t('加载更多')}
+                </Button>
+              </div>
+            )}
+            </>
           ) : (
             <div className="px-2 py-1 text-xs text-muted-foreground">{t('还没有提交')}</div>
           )}

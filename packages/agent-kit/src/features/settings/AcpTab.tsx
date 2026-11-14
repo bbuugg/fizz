@@ -26,8 +26,8 @@
  * 删除走二次确认弹窗（名称 + 命令写进正文）：配置删掉就得重新敲一遍，
  * 比「点两次按钮就地确认」值得多问一句。移除白名单里的单个模型同样走这套确认弹窗。
  */
-import { useState } from 'react'
-import { Check, Download, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Check, ChevronDown, ChevronRight, Download, Loader2, Pencil, Plus, Power, RefreshCw, Trash2, X } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
 import { Input } from '@fizz/ui/input'
 import {
@@ -54,6 +54,7 @@ import {
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { formatCommandArgs, parseCommandArgs } from '@fizz/agent-kit/shared/lib/command-args'
+import { formatDuration } from '@fizz/agent-kit/shared/lib/duration'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import type {
   AcpAgentType,
@@ -61,7 +62,7 @@ import type {
   AcpModelChoices,
   AcpModelOption
 } from '@fizz/acp'
-import type { AcpAgentView, DetectedAcpAgent } from '@fizz/contracts/agent-api'
+import type { AcpAgentView, AcpProcessInfo, DetectedAcpAgent } from '@fizz/contracts/agent-api'
 import { acpAgentKey } from '@fizz/contracts/agent-api'
 
 /** 某个 agent 的模型清单探测状态：还没问 / 正在问 / 结果（字符串 = 出错信息） */
@@ -123,6 +124,62 @@ export function AcpTab({ app }: { app: AgentApp }) {
     agent: AcpAgentView
     model: AcpModelOption
   } | null>(null)
+
+  /** 常驻进程诊断区：展开状态 / 快照 / 错误 */
+  const [processesOpen, setProcessesOpen] = useState(false)
+  const [processes, setProcesses] = useState<AcpProcessInfo[] | null>(null)
+  const [processesLoading, setProcessesLoading] = useState(false)
+  const [processesError, setProcessesError] = useState<string | null>(null)
+  /** 待确认结束的常驻进程（二次确认；null = 关着） */
+  const [processKillTarget, setProcessKillTarget] = useState<AcpProcessInfo | null>(null)
+
+  const loadProcesses = async (): Promise<void> => {
+    const api = app.api
+    if (!api) return
+    setProcessesLoading(true)
+    setProcessesError(null)
+    try {
+      const res = await api.listAcpProcesses()
+      setProcesses(res.sessions)
+    } catch (err) {
+      setProcessesError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setProcessesLoading(false)
+    }
+  }
+
+  const killProcess = async (p: AcpProcessInfo): Promise<void> => {
+    const api = app.api
+    if (!api) return
+    try {
+      await api.killAcpProcess(p.agentId, p.conversationId)
+      await loadProcesses()
+    } catch (err) {
+      setProcessesError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  // 展开时每 5 秒刷一次：这是诊断视图，用户盯着看的时候应该能看到进程自己消失
+  const processesApi = app.api
+  useEffect(() => {
+    if (!processesOpen || !processesApi) return
+    // 用本帧的 api 建轮询：api 还没就绪时不要起一个永远拿不到数据的定时器
+    const load = async (): Promise<void> => {
+      setProcessesLoading(true)
+      setProcessesError(null)
+      try {
+        const res = await processesApi.listAcpProcesses()
+        setProcesses(res.sessions)
+      } catch (err) {
+        setProcessesError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setProcessesLoading(false)
+      }
+    }
+    void load()
+    const timer = setInterval(() => void load(), 5000)
+    return () => clearInterval(timer)
+  }, [processesOpen, processesApi])
 
   /**
    * 已添加过的 agent 身份（命令 + 参数，判据与服务端 `acpAgentKey` 同一份）。
@@ -474,6 +531,102 @@ export function AcpTab({ app }: { app: AgentApp }) {
         </Button>
       </div>
 
+      {/* 常驻进程诊断：只在展开时拉取，5 秒轮询一次；空闲回收由 @fizz/acp 自己负责 */}
+      <div className="rounded-md border border-border/60">
+        <button
+          type="button"
+          onClick={() => setProcessesOpen((v) => !v)}
+          className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-foreground/5"
+        >
+          {processesOpen ? (
+            <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+          )}
+          <span className="min-w-0 flex-1">{tr('运行中的 ACP 进程')}</span>
+          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+            {processes ? processes.length : '—'}
+          </span>
+          {processesLoading && <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />}
+        </button>
+        {processesOpen && (
+          <div className="space-y-1.5 border-t border-border/60 px-3 py-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground">
+                {tr('空闲超过 10 分钟会自动回收；有轮次在跑的不回收。')}
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 shrink-0 px-2 text-xs"
+                disabled={processesLoading}
+                onClick={() => void loadProcesses()}
+              >
+                <RefreshCw className={cn('size-3.5', processesLoading && 'animate-spin')} />
+                {tr('刷新')}
+              </Button>
+            </div>
+            {processesError ? (
+              <p className="text-xs text-destructive">
+                {tr('读取失败：{error}', { error: processesError })}
+              </p>
+            ) : processes === null ? (
+              <p className="text-xs text-muted-foreground">{tr('正在读取…')}</p>
+            ) : processes.length === 0 ? (
+              <p className="text-xs text-muted-foreground">{tr('当前没有常驻的 ACP 进程')}</p>
+            ) : (
+              processes.map((p) => {
+                const agentName = app.acpAgents.find((a) => a.id === p.agentId)?.name ?? p.agentId
+                const conv = app.conversations.find((c) => c.id === p.conversationId)
+                return (
+                  <div
+                    key={`${p.agentId}::${p.conversationId}`}
+                    className="flex items-center gap-2 text-xs"
+                  >
+                    <span
+                      className="min-w-0 flex-1 truncate"
+                      title={`${agentName} · ${conv?.title ?? p.conversationId}`}
+                    >
+                      {agentName} · {conv?.title ?? p.conversationId.slice(0, 8)}
+                    </span>
+                    <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground">
+                      PID {p.pid ?? '—'}
+                    </span>
+                    <span
+                      className={cn(
+                        'shrink-0 rounded px-1.5 py-0.5 text-[0.625rem]',
+                        p.running
+                          ? 'bg-primary/10 text-primary'
+                          : 'bg-secondary text-muted-foreground'
+                      )}
+                    >
+                      {p.running
+                        ? tr('运行中')
+                        : tr('空闲 {time}', { time: formatDuration(p.idleMs) })}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="size-5 shrink-0 p-0 text-muted-foreground hover:text-destructive"
+                      title={
+                        p.running
+                          ? tr('运行中的轮次请先在输入框停止')
+                          : tr('结束进程')
+                      }
+                      aria-label={tr('结束进程')}
+                      disabled={p.running}
+                      onClick={() => setProcessKillTarget(p)}
+                    >
+                      <Power className="size-3" />
+                    </Button>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        )}
+      </div>
+
       {/*
         新增与编辑共用这一个弹窗（`editingId` 为空 = 新增）。
         关掉只收起、不清草稿：误点遮罩 / Esc 不该把刚填的命令弄丢（只有保存成功才清）。
@@ -686,6 +839,34 @@ export function AcpTab({ app }: { app: AgentApp }) {
           const target = removeTarget
           setRemoveTarget(null)
           if (target) void removeModel(target.agent, target.model.value)
+        }}
+      />
+
+      {/* 手动结束常驻进程：与删除配置不同，这里只杀进程，不改任何配置 / 历史 */}
+      <ConfirmDeleteDialog
+        open={processKillTarget !== null}
+        title={tr('结束这个 ACP 进程？')}
+        confirmLabel={tr('结束进程')}
+        description={
+          processKillTarget
+            ? tr(
+                '「{agent}」在「{conversation}」上的 agent 进程会被结束；下一轮会自动重新连接并恢复上下文。',
+                {
+                  agent:
+                    app.acpAgents.find((a) => a.id === processKillTarget.agentId)?.name ??
+                    processKillTarget.agentId,
+                  conversation:
+                    app.conversations.find((c) => c.id === processKillTarget.conversationId)?.title ??
+                    processKillTarget.conversationId.slice(0, 8)
+                }
+              )
+            : ''
+        }
+        onCancel={() => setProcessKillTarget(null)}
+        onConfirm={() => {
+          const target = processKillTarget
+          setProcessKillTarget(null)
+          if (target) void killProcess(target)
         }}
       />
 

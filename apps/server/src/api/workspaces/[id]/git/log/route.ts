@@ -1,6 +1,6 @@
 /**
  * 源代码管理（git）：提交历史。
- * GET /api/workspaces/:id/git/log?limit=30
+ * GET /api/workspaces/:id/git/log?limit=30&skip=0
  */
 import { domain } from '@/lib/server/state'
 import { gitExecFor, notRepoMessage, workspaceRepoRoot } from '@/lib/workspace-repo'
@@ -21,10 +21,13 @@ export async function GET(
   const url = new URL(request.url)
   const rawLimit = Number(url.searchParams.get('limit') ?? 30)
   const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.trunc(rawLimit), 1), 200) : 30
+  // 分页偏移：只往下翻，不设上限（面板按页追加，直到某一页不满）
+  const rawSkip = Number(url.searchParams.get('skip') ?? 0)
+  const skip = Number.isFinite(rawSkip) ? Math.max(0, Math.trunc(rawSkip)) : 0
 
   // %aI 是作者时间的严格 ISO 8601；自定义 format 里的字段由 @fizz/git 的 parseLogOutput 切。
   // 空仓库（unborn HEAD）上 git log 会失败 —— gitLog 按空列表返回，与旧实现一致
-  const commits = await gitLog(root, limit, exec)
+  const commits = await gitLog(root, limit, exec, skip)
   return Response.json({ commits } satisfies GitLogResult)
 }
 

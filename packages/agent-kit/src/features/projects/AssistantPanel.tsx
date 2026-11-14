@@ -62,10 +62,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
-  DropdownMenuGroup
 } from '@fizz/ui/dropdown-menu'
 
 /**
@@ -292,10 +289,10 @@ export function AssistantPanel({
 
   return (
     <div className={className}>
-      {/* 顶栏：会话切换器（标题 + 历史会话 + 新建）+ 删除当前会话。
-          全局形态（桌面停靠 / 手机浮层）的收起键统一在顶栏右上角的 AI 助手开关上 ——
-          手机浮层只盖工作行、盖不到顶栏，那颗键随时点得到，面板里不再重复放一颗；
-          终端内嵌形态没有那颗全局开关，才保留「收起助手面板」。 */}
+      {/* 顶栏：会话切换器（标题 + 历史会话）+ 新建 + 删除当前会话。
+          新建从下拉里提出来常驻在删除左侧 —— 它是这段面板最高频的动作，
+          收进菜单只会多一次点击；切换器因此只保留「历史会话」，宽度也不再撑满。
+          全局形态的收起键在顶栏右上角的 AI 助手开关上，只有嵌入形态才在这里补一颗。 */}
       <div className="flex items-center gap-2 px-3 py-2">
         {embedded ? (
           <Terminal className="size-4 shrink-0 text-muted-foreground" />
@@ -308,67 +305,69 @@ export function AssistantPanel({
               type="button"
               aria-label="切换助手会话"
               title={`${embedded ? '终端助手' : '项目助手'} · ${activeTitle}`}
-              className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground data-[state=open]:bg-accent/60"
+              className="flex min-w-0 max-w-56 items-center gap-1 rounded-md px-1.5 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground data-[state=open]:bg-accent/60"
             >
               <span className="truncate">{activeTitle}</span>
               <ChevronDown className="size-3 shrink-0 opacity-60" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" sideOffset={6} className="max-h-80 min-w-64 overflow-y-auto">
-            <DropdownMenuItem onSelect={() => newAssistantSession()}>
-              <Plus className="size-3.5 shrink-0" />
-              新建会话
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuLabel className="px-2 text-xs font-normal text-muted-foreground">
-                历史会话
-              </DropdownMenuLabel>
-              {historyList.map((item) => (
-                <DropdownMenuItem
-                  key={item.sessionId}
-                  onSelect={() => switchAssistantSession(item.sessionId)}
-                  // 正在跑的那段给个记号：切走之后它还在后台继续（帧仍落到自己那段上）
-                  title={assistantConversationTitle(item.messages)}
-                  className="gap-2"
-                >
-                  <span className="min-w-0 flex-1 truncate">
-                    {assistantConversationTitle(item.messages)}
-                  </span>
-                  {item.streaming && (
-                    <span className="shrink-0 text-[10px] text-muted-foreground">进行中</span>
-                  )}
-                  <span className="shrink-0 text-[10px] text-muted-foreground">
-                    {shortTime(item.updatedAt)}
-                  </span>
-                  {item.sessionId === activeId && <Check className="size-3.5 shrink-0" />}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuGroup>
+            {historyList.map((item) => (
+              <DropdownMenuItem
+                key={item.sessionId}
+                onSelect={() => switchAssistantSession(item.sessionId)}
+                // 正在跑的那段给个记号：切走之后它还在后台继续（帧仍落到自己那段上）
+                title={assistantConversationTitle(item.messages)}
+                className="gap-2"
+              >
+                <span className="min-w-0 flex-1 truncate">
+                  {assistantConversationTitle(item.messages)}
+                </span>
+                {item.streaming && (
+                  <span className="shrink-0 text-[10px] text-muted-foreground">进行中</span>
+                )}
+                <span className="shrink-0 text-[10px] text-muted-foreground">
+                  {shortTime(item.updatedAt)}
+                </span>
+                {item.sessionId === activeId && <Check className="size-3.5 shrink-0" />}
+              </DropdownMenuItem>
+            ))}
           </DropdownMenuContent>
         </DropdownMenu>
-        {/* 删除 = 把这段会话从本地存档里删掉（想开新的用切换器里的「新建会话」） */}
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          title={hasMessages ? '删除这段会话' : '还没有对话内容'}
-          aria-label="删除这段会话"
-          disabled={!hasMessages}
-          onClick={() => setConfirmDelete(true)}
-        >
-          <Trash2 className="size-4 text-muted-foreground" />
-        </Button>
-        {embedded && (
+        {/* 右侧动作组：新建 / 删除 / 收起，统一靠右 —— 左侧只保留会话入口 */}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
           <Button
             size="icon-sm"
             variant="ghost"
-            title="收起助手面板"
-            aria-label="收起助手面板"
-            onClick={closePanel}
+            title="新建会话"
+            aria-label="新建会话"
+            onClick={() => newAssistantSession()}
           >
-            <PanelRightClose className="size-4 text-muted-foreground" />
+            <Plus className="size-4 text-muted-foreground" />
           </Button>
-        )}
+          {/* 删除 = 把这段会话从本地存档里删掉（想开新的用左侧那颗 +） */}
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            title={hasMessages ? '删除这段会话' : '还没有对话内容'}
+            aria-label="删除这段会话"
+            disabled={!hasMessages}
+            onClick={() => setConfirmDelete(true)}
+          >
+            <Trash2 className="size-4 text-muted-foreground" />
+          </Button>
+          {embedded && (
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              title="收起助手面板"
+              aria-label="收起助手面板"
+              onClick={closePanel}
+            >
+              <PanelRightClose className="size-4 text-muted-foreground" />
+            </Button>
+          )}
+        </div>
       </div>
 
       <ConfirmDeleteDialog
@@ -381,7 +380,7 @@ export function AssistantPanel({
           <>
             {'这段对话会从本地存档里删除，助手历史只有本地一份，删除后'}
             <span className="font-medium text-foreground">无法恢复</span>
-            {'。只想开一段新的，用标题栏下拉里的「新建会话」。'}
+            {'。只想开一段新的，点标题栏的「+」。'}
             {streaming && '正在生成的那一轮也会被停止。'}
           </>
         }

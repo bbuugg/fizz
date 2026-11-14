@@ -18,7 +18,7 @@ import { resolveClientIp, setClientIp } from './lib/rate-limit'
 import { compareRoutePaths, mountRouteModule, routePathFromModuleKey, type RouteModule } from './next-route'
 
 const NAME = 'fizz-server'
-const VERSION = '0.0.26'
+const VERSION = '0.0.27'
 
 /**
  * 编译期收集全部 Next 风格路由模块（`api/**\/route.ts`）。

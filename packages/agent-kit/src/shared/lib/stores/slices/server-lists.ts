@@ -211,9 +211,9 @@ export interface ServerListsSlice {
   /** 归档 / 取消归档（不删数据；侧栏据此把会话收进 / 放出「已归档」区） */
   archiveConversation: (id: string, archived: boolean) => Promise<void>
   /**
-   * 重启 acp 会话：杀掉 agent 进程、**保留 sessionId**（下一轮 `session/load` 把原上下文接回来）。
-   * 不新建 agent 侧会话、不动本地历史，真正的重连发生在下一条消息里 ——
-   * 所以这个动作**不改任何本地状态**，成功返回 true（失败原因进 error）。
+   * 重启 acp 会话：杀掉 agent 进程、**保留 sessionId**，并立刻用 `session/load` 接回上下文。
+   * 不新建 agent 侧会话、不动本地历史，服务端在重启请求里就完成重连 ——
+   * 这个动作**不改任何本地状态**，成功返回 true（失败原因进 error）。
    * 用于让 agent 侧的变更生效（新装的 pi 权限扩展、改过的项目信任设置…）。
    */
   restartAcpSession: (agentId: string, conversationId: string) => Promise<boolean>
@@ -524,7 +524,7 @@ export interface ServerListsSlice {
   gitStatus: (workspaceId: string) => Promise<GitStatusResult>
   /** `prune` = 顺带 `git fetch --prune --all`（要联网，只在用户手动刷新时开） */
   gitBranches: (workspaceId: string, prune?: boolean) => Promise<GitBranchesResult>
-  gitLog: (workspaceId: string, limit?: number) => Promise<GitCommit[]>
+  gitLog: (workspaceId: string, limit?: number, skip?: number) => Promise<GitCommit[]>
   /** 一次提交的元信息 + 文件清单 + unified 文本（历史面板点开某次提交时取） */
   gitCommit: (workspaceId: string, hash: string) => Promise<GitCommitDiffResult>
   gitDiff: (workspaceId: string, path: string, staged: boolean) => Promise<GitDiffResult>
@@ -826,9 +826,8 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
     },
 
     /**
-     * 重启 acp 会话：只调服务端杀进程，**本地什么都不用改** ——
-     * `acpSessionId` 与服务端会话配置都没变，消息也没变，重连发生在下一条消息里
-     * （那时 entry 已不在，`runAcpAgent` 自然走 `session/load`）。
+     * 重启 acp 会话：服务端杀进程后**立刻重连**；本地什么都不用改 ——
+     * `acpSessionId` 与服务端会话配置都没变，消息也没变，重连结果由服务端返回。
      */
     restartAcpSession: async (agentId, conversationId) => {
       const api = get().getApi()
@@ -1457,9 +1456,9 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
     },
     gitStatus: (workspaceId) => requireApi().gitStatus(workspaceId),
     gitBranches: (workspaceId, prune) => requireApi().gitBranches(workspaceId, prune),
-    gitLog: (workspaceId, limit = 30) =>
+    gitLog: (workspaceId, limit = 30, skip = 0) =>
       requireApi()
-        .gitLog(workspaceId, limit)
+        .gitLog(workspaceId, limit, skip)
         .then((r) => r.commits),
     gitDiff: (workspaceId, path, staged) => requireApi().gitDiff(workspaceId, path, staged),
     gitCommit: (workspaceId, hash) => requireApi().gitCommit(workspaceId, hash),

@@ -362,17 +362,26 @@ export function parseLogOutput(stdout: string): GitLogResult['commits'] {
 }
 
 /**
- * 提交历史（`git log -n <limit>`）；空仓库（unborn HEAD）上 git 会失败，按空列表返回
+ * 提交历史（`git log -n <limit> --skip <skip>`）；空仓库（unborn HEAD）上 git 会失败，按空列表返回
  * —— 与面板旧行为一致，不把「还没有提交」当错误。
+ *
+ * `skip` 供历史面板「加载更多」分页：服务端单页仍有上限，但可以用 skip 一直往后翻。
  */
 export async function gitLog(
   cwd: string,
   limit: number,
-  exec: GitExec = localGitExec
+  exec: GitExec = localGitExec,
+  skip = 0
 ): Promise<GitLogResult['commits']> {
   const res = await git(
     cwd,
-    ['log', '-n', String(limit), `--format=%H${FIELD_SEP}%h${FIELD_SEP}%an${FIELD_SEP}%aI${FIELD_SEP}%s`],
+    [
+      'log',
+      '-n',
+      String(limit),
+      ...(skip > 0 ? [`--skip=${skip}`] : []),
+      `--format=%H${FIELD_SEP}%h${FIELD_SEP}%an${FIELD_SEP}%aI${FIELD_SEP}%s`
+    ],
     exec
   )
   return res.ok ? parseLogOutput(res.stdout) : []

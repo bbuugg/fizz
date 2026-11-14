@@ -493,9 +493,9 @@ export interface ConversationSlice {
    * 重新加载一条 ACP 会话：**当场**再走一次 `session/load`，用 agent 侧回放**整体重建**
    * 本地消息列表。
    *
-   * 与「重启会话」（`restartAcpSession`）的分工：重启只杀 agent 进程、视图一动不动，
-   * 重连发生在下一条消息里（用途是让 agent 侧启动期读的配置生效）；本项是**把视图拉回来
-   * 对齐** —— agent 侧会话在别处被改过、打开时回放只回来半截、视图与 agent 侧对不上时用它。
+   * 与「重启会话」（`restartAcpSession`）的分工：重启会立刻 `session/load` 重连，但视图
+   * 一动不动（用途是让 agent 侧启动期读的配置生效）；本项是**把视图拉回来对齐** ——
+   * agent 侧会话在别处被改过、打开时回放只回来半截、视图与 agent 侧对不上时用它。
    *
    * 服务端**不需要新路由**：直接复用 `GET /api/acp/agents/:id/transcript` —— 那条路由
    * 就是 `session/load` 回放（内部先 teardown 旧进程，保证从干净进程 load）。
