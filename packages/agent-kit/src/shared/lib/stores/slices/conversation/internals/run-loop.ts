@@ -746,15 +746,30 @@ export function createConversationRunLoop(ctx: ConvCore) {
                 convMeta.acpSessionId ?? "",
                 cwd ?? "",
               );
-              if (
-                isFocus(conversationId) &&
-                readSlice(conversationId).messages.length === 0
-              ) {
-                writeSlice(conversationId, (s) => ({
-                  ...s,
-                  messages: snapshot,
-                  scrollResetSeq: s.scrollResetSeq + 1,
-                }));
+              if (isFocus(conversationId) && snapshot.length > 0) {
+                /**
+                 * ⚠️ **不能只在本地消息为空时才写快照**。
+                 *
+                 * 刷新时 `useAttachRemoteRun` 可能抢在本次装载前面先 `attachRun`，那时
+                 * 本地已经挂了本轮助手占位（`messages.length` = 1，但不是历史）。原来的
+                 * `length === 0` 判据会因此整份丢弃快照 —— 表现就是「跑到一半刷新，
+                 * 历史消息不显示，结束后再刷新才回来」。
+                 *
+                 * 改成合并：快照（已完成的轮次 + 本轮用户消息）在前，本地那些快照里
+                 * 没有的（当前助手占位 / 已回放的 part）接在后面，按 id 去重。
+                 * 本地已经有用户消息（用户刚发的乐观消息）时不合并 —— 快照里多半还没
+                 * 有它，硬并会重复一条。
+                 */
+                writeSlice(conversationId, (s) => {
+                  if (s.messages.some((m) => m.role === "user")) return s;
+                  const ids = new Set(snapshot.map((m) => m.id));
+                  const extras = s.messages.filter((m) => !ids.has(m.id));
+                  return {
+                    ...s,
+                    messages: [...snapshot, ...extras],
+                    scrollResetSeq: s.scrollResetSeq + 1,
+                  };
+                });
               }
             } catch {
               // 快照拉不到不该挡住 attach：帧日志仍然能恢复当前这一轮
@@ -921,6 +936,24 @@ export function createConversationRunLoop(ctx: ConvCore) {
               : c,
           ),
         }));
+      } else if (conversation.messages.length > 0) {
+        /**
+         * 代次变了（刷新时 `attachRun` 抢在前面把 `loadGen` +1）也不能把这份历史**丢掉**。
+         *
+         * 这是「跑到一半刷新，历史消息全不见了」的直接成因：`attachRun` 先挂了本轮
+         * 助手占位，随后的历史响应因代次不符被整份丢弃 —— 界面上只剩占位 + 回放的
+         * 当前一轮，更早的消息没了，要等这一轮结束、再刷新一次靠空闲路径重拉才回来。
+         *
+         * 这里改成**合并**：服务端历史在前（权威顺序），本地那些历史里还没有的消息
+         * （本轮占位 / 回放出来的助手内容 / 乐观发送的用户消息）按原顺序接在后面。
+         * 按 id 去重 —— 收尾落盘会复用占位 id，届时服务端那份覆盖本地那份正好。
+         */
+        writeSlice(conversationId, (s) => {
+          const historyIds = new Set(conversation.messages.map((m) => m.id));
+          const extras = s.messages.filter((m) => !historyIds.has(m.id));
+          if (extras.length === 0) return s;
+          return { ...s, messages: [...conversation.messages, ...extras] };
+        });
       }
       // 把服务端那份回给调用方：打开会话时用它判断 kind / 是否需要回放，比列表快照新
       return conversation;

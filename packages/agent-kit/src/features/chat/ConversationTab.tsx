@@ -529,14 +529,14 @@ export function ConversationTab({
               />
             )}
             {hasDirectory && (
-              /* 分裂按钮：左半开/收终端，右半箭头弹 shell 菜单 —— 选一项就新开一条终端 */
-              <div className="flex items-center">
+              /* 分裂按钮：左半开/收终端，右半箭头弹 shell 菜单 —— 选一项就新开一条终端。
+                 徽章挂在整组右上角（不是左半按钮上）：挂左半会被紧挨着的下拉按钮盖住一半。 */
+              <div className="relative flex items-center">
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <LiquidGlassButton tone="contrast"
                       className={cn(
                         HEADER_GLASS_BUTTON,
-                        'relative',
                         // 远端工作区只有一种终端（SSH 到那台主机），没有 shell 可选，
                         // 右侧箭头下拉不渲染 —— 这一颗就按整颗按钮的圆角收口
                         isRemote ? undefined : 'rounded-l-md rounded-r-none',
@@ -547,12 +547,6 @@ export function ConversationTab({
                       onClick={() => toggleTerminalPanelOf(key)}
                     >
                       <SquareTerminal className="size-4" />
-                      {/* 面板里开着几条终端：收起面板时才知道「回去」有几条 */}
-                      {terminalCount > 0 && (
-                        <span className="pointer-events-none absolute -top-1.5 -right-1.5 min-w-4 rounded-full bg-primary px-1 text-center text-[0.625rem] font-medium leading-4 text-primary-foreground tabular-nums">
-                          {terminalCount}
-                        </span>
-                      )}
                     </LiquidGlassButton>
                   </TooltipTrigger>
                   <TooltipContent side="bottom">
@@ -632,6 +626,13 @@ export function ConversationTab({
                       )}
                     </DropdownMenuContent>
                   </DropdownMenu>
+                )}
+                {/* 面板里开着几条终端：收起面板时才知道「回去」有几条。挂在整组右上角，
+                    `z-10` 保证不被紧挨着的下拉按钮压住。 */}
+                {terminalCount > 0 && (
+                  <span className="pointer-events-none absolute -top-1.5 -right-1.5 z-10 min-w-4 rounded-full bg-primary px-1 text-center text-[0.625rem] font-medium leading-4 text-primary-foreground tabular-nums">
+                    {terminalCount}
+                  </span>
                 )}
               </div>
             )}

@@ -21,6 +21,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentChatMessage } from '@fizz/contracts/agent-api'
 import { createConversationSlice } from '../index'
+import { emptySlice } from '../state'
 import type { ConvSlice } from '../types'
 
 /** 手写一个可外部放行的 promise（模拟「探测在不在跑」那个往返） */
@@ -169,3 +170,75 @@ describe('loadConversation · ACP 装载窗口', () => {
     expect(read(CONVERSATION_ID).loading).toBe(false)
   })
 })
+
+/**
+ * 刷新撞上运行中的会话（回归测试）。
+ *
+ * ## 防的是什么
+ *
+ * 跑到一半刷新页面，历史消息整段不显示，只剩当前这一轮；要等这轮结束再刷新一次才回来。
+ *
+ * 装载时 `useAttachRemoteRun` 会先 `attachRun`（把 `loadGen` +1、挂上本轮助手占位），
+ * 而 `loadMessages` 早在此之前就读走了旧的 `loadGen`。响应回来时代次已经不符 —— 以前
+ * 直接 `return`，服务端那份历史就被**整份丢弃**了。
+ *
+ * 这里钉住：代次不符时也要**合并**（历史在前、本地独有的消息在后），而不是丢掉历史。
+ */
+describe('loadMessages · 代次变了也要保住历史', () => {
+  it('历史响应晚于 attachRun 时仍合并进现场', async () => {
+    const gate = deferred<{
+      id: string
+      messages: AgentChatMessage[]
+    }>()
+    const history: AgentChatMessage[] = [
+      { id: 'u-old', role: 'user', parts: [{ type: 'text', text: '更早的问题' }], createdAt: 1 },
+      { id: 'a-old', role: 'assistant', parts: [{ type: 'text', text: '更早的回复' }], createdAt: 2 }
+    ]
+    const placeholder: AgentChatMessage = {
+      id: 'a-live',
+      role: 'assistant',
+      parts: [],
+      createdAt: 3
+    }
+    const api = {
+      getConversation: vi.fn(async (id: string) => {
+        const { messages } = await gate.promise
+        return {
+          id,
+          backend: 'builtin' as const,
+          configId: null,
+          workspaceId: 'ws-1',
+          title: '会话',
+          createdAt: 1,
+          updatedAt: 1,
+          messages
+        }
+      })
+    }
+    const { state, read } = makeStore(api)
+    const slices = state.slices as Record<string, ConvSlice>
+    slices[CONVERSATION_ID] = { ...emptySlice(), messages: [placeholder], loadGen: 0 }
+
+    const pending = (sliceCall(state, 'loadMessages') as (id: string) => Promise<unknown>)(
+      CONVERSATION_ID
+    )
+    // 历史请求已经发出、还没回来：模拟 attachRun 把代次 +1 并挂上占位
+    await vi.waitFor(() => expect(api.getConversation).toHaveBeenCalledTimes(1))
+    slices[CONVERSATION_ID] = { ...slices[CONVERSATION_ID], loadGen: 1 }
+
+    gate.resolve({ id: CONVERSATION_ID, messages: history })
+    await pending
+
+    // 历史一条都不能少，本地占位接在后面（按 id 去重）
+    expect(read(CONVERSATION_ID).messages.map((m) => m.id)).toEqual([
+      'u-old',
+      'a-old',
+      'a-live'
+    ])
+  })
+})
+
+/** 从 store 现场里取动作（`makeStore` 把切片动作摊在 state 上） */
+function sliceCall(state: Record<string, unknown>, name: string): unknown {
+  return state[name]
+}

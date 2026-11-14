@@ -214,7 +214,15 @@ export function SettingsPage({
    * 想要的层级。web 调试时那边不装原生监听，注册在这里也只是空转。
    */
   useAndroidBackHandler(() => {
-    if (mobileDetail?.back()) return true
+    /*
+     * ⚠️ `back()` 返回的是 `void`（它只是 `setMenuOpen(true)`）：**不能**写成
+     * `if (mobileDetail?.back())` —— 返回值恒为 undefined，条件永远不成立，于是二级页
+     * 按返回会直接 `close()` 关掉整个设置页。先判对象，再执行。
+     */
+    if (mobileDetail) {
+      mobileDetail.back()
+      return true
+    }
     // 关整页走 `close()`（先播退场、动画完才真卸载），不是直接 `onClose`
     close()
     return true

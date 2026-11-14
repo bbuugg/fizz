@@ -95,9 +95,14 @@ export interface ChatFindProps {
   panelRef: React.RefObject<HTMLDivElement | null>
   /** 消息列表：变化即视为「内容可能变了」，触发重算（内部已节流） */
   messages: AgentChatMessage[]
+  /**
+   * 开始搜索时回调：消息区默认只渲染最近一批（长会话），而查找扫的是**当前 DOM** ——
+   * 不先把更早的展开，搜索会漏掉它们。由 `MessageList` 负责展开全部。
+   */
+  onSearchActive?: () => void
 }
 
-export function ChatFind({ panelRef, messages }: ChatFindProps) {
+export function ChatFind({ panelRef, messages, onSearchActive }: ChatFindProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [count, setCount] = useState(0)
@@ -358,7 +363,11 @@ export function ChatFind({ panelRef, messages }: ChatFindProps) {
       <input
         ref={inputRef}
         value={query}
-        onChange={(event) => setQuery(event.target.value)}
+        onChange={(event) => {
+          const value = event.target.value
+          if (value.trim()) onSearchActive?.()
+          setQuery(value)
+        }}
         onKeyDown={(event) => {
           // Esc 由 window 捕获那层统一处理（它先于这里拿到事件），这里只管上下跳
           if (event.key !== 'Enter') return

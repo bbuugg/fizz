@@ -270,6 +270,7 @@ function PluginSettingRow({
           disabled={busy}
           aria-label={item.title}
           placeholder={item.placeholder ?? ''}
+          autoComplete="off"
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}
           className="min-h-24 w-full resize-y text-xs"
@@ -287,7 +288,9 @@ function PluginSettingRow({
           value={draft}
           disabled={busy}
           aria-label={item.title}
-          autoComplete={item.secret ? 'off' : undefined}
+          autoComplete={item.secret ? 'new-password' : 'off'}
+          data-lpignore="true"
+          data-1p-ignore="true"
           placeholder={
             item.secret
               ? item.hasValue
@@ -801,11 +804,20 @@ export function PluginsPanel({
         <div className="flex items-center gap-2">
           <div className="relative min-w-0 flex-1">
             <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            {/* `type="search"`：Chrome 的自动填充/密码管理器只认文本输入框，搜索框用
+                search 类型能从源头避免被回填（回填会触发 onChange，把插件列表筛空）。
+                `name` + 各类密码管理器的忽略标记再兜一层。 */}
             <Input
+              type="search"
+              name="plugin-search"
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
               placeholder={tr('搜索插件（名字 / 路径）…')}
               aria-label={tr('搜索插件')}
+              autoComplete="off"
+              data-lpignore="true"
+              data-1p-ignore="true"
+              data-form-type="other"
               className="h-8 pl-7 text-xs"
             />
           </div>

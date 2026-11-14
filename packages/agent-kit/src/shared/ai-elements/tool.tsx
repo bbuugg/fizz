@@ -23,7 +23,6 @@ import {
   FileXIcon,
   FolderOpenIcon,
   FolderTreeIcon,
-  Loader2Icon,
   SearchIcon,
   Square,
   SquareTerminalIcon,
@@ -36,6 +35,7 @@ import { Button } from "@fizz/ui/button";
 import type { ComponentProps, ReactNode } from "react";
 import { isValidElement, useEffect, useState } from "react";
 import { CodeBlock } from "@fizz/agent-kit/shared/ai-elements/code-block";
+import { Loader } from "@fizz/agent-kit/shared/ai-elements/loader";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@fizz/ui/tooltip";
 import {
   Dialog,
@@ -162,10 +162,13 @@ const STATUS_SHRINK = "shrink-[99]";
  *
  * `live` 是必需的门：非直播（历史里残留的未结算 part）时**不能转** —— 那一轮早就没了，
  * 转圈会让人以为它还在跑。那时退回静态的圆圈 / 时钟。
+ *
+ * ⚠️ 用 `Loader`（`ai-elements/loader`，一圈对称的辐条），**不要换回 `Loader2Icon`**：
+ * 后者的弧线不是中心对称的，旋转时轮廓会一伸一缩，看起来像图标高度在跳。
  */
 const statusIcon = (state: ToolUIPart["state"], live: boolean) =>
   live && RUNNING_STATES.has(state) ? (
-    <Loader2Icon className="size-4 shrink-0 animate-spin" />
+    <Loader size={16} className="shrink-0" />
   ) : (
     STATUS_ICONS[state]
   );

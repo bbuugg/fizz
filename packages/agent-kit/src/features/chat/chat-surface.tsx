@@ -24,7 +24,7 @@
  *
  * 它们通过 `leading` / `trailing` / `header` / `above` / `renderActions` 这几个槽位进来。
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
 import { Bot, ChevronLeft, Loader2, MessageSquare, RotateCw, Square, Unplug } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
@@ -60,6 +60,11 @@ import { cn } from '@fizz/agent-kit/shared/lib/utils'
 // ---------------------------------------------------------------------------
 // 消息列表
 // ---------------------------------------------------------------------------
+
+/** 首屏渲染的消息条数：再往上滚一次追加一批（见 `MessageList` 里的 `visibleCount`） */
+const INITIAL_VISIBLE_MESSAGES = 40
+/** 每次「加载更早」追加的条数 */
+const LOAD_OLDER_STEP = 40
 
 export interface MessageListProps {
   messages: AgentChatMessage[]
@@ -246,13 +251,17 @@ export function MessageList({
    */
   const panelRef = useRef<HTMLDivElement>(null)
 
-  /** 消息目录点击：把那条消息滚到可视区顶部（消息上的 `scroll-mt-6` 负责留出上边距） */
-  const jumpToMessage = (messageId: string): void => {
-    const node = panelRef.current?.querySelector(
-      `[data-message-id="${CSS.escape(messageId)}"]`
-    )
-    node?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  }
+  /**
+   * 「下拉加载更早的消息」：历史一次性都在 store 里（服务端返回完整历史），这里只控制
+   * **渲染多少条**，避免一进长会话就挂出几百条消息（代码高亮 / 图片 / 工具卡全部展开）。
+   * 默认只渲染最近 `INITIAL_VISIBLE_MESSAGES` 条，滚到顶部继续往下拉再追加一批。
+   *
+   * 切换会话要复位 —— 否则在一条长会话里展开到 200 条，切去另一条也直接渲染 200 条。
+   */
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_MESSAGES)
+  useEffect(() => {
+    setVisibleCount(INITIAL_VISIBLE_MESSAGES)
+  }, [conversationId])
 
   /**
    * 协作轮里主对话没有「唯一一条助手消息」：多个 Agent 同时流式输出时先挂在末尾，
@@ -260,21 +269,87 @@ export function MessageList({
    * 同时把那条空的主占位隐藏掉（它不会有内容，露出来会显示「本轮没有返回内容」）。
    */
   const live = streaming && liveMessages?.length ? liveMessages : []
-  const displayMessages =
+  /**
+   * 协作轮里主对话那条空占位要隐藏（它不会有内容，露出来会显示「本轮没有返回内容」），
+   * 这层处理要在窗口裁剪**之前**做，否则被裁到窗口外的占位会让下标算错。
+   */
+  const baseMessages =
     live.length > 0
-      ? [
-          ...messages.filter(
-            (message, index) =>
-              !(
-                index === messages.length - 1 &&
-                message.role === 'assistant' &&
-                message.parts.length === 0
-              )
-          ),
-          ...live
-        ]
+      ? messages.filter(
+          (message, index) =>
+            !(
+              index === messages.length - 1 &&
+              message.role === 'assistant' &&
+              message.parts.length === 0
+            )
+        )
       : messages
+  /** 还没渲染出来的更早消息条数（0 = 全部已渲染） */
+  const hiddenCount = Math.max(0, baseMessages.length - visibleCount)
+  const visibleMessages = hiddenCount > 0 ? baseMessages.slice(hiddenCount) : baseMessages
+  const displayMessages = [...visibleMessages, ...live]
+  /** 渲染条数（用于「流式末条」的判断） */
   const total = displayMessages.length
+  /**
+   * 完整消息条数（含被窗口裁掉的）。`renderActions` / `MessageParts` 的 `index` 与 `total`
+   * 必须是**完整列表**口径 —— 删除「本条及其后」的条数靠 `total - index` 算，按窗口算会少删。
+   */
+  const fullTotal = baseMessages.length + live.length
+
+  /**
+   * 展开更早一批。展开前记下滚动容器的高度与位置，layout effect 里把差值补回 `scrollTop`
+   * —— 否则新内容插在可视区上方，用户正看着的那条会被顶走。
+   */
+  const anchorRef = useRef<{ height: number; top: number } | null>(null)
+  const loadOlder = useCallback(() => {
+    if (visibleCount >= baseMessages.length) return
+    const el = panelRef.current?.querySelector<HTMLElement>('[data-message-scroll]')
+    if (el) anchorRef.current = { height: el.scrollHeight, top: el.scrollTop }
+    setVisibleCount(Math.min(baseMessages.length, visibleCount + LOAD_OLDER_STEP))
+  }, [baseMessages.length, visibleCount])
+
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current
+    anchorRef.current = null
+    if (!anchor) return
+    const el = panelRef.current?.querySelector<HTMLElement>('[data-message-scroll]')
+    if (!el) return
+    el.scrollTop = anchor.top + (el.scrollHeight - anchor.height)
+  }, [visibleCount])
+
+  /** 顶部哨兵进入可视区（滚到顶 / 触屏下拉）就自动再展开一批 */
+  const olderSentinelRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const node = olderSentinelRef.current
+    if (!node || hiddenCount === 0) return
+    const root = panelRef.current?.querySelector<HTMLElement>('[data-message-scroll]') ?? null
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) loadOlder()
+      },
+      // 提前一屏预取，滚到顶不会先看见「加载中」再等
+      { root, rootMargin: '240px 0px 0px 0px' }
+    )
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [hiddenCount, loadOlder])
+
+  /** 消息目录点击：目标被窗口裁掉时先全部展开，再滚到它（消息上的 `scroll-mt-6` 留边距） */
+  const jumpToMessage = useCallback(
+    (messageId: string): void => {
+      const index = messages.findIndex((message) => message.id === messageId)
+      if (index >= 0 && index < baseMessages.length - visibleCount) {
+        setVisibleCount(baseMessages.length)
+      }
+      requestAnimationFrame(() => {
+        const node = panelRef.current?.querySelector(
+          `[data-message-id="${CSS.escape(messageId)}"]`
+        )
+        node?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      })
+    },
+    [messages, visibleCount, baseMessages.length]
+  )
 
   return (
     // relative 只包住消息区（不含下方输入框）：「消息目录」的竖条相对它垂直居中。
@@ -354,15 +429,31 @@ export function MessageList({
             <ConversationEmptyState>{emptyState ?? <DefaultEmptyState />}</ConversationEmptyState>
           ) : (
             <>
+              {/* 顶部哨兵：还有更早的消息没渲染时挂在这里，滚到顶自动再展开一批 */}
+              {hiddenCount > 0 && (
+                <div ref={olderSentinelRef} className="flex justify-center pb-3">
+                  <button
+                    type="button"
+                    onClick={loadOlder}
+                    className="rounded-full border border-border/60 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                  >
+                    {tr('加载更早的消息（还有 {count} 条）', { count: hiddenCount })}
+                  </button>
+                </div>
+              )}
               {displayMessages.map((message, index) => {
                 const isStreamingLast = streaming && index === total - 1
+                /** 完整列表里的下标（窗口裁掉了更早的那些，见 `fullTotal`） */
+                const fullIndex = hiddenCount + index
                 /** 正在编辑重发的那条：描边 + 压暗，和输入框上方的「编辑消息」条是一对标识 */
                 const isEditing = !!editingMessageId && message.id === editingMessageId
                 const messageCompaction =
                   compaction && compaction.messageId === message.id ? compaction : null
                 // 实时回复还没落盘，不挂编辑 / 删除 / 签出这些需要稳定 id 的操作
                 const isLive = message.id.startsWith('collab-live-')
-                const actions = isLive ? null : (renderActions?.({ message, index, total }) ?? null)
+                const actions = isLive
+                  ? null
+                  : (renderActions?.({ message, index: fullIndex, total: fullTotal }) ?? null)
                 /*
                  * 流式末条**不渲染操作行**（连占位也不）—— 用户明确要求「不要占位」。
                  *
@@ -434,8 +525,8 @@ export function MessageList({
                       ) : (
                         <MessageParts
                           message={message}
-                          index={index}
-                          total={total}
+                          index={fullIndex}
+                          total={fullTotal}
                           streaming={streaming}
                           followup={followup}
                           compaction={messageCompaction}
@@ -526,7 +617,12 @@ export function MessageList({
       {outline ? <MessageOutline messages={messages} onJump={jumpToMessage} /> : null}
 
       {/* 会话内查找（Ctrl/Cmd+F）：浮在消息区右上角，不开时不占位（见 chat-find.tsx） */}
-      <ChatFind panelRef={panelRef} messages={messages} />
+      <ChatFind
+        panelRef={panelRef}
+        messages={messages}
+        // 查找扫的是 DOM：先把被「加载更早」裁掉的历史展开，否则搜不到旧消息
+        onSearchActive={() => setVisibleCount(baseMessages.length)}
+      />
     </div>
   )
 }
