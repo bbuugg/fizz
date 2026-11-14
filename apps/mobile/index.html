@@ -94,10 +94,10 @@
         height: var(--boot-logo-size);
       }
       /*
-        状态行（加载圈 + 文字）：绝对定位在 logo 正下方，**不参与 flex 居中** —— 它一进
+        状态行（三个点）：绝对定位在 logo 正下方，**不参与 flex 居中** —— 它一进
         正常流，logo 就会被往上推半个（状态行 + 间距），而原生启动屏的 logo 是严格居中
         的，切过来那一下就会「图标跳一下」。定位从 50% 算起，与 logo 的几何中心对齐；
-        水平居中交给这个容器的 translateX，圈自己的旋转动画才不会被覆盖。
+        水平居中交给这个容器的 translateX。
       */
       #boot-splash-status {
         position: absolute;
@@ -105,47 +105,20 @@
         left: 50%;
         display: flex;
         align-items: center;
-        gap: 10px;
         transform: translateX(-50%);
-        font-family:
-          system-ui,
-          -apple-system,
-          'Segoe UI',
-          'PingFang SC',
-          'Microsoft YaHei',
-          sans-serif;
-        font-size: 14px;
-        line-height: 1;
-        letter-spacing: 0.02em;
         color: rgba(0, 0, 0, 0.6);
-        white-space: nowrap;
       }
       html.dark #boot-splash-status {
         color: rgba(255, 255, 255, 0.65);
       }
-      #boot-splash-spinner {
-        box-sizing: border-box;
-        flex: none;
-        width: 18px;
-        height: 18px;
-        border: 2px solid rgba(0, 0, 0, 0.14);
-        border-top-color: rgba(0, 0, 0, 0.65);
-        border-radius: 9999px;
-        animation: boot-splash-spin 700ms linear infinite;
-      }
-      html.dark #boot-splash-spinner {
-        border-color: rgba(255, 255, 255, 0.16);
-        border-top-color: rgba(255, 255, 255, 0.72);
-      }
       /*
-        「加载中」后面三个点依次亮起。不用 `content` 动画（WebKit 上不可靠），
+        三个点依次亮起。不用 `content` 动画（WebKit 上不可靠），
         固定三个圆点 + 错开的 opacity 动画，节奏更稳。
       */
       #boot-splash-dots {
         display: inline-flex;
         align-items: center;
         gap: 3px;
-        margin-left: 2px;
       }
       #boot-splash-dots i {
         width: 4px;
@@ -161,11 +134,6 @@
       #boot-splash-dots i:nth-child(3) {
         animation-delay: 0.4s;
       }
-      @keyframes boot-splash-spin {
-        to {
-          transform: rotate(360deg);
-        }
-      }
       @keyframes boot-splash-dot {
         0%,
         60%,
@@ -173,15 +141,6 @@
           opacity: 0.25;
         }
         30% {
-          opacity: 1;
-        }
-      }
-      @keyframes boot-splash-pulse {
-        0%,
-        100% {
-          opacity: 0.3;
-        }
-        50% {
           opacity: 1;
         }
       }
@@ -193,14 +152,6 @@
         #boot-splash {
           transition: none;
         }
-        /* 减动效时不转圈，退化成呼吸式明暗，仍然能看出「还在加载」 */
-        #boot-splash-spinner {
-          animation: boot-splash-pulse 1.2s ease-in-out infinite;
-          border-color: rgba(0, 0, 0, 0.45);
-        }
-        html.dark #boot-splash-spinner {
-          border-color: rgba(255, 255, 255, 0.55);
-        }
         /* 三个点保持常亮，不再依次闪烁 */
         #boot-splash-dots i {
           animation: none;
@@ -211,14 +162,13 @@
   </head>
   <body>
     <!--
-      首屏：居中 logo + 下方「加载圈 + 加载中…」，底色跟设置里的亮暗主题（见上面那段内联样式）。
+      首屏：居中 logo + 下方三个加载点，底色跟设置里的亮暗主题（见上面那段内联样式）。
       退出由 src/app/boot-splash.ts 负责（React 画完第一帧后淡出并移除）。
     -->
     <div id="boot-splash" aria-hidden="true">
       <img src="__FIZZ_BOOT_LOGO__" alt="" />
-      <div id="boot-splash-status">
-        <span id="boot-splash-spinner" role="status" aria-label="加载中"></span>
-        <span>加载中<span id="boot-splash-dots"><i></i><i></i><i></i></span></span>
+      <div id="boot-splash-status" role="status" aria-label="加载中">
+        <span id="boot-splash-dots"><i></i><i></i><i></i></span>
       </div>
     </div>
     <div id="root"></div>
