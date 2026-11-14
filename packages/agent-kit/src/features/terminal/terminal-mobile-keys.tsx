@@ -4,7 +4,7 @@
  * 从 `TerminalPanel` 拆出来的原因很单纯：这些是**纯函数 + 一个无状态按钮**，
  * 跟终端的会话生命周期、PTY、xterm 实例毫无关系。
  */
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 
 /** 手机端虚拟键盘缺修饰键 / 功能键：底部快捷键条用的「粘连」修饰键状态。 */
@@ -41,8 +41,6 @@ export function specialSeq(token: string, m: ModsState): string {
       return p === 1 ? '\x1b[5~' : `\x1b[5;${p}~`
     case 'PageDown':
       return p === 1 ? '\x1b[6~' : `\x1b[6;${p}~`
-    case 'Delete':
-      return p === 1 ? '\x1b[3~' : `\x1b[3;${p}~`
     default:
       return ''
   }
@@ -71,7 +69,8 @@ export function MobileKey({
   active,
   onClick,
   ariaLabel,
-  repeat = false
+  repeat = false,
+  className
 }: {
   label: string
   active?: boolean
@@ -79,6 +78,7 @@ export function MobileKey({
   ariaLabel?: string
   /** 长按连续触发（方向键 / 翻页键） */
   repeat?: boolean
+  className?: string
 }) {
   const holdTimer = useRef<number | null>(null)
   const repeatTimer = useRef<number | null>(null)
@@ -107,9 +107,11 @@ export function MobileKey({
       holdTimer.current = null
       repeating.current = true
       onClickRef.current()
-      repeatTimer.current = window.setInterval(() => onClickRef.current(), REPEAT_INTERVAL)
+      if (repeat) {
+        repeatTimer.current = window.setInterval(() => onClickRef.current(), REPEAT_INTERVAL)
+      }
     }, REPEAT_DELAY)
-  }, [clearTimers])
+  }, [clearTimers, repeat])
 
   const stop = useCallback(() => {
     clearTimers()
@@ -123,20 +125,29 @@ export function MobileKey({
     onClickRef.current()
   }, [])
 
+  /**
+   * 按下时 `preventDefault()`，**别让按钮抢走终端的焦点**。
+   *
+   * 焦点一换，软键盘就会跟着开合：终端 textarea 仍聚焦时安卓用返回键收起键盘并不丢焦点，
+   * 这时点一下键条又 focus 一次，键盘就重新弹出来了。拦住默认行为后，终端原本聚焦就
+   * 继续聚焦（键盘不动），原本没聚焦也不会被按钮或终端抢回来 —— 按键只发字节，不碰
+   * 输入状态。`click` 不受影响（不是 compatibility mouse event）。
+   */
+  const onPointerDown = repeat
+    ? (e: ReactPointerEvent<HTMLButtonElement>): void => {
+        if (e.pointerType === 'mouse' && e.button !== 0) return
+        e.preventDefault()
+        start()
+      }
+    : (e: ReactPointerEvent<HTMLButtonElement>): void => e.preventDefault()
+
   return (
     <button
       type="button"
       aria-label={ariaLabel ?? label}
       aria-pressed={active}
       onClick={repeat ? handleClick : onClick}
-      onPointerDown={
-        repeat
-          ? (e) => {
-              if (e.pointerType === 'mouse' && e.button !== 0) return
-              start()
-            }
-          : undefined
-      }
+      onPointerDown={onPointerDown}
       onPointerUp={repeat ? stop : undefined}
       onPointerLeave={repeat ? stop : undefined}
       onPointerCancel={repeat ? stop : undefined}
@@ -144,6 +155,7 @@ export function MobileKey({
       className={cn(
         'flex h-8 w-full min-w-0 select-none items-center justify-center px-0.5 text-xs font-medium transition-colors',
         repeat && 'touch-manipulation',
+        className,
         active
           ? 'bg-primary text-primary-foreground'
           : 'bg-background text-foreground hover:bg-accent active:bg-accent/70'

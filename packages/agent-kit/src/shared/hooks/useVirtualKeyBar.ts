@@ -73,8 +73,8 @@ function matchesTouchOnly(): boolean {
  * 同一判据的**非 React 版本**：这台设备是不是只有手指可用（软键盘是唯一输入）。
  *
  * 给「要不要主动把焦点塞进终端」这类一次性判断用 —— 手机 / 平板上一 focus 就等于弹出
- * 软键盘，而用户往往是**刚收起键盘**才去点菜单的（见 `TerminalPanel` 里 `hadFocusRef`
- * 那段注释：别把用户主动收起的键盘招回来）。
+ * 软键盘，而用户往往是**刚收起键盘**才去点菜单的（见 `run-script-command`：一键执行脚本
+ * 不抢焦点，别把用户主动收起的键盘招回来）。
  */
 export function isTouchOnlyInput(): boolean {
   return matchesTouchOnly()

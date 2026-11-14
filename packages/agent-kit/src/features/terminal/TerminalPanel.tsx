@@ -36,6 +36,15 @@ import {
   type TerminalProcess
 } from '@fizz/agent-client/web-host'
 import { attachTerminalTouchScroll } from '@fizz/agent-kit/shared/lib/terminal-touch-scroll'
+import {
+  cellFromExclusiveEnd,
+  moveCaret,
+  selectionRange,
+  trimmedCellEnd,
+  type CaretContext,
+  type CaretDirection,
+  type CaretPosition
+} from '@fizz/agent-kit/shared/lib/terminal-selection'
 import { clampCompositionOverflow } from '@fizz/agent-kit/shared/lib/terminal-ime'
 import { supportsTouch } from '@fizz/agent-kit/shared/lib/supports-touch'
 import {
@@ -102,6 +111,85 @@ const DEFAULT_FONT_SIZE = 14
  * 滚出去的会被 `readSince` 标成 `truncated`，工具据此告诉模型「前面丢了」。
  */
 const RAW_OUTPUT_KEEP = 64_000
+
+/**
+ * 选择模式下，键条上这些功能键改去移动**选区端点**，不再写 PTY。
+ *
+ * 只在这几个键上分叉：其余键（Esc / Ctrl / Tab / 方向以外的）行为不变。方向键若照常写进
+ * shell，会翻命令历史、移动提示符光标，而用户正在终端上方划词 —— 两件事互相打架。
+ */
+const SELECT_NAV_TOKENS: Record<string, CaretDirection> = {
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+  Home: 'home',
+  End: 'end',
+  PageUp: 'pageUp',
+  PageDown: 'pageDown'
+}
+
+/**
+ * 现读 xterm 缓冲，给方向键选区造上下文（行号一律是**绝对行**，与 `term.select` /
+ * `getSelectionPosition` 一致）。
+ *
+ * `maxRow` 取「最后一行有内容的行」与光标行中较大的那个：内容可能落在光标下方
+ * （进度条、重连提示），而屏幕底部剩下的空行不该成为可移动范围 —— 否则按 ↓ 能一路走到
+ * 缓冲末尾，用户看着光标不动。
+ */
+function buildCaretContext(term: Terminal): CaretContext {
+  const buffer = term.buffer.active
+  const cols = term.cols
+  const lastLine = Math.max(0, buffer.length - 1)
+  const cursorRow = Math.max(0, Math.min(lastLine, buffer.baseY + buffer.cursorY))
+  // 从下往上最多扫一屏：更早的尾部空行没人会在里面选字
+  let lastContent = cursorRow
+  const floor = Math.max(0, buffer.length - term.rows)
+  for (let row = lastLine; row >= floor; row--) {
+    if (trimmedCellEnd(buffer.getLine(row), cols) > 0) {
+      lastContent = row
+      break
+    }
+  }
+  return {
+    cols,
+    maxRow: Math.max(0, Math.min(lastLine, Math.max(lastContent, cursorRow))),
+    // 一屏减去一行，PgUp/PgDn 才有重叠，不会跳过一行内容
+    pageSize: Math.max(1, term.rows - 1),
+    isWrapped: (row) => buffer.getLine(row)?.isWrapped ?? false,
+    lineEnd: (row) => trimmedCellEnd(buffer.getLine(row), cols),
+    cellWidth: (row, col) => buffer.getLine(row)?.getCell(col)?.getWidth() ?? 1
+  }
+}
+
+/** 终端光标所在的字符格 */
+function cursorCell(term: Terminal, ctx: CaretContext): CaretPosition {
+  const buffer = term.buffer.active
+  return {
+    row: Math.max(0, Math.min(ctx.maxRow, buffer.baseY + buffer.cursorY)),
+    col: Math.max(0, Math.min(buffer.cursorX, ctx.cols - 1))
+  }
+}
+
+/** `getSelectionPosition().start` 是包含端，直接夹进缓冲可用范围就是字符格 */
+function cellFromStart(start: { x: number; y: number }, ctx: CaretContext): CaretPosition {
+  return {
+    row: Math.max(0, Math.min(start.y, ctx.maxRow)),
+    col: Math.max(0, Math.min(start.x, ctx.cols - 1))
+  }
+}
+
+/** 比较两格先后（行优先），用来判 caret 在 anchor 之前还是之后 */
+function compareCells(a: CaretPosition, b: CaretPosition): number {
+  return a.row === b.row ? a.col - b.col : a.row - b.row
+}
+
+/** 把某行滚进可视区（方向键移出屏幕时，用户得看得见端点在哪） */
+function revealRow(term: Terminal, row: number): void {
+  const viewportY = term.buffer.active.viewportY
+  if (row < viewportY) term.scrollToLine(row)
+  else if (row >= viewportY + term.rows) term.scrollToLine(row - term.rows + 1)
+}
 
 /**
  * 拖拽上传（把本地文件拖进 SSH 终端，经 SFTP 送到远端）的确认条状态。
@@ -257,8 +345,6 @@ export function TerminalPanel({
    * 细横栏；粘成功不打扰。
    */
   const [pasteHint, setPasteHint] = useState<string | null>(null)
-  /** 手机上长按划出的选区：显示「复制选中文本」条（xterm 的选区是自己的模型，走 getSelection） */
-  const [hasTouchSelection, setHasTouchSelection] = useState(false)
   const tr = useT()
   /** 主题 revision：保存自定义主题颜色时 `<style>` 被重写、`data-theme` 不变，MutationObserver 看不到 */
   const themeRevision = useThemeRevision()
@@ -267,6 +353,99 @@ export function TerminalPanel({
   const processRef = useRef<TerminalProcess | null>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+
+  /**
+   * 方向键选区模式：底部键条切成「方向键 + 定起点/复制/取消」，方向键只动选区端点、不写 PTY。
+   * 手机软键盘上没法精确拖选，逐格挪光标（← ↑ ↓ →，Home/End/PgUp/PgDn 跳一段）才算能选中
+   * 要复制的那一段。
+   *
+   * 分两段：进来时**没锁起点**，方向键只挪那颗「光标」（一格选区），想从哪开始选就把光标
+   * 挪到哪；按「定起点」锁住它，之后方向键才从起点往外扩。不锁时方向键绝不能扩选 ——
+   * 否则起点永远是进模式那一刻的位置，用户改不了（用户报的正是这个）。
+   */
+  const [selectionMode, setSelectionMode] = useState(false)
+  /** 同一份状态的 ref 镜像：键条回调 / 触摸手势里要现读，不等下一次渲染 */
+  const selectionModeRef = useRef(false)
+  /** 起点是否已锁定（false = 方向键只挪光标，选起点） */
+  const [anchorLocked, setAnchorLocked] = useState(false)
+  const anchorLockedRef = useRef(false)
+  /** 选区固定端与移动端（闭区间字符格，见 `shared/lib/terminal-selection.ts`） */
+  const anchorRef = useRef<CaretPosition | null>(null)
+  const caretRef = useRef<CaretPosition | null>(null)
+  /** 上下移动时要保持的列（短行夹住、回到长行恢复原列） */
+  const desiredColRef = useRef<number | null>(null)
+  /** caret 是否在 anchor 之后：决定下一次移动从选区的哪一端扩展 */
+  const caretIsEndRef = useRef(true)
+  /** 方向键改选区期间跳过「选中即复制」（连发时每帧写剪贴板会刷屏弹提示） */
+  const suppressCopyOnSelectRef = useRef(false)
+
+  const applySelectionMode = useCallback((on: boolean): void => {
+    selectionModeRef.current = on
+    setSelectionMode(on)
+  }, [])
+
+  const applyAnchorLocked = useCallback((on: boolean): void => {
+    anchorLockedRef.current = on
+    setAnchorLocked(on)
+  }, [])
+
+  /** 退出方向键选区：清端点、清选区、键条恢复。复制完与「取消」都走这里 */
+  const exitSelectionMode = useCallback((): void => {
+    applySelectionMode(false)
+    applyAnchorLocked(false)
+    anchorRef.current = null
+    caretRef.current = null
+    desiredColRef.current = null
+    caretIsEndRef.current = true
+    termRef.current?.clearSelection()
+  }, [applyAnchorLocked, applySelectionMode])
+
+  /**
+   * 把两个端点之间的格子写进 xterm 选区。
+   *
+   * `term.select` 不做越界校验，行列都得自己夹；写选区期间压住「选中即复制」——
+   * 方向键一次移动会改一次选区，不压住会连续覆盖剪贴板。
+   */
+  const selectBetweenCells = useCallback(
+    (term: Terminal, anchor: CaretPosition, caret: CaretPosition): void => {
+      const { start, length } = selectionRange(term.cols, anchor, caret)
+      const row = Math.max(0, Math.min(start.row, term.buffer.active.length - 1))
+      const col = Math.max(0, Math.min(start.col, term.cols - 1))
+      suppressCopyOnSelectRef.current = true
+      try {
+        term.select(col, row, length)
+      } finally {
+        suppressCopyOnSelectRef.current = false
+      }
+    },
+    []
+  )
+
+  /**
+   * 锁定 / 解锁起点。
+   *
+   * - 未锁定 → 锁定：当前位置（那颗光标）成为固定端，之后方向键从它往外扩。
+   * - 已锁定 → 解锁：选区收回到**起点那一格**，方向键重新只挪光标，可以换个起点重来。
+   */
+  const toggleAnchor = useCallback((): void => {
+    const term = termRef.current
+    if (!term) return
+    if (!anchorLockedRef.current) {
+      applyAnchorLocked(true)
+      return
+    }
+    const pinned = anchorRef.current ?? caretRef.current
+    if (!pinned) {
+      applyAnchorLocked(false)
+      return
+    }
+    anchorRef.current = pinned
+    caretRef.current = pinned
+    desiredColRef.current = pinned.col
+    caretIsEndRef.current = true
+    selectBetweenCells(term, pinned, pinned)
+    applyAnchorLocked(false)
+  }, [applyAnchorLocked, selectBetweenCells])
 
   /** 写剪贴板：`navigator.clipboard` 在部分安卓 WebView 里不可用，退回 execCommand */
   const writeClipboard = useCallback(async (text: string): Promise<void> => {
@@ -285,13 +464,12 @@ export function TerminalPanel({
     if (!ok) throw new Error('clipboard unavailable')
   }, [])
 
-  /** 手机长按划词后的「复制选中文本」 */
-  const copyTouchSelection = useCallback(async (): Promise<void> => {
+  /** 方向键选区之后的「复制」：写剪贴板并退出选区模式 */
+  const copySelection = useCallback(async (): Promise<void> => {
     const term = termRef.current
     const text = term?.getSelection() ?? ''
     if (!text) {
-      term?.clearSelection()
-      setHasTouchSelection(false)
+      exitSelectionMode()
       return
     }
     try {
@@ -301,9 +479,8 @@ export function TerminalPanel({
       toast.error(tr('复制失败，请检查剪贴板权限'))
       return
     }
-    term?.clearSelection()
-    setHasTouchSelection(false)
-  }, [tr, writeClipboard])
+    exitSelectionMode()
+  }, [exitSelectionMode, tr, writeClipboard])
   /**
    * 输出活动（收到多少段 + 最后一段什么时候来的）：登记给 AI 工具，`run_in_terminal`
    * 靠它判「命令的输出停了没有」，替代从前固定 sleep 3 秒的做法。
@@ -525,19 +702,6 @@ export function TerminalPanel({
    *  发完即复位。 */
   const [mods, setMods] = useState<ModsState>(NO_MODS)
   const modsRef = useRef<ModsState>(NO_MODS)
-  /**
-   * 按下快捷键那一下，终端里**本来有没有焦点**（= 软键盘当时开不开）。
-   *
-   * 在 `pointerdown` 时记、`click` 时用：等 click 已经晚了，浏览器在 touch 处理里
-   * 就把它 blur 了（`document.activeElement` 变成 body），那时再判断什么都一样。
-   *
-   * ⚠️ 这个 ref 治的是「点快捷键把键盘弄没」。别改成「手机端一律 blur / 桌面一律
-   * focus」：两者都错 —— blur 会把用户正开着的键盘强行收掉（点一个键就得重新唤键盘），
-   * 而一律 focus 会把用户**主动收起的**键盘又弹出来。正确的语义是**不动用户的状态**：
-   * 之前开着就还给他开着（touch 期间被浏览器 blur 了的，这里 focus 补回来），
-   * 之前关着就还关着。
-   */
-  const hadFocusRef = useRef(false)
   const applyMods = useCallback((next: ModsState): void => {
     modsRef.current = next
     setMods(next)
@@ -546,8 +710,6 @@ export function TerminalPanel({
   const toggleMod = useCallback(
     (k: keyof ModsState): void => {
       applyMods({ ...modsRef.current, [k]: !modsRef.current[k] })
-      // 保持终端焦点：让软键盘不收起，这样「粘连修饰键 + 软键盘字母」才能配合（如 Ctrl+C）
-      termRef.current?.focus()
     },
     [applyMods]
   )
@@ -803,6 +965,97 @@ export function TerminalPanel({
   }, [clearSuggestions])
 
   /**
+   * 进入方向键选区模式（键条上的「选择」）。
+   *
+   * 光标（起点）的初始位置：
+   * - 光标在可视区（没往上滚）→ 放在光标处，多数时候用户想选的就是光标附近；
+   * - 用户正翻着历史 → 放在**可视区最后一行**的行尾，别把人拽回底部（翻上去就是为了选那段）。
+   *
+   * 进来时**不锁起点**：方向键可以把这颗光标挪到任意位置（见 `moveSelection`），
+   * 按「定起点」之后才从它往外扩选。本来就有一段选区（桌面上鼠标划的）时才直接锁住它。
+   *
+   * 进入即失焦：选区模式不需要输入，收起软键盘多出一屏高度。退出后也不主动恢复焦点 ——
+   * 否则一复制键盘又弹回来。
+   */
+  const enterSelectionMode = useCallback((): void => {
+    const term = termRef.current
+    if (!term) return
+    const ctx = buildCaretContext(term)
+    const live = term.getSelectionPosition()
+    if (live) {
+      anchorRef.current = cellFromStart(live.start, ctx)
+      caretRef.current = cellFromExclusiveEnd(live.end, ctx)
+      applyAnchorLocked(true)
+    } else {
+      const buffer = term.buffer.active
+      let anchor: CaretPosition
+      if (buffer.viewportY >= buffer.baseY) {
+        anchor = cursorCell(term, ctx)
+      } else {
+        const row = Math.max(0, Math.min(ctx.maxRow, buffer.viewportY + term.rows - 1))
+        anchor = { row, col: Math.max(0, ctx.lineEnd(row) - 1) }
+      }
+      anchorRef.current = anchor
+      caretRef.current = anchor
+      selectBetweenCells(term, anchor, anchor)
+      applyAnchorLocked(false)
+    }
+    caretIsEndRef.current = true
+    desiredColRef.current = caretRef.current?.col ?? null
+    applySelectionMode(true)
+    term.textarea?.blur()
+    clearSuggestions()
+    // 键条在选区模式里不显示修饰键：粘连着的 Ctrl/Alt 留着，退出后会悄悄作用于下一次输入
+    resetMods()
+  }, [applyAnchorLocked, applySelectionMode, clearSuggestions, resetMods, selectBetweenCells])
+
+  /**
+   * 方向键移动选区端点（不写 PTY）。
+   *
+   * 起点没锁定时只挪光标（一格选区，用来挑起点）；锁定后固定起点、移动自由端。
+   *
+   * 每次移动前先按 `getSelectionPosition()` 重同步两端：xterm 的缓冲裁剪 / 列数变化后的
+   * reflow 会**改写**选区坐标，且**不触发** `onSelectionChange` —— 自己记的行列号会悄悄
+   * 过期，表现为方向键按几下之后选区突然跳到别处。取不到选区就回落到光标。
+   */
+  const moveSelection = useCallback(
+    (dir: CaretDirection): void => {
+      const term = termRef.current
+      if (!term) return
+      const ctx = buildCaretContext(term)
+      const live = term.getSelectionPosition()
+      let anchor: CaretPosition
+      let caret: CaretPosition
+      if (live) {
+        // end 是排他端：caret 在末端时「最后一个包含的格」要退一格 / 退到上一行
+        anchor = caretIsEndRef.current ? cellFromStart(live.start, ctx) : cellFromExclusiveEnd(live.end, ctx)
+        caret = caretIsEndRef.current ? cellFromExclusiveEnd(live.end, ctx) : cellFromStart(live.start, ctx)
+      } else {
+        anchor = cursorCell(term, ctx)
+        caret = anchor
+      }
+      const moved = moveCaret(caret, dir, ctx, desiredColRef.current ?? undefined)
+      if (!anchorLockedRef.current) {
+        // 还没定起点：只挪光标，选区始终收在光标这一格
+        anchorRef.current = moved.caret
+        caretRef.current = moved.caret
+        desiredColRef.current = moved.desiredCol
+        caretIsEndRef.current = true
+        selectBetweenCells(term, moved.caret, moved.caret)
+      } else {
+        anchorRef.current = anchor
+        caretRef.current = moved.caret
+        desiredColRef.current = moved.desiredCol
+        caretIsEndRef.current = compareCells(moved.caret, anchor) >= 0
+        selectBetweenCells(term, anchor, moved.caret)
+      }
+      revealRow(term, moved.caret.row)
+      applySelectionMode(true)
+    },
+    [applySelectionMode, selectBetweenCells]
+  )
+
+  /**
    * 一段原始输入进终端前的统一入口：先喂给预测的缓冲跟踪，再写 PTY。
    * 键盘（term.onData）与手机快捷键条（handleAction）都走这里，两边行为一致。
    */
@@ -898,27 +1151,26 @@ export function TerminalPanel({
 /**
  * 底部功能键：按当前修饰键合成转义序列走统一输入入口（预测拦截 / 缓冲跟踪都一致），然后复位粘连修饰键。
  *
- * ⚠️ **不要在这里动焦点**（这里踩过两次，记一下免得第三次）：
- * - 曾经无条件 `focus()`：手机上焦点落在 xterm 那个隐藏 textarea 上就等于软键盘弹出来，
- *   而当时工具条被键盘盖着（dvh 不管键盘，见底栏的 margin-bottom），于是「只能先收
- *   键盘才点得到、点一下又弹出来」；
- * - 于是改成手机端 `blur()`：又变成「点一下键盘就没了」，用户每发一个快捷键都得
- *   重新唤一次键盘。
- *
- * 正解是**尊重用户当下的状态**：按下时终端有焦点（键盘开着）就补一次 focus ——
- * 因为 touch 期间浏览器会先把 textarea blur 掉，不补键盘就真收了；按下时没焦点
- * （用户自己收起了键盘）就什么都别做，别把键盘招回来。判据在 `hadFocusRef`。
+ * ⚠️ **这里绝不碰焦点**。键条上的按钮在 `pointerdown` 里 `preventDefault()`（见
+ * `MobileKey`），终端的 focus 与软键盘开合原样保留：键盘开着就一直开着，用户自己收起
+ * 的就别再弹回来。曾经靠「按下时记焦点、click 时 focus 补回」兜浏览器把 textarea 弄失焦
+ * 的情况，结果安卓上「用返回键收起键盘、textarea 仍算聚焦」时，点任何一键都会把键盘
+ * 重新弹出来（用户报的正是这个）。
  */
   const handleAction = useCallback(
     (token: string): void => {
+      // 选区模式下方向 / 翻页 / 行首行尾只动选区端点：写进 shell 会翻历史、挪提示符光标
+      const nav = SELECT_NAV_TOKENS[token]
+      if (nav && selectionModeRef.current) {
+        moveSelection(nav)
+        return
+      }
       const m = modsRef.current
       const seq = specialSeq(token, m)
       if (seq) sendInput(seq)
       if (hasAnyMod(m)) resetMods()
-      // 键盘开着就补回焦点（抵消 touch 期间的浏览器 blur）；关着就留着关
-      if (hadFocusRef.current) termRef.current?.focus()
     },
-    [resetMods, sendInput]
+    [moveSelection, resetMods, sendInput]
   )
 
   /** 管理浮层里点某条历史：把命令原样写进终端（等同键入，不代按回车） */
@@ -1151,7 +1403,9 @@ export function TerminalPanel({
         showPasteHint('读取剪贴板失败（需要剪贴板权限），可改用 Ctrl+V')
       },
       // 异步读剪贴板期间可能已经拆掉终端（换 shell / 关标签）
-      isCurrent: () => termRef.current === term
+      isCurrent: () => termRef.current === term,
+      // 方向键改选区期间别把每一格都写进剪贴板
+      suppressCopyOnSelect: () => suppressCopyOnSelectRef.current
     })
 
     /**
@@ -1169,14 +1423,14 @@ export function TerminalPanel({
     const detachTouchScroll = supportsTouch()
       ? attachTerminalTouchScroll(term, container, {
           getFontSize: () => fontSizeRef.current,
-          onZoom: (size) => applyFontSize(size),
-          // 长按选中 / 选区清掉 → 顶部那条「复制选中文本」
-          onSelectionChange: setHasTouchSelection
+          onZoom: (size) => applyFontSize(size)
         })
       : null
 
     // 容器尺寸变化 → 重新 fit → 回写 PTY 尺寸（面板拖拽 / 窗口缩放共用这一条路）
     const observer = new ResizeObserver(() => {
+      const prevCols = term.cols
+      const prevRows = term.rows
       try {
         fit.fit()
       } catch {
@@ -1186,6 +1440,38 @@ export function TerminalPanel({
       processRef.current?.resize(term.cols, term.rows)
       // 容器变了对预测下拉框重新定位（还开着的话）
       positionDropdown()
+      if (!selectionModeRef.current) return
+      /**
+       * 列数变了 = reflow：xterm 会把选区重映射到新坐标，但**不发事件**，我们记的
+       * anchor/caret 已经作废。按当前选区重新同步；选区没保住就退出模式（别让用户
+       * 对着一个看不见的选区按方向键）。
+       */
+      if (term.cols !== prevCols) {
+        const ctx = buildCaretContext(term)
+        const live = term.getSelectionPosition()
+        if (live) {
+          const start = cellFromStart(live.start, ctx)
+          const end = cellFromExclusiveEnd(live.end, ctx)
+          // 保住「哪一端是自由端」，否则重排一次后方向键会突然改去动另一端
+          anchorRef.current = caretIsEndRef.current ? start : end
+          caretRef.current = caretIsEndRef.current ? end : start
+          desiredColRef.current = caretRef.current.col
+        } else {
+          exitSelectionMode()
+        }
+        return
+      }
+      /**
+       * 只有行数变了（软键盘开合、面板上下拖）：xterm 在 rowsChanged 时会**主动清掉选区**
+       * （见 SelectionService 里那条 resize 监听）。列没变就没有重排，绝对行号仍然有效 ——
+       * 按记下的两端把选区补回来，否则用户点完「选择」键盘一收选区就没了。
+       */
+      if (term.rows !== prevRows && !term.getSelectionPosition()) {
+        const anchor = anchorRef.current
+        const caret = caretRef.current
+        if (anchor && caret) selectBetweenCells(term, anchor, caret)
+        else exitSelectionMode()
+      }
     })
     observer.observe(container)
 
@@ -1414,6 +1700,16 @@ export function TerminalPanel({
       // 终端标签不该顺手掐掉传到一半的文件（用户可以在清单里自己决定）。
       // `lastUploadDirRef` **不清**：重连之后用户多半还想传到同一个目录。
       setSftpDrop(null)
+      // 会话拆了：选区模式与端点一起清（旧 term 马上 dispose，refs 留着只会指向坏坐标）。
+      // 这里不走 exitSelectionMode() —— 它还要动已经要销毁的 term。
+      selectionModeRef.current = false
+      setSelectionMode(false)
+      anchorLockedRef.current = false
+      setAnchorLocked(false)
+      anchorRef.current = null
+      caretRef.current = null
+      desiredColRef.current = null
+      caretIsEndRef.current = true
       processRef.current?.kill()
       processRef.current = null
       term.dispose()
@@ -1563,33 +1859,6 @@ export function TerminalPanel({
           >
             知道了
           </button>
-        </div>
-      )}
-      {/* 手机长按划词：选区在 xterm 自己的模型里，复制走 getSelection()，不是浏览器原生选区。
-          这条不盖终端内容、也不抢触摸手势（手指还在终端上划时它在上方，不接收 touch）。 */}
-      {hasTouchSelection && (
-        <div className="absolute inset-x-0 top-0 z-30 flex items-center justify-between gap-2 border-b bg-background/95 px-2 py-1 text-xs shadow-sm backdrop-blur-sm">
-          <span className="truncate text-muted-foreground">{tr('拖动可继续选择，松手后点复制')}</span>
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              className="rounded bg-primary px-2 py-1 text-primary-foreground"
-              onClick={() => void copyTouchSelection()}
-            >
-              {tr('复制选中文本')}
-            </button>
-            <button
-              type="button"
-              aria-label={tr('清除选区')}
-              className="rounded p-1 text-muted-foreground hover:text-foreground"
-              onClick={() => {
-                termRef.current?.clearSelection()
-                setHasTouchSelection(false)
-              }}
-            >
-              <X className="size-3.5" />
-            </button>
-          </div>
         </div>
       )}
       {/* 容器不随可见性卸载：xterm 重建会丢渲染状态（会话在宿主 / 服务端活着） */}
@@ -1973,48 +2242,81 @@ export function TerminalPanel({
           **高度链**解决：`useKeyboardInset` 把「应用高度 = innerHeight − 键盘遮挡」写进
           <html> 的 `--app-height`，整条链缩到键盘上沿，这条自然就在键盘上方
           （见 lib/keyboard-inset.ts 文件头）。 */}
-      {showKeyBar && (
-        <div
-          className="grid shrink-0 grid-cols-7 bg-background"
-          // pointerdown 时就记下「终端里本来有没有焦点」—— 等 click 已经晚了，浏览器在
-          // touch 处理里就把 textarea blur 了。记下来是为了点完快捷键把用户的键盘状态
-          // 原样还给他（开着就补 focus，关着就别招回来），见 hadFocusRef 与 handleAction。
-          onPointerDown={() => {
-            hadFocusRef.current = document.activeElement === termRef.current?.textarea
-          }}
-        >
-          {/*
-            固定 7 列 × 2 行，所有键等宽铺满：手机上没有键盘的物理布局，键距不均时
-            最容易误触。
+      {showKeyBar &&
+        (selectionMode ? (
+          /**
+           * 选区模式键条：方向键只动选区端点（见 `handleAction` 里的 `SELECT_NAV_TOKENS`），
+           * 不进 shell。仍是 2 行 × `h-8` —— 与普通键条**同高**，切换时终端不会因为 fit
+           * 抖一下。7 列：
+           * - 第一行 `← ↑ ↓ →` + `复制`（跨 2 列）+ `定起点`：方向键随手按，复制是大目标；
+           * - 第二行 `Home End PgUp PgDn` + `取消`（跨 3 列）：大段跳转与退出。
+           *
+           * 「定起点」未锁定时方向键只挪光标（选起点），按一下锁住；再按一下解锁、选区收回到
+           * 起点那一格（高亮 = 已锁定）。不锁就扩选的话起点永远改不了（用户报的正是这个）。
+           */
+          <div className="grid shrink-0 grid-cols-7 bg-background">
+            <MobileKey label="←" ariaLabel="左方向键" onClick={() => handleAction('ArrowLeft')} repeat />
+            <MobileKey label="↑" ariaLabel="上方向键" onClick={() => handleAction('ArrowUp')} repeat />
+            <MobileKey label="↓" ariaLabel="下方向键" onClick={() => handleAction('ArrowDown')} repeat />
+            <MobileKey label="→" ariaLabel="右方向键" onClick={() => handleAction('ArrowRight')} repeat />
+            <MobileKey
+              className="col-span-2"
+              label={tr('复制')}
+              onClick={() => void copySelection()}
+            />
+            <MobileKey
+              active={anchorLocked}
+              label={tr('定起点')}
+              ariaLabel={tr('把光标处设为选区起点')}
+              onClick={toggleAnchor}
+            />
+            <MobileKey label="Home" onClick={() => handleAction('Home')} repeat />
+            <MobileKey label="End" onClick={() => handleAction('End')} repeat />
+            <MobileKey label="PgUp" ariaLabel="上一页" onClick={() => handleAction('PageUp')} repeat />
+            <MobileKey label="PgDn" ariaLabel="下一页" onClick={() => handleAction('PageDown')} repeat />
+            <MobileKey className="col-span-3" label={tr('取消')} onClick={exitSelectionMode} />
+          </div>
+        ) : (
+          <div className="grid shrink-0 grid-cols-7 bg-background">
+            {/*
+              固定 7 列 × 2 行，所有键等宽铺满：手机上没有键盘的物理布局，键距不均时
+              最容易误触。
 
-            按键顺序（用户指定）：
-            - **Esc 在左上角，Tab 在 Esc 正下方，Ctrl 在 Esc 右边**；
-            - **Home 紧贴 ↑ 左侧、End 紧贴 ↑ 右侧**（寻址键包住方向键，与笔记本键盘一致）；
-            - **PgUp 占最右上角、PgDn 占最右下角**（两颗同一列上下相对，翻页不用横着摸）。
+              按键顺序（用户指定）：
+              - **Esc 在左上角，Tab 在 Esc 正下方，Ctrl 在 Esc 右边**；
+              - **Home 紧贴 ↑ 左侧、End 紧贴 ↑ 右侧**（寻址键包住方向键，与笔记本键盘一致）；
+              - **PgUp 占最右上角、PgDn 占最右下角**（两颗同一列上下相对，翻页不用横着摸）。
 
-            「End 在 ↑ 右边」与「PgUp 占右上角」本来抢同一格（第 7 列）—— 所以 ↑ 连同
-            Home 一起左移一格，第 7 列留给 PgUp 与 PgDn；挤出来的第 4 格（原来是 Shift）
-            正好接住 End。**Shift 因此下移到第 2 行第 3 格（Alt 正下方）**，修饰键仍是
-            左侧那一条纵向带状区域，没有散到右边去。
+              「End 在 ↑ 右边」与「PgUp 占右上角」本来抢同一格（第 7 列）—— 所以 ↑ 连同
+              Home 一起左移一格，第 7 列留给 PgUp 与 PgDn；挤出来的第 4 格（原来是 Shift）
+              正好接住 End。**Shift 因此下移到第 2 行第 3 格（Alt 正下方）**，修饰键仍是
+              左侧那一条纵向带状区域，没有散到右边去。
 
-            方向键保持普通键盘的倒 T：↑ 在第 5 列，← ↓ → 在第 2 行第 4~6 列，↑ 正对 ↓。
-          */}
-          <MobileKey label="Esc" onClick={() => handleAction('Escape')} />
-          <MobileKey active={mods.ctrl} label="Ctrl" onClick={() => toggleMod('ctrl')} />
-          <MobileKey active={mods.alt} label="Alt" onClick={() => toggleMod('alt')} />
-          <MobileKey label="Home" onClick={() => handleAction('Home')} />
-          <MobileKey label="↑" ariaLabel="上方向键" onClick={() => handleAction('ArrowUp')} repeat />
-          <MobileKey label="End" onClick={() => handleAction('End')} />
-          <MobileKey label="PgUp" ariaLabel="上一页" onClick={() => handleAction('PageUp')} repeat />
-          <MobileKey label="Tab" onClick={() => handleAction('Tab')} />
-          <MobileKey label="Del" ariaLabel="删除键" onClick={() => handleAction('Delete')} />
-          <MobileKey active={mods.shift} label="Shift" onClick={() => toggleMod('shift')} />
-          <MobileKey label="←" ariaLabel="左方向键" onClick={() => handleAction('ArrowLeft')} repeat />
-          <MobileKey label="↓" ariaLabel="下方向键" onClick={() => handleAction('ArrowDown')} repeat />
-          <MobileKey label="→" ariaLabel="右方向键" onClick={() => handleAction('ArrowRight')} repeat />
-          <MobileKey label="PgDn" ariaLabel="下一页" onClick={() => handleAction('PageDown')} repeat />
-        </div>
-      )}
+              方向键保持普通键盘的倒 T：↑ 在第 5 列，← ↓ → 在第 2 行第 4~6 列，↑ 正对 ↓。
+
+              第 2 行第 2 格的 Del 换成了「选择」：手机上的退格在软键盘里，前向删除极少用，
+              不再提供 Del。
+            */}
+            <MobileKey label="Esc" onClick={() => handleAction('Escape')} />
+            <MobileKey active={mods.ctrl} label="Ctrl" onClick={() => toggleMod('ctrl')} />
+            <MobileKey active={mods.alt} label="Alt" onClick={() => toggleMod('alt')} />
+            <MobileKey label="Home" onClick={() => handleAction('Home')} />
+            <MobileKey label="↑" ariaLabel="上方向键" onClick={() => handleAction('ArrowUp')} repeat />
+            <MobileKey label="End" onClick={() => handleAction('End')} />
+            <MobileKey label="PgUp" ariaLabel="上一页" onClick={() => handleAction('PageUp')} repeat />
+            <MobileKey label="Tab" onClick={() => handleAction('Tab')} />
+            <MobileKey
+              label={tr('选择')}
+              ariaLabel={tr('选择文字')}
+              onClick={enterSelectionMode}
+            />
+            <MobileKey active={mods.shift} label="Shift" onClick={() => toggleMod('shift')} />
+            <MobileKey label="←" ariaLabel="左方向键" onClick={() => handleAction('ArrowLeft')} repeat />
+            <MobileKey label="↓" ariaLabel="下方向键" onClick={() => handleAction('ArrowDown')} repeat />
+            <MobileKey label="→" ariaLabel="右方向键" onClick={() => handleAction('ArrowRight')} repeat />
+            <MobileKey label="PgDn" ariaLabel="下一页" onClick={() => handleAction('PageDown')} repeat />
+          </div>
+        ))}
     </div>
   )
 }

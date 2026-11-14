@@ -317,7 +317,7 @@
  * ⚠️ xterm（`.xterm`）与 Monaco（`.monaco-editor`）**刻意不在这里管**：两者都自带选区模型
  * 与 `user-select` 声明（xterm.css 自己就写了 `.xterm{user-select:none}`），靠自己的 DOM 层
  * 做选中与复制，外部规则别去碰（xterm 的复制走 `term.getSelection()`，与浏览器原生选区无关）。
- * 手机上「长按划词」是 `lib/terminal-touch-scroll.ts` 直接驱动 `term.select()` 实现的，
+ * 手机上的选字走键盘栏的「选择」+ 方向键（`TerminalPanel` 的选区模式，直接驱动 `term.select()`），
  * **不是**放开 `user-select` 的结果 —— 给 `.xterm` 加 `user-select:text` 不会让原生长按生效，
  * 只会把浏览器合成的鼠标事件放进来，跟单指滚动手势打架。
  * `FileHtmlPreview` 是 sandbox iframe（独立文档，宿主 CSS 到不了里面）、`BrowserPane` 是

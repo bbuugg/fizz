@@ -39,11 +39,17 @@ export interface TerminalInteractionsOptions {
   onPasteFailed: () => void
   /** 这个 term 是否仍是当前实例（异步读剪贴板期间可能已经换掉了会话） */
   isCurrent: () => boolean
+  /**
+   * 本次选区变化要不要跳过「选中即复制」。方向键选区模式下每次按键都会改选区，
+   * 不跳过会每 70ms 写一次剪贴板（安卓还会反复弹「已复制」系统提示）。
+   */
+  suppressCopyOnSelect?: () => boolean
 }
 
 /** 挂上三条容器交互，返回卸载函数 */
 export function attachTerminalInteractions(options: TerminalInteractionsOptions): () => void {
-  const { term, container, fontSizeRef, applyFontSize, sendInput, onPasteFailed, isCurrent } = options
+  const { term, container, fontSizeRef, applyFontSize, sendInput, onPasteFailed, isCurrent, suppressCopyOnSelect } =
+    options
 
   /**
    * 滚轮缩放：Ctrl/Cmd + 滚轮调整字号（普通滚轮仍交给 xterm 翻滚动缓冲）。
@@ -104,6 +110,7 @@ export function attachTerminalInteractions(options: TerminalInteractionsOptions)
    * 空选区不能写 —— 那会把剪贴板覆盖成空串。
    */
   const selectionSub = term.onSelectionChange(() => {
+    if (suppressCopyOnSelect?.()) return
     if (!getTerminalCopyOnSelect()) return
     const selection = term.getSelection()
     if (!selection) return
