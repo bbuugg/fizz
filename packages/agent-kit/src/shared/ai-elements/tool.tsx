@@ -245,6 +245,7 @@ function DetailDialog({
           <pre
             // 全局默认禁选（styles.css 的白名单制）：这块是要拿去复制 / 贴给别人的，显式放开
             data-selectable
+            // 折行显示：长参数 / 代码宁可换行也不要横向拖动
             className="max-h-[60vh] overflow-auto px-2 py-1.5 font-mono text-xs leading-5 whitespace-pre-wrap break-all"
           >
             {detail}

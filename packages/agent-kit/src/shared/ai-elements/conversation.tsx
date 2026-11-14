@@ -27,10 +27,6 @@
  */
 import { LiquidGlassButton } from "@fizz/ui/liquid-glass";
 import { cn } from "@fizz/agent-kit/shared/lib/utils";
-import {
-  PullToRefreshIndicator,
-  usePullToRefresh,
-} from "@fizz/agent-kit/shared/ai-elements/pull-to-refresh";
 import { ArrowDownIcon } from "lucide-react";
 import { useStickToBottom } from "use-stick-to-bottom";
 import type { ComponentProps } from "react";
@@ -123,30 +119,12 @@ export type ConversationProps = ComponentProps<"div"> & {
    * 默认 `false`（瞬时）。流式那一路由调用方传 `streaming` 打开。
    */
   smoothResize?: boolean;
-  /**
-   * 上拉刷新：给了就在消息区挂上「滚到底部继续上拉 → 松手重拉这条会话」，
-   * 并在**底边**显示指示器（见 `pull-to-refresh.tsx`）。
-   *
-   * 不传 = 完全不挂监听（容器工作台这类没有「重拉这条会话」语义的宿主）。
-   *
-   * ⚠️ 为什么不复用原来那颗「重新加载」按钮：错误只是**一种**该重拉的时机 ——
-   * 「一条消息都没有」很可能是**没加载成功**，那种状态下原来根本没有按钮可点。
-   */
-  onRefresh?: () => Promise<unknown> | unknown;
-  /**
-   * 是否允许触发上拉刷新（默认 `true`）。传给 `false` 时手势监听、指示器都不挂，
-   * 但容器仍保留 `overscroll-y-contain` —— 会话进行中要禁止的是「重拉会话」这个动作，
-   * 不能让页面退回浏览器自己的整页下拉刷新。
-   */
-  refreshEnabled?: boolean;
 };
 
 export const Conversation = ({
   className,
   resetKey,
   smoothResize = false,
-  onRefresh,
-  refreshEnabled = true,
   children,
   style,
   ...props
@@ -174,26 +152,6 @@ export const Conversation = ({
        */
       resize: smoothResize && !settling ? undefined : "instant",
     });
-
-  /**
-   * 上拉刷新（见 `pull-to-refresh.tsx`）：只有传了 `onRefresh`、且 `refreshEnabled`
-   * 才挂监听与指示器。
-   *
-   * 解构而不是拿整个对象：`attachPull` 是 `useCallback` 的稳定引用（只随 `enabled` 变），
-   * 而对象本身每次渲染都是新的 —— 把对象放进 `attachScroll` 的依赖会让 ref 回调每帧
-   * 重建、监听被反复摘挂。
-   */
-  const pullEnabled = !!onRefresh && refreshEnabled;
-  const {
-    attach: attachPull,
-    phase: pullPhase,
-    distance: pullDistance,
-  } = usePullToRefresh({
-    enabled: pullEnabled,
-    onRefresh: onRefresh ?? (() => undefined),
-  });
-  /** 上拉监听的卸载函数（与 `attachScroll` 同生命周期，节点换了要摘掉） */
-  const pullCleanupRef = useRef<(() => void) | null>(null);
 
   /**
    * 用户主动离开底部后置 true：**只有**滚回底部或 resetKey 才复位。
@@ -233,11 +191,7 @@ export const Conversation = ({
       containerObserverRef.current = null;
       userScrollCleanupRef.current?.();
       userScrollCleanupRef.current = null;
-      pullCleanupRef.current?.();
-      pullCleanupRef.current = null;
       if (!el) return;
-      // 下拉刷新：没传 `onRefresh` 时 `attachPull` 直接返回（不挂任何监听）
-      pullCleanupRef.current = attachPull(el) ?? null;
       /**
        * 用户主动上滚 → 立刻退出跟随。
        *
@@ -392,15 +346,14 @@ export const Conversation = ({
       ro.observe(el);
       containerObserverRef.current = ro;
     },
-    [scrollRef, stopScroll, scrollToBottom, attachPull]
+    [scrollRef, stopScroll, scrollToBottom]
   );
 
-  // 组件卸载时摘掉观察器、用户上滚监听与下拉监听（节点被换掉时由 attachScroll 自己清）
+  // 组件卸载时摘掉观察器与用户上滚监听（节点被换掉时由 attachScroll 自己清）
   useEffect(
     () => () => {
       containerObserverRef.current?.disconnect();
       userScrollCleanupRef.current?.();
-      pullCleanupRef.current?.();
     },
     []
   );
@@ -572,11 +525,10 @@ export const Conversation = ({
            */
           "relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden",
           /*
-           * `overscroll-y-contain`：只在挂了下拉刷新时加。滚到头继续拉不再向页面链式传递
-           * —— 少了它，手机上拉一下会触发**浏览器自己的整页下拉刷新**（整页重载），
-           * 比原来点按钮糟得多。不挂上拉刷新的宿主保持原状（滚动链没被改变）。
+           * `overscroll-y-contain`：滚到头继续拉不再向页面链式传递 —— 少了它，手机上
+           * 拉一下会触发**浏览器自己的整页下拉刷新**（整页重载），代价比任何页内刷新都大。
            */
-          onRefresh && "overscroll-y-contain",
+          "overscroll-y-contain",
           className
         )}
         /*
@@ -591,13 +543,6 @@ export const Conversation = ({
         {...props}
       >
         <div ref={contentRef}>{children}</div>
-        {/*
-         * 指示器放在**内容之后**：`sticky bottom-0` 要贴在滚动区底边，就必须是流里的
-         * 最后一个节点（放前面会变成贴在顶边 —— 那是下拉刷新的形状）。
-         */}
-        {pullEnabled ? (
-          <PullToRefreshIndicator phase={pullPhase} distance={pullDistance} />
-        ) : null}
       </div>
     </ConversationContext.Provider>
   );

@@ -227,21 +227,27 @@ export function MessageList({
 }: MessageListProps) {
   const tr = useT()
   /**
-   * 上拉刷新（滚到底后继续上拉、松手）→ 重拉这条会话（与标签右键的「刷新」同一个 action）。
+   * 重拉这条会话（与标签右键的「刷新」同一个 action）。
    *
-   * 这是原来错误块下方那颗「重新加载」的替代路径：错误只是该重拉的**一种**时机 ——
-   * 「一条消息都没有」往往是**没加载成功**，那种状态下原来根本没有按钮可点。所以不论
-   * 有没有消息、有没有报错，都支持同一个手势（见 `pull-to-refresh.tsx`）。
+   * 只由空态里那颗「重新加载会话」调用：一条消息都没有常常是历史没拉回来，光看空态
+   * 分不清「本来就没有」还是「加载失败」，得给一个显式出口。
    */
+  const [reloading, setReloading] = useState(false)
   const refreshConversation = useCallback(async () => {
-    if (!conversationId) return
+    if (!conversationId || reloading) return
     // 正在生成时 store 会拒绝（权威历史会把流式现场整段盖掉）—— 先说清为什么没反应
     if (streaming) {
       toast(tr('这一轮还在生成，先停止再重新加载'))
       return
     }
-    await useAgentStore.getState().reloadConversation(conversationId)
-  }, [conversationId, streaming, tr])
+    setReloading(true)
+    try {
+      const ok = await useAgentStore.getState().reloadConversation(conversationId)
+      if (ok) toast.success(tr('已重新加载会话'))
+    } finally {
+      setReloading(false)
+    }
+  }, [conversationId, streaming, tr, reloading])
   /**
    * 消息区根节点，给右侧「消息目录」定位用。
    *
@@ -363,14 +369,6 @@ export function MessageList({
       <Conversation
         className="min-h-0 flex-1"
         resetKey={resetKey}
-        /* 没有 conversationId（容器工作台）就不挂手势：那儿没有「重拉这条会话」的语义 */
-        onRefresh={conversationId ? refreshConversation : undefined}
-        /*
-         * 本轮还在生成时**禁止上拉刷新**（不只是点了弹提示）：手势监听与指示器都不挂，
-         * 但容器仍保留 `overscroll-y-contain`，避免退回浏览器自己的整页下拉刷新。
-         * 等 `streaming` 落回 false 再挂回来。
-         */
-        refreshEnabled={!streaming}
         /*
          * 只有「本轮正在流式输出」才用平滑跟随（消息向上流动的观感）；
          * 其余内容长高（图片加载完成、历史刷新…）一律瞬时贴底，不要自己滚。
@@ -426,7 +424,34 @@ export function MessageList({
               </div>
             </div>
           ) : total === 0 ? (
-            <ConversationEmptyState>{emptyState ?? <DefaultEmptyState />}</ConversationEmptyState>
+            <ConversationEmptyState>
+              {emptyState ?? <DefaultEmptyState />}
+              {/*
+                会话存在却一条消息都没有：多半是历史没拉回来（ACP 回放没起来 / 刷新正好
+                撞上装载窗口）。空态本身看不出「是本来就没有，还是加载失败」，这里给一个
+                显式出口，别让人以为会话被清空了。生成中不给 —— 那会和流式现场抢历史。
+              */}
+              {conversationId && !streaming ? (
+                <div className="flex flex-col items-center gap-1.5">
+                  <span className="text-xs text-muted-foreground">
+                    {tr('历史消息没有显示？')}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={reloading}
+                    onClick={() => void refreshConversation()}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground disabled:cursor-default disabled:opacity-60"
+                  >
+                    {reloading ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <RotateCw className="size-3.5" />
+                    )}
+                    {reloading ? tr('加载中…') : tr('重新加载会话')}
+                  </button>
+                </div>
+              ) : null}
+            </ConversationEmptyState>
           ) : (
             <>
               {/* 顶部哨兵：还有更早的消息没渲染时挂在这里，滚到顶自动再展开一批 */}

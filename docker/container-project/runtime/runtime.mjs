@@ -3160,6 +3160,7 @@ var CHAT = {
 	"重启会话": "Restart session",
 	"已重新加载会话": "Session reloaded",
 	"重新加载会话": "Reload session",
+	"历史消息没有显示？": "History not showing?",
 	"转换为内置 Agent 会话": "Convert to built-in Agent conversation",
 	"列出目录": "List directory",
 	"查找文件": "Find files",
@@ -3172,6 +3173,8 @@ var CHAT = {
 	"查看与编辑文件": "View & edit files",
 	"打开 AI 助手": "Open AI assistant",
 	"关闭 AI 助手": "Close AI assistant",
+	"让助手执行 / 读取这个终端…": "Ask the assistant to run / read this terminal…",
+	"让助手创建 / 打开 / 删除项目…": "Ask the assistant to create / open / delete projects…",
 	"在终端执行": "Run in terminal",
 	"读取终端输出": "Read terminal output",
 	"发送按键": "Send keys",
@@ -3607,6 +3610,15 @@ var WORKSPACE = {
 	"基础层被所有环境镜像共用：重建它之后，环境镜像还要各自重建一次才会用到新层。": "The base layer is shared by all environment images: after rebuilding it, each environment image must be rebuilt once more to use the new layer.",
 	"这里列的是服务端上的目录（Agent 就跑在那台机器上）。选中的目录会登记为项目。": "These are directories on the server (where the agent runs). The selected directory will be registered as a project.",
 	"选择文件夹…": "Choose folder…",
+	"选择目录": "Choose directory",
+	"选择远端目录": "Choose remote directory",
+	"只列出目录；选中的目录会作为这个远端工作区的根。": "Only directories are listed; the selected one becomes the root of this remote workspace.",
+	"绝对路径，回车跳转": "Absolute path — press Enter to go",
+	"在当前目录下新建文件夹": "Create a folder in the current directory",
+	"新文件夹名字，回车创建": "New folder name — press Enter to create",
+	"读取目录…": "Reading directory…",
+	"这个目录下没有子目录": "No subdirectories here",
+	"选择此目录": "Choose this directory",
 	"从 Git 导入…": "Import from Git…",
 	"新建容器型项目…": "New container project…",
 	"连接远端服务器…": "Connect to a remote server…",
@@ -3896,6 +3908,13 @@ var WORKSPACE = {
 	"请填写完整的快捷功能信息": "Fill in all quick action fields",
 	"快捷功能": "Quick actions",
 	"添加快捷功能": "Add quick action",
+	"工作区快捷功能": "Workspace quick actions",
+	"管理快捷功能…": "Manage quick actions…",
+	"「{name}」执行失败：{error}": "\"{name}\" failed: {error}",
+	"打开链接": "Open link",
+	"打开路径": "Open path",
+	"npm run dev（在工作区目录的终端里执行）": "npm run dev (runs in a terminal in the workspace directory)",
+	"src/index.ts（相对工作区，也可填绝对路径）": "src/index.ts (relative to the workspace, or an absolute path)",
 	"配置位置：{path}": "Config file: {path}",
 	"配置文件读取中…": "Reading config file…",
 	"复制配置路径": "Copy config path",
@@ -4378,7 +4397,7 @@ function createOutputDecoder() {
 }
 // packages/tools/src/ripgrep.ts
 /**
-* 随包 ripgrep：给本地工作区的 `grep` / `glob` 用（与 dsh 的实现同源）。
+* 随包 ripgrep：给本地工作区的 `grep` / `glob` 用。
 *
 * 为什么不用系统 `rg`：Windows / macOS 用户机器上通常没有；而 Node 侧自己遍历
 * （`backend.ts` 里那套）在大仓库上慢一个数量级，且正则方言与 rg 有出入。
@@ -4466,7 +4485,7 @@ function ignoreGlobs() {
 /**
 * 用 rg 搜内容。返回 `null` = 没有可用的 rg（调用方退回 JS 实现）。
 *
-* 与 dsh 的 grep 一致：遵守 `.gitignore`、不搜隐藏文件、跳过二进制；
+* 搜索规则：遵守 `.gitignore`、不搜隐藏文件、跳过二进制；
 * 额外附上 Fizz 的默认忽略目录（`dist` / `node_modules` 等没写进 .gitignore 的也算）。
 */
 function buildSearchArgs(opts) {
@@ -5107,8 +5126,7 @@ function clipToBudget(text, max = SUMMARY_BODY_CHARS) {
 }
 // packages/tools/src/str-replace-editor.ts
 /**
-* `str_replace_editor`：Anthropic 风格的「一个工具四个子命令」（与 dsh 的
-* `@deepseek-ai/dsh-tool-str-replace-editor` 同源）。
+* `str_replace_editor`：Anthropic 风格的「一个工具四个子命令」。
 *
 * 存在的意义不是再抄一遍 `read` / `write` / `edit`，而是**兼容**：很多提示词、技能、
 * 从 Claude Code 搬来的工作流都会直接调这个名字。语义上它是一个独立面：
@@ -5117,14 +5135,14 @@ function clipToBudget(text, max = SUMMARY_BODY_CHARS) {
 * - `str_replace`：`old_str` 必须**唯一命中**，`new_str` 省略 = 删掉；
 * - `insert`：在 `insert_line` 那行**之后**插入。
 *
-* 与 dsh 的差别只有一处，且是刻意的：dsh 要求**绝对路径**（它的执行世界没有「工作区根」
-* 这个概念），Fizz 的模型一直按「相对工作区根」工作 —— 所以这里相对路径按工作区解析，
-* 绝对路径只要落在工作区内也接受。错误文案仍保持 dsh 原样。
+* 唯一一处刻意偏差：这个工具原本要求**绝对路径**，而 Fizz 的模型一直按
+* 「相对工作区根」工作 —— 所以这里相对路径按工作区解析，绝对路径只要落在工作区内
+* 也接受。错误文案保持原样。
 *
 * 读后写：`str_replace` / `insert` 与内置 `edit` 走同一张观察表（改之前必须读过），
 * 否则「唯一命中」这条硬要求会让模型在没看过文件时反复瞎猜。
 */
-/** view 的默认输出上限（与 dsh 一致） */
+/** view 的默认输出上限 */
 var VIEW_MAX_OUTPUT_CHARS = 16e3;
 var TRUNCATED_MESSAGE = "<response clipped><NOTE>To save on context only part of this file has been shown to you. You should retry this tool after you have searched inside the file with `grep -n` in order to find the line numbers of what you are looking for.</NOTE>";
 var DEFAULT_DESCRIPTION = `Custom editing tool for viewing, creating and editing files
@@ -5163,7 +5181,7 @@ function formatFileView(path, content, viewRange, maxOutputChars = VIEW_MAX_OUTP
 	const numbered = lines.map((line, index) => `${String(initialLine + index).padStart(6, " ")}  ${line}`).join("\n");
 	return maybeTruncate(`${prompt}:\n${numbered}\n`, maxOutputChars);
 }
-/** 唯一命中才替换；返回替换后的全文（dsh 的 `str_replace` 语义） */
+/** 唯一命中才替换；返回替换后的全文 */
 function replaceUnique(before, oldStr, newStr, path) {
 	const offset = before.indexOf(oldStr);
 	if (offset < 0) throw new Error(`No replacement was performed, old_str \`${oldStr}\` did not appear verbatim in ${path}.`);
@@ -5194,7 +5212,7 @@ function insertAfterLine(before, insertLine, newStr) {
 		...lines.slice(insertLine)
 	].join("\n");
 }
-/** 组装 `str_replace_editor` 工具（注册名与 dsh 一致） */
+/** 组装 `str_replace_editor` 工具 */
 function buildStrReplaceEditorTool(deps) {
 	const { backend } = deps;
 	const maxOutputChars = deps.maxOutputChars ?? 16e3;
@@ -5207,7 +5225,7 @@ function buildStrReplaceEditorTool(deps) {
 			display: backend.rel(abs)
 		};
 	};
-	/** 目录树：最多两层，跳过隐藏项 / node_modules / __pycache__（与 dsh 一致） */
+	/** 目录树：最多两层，跳过隐藏项 / node_modules / __pycache__ */
 	const listDirectory = async (abs, display) => {
 		const rows = [`d\t${display}`];
 		const visit = async (dir, depth) => {
@@ -5328,7 +5346,7 @@ async function readText(backend, abs) {
 * read 的 offset/limit 即可，不走 output-log（那里只留给 bash）。
 */
 var MAX_FILE_BYTES = 8e6;
-/** 一次 read 的**默认且最大**行数（与 dsh 一致：传更大的值是错误，不是夹取） */
+/** 一次 read 的**默认且最大**行数（传更大的值是错误，不是夹取） */
 var READ_LIMIT = 2e3;
 /** 单行最长返回多少字符（超出截断并标注） */
 var READ_MAX_LINE_LENGTH = 2e3;
@@ -5403,11 +5421,11 @@ function formatEditOutput(display, replaceAll) {
 	return replaceAll ? `The file ${display} has been updated. All occurrences were successfully replaced.` : `The file ${display} has been updated successfully.`;
 }
 /**
-* 字面量替换（与 dsh 的 `editText` 同语义）。
+* 字面量替换（精确匹配）。
 *
 * - 在 **LF 归一化**的文本上匹配，最后按原文的主流行尾还原（CRLF 文件改完还是 CRLF）；
 * - 默认**必须唯一命中**：0 处报「没找到」，多处要求 `replace_all`（模型自己决定）；
-* - 不存在「近似匹配」：行尾 / 缩进 / 行号前缀的差异都要模型自己抄对，这是 dsh 的取舍。
+* - 不存在「近似匹配」：行尾 / 缩进 / 行号前缀的差异都要模型自己抄对。
 */
 function applyLiteralEdit(text, oldString, newString, replaceAll, display) {
 	const crlf = (text.match(/\r\n/g)?.length ?? 0) > 0 && (text.match(/\r\n/g)?.length ?? 0) * 2 >= (text.match(/\n/g)?.length ?? 0);
@@ -5436,7 +5454,7 @@ function intentOf(input) {
 	return typeof value === "string" ? value.trim() : "";
 }
 /**
-* 把后端执行结果拼成 `bash` 的模型可见文本（与 dsh 的 `renderResult` 同格式）：
+* 把后端执行结果拼成 `bash` 的模型可见文本：
 * stdout、`[stderr]` 段、`[exit code: N]` 标记；全空写 `(no output)`。
 *
 * 非 0 退出码**不是**工具错误（模型自己决定怎么办）；只有启动失败这种基础设施问题才抛错。
@@ -5472,8 +5490,8 @@ function buildAgentTools(root, opts) {
 	/**
 	* 观察表：本次工具集生命周期内「模型读过哪些文件、读到的版本是什么」。
 	*
-	* 对应 dsh 的 `fs-observation-policy`：write / edit 只能改「读过且没被别人改过」的文件。
-	* 与 dsh 的差别：工具集一轮建一次，所以这张表只活在**一轮**里（跨轮要重读）；
+	* 读后写保护：write / edit 只能改「读过且没被别人改过」的文件。
+	* 工具集一轮建一次，所以这张表只活在**一轮**里（跨轮要重读）；
 	* 校验是写前再 stat 一次，不是后端层的原子 CAS —— 中间被外部改掉的极小窗口仍存在。
 	*/
 	const observed = /* @__PURE__ */ new Map();
@@ -5632,8 +5650,8 @@ function buildAgentTools(root, opts) {
 				const absPath = backend.resolve(path);
 				if (!await backend.stat(absPath)) throw new Error(`cannot list "${path || "."}": not found`);
 				/**
-				* 与 dsh 一致：**包含**隐藏文件与被 .gitignore 忽略的文件，只排除版本库元数据目录。
-				* 这条与 grep 相反（grep 遵守 .gitignore），是 dsh 刻意的取舍。
+				* **包含**隐藏文件与被 .gitignore 忽略的文件，只排除版本库元数据目录。
+				* 这条与 grep 相反（grep 遵守 .gitignore）。
 				*/
 				const out = await backend.find({
 					pattern,
@@ -5703,7 +5721,6 @@ function buildAgentTools(root, opts) {
 		bash: tool({
 			description: tr("在工作区目录下执行 shell 命令并返回输出（stdout + stderr）。适用于运行构建 / 测试 / git 操作 / 安装依赖 / 启动服务等。命令默认超时 120 秒。输出超过一个工具结果的预算时会被完整落盘到工作区的 .fizz/tool-output/ 下，结果里给出相对路径、全文行数与本次返回了哪几行；其余部分用 read 传那个 path 加 offset / limit 按行接着读，也可以用 grep 检索（常见于构建 / 测试的完整日志）。注意这是真实执行环境，删除、覆盖、危险命令（rm -rf、git push --force 等）前先说明影响。需要在**本轮结束后继续跑**的进程（dev server / watch / 长构建）把 run_in_background 设为 true：调用会立刻返回一个后台任务 id，它不受本轮超时与停止影响，输出显示在输入框上方的任务面板里；当前这一轮就要用它的输出时**不要**开这个开关。" + shellNote, "Run a shell command in the workspace and return stdout + stderr. Use it for builds, tests, git, installing dependencies, starting services, etc. Default timeout is 120 seconds. If output exceeds one tool result, the full text is saved under .fizz/tool-output/ and the result includes the relative path, total lines, and which lines were returned; read the rest with read offset/limit on that path, or search it with grep (common for full build/test logs). This is a real execution environment: explain the impact before deleting, overwriting, or running dangerous commands (rm -rf, git push --force, etc.). Set run_in_background: true for processes that must keep running after this turn (dev servers, watchers, long builds): the call returns a background task id immediately, it is not affected by this turn's timeout or stop, and its output shows in the task panel above the input box; do NOT set it when the current turn needs the output." + shellNoteEn),
 			inputSchema: z.object({
-				description: z.string().describe("Clear, concise description of what this command does in active voice, e.g. \"List files in the workspace\"."),
 				command: z.string().describe("The command to execute."),
 				timeoutMs: z.number().optional().describe("Timeout in milliseconds; default 120000, max 300000."),
 				workdir: z.string().optional().describe("Working directory for this command. Defaults to the session workspace; a relative path is resolved against it."),
@@ -5830,7 +5847,7 @@ function buildAgentTools(root, opts) {
 	}, opts.includeTools);
 }
 /**
-* grep 结果：与 dsh 的 `formatGrepOutput` 同格式。
+* grep 结果（格式固定）：
 *
 * ```
 * Found 3 matches
@@ -5849,7 +5866,7 @@ function formatGrepOutput(files, total) {
 	}).join("\n\n")}`;
 }
 /**
-* `include` 是 dsh / ripgrep 的 glob（`*.ts`、`*.{js,jsx}`），而 Fizz 的本地搜索后端
+* `include` 是 glob（`*.ts`、`*.{js,jsx}`），而 Fizz 的本地搜索后端
 * 收的是**文件名正则**。这里做一层最小转换：`**` → `.*`、`*` → `[^/]*`、`?` → `.`、
 * `{a,b}` → `(a|b)`。远端后端本来就把 filePattern 当正则用，两边一致。
 *

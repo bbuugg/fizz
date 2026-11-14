@@ -112,7 +112,7 @@ export function buildAssistantInstructions(): string {
     '- web_fetch 抓网页(只认 http(s),超长正文会截断不落盘);查某个 CLI 的参数 / 排错时可以用它翻官方文档。todo_write 只在确实有三步以上时建清单,每次传完整清单;',
     '- 外部 Agent(ACP)配置也能管:list_acp_agents 看现状(拿 id)、detect_acp_agents 扫本机 PATH 上装了哪些(只读,不会装东西;用户说「我装了 Claude Code / Codex」但不确定命令时先用它)、probe_acp_models 连上某条列出它广告的模型(只读,但会起一次进程)、create_acp_agent / update_acp_agent / delete_acp_agent 管配置本身;',
     '- ACP 的启动命令在**跑 Agent 的机器**上 spawn 成子进程,args 必须是该 CLI 真实的 ACP 入口(gemini --acp / copilot --acp / opencode acp / codex-acp / claude-agent-acp 之类);不确定就别猜,先 detect 或问用户;Windows 上 npm 装的 CLI 常要 .cmd 后缀;',
-    '- **ACP 配好也不等于用上**:它是**会话级**的后端选择 —— 要让用户**新建**一个会话、后端选「外部 Agent」、再挑这一条(已有会话的后端不能改)。「会话模型下拉里暴露哪几个模型」用 probe_acp_models 拿到候选后把选中的几条交给 update_acp_agent 的 models(空数组 = 一个都不列,不传 = 沿用);',
+    '- **ACP 配好也不等于用上**:它是**会话级**的后端选择 —— 要让用户**新建**一个会话、后端选「外部 Agent」、再挑这一条(已有会话的后端不能改)。「会话模型下拉里暴露哪几个模型」:先用 list_acp_agents 看该条现在暴露了哪些(models 字段),再用 probe_acp_models 拿候选(返回里 alreadyExposed 标了哪些已经配过,只把没配的传下去);**只是「再加一个」就用 update_acp_agent 的 addModels**(按 value 合并、不动已有),整份重设才用 models(会替换,空数组 = 一个都不列)。用户说「加」的时候绝不要传 models —— 那会把已配置的全换掉;',
     '- 定时任务的创建 / 修改 / 删除 / 启停与写插件都会弹审批卡,且产出或改动的是「以后会自动执行」的东西 —— 动手前先用一句话向用户讲清你要做什么;改 / 删定时任务前先 list 出来确认是哪一条;',
     '- 根目录外的创建、删除、worktree 变更都会弹审批卡等用户点头;',
     '- remove_project 缺省只移除登记、不删磁盘文件;deleteFiles=true 只对 worktree 项目生效;删之前必须向用户复述一次要删什么;',
@@ -245,12 +245,13 @@ export async function startAssistantTurn(input: AssistantSendInput): Promise<Sta
   /**
    * 这一轮的工具权限档(客户端在助手输入框左侧那颗 pill 上选的;没带 = `confirm`)。
    *
-   * 两处落地**范围不同**,别按一个想:
-   * - `terminal`(客户端工具):三档全生效 —— 闸在 `buildClientToolset`,依据是客户端
-   *   自己声明在 `ClientToolSpec.mutating` 上的标记;
-   * - `project`(项目工具):只有 `readonly` 生效(拒绝全部改动),`confirm` / `full` 一律
-   *   弹审批 —— 项目工具的作用域在单个工作区之外,且「一次授权、长期自动执行」,见
-   *   `guardMutation` 的说明。别拿这里的档位去放松它。
+   * 两种作用域**同一套三档**,别按一个想:
+   * - `terminal`(客户端工具):闸在 `buildClientToolset`,依据是客户端自己声明在
+   *   `ClientToolSpec.mutating` 上的标记;
+   * - `project`(项目 / 模型 / MCP / ACP 配置工具):闸在 `guardMutation`。
+   * 两边都是 `readonly` 拒绝、`confirm` 弹卡、`full` 直接放行 —— 用户在输入框选的哪一档，
+   * 对助手的所有工具生效（2026-11 反馈过「部分工具不受 pill 控制」，就是因为
+   * `guardMutation` 从前只认 readonly）。档位用 getter 现取，中途切换立刻生效。
    */
   const permissionMode = (input.permissionMode ?? prefs.permissionMode) as AiPermissionMode
   /**

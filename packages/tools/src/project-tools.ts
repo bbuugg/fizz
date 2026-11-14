@@ -5,19 +5,23 @@
  * **项目清单本身**(跨工作区),所以不持 root,服务能力全部经 `deps` 注入 ——
  * `packages/tools` 不 import 领域包 / 服务端模块,保持分层与可离线验证。
  *
- * 审批策略(spec 4.5,与内置 write 的 guardWrite 刻意不同):
- * - `readonly` 档:变更类直接拒绝;
- * - **整项目级操作**(根目录外的创建、删除、worktree 增删)不管权限档,**一律弹审批**;
- *   没有确认回调时按拒绝处理 —— 绝不静默放行一个能删项目的环境;
- * - 默认根目录内的创建免审批(低风险、高频);
- * - 只读工具(list / open / 浏览目录)任何模式都不拦。
- * - **定时任务的全部变更(create / update / delete / setEnabled)与 create_plugin 一律弹审批**:
- *   它们要么产出「以后会自动执行」的东西(定时任务到点无人值守跑 agent、插件下一轮起执行代码),
- *   要么能改掉 / 停掉已授权的自动执行,比建个目录危险得多(`list_task_triggers` 是只读,不拦)。
+ * 审批策略：**与内置工具的 `guardWrite` 同一套三档**（统一由输入框那颗权限 pill 控制）：
+ * - `readonly` 档：变更类直接拒绝；
+ * - `confirm` 档：需要确认的操作弹审批卡；没有确认回调时按拒绝处理 —— 绝不静默放行；
+ * - `full` 档（「完全访问」）：直接执行，不弹卡。用户是**显式**选的这一档，与主会话里
+ *   `bash` 在 `full` 下不问是同一口径；别在这里再偷偷加一层「无论如何都要问」，
+ *   那会让同一颗 pill 对两组工具给出两种行为（2026-11 的反馈就是「部分工具不受 pill 控制」）。
+ * - 默认根目录内的创建本来就是低风险免审批（`needsConfirm: false`），三档都不问。
  *
- * `create_conversation` 是唯一的例外档位:**任何权限档都不弹审批**。它产出的是一个空会话
- * (不带消息、不动磁盘),用户看一眼侧栏就能删掉 —— 按「删除数据前要审批」的口径,
- * 它连「数据」都还没产生,够不上审批;但 `readonly` 仍然拒绝(它确实是变更)。
+ * 哪些操作在 `confirm` 档下必弹（`needsConfirm: true`）：
+ * - **整项目级操作**（根目录外的创建、删除、worktree 增删）；
+ * - **定时任务的全部变更**（create / update / delete / setEnabled）与 `create_plugin` ——
+ *   它们要么产出「以后会自动执行」的东西（到点无人值守跑 agent、插件下一轮起执行代码），
+ *   要么能改掉 / 停掉已授权的自动执行，比建个目录危险得多（`list_task_triggers` 是只读，不拦）。
+ *
+ * `create_conversation` 是唯一的例外档位：**`confirm` 档也不弹**。它产出的是一个空会话
+ * （不带消息、不动磁盘），用户看一眼侧栏就能删掉 —— 按「删除数据前要审批」的口径，
+ * 它连「数据」都还没产生，够不上审批；但 `readonly` 仍然拒绝（它确实是变更）。
  */
 import { join, resolve } from 'node:path'
 import { tool, type ToolSet } from 'ai'
@@ -43,15 +47,16 @@ export interface ProjectDirsResult {
 /**
  * 变更类工具的闸门依赖（项目工具 / 模型配置工具共用，见 `guardMutation`）。
  *
- * 拆出来是为了让 `model-tools.ts` 复用同一个实现 —— 两套工具的作用域都在单个工作区之外，
- * 审批口径必须一致：`readonly` 一律拒绝、其余档一律弹审批。
+ * 拆出来是为了让 `model-tools.ts` / `mcp-tools.ts` / `acp-tools.ts` 复用同一个实现 ——
+ * 这些工具的作用域都在单个工作区之外，审批口径必须与内置工具完全一致：
+ * `readonly` 拒绝 / `confirm` 弹卡 / `full` 放行。
  */
 export interface MutationGuardDeps {
   permissionMode: 'full' | 'confirm' | 'readonly'
   /**
    * 运行中实时读取权限档（优先于 `permissionMode`）。工具集一轮建一次，静态档会把权限
-   * 快照死在整轮里；传 getter 则闸门每次调用现取。**只影响 `readonly` 那一档的判定**
-   * ——项目工具恒弹审批（见 `guardMutation`），切到只读能立刻拒绝、切回不放松审批。
+   * 快照死在整轮里；传 getter 则闸门每次调用现取 —— 用户在输入框把 pill 从「确认」切成
+   * 「完全访问」后，下一次工具调用就不再弹卡（见 `guardMutation`）。
    */
   getPermissionMode?: () => 'full' | 'confirm' | 'readonly'
   requestConfirm?: (req: AgentConfirmInput) => Promise<boolean>
@@ -280,15 +285,21 @@ ${indentBlock(executeBody.trim(), 8)}
 /**
  * 变更类操作的统一闸门。返回 null = 放行;返回字符串 = 直接作为工具结果(回绝说明)。
  *
- * 项目工具与模型配置工具（`model-tools.ts`）共用这一份 —— 作用域都在单个工作区之外。
+ * 项目 / 模型 / MCP / ACP 四组配置工具共用这一份，**三档语义与内置工具的 `guardWrite`
+ * 完全一致**：`readonly` 拒绝、`confirm` 按 `needsConfirm` 弹卡、`full` 直接放行。
+ * 档位每次现取（`getPermissionMode`），所以输入框那颗 pill 中途切换立刻生效。
  */
 export async function guardMutation(
   deps: MutationGuardDeps,
   args: { needsConfirm: boolean; denied: string; command: string; toolCallId: string; toolName: string }
 ): Promise<string | null> {
-  if ((deps.getPermissionMode?.() ?? deps.permissionMode) === 'readonly') {
-    return `当前是只读模式:${args.denied}。请把这一点告诉用户(他可以在「设置 → 通用」里把权限切换成「确认模式」或「完全访问」),不要反复尝试同类操作。`
+  const mode = deps.getPermissionMode?.() ?? deps.permissionMode
+  if (mode === 'readonly') {
+    return `当前是只读模式:${args.denied}。请把这一点告诉用户(他可以在输入框左侧的权限选择里切换成「确认模式」或「完全访问」),不要反复尝试同类操作。`
   }
+  // 「完全访问」= 用户在输入框显式选的那一档：与主会话的 bash 同一口径，不再二次确认。
+  // 别在这里另加「危险操作无论如何都问」的例外——同一颗 pill 必须对两组工具给出同一种行为。
+  if (mode === 'full') return null
   if (!args.needsConfirm) return null
   if (!deps.requestConfirm) {
     return `这个操作(${args.denied})需要用户确认,但当前环境没有可用的确认通道,已取消。请让用户改用界面操作,不要重试。`

@@ -14,7 +14,17 @@ import { ACP_TOOLS, buildAcpTools, type AcpAgentSummary, type AcpToolsDeps } fro
 function deps(over: Partial<AcpToolsDeps['acp']> = {}, confirm = true): AcpToolsDeps {
   const store: AcpAgentSummary[] = [
     { id: 'a1', name: 'Codex CLI', command: 'codex-acp', args: [] },
-    { id: 'a2', name: 'opencode', command: 'opencode', args: ['acp'], type: 'opencode' }
+    {
+      id: 'a2',
+      name: 'opencode',
+      command: 'opencode',
+      args: ['acp'],
+      type: 'opencode',
+      models: [
+        { value: 'm-a', name: 'Model A' },
+        { value: 'm-b', name: 'Model B' }
+      ]
+    }
   ]
   return {
     permissionMode: 'confirm',
@@ -77,6 +87,12 @@ describe('list_acp_agents', () => {
     expect(out).toContain('"id": "a2"')
     expect(out).toContain('"acp"')
   })
+
+  it('把已配置的模型清单原样报出来（否则模型无法「只加一条」）', async () => {
+    const out = await run(deps(), 'list_acp_agents', {})
+    const parsed = JSON.parse(out) as Array<{ id: string; models: Array<{ value: string }> }>
+    expect(parsed.find((a) => a.id === 'a2')?.models.map((m) => m.value)).toEqual(['m-a', 'm-b'])
+  })
 })
 
 describe('detect_acp_agents', () => {
@@ -97,11 +113,57 @@ describe('probe_acp_models', () => {
     expect(instance.acp.probeModels).toHaveBeenCalledWith('a1')
   })
 
+  it('标出哪些模型已经配过（alreadyExposed）', async () => {
+    const instance = deps()
+    // 注意 a2 的现有清单是 m-a / m-b，探针返回 m-a + m-c
+    instance.acp.probeModels = vi.fn(async () => [
+      { value: 'm-a', name: 'Model A' },
+      { value: 'm-c', name: 'Model C' }
+    ])
+    const out = await run(instance, 'probe_acp_models', { id: 'a2' })
+    const parsed = JSON.parse(out) as {
+      models: Array<{ value: string; alreadyExposed: boolean }>
+    }
+    expect(parsed.models.find((m) => m.value === 'm-a')?.alreadyExposed).toBe(true)
+    expect(parsed.models.find((m) => m.value === 'm-c')?.alreadyExposed).toBe(false)
+  })
+
   it('未知 id 不探测', async () => {
     const instance = deps()
     const out = await run(instance, 'probe_acp_models', { id: 'nope' })
     expect(out).toContain('没有 id 为 nope')
     expect(instance.acp.probeModels).not.toHaveBeenCalled()
+  })
+})
+
+describe('权限档：与输入框那颗 pill 同一口径', () => {
+  it('full（完全访问）：不弹审批，直接落盘', async () => {
+    const instance = deps()
+    instance.permissionMode = 'full'
+    await run(instance, 'create_acp_agent', { name: 'X', command: 'x-acp' })
+    expect(instance.requestConfirm).not.toHaveBeenCalled()
+    expect(instance.acp.save).toHaveBeenCalled()
+  })
+
+  it('readonly：直接拒绝，既不弹审批也不落盘', async () => {
+    const instance = deps()
+    instance.permissionMode = 'readonly'
+    const out = await run(instance, 'create_acp_agent', { name: 'X', command: 'x-acp' })
+    expect(out).toContain('只读模式')
+    expect(instance.requestConfirm).not.toHaveBeenCalled()
+    expect(instance.acp.save).not.toHaveBeenCalled()
+  })
+
+  it('运行中改档立刻生效（getPermissionMode 每次现取）', async () => {
+    const instance = deps()
+    let mode: 'full' | 'confirm' | 'readonly' = 'confirm'
+    instance.getPermissionMode = () => mode
+    await run(instance, 'create_acp_agent', { name: 'A', command: 'a-acp' })
+    expect(instance.requestConfirm).toHaveBeenCalledTimes(1)
+    // 用户把 pill 切成「完全访问」：下一次调用不该再弹
+    mode = 'full'
+    await run(instance, 'create_acp_agent', { name: 'B', command: 'b-acp' })
+    expect(instance.requestConfirm).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -163,6 +225,58 @@ describe('update_acp_agent', () => {
       command: 'opencode',
       models: []
     })
+  })
+
+  it('addModels 在现有清单上合并，不替换已有模型', async () => {
+    const instance = deps()
+    await run(instance, 'update_acp_agent', {
+      id: 'a2',
+      addModels: [
+        { value: 'm-b', name: 'Model B (new)' },
+        { value: 'm-c', name: 'Model C' }
+      ]
+    })
+    expect(instance.acp.save).toHaveBeenCalledWith({
+      id: 'a2',
+      name: 'opencode',
+      command: 'opencode',
+      models: [
+        { value: 'm-a', name: 'Model A' },
+        { value: 'm-b', name: 'Model B (new)' },
+        { value: 'm-c', name: 'Model C' }
+      ]
+    })
+  })
+
+  it('审批卡上能看出这次改了模型（新增 / 重设）', async () => {
+    const instance = deps()
+    await run(instance, 'update_acp_agent', {
+      id: 'a2',
+      addModels: [{ value: 'm-c', name: 'Model C' }]
+    })
+    const confirm = instance.requestConfirm as unknown as {
+      mock: { calls: Array<[{ command: string }]> }
+    }
+    expect(confirm.mock.calls[0][0].command).toContain('新增 1 个模型')
+
+    const reset = deps()
+    await run(reset, 'update_acp_agent', { id: 'a2', models: [] })
+    const resetConfirm = reset.requestConfirm as unknown as {
+      mock: { calls: Array<[{ command: string }]> }
+    }
+    expect(resetConfirm.mock.calls[0][0].command).toContain('模型清单重设为 0 个')
+  })
+
+  it('models 与 addModels 同时传直接回绝，不弹审批', async () => {
+    const instance = deps()
+    const out = await run(instance, 'update_acp_agent', {
+      id: 'a2',
+      models: [],
+      addModels: [{ value: 'm-c', name: 'Model C' }]
+    })
+    expect(out).toContain('只能传一个')
+    expect(instance.requestConfirm).not.toHaveBeenCalled()
+    expect(instance.acp.save).not.toHaveBeenCalled()
   })
 
   it('只传名字时 args 沿用原值（不会被清空）', async () => {

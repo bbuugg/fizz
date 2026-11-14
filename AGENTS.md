@@ -66,7 +66,7 @@ Fizz 是自托管的 AI Agent 工作台：**所有能力跑在一个 Node 进程
 
 ### 权限与审批
 
-- **普通工作区工具**用 `guardWrite`（每次现取权限档，`confirm` 档 + 有回调才弹卡）；**项目工具**用 `guardMutation`（只认 readonly，删项目 / worktree / 定时任务 / 插件一律弹审批）。没有确认通道时**按拒绝**处理，绝不静默放行。
+- **普通工作区工具**用 `guardWrite`、**项目 / 模型 / MCP / ACP 配置工具**用 `guardMutation`：**两者的三档语义必须一致**（`readonly` 拒绝 / `confirm` 弹卡 / `full` 放行），档位每次都现取，输入框那颗 pill 对助手的所有工具生效。没有确认通道时**按拒绝**处理，绝不静默放行。
 - **`project-tools` 只挂给项目管理助手**，普通会话不挂：这组工具作用域在工作区之外，挂进去等于让 agent 从侧门绕开 `resolveInside`。
 - **权限档能在一轮中途改，必须现取**（`getPermissionMode?: () => AiPermissionMode`），别当静态值闭包捕获。系统提示词是快照——闸是权威，提示词只是引导。
 - **「始终允许」的键是命令原文，不是工具名**（按工具名记 = 点一次放行该工具的一切调用）；落盘 `approvedCommands`，每次审批前现读盘。「始终拒绝」只记内存。
@@ -113,6 +113,7 @@ npm run dev:stack      # 构建 server + web 并启动（7801）
 npm run dev:web        # 另开终端：vite（5173，/api 已代理到 7801，不需要 CORS）
 npm run build:server   # 只构建服务端
 npm run build:web      # 只构建网页（改完前端要重跑，server 同源托管 dist）
+npm run build:mobile:hosted  # 构建手机版（别用 build:mobile，那个会连 cap sync）
 npm run typecheck      # 全量类型检查（提交前必跑）
 npm run check:boundaries  # 包边界 + 会话作用域检查，必须 0 违规
 npm run check:scope    # 只跑会话作用域检查（store 里不许「读焦点当默认目标」）

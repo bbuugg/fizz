@@ -159,6 +159,7 @@ export const CHAT: Record<string, string> = {
   '重启会话': 'Restart session',
   '已重新加载会话': 'Session reloaded',
   '重新加载会话': 'Reload session',
+  '历史消息没有显示？': 'History not showing?',
   '转换为内置 Agent 会话': 'Convert to built-in Agent conversation',
   '列出目录': 'List directory',
   '查找文件': 'Find files',
