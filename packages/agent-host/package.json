@@ -44,7 +44,7 @@
     "@fizz/shells": "*",
     "@fizz/workspace": "*",
     "@hono/node-server": "^2.1.3",
-    "hono": "^4.10.3",
+    "hono": "^4.13.18",
     "node-pty": "^1.1.0"
   },
   "peerDependencies": {
