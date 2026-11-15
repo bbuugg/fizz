@@ -511,7 +511,7 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
       description:
         'Read a UTF-8 text file and return line-numbered content.',
       inputSchema: z.object({
-        file_path: z.string().describe('Path to read, resolved by the filesystem backend.'),
+        file_path: z.string().describe('Path to read.'),
         offset: z.number().optional().describe('1-based first line to return. Defaults to 1.'),
         limit: z
           .number()
@@ -572,7 +572,7 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
         file_path: z
           .string()
           .describe(
-            'Path to write, resolved by the filesystem backend. Provide `file_path` before `content` in the arguments.'
+            'Path to write. Provide `file_path` before `content` in the arguments.'
           ),
         content: z.string().describe('Full UTF-8 text content to write.')
       }),
@@ -607,7 +607,7 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
         file_path: z
           .string()
           .describe(
-            'Path to edit, resolved by the filesystem backend. Provide `file_path` before `old_string` and `new_string` in the arguments.'
+            'Path to edit. Provide `file_path` before `old_string` and `new_string` in the arguments.'
           ),
         old_string: z.string().describe('Literal text to replace.'),
         new_string: z

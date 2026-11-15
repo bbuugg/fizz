@@ -5335,7 +5335,7 @@ function buildAgentTools(root, opts) {
 		read: tool({
 			description: "Read a UTF-8 text file and return line-numbered content.",
 			inputSchema: z.object({
-				file_path: z.string().describe("Path to read, resolved by the filesystem backend."),
+				file_path: z.string().describe("Path to read."),
 				offset: z.number().optional().describe("1-based first line to return. Defaults to 1."),
 				limit: z.number().optional().describe(`Maximum number of lines to return. Defaults to ${READ_LIMIT}.`)
 			}),
@@ -5378,7 +5378,7 @@ function buildAgentTools(root, opts) {
 		write: tool({
 			description: "Create or fully replace a UTF-8 text file.",
 			inputSchema: z.object({
-				file_path: z.string().describe("Path to write, resolved by the filesystem backend. Provide `file_path` before `content` in the arguments."),
+				file_path: z.string().describe("Path to write. Provide `file_path` before `content` in the arguments."),
 				content: z.string().describe("Full UTF-8 text content to write.")
 			}),
 			execute: async (input, options) => {
@@ -5405,7 +5405,7 @@ function buildAgentTools(root, opts) {
 		edit: tool({
 			description: "Edit an existing UTF-8 text file by replacing literal text.",
 			inputSchema: z.object({
-				file_path: z.string().describe("Path to edit, resolved by the filesystem backend. Provide `file_path` before `old_string` and `new_string` in the arguments."),
+				file_path: z.string().describe("Path to edit. Provide `file_path` before `old_string` and `new_string` in the arguments."),
 				old_string: z.string().describe("Literal text to replace."),
 				new_string: z.string().describe("Literal replacement text. Use an empty string to delete the match."),
 				replace_all: z.boolean().optional().describe("Replace all matches. Defaults to false; when false, old_string must appear exactly once.")
