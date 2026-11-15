@@ -4,7 +4,7 @@
  * 主要文件：
  * - `tools.ts` —— 文件读写 / 命令执行工具（路径安全靠 contracts/workspace，
  *   技能读取靠 @fizz/skills，破坏性操作走注入的审批回调）；
- * - `ask-followup.ts` —— `ask_followup_question` 提问工具（transport 无关，
+ * - `ask-followup.ts` —— `ask` 提问工具（transport 无关，
  *   由调用方注入答复通道）；
  * - `web-fetch.ts` —— 联网抓取（Playwright 渲染 + turndown 转 Markdown，
  *   两者都走动态 import，没装时给可读错误）；

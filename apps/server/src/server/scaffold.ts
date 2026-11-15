@@ -51,7 +51,7 @@ export class ScaffoldError extends Error {
  *
  * 刻意要求小写：技能目录名同时是**技能的默认名**（`SKILL.md` 没有 frontmatter `name`
  * 时退回目录名，见 `skills-scan.ts` 的 `readSkillDir`），而它会进系统提示词、也会被
- * `read_skill` 当参数用 —— 混进空格 / 中文 / 大写会让提示词难读、工具调用容易拼错。
+ * `skill` 当参数用 —— 混进空格 / 中文 / 大写会让提示词难读、工具调用容易拼错。
  * 允许 `-` 与 `_` 是因为社区技能目录两种写法都有（`web-fetch` / `web_fetch`）。
  */
 const SKILL_NAME_RE = /^[a-z][a-z0-9_-]*$/
@@ -99,7 +99,7 @@ export function skillDirName(raw: string | undefined): string {
  * SKILL.md 的模板。
  *
  * `description` 是这份文件里**唯一必须写好**的字段：系统提示词只放名称 + 描述，
- * 正文由模型调 `read_skill` 按需读。所以模板在 frontmatter 上给了带日期的样例，
+ * 正文由模型调 `skill` 按需读。所以模板在 frontmatter 上给了带日期的样例，
  * 并在正文开头点名「描述写清『什么时候用』」—— 这正是 `skills-scan.ts` 与
  * `skill-tools.ts` 提示词段落反复强调的那件事。
  */
@@ -113,7 +113,7 @@ description: ${desc}
 # ${name}
 
 <!--
-这个文件是写给 AI 看的。系统提示词里只放「名称 + 描述」，正文要模型调 read_skill
+这个文件是写给 AI 看的。系统提示词里只放「名称 + 描述」，正文要模型调 skill
 才读进来 —— 所以 description 决定了这个技能会不会被用上，写清「什么时候该用它」，
 别只写「它是什么」。
 -->
@@ -128,7 +128,7 @@ description: ${desc}
 
 ## 参考资料
 
-（可选：references/ 下的文件用 read_skill 的 file 参数读。）
+（可选：references/ 下的文件用 skill 的 file 参数读。）
 `
 }
 

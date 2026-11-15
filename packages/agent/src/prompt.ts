@@ -167,7 +167,7 @@ export function stepBudgetReminder(state: StepBudgetState): string {
 /**
  * 构建 Agent 系统提示词：说明工作区、工具约定与安全边界。
  *
- * `skills` 非空时追加「可用技能」段落（只有名称 + 描述，正文由 read_skill 按需加载，
+ * `skills` 非空时追加「可用技能」段落（只有名称 + 描述，正文由 skill 按需加载，
  * 见 skills.ts 的渐进式披露说明）。
  *
  * `projectDoc` 是全局 + 工作区根合并后的规则文档（调用方用 `readProjectDoc` 读好传进来）：
@@ -370,7 +370,7 @@ function buildContainerStartSection(previewPort?: number, autoStart?: string): s
 /**
  * 任务规划与动态重规划。
  *
- * `todo_write` 的 schema 里已经写了怎么用它；这里补的是**跨工具的行为约定**：
+ * `todo` 的 schema 里已经写了怎么用它；这里补的是**跨工具的行为约定**：
  * 什么时候该建清单、**做到一半发现计划不对时要主动改**（这才是「动态规划」的关键，
  * 光给工具不说这句，模型会倾向于把最初那份清单当成不可改的合同一路跑到底）、
  * 以及「清单是给自己对进度用的、不是给用户看的交付物」这个边界。
@@ -379,7 +379,7 @@ function buildPlanningSection(): string {
   if (getLanguage() === 'en') {
     return [
       'Task planning (multi-step tasks):',
-      '- For tasks with **three or more steps**, or that need repeated verification, first list the work in a todo list with `todo_write`, then proceed step by step;',
+      '- For tasks with **three or more steps**, or that need repeated verification, first list the work in a todo list with `todo`, then proceed step by step;',
       '- **Planning is dynamic, not fixed upfront**: maintain the list as you go — mark finished items and set the next one in progress. More importantly, if later arrangements turn out wrong, drift from the user’s goal, or new needs appear, rewrite the remaining items (add/remove/edit/reorder) instead of blindly finishing the original list;',
       '- Keep exactly one item in progress at a time; make items specific (“one sentence, one action”), not vague phases;',
       '- Do not use a todo list for simple or single-step tasks. The list is for your own tracking; do not repeat it in the reply.'
@@ -387,7 +387,7 @@ function buildPlanningSection(): string {
   }
   return [
     '任务规划（多步骤任务）：',
-    '- 遇到**三步以上**、或需要来回验证的任务，先用 `todo_write` 把要做的事列成待办清单，再逐步推进；',
+    '- 遇到**三步以上**、或需要来回验证的任务，先用 `todo` 把要做的事列成待办清单，再逐步推进；',
     '- **规划是动态的，不是一次定死**：边做边维护清单 —— 完成一项就更新它的状态、把下一项设为进行中。' +
       '更关键的是，做到某一步时如果发现**后面的安排不对 / 偏离了用户目标 / 冒出了新需求**，' +
       '要主动回头改写后续条目（增、删、改、换序都行），而不是硬按最初的清单跑完；',

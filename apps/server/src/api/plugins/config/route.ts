@@ -20,6 +20,7 @@ import type { PluginConfigInput, UiSettingItem, UiSettingType } from '@fizz/plug
 import { discoverServerPlugins, pluginRuntimeConfig } from '@/lib/server/plugin-roots'
 import { domain } from '@/lib/server/state'
 import { invalidatePluginModels, refreshPluginModels } from '@/lib/server/plugin-models'
+import { invalidateConversationHooks } from '@/lib/server/conversation-hooks'
 import { jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 
 /** 按声明的类型收敛一个值；返回 undefined = 类型不对（回 400） */
@@ -98,6 +99,12 @@ export async function POST(request: Request): Promise<Response> {
   }
   // 插件可能用刚保存的 token 注册模型配置：立即重建全局模型清单
   invalidatePluginModels()
+  // 通知类插件靠设置值决定发不发：宿主指纹不含实时配置，必须当场作废
+  if (target.source === 'workspace' && workspaceId) {
+    await invalidateConversationHooks(workspaceId)
+  } else {
+    await invalidateConversationHooks()
+  }
   await refreshPluginModels()
   return Response.json({ ok: true })
 }

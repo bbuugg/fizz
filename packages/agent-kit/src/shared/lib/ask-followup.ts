@@ -1,5 +1,5 @@
 /**
- * ask_followup_question 提问表单的防御式归一化（web / 桌面端同构）。
+ * ask 提问表单的防御式归一化（web / 桌面端同构）。
  *
  * 模型给的是任意 JSON，这里规整成能渲染出一张可用卡片的结构；缺字段就兜底。
  */
@@ -210,14 +210,14 @@ export function getResumedFollowup(toolCallId: string): AskFollowupAnswer | unde
   return resumedFollowups.get(toolCallId)
 }
 
-/** ask_followup_question 的工具名（与 `shared/lib/parts.ts` 的常量同值，这里避开循环依赖） */
-const ASK_FOLLOWUP_TOOL_NAME = 'ask_followup_question'
+/** ask 的工具名（与 `shared/lib/parts.ts` 的常量同值，这里避开循环依赖） */
+const ASK_FOLLOWUP_TOOL_NAME = 'ask'
 
 /**
  * 这个 part 是不是**一张没拿到答案的提问卡**（可以补答）。
  *
  * 判据三件事：
- * 1. 是 `ask_followup_question` 的 tool-call，且有题目（`normalizeFollowup` 能解析出来）；
+ * 1. 是 `ask` 的 tool-call，且有题目（`normalizeFollowup` 能解析出来）；
  * 2. 工具没报错，而且**没拿到答案** —— 有 `output` 时必须带 `interrupted: true`
  *    （服务端 abort 时打的那个标记，见 `@fizz/tools` 的 `AskFollowupSink.interrupted`）。
  *    用户自己点「跳过」的结果没有这个标记：他刚说不要了，别再把表单弹回来；

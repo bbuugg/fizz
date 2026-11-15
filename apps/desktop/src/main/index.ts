@@ -1042,7 +1042,7 @@ app.on('will-quit', (event) => {
    * 那套收尾从来没人跑。而 `will-quit` 是同步事件，await 不了 —— 于是先
    * `preventDefault()`，等 drain 落地再 `app.exit()` 硬退（不走事件，避免二次进入）。
    *
-   * 症状背景：agent 用 `ask_followup_question` 提问、正挂着等答复时关掉应用，
+   * 症状背景：agent 用 `ask` 提问、正挂着等答复时关掉应用，
    * 再打开那一轮的消息整段没了（run 与半截正文都只在内存里）。
    */
   event.preventDefault()

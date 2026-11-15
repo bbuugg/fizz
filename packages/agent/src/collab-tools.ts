@@ -8,16 +8,16 @@
 /**
  * 不受 `agent.tools` 白名单约束的工具。
  *
- * `read_skill` 必须在这里：技能清单是**系统提示词**里的固定一段（`buildAgentSetup`
+ * `skill` 必须在这里：技能清单是**系统提示词**里的固定一段（`buildAgentSetup`
  * 按 `opts.skills` 自动拼进去），提示词还明确写着「判断任务与某个技能相关时，先调用
- * read_skill 读完整说明」。白名单一旦把它挡掉，模型就是「看得见清单、手里没有读的
+ * skill 读完整说明」。白名单一旦把它挡掉，模型就是「看得见清单、手里没有读的
  * 工具」—— 只会回一句「我没有读取技能的能力」，而主智能体还当它能用。
  *
  * 放行它不扩大权限面：只读，且读写范围被 `buildReadSkillTool` 锁在已发现的技能目录内。
  * 它也不在配置弹窗的勾选项里（`AgentConfigDialog` 的 `TOOL_OPTIONS`），用户没有
  * 「主动取消」这个动作，所以放行不会造成「配置说不用、实际在用」的矛盾。
  */
-const ALWAYS_ALLOWED: readonly string[] = ['read_skill']
+const ALWAYS_ALLOWED: readonly string[] = ['skill']
 
 /**
  * 按白名单挑工具。

@@ -201,7 +201,7 @@ export interface RunAgentOptions {
   /**
    * 额外注入的工具（工具名 → VercelTool），合并进 `buildAgentTools` 之上。
    * 用来挂 transport 无关但与用户交互挂钩的工具 —— 最典型的是
-   * `ask_followup_question`（server 端用它把提问推成本地 SSE 通道）。
+   * `ask`（server 端用它把提问推成本地 SSE 通道）。
    * 桌面端这里传空，它自己用 `buildAgentTools` + `buildAskFollowupTool`。
    */
   extraTools?: Record<string, unknown>
@@ -628,7 +628,7 @@ export function buildAgentSetup(opts: {
       ...(opts.nestedDocs ? { nestedDocs: opts.nestedDocs } : {})
     })
   )
-  // ② 调用方注入的工具（transport 相关，如 ask_followup_question）
+  // ② 调用方注入的工具（transport 相关，如 ask）
   if (opts.extraTools) ctx.plugin(rawToolsPlugin('extra-tools', opts.extraTools, { source: 'extra-tools' }))
   // ③ 调用方挂的插件（server 的项目工具 / 浏览器 / MCP 桥接）
   // **逐个 try/catch**：一个插件挂载失败不该拖垮整轮对话（与 loadPlugins 的取舍一致）。
@@ -668,7 +668,7 @@ export function buildAgentSetup(opts: {
     // exactOptionalPropertyTypes 下不能传 undefined，条件展开（与上面 requestConfirm 的用法一致）
     ...(opts.requestConfirm ? { requestConfirm: opts.requestConfirm } : {})
   })
-  // 桌面端**总是**在系统提示词后追加提问提示词；server 只在真正注入了 ask_followup_question
+  // 桌面端**总是**在系统提示词后追加提问提示词；server 只在真正注入了 ask
   // 工具时追加，避免给 CLI（没有卡片 UI）塞一个用不上的指引。
   // 判据从「查 extraTools」改成「查注册表产出的工具集」——语义不变，但不再关心工具来自哪条通道。
   const askHint = ASK_FOLLOWUP_TOOL in tools ? ASK_FOLLOWUP_HINT : ''

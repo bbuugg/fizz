@@ -88,7 +88,7 @@ export function ThinkingRow({ placeholder = false }: { placeholder?: boolean }) 
  * - `tool-call` **还没出结果**：卡片上是 Running 徽章 —— 出了结果（`hasOutput`）才算落地；
  * - 孤儿 `tool-result`：落地。
  *
- * 这个判据顺带把「在等用户」的情况排掉了：`ask_followup_question` 和「等审批」的工具都还没有
+ * 这个判据顺带把「在等用户」的情况排掉了：`ask` 和「等审批」的工具都还没有
  * output，所以不会在那种时刻冒出「正在思考…」误导人。
  */
 export function isWaitingNextStep(parts: AgentMessagePart[]): boolean {

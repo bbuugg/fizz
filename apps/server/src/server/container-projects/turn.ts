@@ -70,7 +70,7 @@ interface ContainerRunBody {
   history: AgentChatMessage[]
   /** 宿主组装好的系统提示词（容器不重新拼：提示词是「服务端口径」，只有一份） */
   systemPrompt: string
-  /** 容器视角的技能清单（`path` 已是容器内路径，容器据此建 `read_skill`） */
+  /** 容器视角的技能清单（`path` 已是容器内路径，容器据此建 `skill`） */
   skills: ContainerSkill[]
   permissionMode: AiPermissionMode
   /**

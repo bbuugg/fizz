@@ -327,7 +327,7 @@ async function processFire(
   if (!started.ok) throw new Error(started.message)
   const run = started.run
 
-  // 无人值守兜底：agent 用 ask_followup_question 提问是「无限期等人」的 —— 定时把
+  // 无人值守兜底：agent 用 ask 提问是「无限期等人」的 —— 定时把
   // 挂起的提问按「跳过」放行（confirm 自带 10 分钟超时，不归这里管）。
   const followupTimer = setTimeout(() => releaseUnattendedWaits(run.requestId), UNATTENDED_WAIT_MS)
   // 别让这个定时器把进程钉住

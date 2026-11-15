@@ -1,5 +1,5 @@
 /**
- * 提问（`ask_followup_question`）的挂起 / 答复工厂 —— 聊天与容器型项目共用一份。
+ * 提问（`ask`）的挂起 / 答复工厂 —— 聊天与容器型项目共用一份。
  *
  * 与 `confirm-gate.ts` 同一个理由：现在有两个入口需要这条反向通道（本地一轮
  * `chat-turn.ts`、容器内一轮 `container-projects/turn.ts`），各写一遍必然漂 ——

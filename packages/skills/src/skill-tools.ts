@@ -5,7 +5,7 @@
  * 「让模型用得上」的两件事：
  * 1. `buildSkillsPromptSection` —— 系统提示词里的**技能清单**（只有名称 + 描述，
  *    省 token），并约定「相关时先读说明再动手」；
- * 2. `buildReadSkillTool` —— `read_skill` 工具，按名字把 SKILL.md 正文读进来，
+ * 2. `buildReadSkillTool` —— `skill` 工具，按名字把 SKILL.md 正文读进来，
  *    也可以读技能目录内的其它文件。
  *
  * 这就是 Anthropic Agent Skills 的**渐进式披露**：清单常驻提示词、正文按需加载。
@@ -77,14 +77,14 @@ function findSkill(skills: AgentSkill[], name: string): AgentSkill {
 }
 
 /**
- * `read_skill`：读取某个技能的说明（默认 SKILL.md 本身）。
+ * `skill`：读取某个技能的说明（默认 SKILL.md 本身）。
  *
  * 技能目录通常在工作区之外（用户级 / Claude 兼容目录），工作区的 read 够不着，
  * 所以单独给一个工具 —— 它的读写范围被限制在**已发现的技能目录**内。
  */
 export function buildReadSkillTool(skills: AgentSkill[]): ToolSet {
   return {
-    read_skill: tool({
+    skill: tool({
       description:
         '读取某个技能的完整说明（SKILL.md 正文）。系统提示词里列出了可用技能与它们的用途；判断任务与某个技能相关时，先调用本工具读说明，再按说明里的步骤执行。也可以用 file 参数读技能目录内的其它文件（如 references/xxx.md、scripts/xxx.mjs）。',
       inputSchema: z.object({
@@ -128,7 +128,7 @@ export function buildReadSkillTool(skills: AgentSkill[]): ToolSet {
 }
 
 /**
- * 系统提示词里的技能段落：只列名称 + 描述，正文交给 `read_skill` 按需加载。
+ * 系统提示词里的技能段落：只列名称 + 描述，正文交给 `skill` 按需加载。
  * 没有技能时返回空串（调用方直接拼接即可）。
  */
 export function buildSkillsPromptSection(skills: AgentSkill[]): string {
@@ -139,8 +139,8 @@ export function buildSkillsPromptSection(skills: AgentSkill[]): string {
       '用户在本机安装了一些技能，每个技能是一份带步骤的说明（可能还带脚本与参考资料）：',
       ...skills.map((s) => `- ${s.name}：${s.description}`),
       '使用约定：',
-      '- 判断任务与某个技能相关时，**先调用 read_skill 读它的完整说明，再严格按说明执行**；不要凭技能名猜做法；',
-      '- 技能说明里提到的脚本 / 参考资料，用 read_skill 的 file 参数读取，或用 bash 以绝对路径执行；',
+      '- 判断任务与某个技能相关时，**先调用 skill 读它的完整说明，再严格按说明执行**；不要凭技能名猜做法；',
+      '- 技能说明里提到的脚本 / 参考资料，用 skill 的 file 参数读取，或用 bash 以绝对路径执行；',
       '- 技能与当前任务无关时不要提及，也不要在正文里罗列技能清单。'
     ].join('\n'),
     [
@@ -148,8 +148,8 @@ export function buildSkillsPromptSection(skills: AgentSkill[]): string {
       'The user installed skills on this machine. Each skill is a step-by-step guide (possibly with scripts and references):',
       ...skills.map((s) => `- ${s.name}: ${s.description}`),
       'Conventions:',
-      '- When a task relates to a skill, **first call read_skill to read its full instructions, then follow them strictly**; do not guess from the name;',
-      '- Read scripts/references mentioned by a skill with read_skill’s file parameter, or run them via bash with an absolute path;',
+      '- When a task relates to a skill, **first call skill to read its full instructions, then follow them strictly**; do not guess from the name;',
+      '- Read scripts/references mentioned by a skill with skill’s file parameter, or run them via bash with an absolute path;',
       '- Do not mention skills unrelated to the current task and do not list them in the reply.'
     ].join('\n')
   )

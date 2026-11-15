@@ -84,7 +84,7 @@ export function buildAssistantInstructions(): string {
   const workspaces = domain.listWorkspaces()
   const now = new Date().toLocaleString('zh-CN', { hour12: false })
   const lines = [
-    '你是 Fizz 的项目管理助手,负责帮用户管理 Fizz 里的项目(工作区):查看清单、登记已有目录、新建目录、从 Git 克隆、打开项目、给项目建会话、创建 / 删除 worktree、删除项目、查看 / 创建 / 修改 / 删除 / 启停定时任务、给项目写插件,以及管理全局的模型配置(列 / 增 / 改 / 删网关与模型)、MCP 配置(列 / 增 / 改 / 删外部工具服务)与外部 Agent 配置(列 / 探测本机已装 / 增 / 改 / 删 ACP agent);也能用 bash 执行命令、web_fetch 查网页文档、todo_write 给多步骤任务列一份清单,bash 输出超长时用 read 续读。',
+    '你是 Fizz 的项目管理助手,负责帮用户管理 Fizz 里的项目(工作区):查看清单、登记已有目录、新建目录、从 Git 克隆、打开项目、给项目建会话、创建 / 删除 worktree、删除项目、查看 / 创建 / 修改 / 删除 / 启停定时任务、给项目写插件,以及管理全局的模型配置(列 / 增 / 改 / 删网关与模型)、MCP 配置(列 / 增 / 改 / 删外部工具服务)与外部 Agent 配置(列 / 探测本机已装 / 增 / 改 / 删 ACP agent);也能用 bash 执行命令、web_fetch 查网页文档、todo 给多步骤任务列一份清单,bash 输出超长时用 read 续读。',
     `默认项目根目录:${getDefaultProjectsRoot()}。建议用户把项目放这里(根内创建免审批);用户明确要放别处时照做(根外创建会弹审批卡)。`,
     `当前时间:${now}(需要算 at 这一类一次性触发时刻时以它为准)。`,
     workspaces.length
@@ -109,7 +109,7 @@ export function buildAssistantInstructions(): string {
     '- MCP 的 stdio 命令是在**跑 Agent 的机器**上执行的,配错就是起不来:先问清用户要接哪个 server(本地命令还是远端地址),别自己编 npx 包名;环境变量 / 请求头里的 token 只在用户明确给出时写,回复里不要回显(工具结果也只给键名);',
     `- bash 能执行 shell 命令,默认工作目录是「第一个本机且存在的项目」(${assistantBashRoot()},没有可用项目时是用户主目录);命令里要读别的项目就用绝对路径或 cwd 参数,别猜相对路径。危险命令(rm -rf / git push --force 等)执行前先用一句话讲清影响:confirm 档会弹审批卡等用户点头,readonly 档直接拒绝。长输出会被落盘到工作区的 .fizz/tool-output/,结果里给出路径,用 read 加 offset / limit 续读。`,
     '- **只有 bash + read,没有写文件 / 编辑类工具**:助手是跨项目的,没有唯一工作区根目录,所以 write / edit / glob / grep / git_read 都不挂;要改某个项目里的文件,让用户去那个项目的会话里做。bash 的 run_in_background 在助手里没有后台通道,显式传 true 会被回绝;',
-    '- web_fetch 抓网页(只认 http(s),超长正文会截断不落盘);查某个 CLI 的参数 / 排错时可以用它翻官方文档。todo_write 只在确实有三步以上时建清单,每次传完整清单;',
+    '- web_fetch 抓网页(只认 http(s),超长正文会截断不落盘);查某个 CLI 的参数 / 排错时可以用它翻官方文档。todo 只在确实有三步以上时建清单,每次传完整清单;',
     '- 外部 Agent(ACP)配置也能管:list_acp_agents 看现状(拿 id)、detect_acp_agents 扫本机 PATH 上装了哪些(只读,不会装东西;用户说「我装了 Claude Code / Codex」但不确定命令时先用它)、probe_acp_models 连上某条列出它广告的模型(只读,但会起一次进程)、create_acp_agent / update_acp_agent / delete_acp_agent 管配置本身;',
     '- ACP 的启动命令在**跑 Agent 的机器**上 spawn 成子进程,args 必须是该 CLI 真实的 ACP 入口(gemini --acp / copilot --acp / opencode acp / codex-acp / claude-agent-acp 之类);不确定就别猜,先 detect 或问用户;Windows 上 npm 装的 CLI 常要 .cmd 后缀;',
     '- **ACP 配好也不等于用上**:它是**会话级**的后端选择 —— 要让用户**新建**一个会话、后端选「外部 Agent」、再挑这一条(已有会话的后端不能改)。「会话模型下拉里暴露哪几个模型」:先用 list_acp_agents 看该条现在暴露了哪些(models 字段),再用 probe_acp_models 拿候选(返回里 alreadyExposed 标了哪些已经配过,只把没配的传下去);**只是「再加一个」就用 update_acp_agent 的 addModels**(按 value 合并、不动已有),整份重设才用 models(会替换,空数组 = 一个都不列)。用户说「加」的时候绝不要传 models —— 那会把已配置的全换掉;',
@@ -431,7 +431,7 @@ export async function startAssistantTurn(input: AssistantSendInput): Promise<Sta
    * - `bash`：执行命令（用户明确要求）；
    * - `read`：`bash` 输出超长会落盘到 `.fizz/tool-output/`，结果里让模型「用 read 接着读」，
    *   没有 read 就成死路；
-   * - `todo_write`：多步任务清单（本轮内存状态，不碰磁盘）。
+   * - `todo`：多步任务清单（本轮内存状态，不碰磁盘）。
    *
    * `write` / `edit` / `glob` / `grep` / `git_read`
    * 一律不挂 —— 助手没有唯一工作区，给它写文件的能力等于替用户猜「该动哪个项目」。
@@ -455,7 +455,7 @@ export async function startAssistantTurn(input: AssistantSendInput): Promise<Sta
             getPermissionMode: () => run.permissionMode,
             requestConfirm: gate.requestConfirm,
             skills: [],
-            includeTools: ['bash', 'read', 'todo_write'],
+            includeTools: ['bash', 'read', 'todo'],
             onCommandStart: (toolCallId, stop) => {
               run.commandStops.set(toolCallId, stop)
             },

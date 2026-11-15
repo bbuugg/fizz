@@ -18,6 +18,7 @@
  */
 import { domain } from '@/lib/server/state'
 import { invalidatePluginModels, refreshPluginModels } from '@/lib/server/plugin-models'
+import { invalidateConversationHooks } from '@/lib/server/conversation-hooks'
 import { parseJsonBody } from '@/app/api/_lib/auth'
 import { listGlobal, listWorkspace, resolveWorkspace, type PluginScope } from './_lib/list'
 
@@ -41,11 +42,16 @@ export async function POST(request: Request) {
   if (body?.scope === 'global') {
     domain.saveGlobalPluginSettings({ disabled })
     invalidatePluginModels()
+    // 内置 / 用户级插件是所有工作区共用的：启停一变，全部会话钩子宿主都作废
+    await invalidateConversationHooks()
     await refreshPluginModels()
     return listGlobal()
   }
 
   const workspace = resolveWorkspace(body?.workspaceId)
-  if (workspace) domain.savePluginSettings(workspace.id, { disabled })
+  if (workspace) {
+    domain.savePluginSettings(workspace.id, { disabled })
+    await invalidateConversationHooks(workspace.id)
+  }
   return listWorkspace(workspace?.id)
 }

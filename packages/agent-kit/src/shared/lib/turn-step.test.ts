@@ -175,7 +175,7 @@ describe('turnStepPreview（右格：这一步的内容）', () => {
   it('没有可看的内容就是 undefined（抬头只留名字）', () => {
     expect(turnStepPreview([])).toBeUndefined()
     expect(turnStepPreview([reasoning('   ')])).toBeUndefined()
-    expect(turnStepPreview([call('todo_write', { input: { todos: [] } })])).toBeUndefined()
+    expect(turnStepPreview([call('todo', { input: { todos: [] } })])).toBeUndefined()
   })
 })
 

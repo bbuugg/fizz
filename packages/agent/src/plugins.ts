@@ -81,7 +81,7 @@ export function webToolsPlugin(
 
 /**
  * 通用「工具袋」插件：把一批**已经构建好**的工具原样挂进注册表。
- * 用于 `extraTools`（transport 相关工具，如 ask_followup_question）与已连接好的 MCP 工具集。
+ * 用于 `extraTools`（transport 相关工具，如 ask）与已连接好的 MCP 工具集。
  */
 export function rawToolsPlugin(
   name: string,

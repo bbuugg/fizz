@@ -396,7 +396,7 @@ export function normalizeReasoningEffort(value: unknown): AiReasoningEffort | un
     : undefined
 }
 
-// ---------- ask_followup_question：AI 向用户提结构化选择题 ----------
+// ---------- ask：AI 向用户提结构化选择题 ----------
 
 /** 一个选项的展示形态：纯文本，或带说明的对象 */
 export interface FollowupOption {
@@ -420,7 +420,7 @@ export interface FollowupQuestion {
 }
 
 /**
- * AI 通过 `ask_followup_question` 工具向用户发起的提问表单。
+ * AI 通过 `ask` 工具向用户发起的提问表单。
  *
  * 主进程发起 → 渲染端在对话流里渲染成一张可回答的卡片（一题一区，底部统一提交）→
  * 用户作答 → IPC 回填 → 工具 resolve，**同一个 streamText 回合继续往下跑**（机制同确认卡）。
@@ -717,10 +717,10 @@ export const CONTAINER_AGENT_TOOL_KEYS: readonly string[] = [
   'glob',
   'grep',
   'bash',
-  'todo_write',
-  'read_skill',
+  'todo',
+  'skill',
   'web_fetch',
-  'ask_followup_question'
+  'ask'
 ]
 
 /**
@@ -1067,14 +1067,14 @@ export interface ConversationAutoSummary {
   createdAt: number
 }
 
-/** 待办条目的状态（Agent 的 todo 清单用，见 @fizz/tools 的 todo_write） */
+/** 待办条目的状态（Agent 的 todo 清单用，见 @fizz/tools 的 todo） */
 export type TodoStatus = 'pending' | 'in_progress' | 'completed'
 
 /**
  * 待办清单里的一条（Agent 自己维护、边做边更新的任务项）。
  *
  * 它是**工具结果的形状**、会随消息历史一起落盘（渲染端据此画勾选清单），
- * 不是独立存储 —— 见 `todo_write` 与 `PartView` 的 todo 分支。
+ * 不是独立存储 —— 见 `todo` 与 `PartView` 的 todo 分支。
  */
 export interface TodoItem {
   /** 要做的事（一句话、可执行；顺序即执行顺序） */
@@ -2500,7 +2500,7 @@ export interface ConversationConfirmResolvedEvent extends ConversationEventBase 
   approved: boolean
 }
 
-/** agent 在等用户回答一个问题（ask_followup_question） */
+/** agent 在等用户回答一个问题（ask） */
 export interface ConversationFollowupEvent extends ConversationEventBase {
   type: 'conversation:followup'
   followup: AskFollowupRequest

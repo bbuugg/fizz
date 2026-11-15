@@ -289,7 +289,7 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     scrollResetSeq: activeSlice?.scrollResetSeq ?? 0,
     /** confirm 模式下等用户答复的审批（渲染成卡片；活跃会话那一份） */
     pendingConfirms: activeSlice?.pendingConfirms ?? NO_CONFIRMS,
-    /** ask_followup_question 在等的提问（按工具调用 id 索引；用于渲染提问卡） */
+    /** ask 在等的提问（按工具调用 id 索引；用于渲染提问卡） */
     followupRequests: activeSlice?.followupRequests ?? NO_FOLLOWUPS,
     /** 待发送队列：会话进行中用户发的消息先排在这里，本轮结束依次执行（活跃会话那一份） */
     queuedMessages: activeSlice?.queuedMessages ?? NO_QUEUE,
@@ -371,7 +371,7 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     /** 答复一次命令执行审批（卡片可能在非焦点标签上，撤卡要撤对会话） */
     resolveConfirm: (id: string, approved: boolean, optionId?: string) =>
       s.resolveConfirm(id, approved, optionId, conversationId),
-    /** 答复一次 ask_followup_question 提问（null = 跳过） */
+    /** 答复一次 ask 提问（null = 跳过） */
     resolveFollowup: (
       toolCallId: string,
       answer: AskFollowupAnswer | null,

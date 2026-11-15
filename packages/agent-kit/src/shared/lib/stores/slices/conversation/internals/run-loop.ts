@@ -318,7 +318,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
       }));
       return;
     }
-    // ask_followup_question：把提问按 toolCallId 存起来，供工具调用卡片渲染；跳过 =
+    // ask：把提问按 toolCallId 存起来，供工具调用卡片渲染；跳过 =
     // 「无问题」用于服务端把提问插到对话流正确位置，但不是待回答态，忽略即可
     if (frame.type === "ask-followup" && frame.followup) {
       const f = frame.followup;
@@ -492,7 +492,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
         retryNotice: {
           attempt: event.attempt,
           maxRetries: event.maxRetries,
-          // 失败原文（限流 / 断网 / 空响应）：提示里跟在次数后面，用户才知道在等什么
+          // 失败原文（限流 / 断网 / 空响应）：界面上挂在次数后的问号 tooltip 里
           ...(event.message ? { message: event.message } : {}),
           ...(event.resume ? { resume: true } : {}),
         },

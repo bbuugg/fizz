@@ -744,7 +744,7 @@ export const API_ROUTES = {
    */
   chatPermission: "/api/chat/permission",
   /**
-   * 答复一次 ask_followup_question 提问（同 confirm 的反向通道约定）。
+   * 答复一次 ask 提问（同 confirm 的反向通道约定）。
    *
    * 服务端在流里推 `ask-followup` 帧 → 客户端 POST 到这里（带上答案）→
    * 服务端解开 await，把答案作为工具结果回给模型，**同一个回合继续往下跑**。
@@ -2085,7 +2085,7 @@ export type ChatCompressFrame =
  * - `event`：一轮里的流事件，与桌面端的 `AgentStreamEvent` 完全一致
  * - `confirm`：confirm 模式下要执行破坏性操作，**等用户答复**（客户端 POST `/api/chat/confirm`）
  * - `confirm-resolved`：某次审批已有结果（本端答复、其它端答复、或超时），客户端据此撤卡片
- * - `ask-followup`：ai-sdk 后端调用 `ask_followup_question` 提问，**等用户答复**（POST `/api/chat/followup`）
+ * - `ask-followup`：ai-sdk 后端调用 `ask` 提问，**等用户答复**（POST `/api/chat/followup`）
  * - `ask-followup-resolved`：某次提问已有结论，客户端据此撤卡片
  * - `replay-end`：这条连接的帧日志**已回放完**（紧跟在回放之后、直播之前）。
  *   它不是这一轮的一部分，**不进程日志**，只在 attach 出来的那条流里出现一次 ——
@@ -2210,7 +2210,7 @@ export interface PermissionSetResult {
 }
 
 /**
- * 答复一次 ask_followup_question 提问。
+ * 答复一次 ask 提问。
  *
  * `answer` 为空表示用户跳过（与桌面端「跳过」一致）：工具按「未作答」继续往下跑；
  * 非空则把 `FollowupAnswerItem[]` 作为工具结果回给模型。

@@ -1,5 +1,5 @@
 ﻿/**
- * ask_followup_question 的答复（上行）：解开对应那条提问工具的 await。
+ * ask 的答复（上行）：解开对应那条提问工具的 await。
  * POST /api/chat/followup
  */
 import type { FollowupReplyInput } from '@fizz/contracts/agent-api'

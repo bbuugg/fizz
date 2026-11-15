@@ -5,7 +5,7 @@ description: Create/modify Fizz plugins in .fizz/plugins using ctx.tools, ctx.pr
 
 # 创建 Fizz 插件
 
-Fizz 插件 = 磁盘上的一个**目录**：目录里必须有 `plugin.json`（身份描述），入口文件由它指定。`@fizz/plugin`（Cordis 风格精简版）在**每一轮对话开始时**把插件挂到一个 turn context 上。插件通过 `ctx` 提供的服务给 Agent **加 / 覆盖工具、往系统提示词里插话、拦截工具调用、声明设置项**。
+Fizz 插件 = 磁盘上的一个**目录**：目录里必须有 `plugin.json`（身份描述），入口文件由它指定。`@fizz/plugin`（Cordis 风格精简版）在**每一轮对话开始时**把插件挂到一个 turn context 上；**会话状态钩子**（`conversation:*`）则挂在按工作区长驻的宿主上（见 3.2）。插件通过 `ctx` 提供的服务给 Agent **加 / 覆盖工具、往系统提示词里插话、拦截工具调用、声明设置项、发通知**。
 
 本 skill 讲「怎么在本仓库里写出一个能跑起来的插件」。动手前先读完下面的位置与生效规则。
 
@@ -146,6 +146,9 @@ export default function (ctx) {
 | `'tool:result'` | waterfall | `(toolName, output, next) => unknown` |
 | `'prompt:render'` | waterfall | `(text, next) => unknown` |
 | `'turn:start'` / `'turn:finish'` | emit | `(payload) => void` |
+| `'conversation:started'` / `'conversation:finished'` | emit | `(payload) => void` |
+| `'conversation:confirm'` / `'conversation:confirm-resolved'` | emit | `(payload) => void` |
+| `'conversation:followup'` / `'conversation:followup-resolved'` | emit | `(payload) => void` |
 
 waterfall（拦截改写）用 **around 范式**：先 `next()` 放行拿到下游结果，再加工返回；不调 `next()` 直接返回 = 中断链路。
 
@@ -159,6 +162,33 @@ export default function (ctx) {
 ```
 
 ⚠️ `next(新值)` **不会**把新值传给链上的下一个监听器（框架恒以原始 args 调用下一个）。想串联改写一律用 around 范式，别想「按入参把新值往后推」。
+
+**`turn:*` 与 `conversation:*` 的归属不同**：
+
+- `turn:*` 是**单轮内部**的生命周期，只在内置 Agent 的 turn context 上触发；ACP / 容器型会话没有。
+- `conversation:*` 是**产品层面**的会话状态，由服务端按工作区建的长驻宿主分发
+  （`apps/server/src/server/conversation-hooks.ts`），三条后端都覆盖。payload 里的公共坐标是
+  `{ conversationId, requestId, title, workspaceId?, workspaceName? }`，finished 还带
+  `finishReason / excerpt / error / stopReason / steps`。
+
+接会话钩子要写成**独立的 inject 半边**，不要写进顶层 `inject`（设置页的 inspect context 没有
+hooks，写顶层会让插件被整体推迟、连设置表单都不出现）：
+
+```ts
+export default {
+  inject: [],
+  apply(ctx, config) {
+    ctx.inject(['hooks'], (c) => {
+      c.hooks.on('conversation:finished', (event) => {
+        // 同步总线：不要 await 网络请求；通知类逻辑一律 fire-and-forget 并自己 catch
+        void sendNotification(event).catch((err) => c.logger.warn('通知失败：', err))
+      })
+    })
+  }
+}
+```
+
+示例见内置的 `plugins/wecom-notify/`（完成 / 等待审批 / 等待回答三种通知、去重与节流）。
 
 ### 3.3 声明设置项与面板（`ctx.ui`）
 

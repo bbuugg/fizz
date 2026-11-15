@@ -17,7 +17,7 @@ describe('buildAssistantInstructions', () => {
     expect(s).toContain('bash 能执行 shell 命令')
     expect(s).toContain('默认工作目录是')
     expect(s).toContain('web_fetch')
-    expect(s).toContain('todo_write')
+    expect(s).toContain('todo')
     expect(s).toContain('用 read 加 offset / limit 续读')
   })
 

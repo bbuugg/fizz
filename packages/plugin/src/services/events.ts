@@ -30,6 +30,14 @@ export class EventsService extends Service {
   }
 
   /**
+   * 安全广播：单个监听器抛错只记日志，不中断其余监听器，也不把异常抛回调用方。
+   * 长驻的会话状态钩子用它分发（见 `Context.emitSafe`）。
+   */
+  emitSafe(name: string, ...args: unknown[]): void {
+    this.ctx.emitSafe(name, ...args)
+  }
+
+  /**
    * 拦截型钩子：监听器签名 `(...args, next)`，可读 / 改参数再 `next(...)` 继续，
    * 或直接返回自己的结果**中断链路**（不再往下走）。
    */

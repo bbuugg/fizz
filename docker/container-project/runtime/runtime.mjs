@@ -113,10 +113,10 @@ var CONTAINER_AGENT_TOOL_KEYS = [
 	"glob",
 	"grep",
 	"bash",
-	"todo_write",
-	"read_skill",
+	"todo",
+	"skill",
 	"web_fetch",
-	"ask_followup_question"
+	"ask"
 ];
 /**
 * 容器内运行时协议的版本号。
@@ -1269,10 +1269,7 @@ function createFileOps() {
 	};
 }
 /** 会改文件的工具名 */
-var WRITE_TOOL_NAMES = /* @__PURE__ */ new Set([
-	"write",
-	"edit"
-]);
+var WRITE_TOOL_NAMES = /* @__PURE__ */ new Set(["write", "edit"]);
 /** 工具入参里的路径 */
 function inputPathOf(input) {
 	const value = input?.file_path;
@@ -2738,6 +2735,14 @@ var AGENT = {
 	"移除模型 {name}": "Remove model {name}",
 	"检测已安装": "Detect installed",
 	"添加 ACP agent": "Add ACP agent",
+	"运行中的 ACP 进程": "Running ACP processes",
+	"空闲超过 10 分钟会自动回收；有轮次在跑的不回收。": "Idle processes are reclaimed after 10 minutes; processes with a running turn are never reclaimed.",
+	"当前没有常驻的 ACP 进程": "No resident ACP processes",
+	"空闲 {time}": "Idle {time}",
+	"结束进程": "End process",
+	"结束这个 ACP 进程？": "End this ACP process?",
+	"运行中的轮次请先在输入框停止": "Stop the running turn before ending the process",
+	"「{agent}」在「{conversation}」上的 agent 进程会被结束；下一轮会自动重新连接并恢复上下文。": "The agent process for “{conversation}” under “{agent}” will be ended; the next turn reconnects automatically and restores context.",
 	"编辑 ACP agent": "Edit ACP agent",
 	"命令在服务端上执行，工作目录是会话所属工作区。": "Commands run on the server, with the conversation workspace as the working directory.",
 	"改完保存即可，已挑好的模型清单不受影响。": "Just save; the selected model list is unaffected.",
@@ -3040,7 +3045,6 @@ var CHAT = {
 	"正在删除消息…": "Deleting message…",
 	"还没有消息": "No messages yet",
 	"第 {attempt} 次重试": "Retry attempt {attempt}",
-	"第 {attempt} 次重试（接着上次的进度）": "Retry attempt {attempt} (resuming from where it stopped)",
 	"连接中断，正在重连（第 {attempt} 次）…": "Connection lost; reconnecting (attempt {attempt})…",
 	"服务端这一轮还在跑，接上就继续": "The server is still running this turn; it will continue once reconnected",
 	"（本轮没有返回内容）": "(No content returned this turn)",
@@ -3152,10 +3156,17 @@ var CHAT = {
 	"归档会话": "Archive conversation",
 	"重命名会话": "Rename conversation",
 	"打开会话目录": "Open conversation directory",
-	"已重启会话，下一条消息会重新连接": "Session restarted; the next message will reconnect",
+	"已重启会话并重新连接": "Session restarted and reconnected",
 	"重启会话": "Restart session",
+	"重启会话失败": "Failed to restart session",
+	"正在重启会话…": "Restarting session…",
+	"正在重启…": "Restarting…",
+	"正在处理会话": "Working on session",
 	"已重新加载会话": "Session reloaded",
 	"重新加载会话": "Reload session",
+	"重新加载会话失败": "Failed to reload session",
+	"正在重新加载会话…": "Reloading session…",
+	"正在重新加载…": "Reloading…",
 	"历史消息没有显示？": "History not showing?",
 	"转换为内置 Agent 会话": "Convert to built-in Agent conversation",
 	"列出目录": "List directory",
@@ -3174,9 +3185,10 @@ var CHAT = {
 	"在终端执行": "Run in terminal",
 	"读取终端输出": "Read terminal output",
 	"发送按键": "Send keys",
-	"拖动可继续选择，松手后点复制": "Drag to extend the selection, then tap Copy",
-	"复制选中文本": "Copy selection",
-	"清除选区": "Clear selection",
+	"选择": "Select",
+	"选择文字": "Select text",
+	"定起点": "Start",
+	"把光标处设为选区起点": "Set the selection start at the cursor",
 	"已复制选中文本": "Selection copied",
 	"复制失败，请检查剪贴板权限": "Copy failed — check clipboard permission",
 	"列出终端会话": "List terminal sessions",
@@ -3298,6 +3310,7 @@ var CHAT = {
 	"松开以添加附件": "Release to attach",
 	"停止录音": "Stop recording",
 	"语音输入（也可按住 Alt+V 说话）": "Voice input (or hold Alt+V to talk)",
+	"语音识别服务没有接管麦克风（按钮会显示录音中，但实际收不到声音）。可换用 Chrome 或检查网络后再试。": "The speech recognition service did not start capturing audio (the button shows recording, but no sound is received). Try Chrome or check your network and retry.",
 	"停止本轮": "Stop this turn",
 	"正在创建会话…": "Creating conversation…",
 	"正在创建会话": "Creating conversation",
@@ -4068,12 +4081,18 @@ var WORKSPACE = {
 	"它们全都没被 git 跟踪，会**直接从磁盘上删除**。": "None of them are tracked by git; all will **be deleted from disk**.",
 	"其中 {count} 个还没被 git 跟踪，会**直接从磁盘上删除**。": "{count} of them are not tracked by git and will **be deleted from disk**.",
 	"历史提交": "Commit history",
+	"加载更多": "Load more",
 	"还没有提交": "No commits yet",
 	"查看 {short} 改了什么": "Show what {short} changed",
 	"收起 {short} 的改动": "Collapse changes in {short}",
+	"查看 {path} 在这次提交里的改动": "Show changes to {path} in this commit",
+	"收起 {path} 的改动": "Collapse changes to {path}",
 	"检出": "Checkout",
 	"检出这次提交（分离头指针）": "Check out this commit (detached HEAD)",
 	"复制完整哈希": "Copy full hash",
+	"复制提交信息": "Copy commit message",
+	"已复制提交信息": "Commit message copied",
+	"没有可复制的提交信息": "No commit message to copy",
 	"复制短哈希（{short}）": "Copy short hash ({short})",
 	"已复制完整提交哈希": "Full commit hash copied",
 	"已复制短哈希": "Short hash copied",
@@ -4082,7 +4101,7 @@ var WORKSPACE = {
 	"这次提交没有可显示的文本改动（可能全是二进制文件或纯 mode 变更）。": "This commit has no displayable text changes (they may all be binary or pure mode changes).",
 	"二进制": "Binary",
 	"没有可展示的文本差异（二进制文件，或只有权限 / 模式变化）": "No displayable text diff (binary file, or only permission / mode changes)",
-	"文件已删除（工具入参没有内容，无原文可对比）": "File deleted (no content in the tool input, so there is no original to compare)"
+	"文件已删除（没有原文可对比）": "File deleted (no original content to compare)"
 };
 ({
 	...COMMON,
@@ -4126,7 +4145,7 @@ function tr(zh, en) {
 * 「让模型用得上」的两件事：
 * 1. `buildSkillsPromptSection` —— 系统提示词里的**技能清单**（只有名称 + 描述，
 *    省 token），并约定「相关时先读说明再动手」；
-* 2. `buildReadSkillTool` —— `read_skill` 工具，按名字把 SKILL.md 正文读进来，
+* 2. `buildReadSkillTool` —— `skill` 工具，按名字把 SKILL.md 正文读进来，
 *    也可以读技能目录内的其它文件。
 *
 * 这就是 Anthropic Agent Skills 的**渐进式披露**：清单常驻提示词、正文按需加载。
@@ -4165,13 +4184,13 @@ function findSkill(skills, name) {
 	throw new Error(`没有名为「${name}」的技能。可用技能：${skills.map((s) => s.name).join("、") || "（无）"}`);
 }
 /**
-* `read_skill`：读取某个技能的说明（默认 SKILL.md 本身）。
+* `skill`：读取某个技能的说明（默认 SKILL.md 本身）。
 *
 * 技能目录通常在工作区之外（用户级 / Claude 兼容目录），工作区的 read 够不着，
 * 所以单独给一个工具 —— 它的读写范围被限制在**已发现的技能目录**内。
 */
 function buildReadSkillTool(skills) {
-	return { read_skill: tool({
+	return { skill: tool({
 		description: "读取某个技能的完整说明（SKILL.md 正文）。系统提示词里列出了可用技能与它们的用途；判断任务与某个技能相关时，先调用本工具读说明，再按说明里的步骤执行。也可以用 file 参数读技能目录内的其它文件（如 references/xxx.md、scripts/xxx.mjs）。",
 		inputSchema: z.object({
 			name: z.string().describe("技能名称（系统提示词里列出的名字）"),
@@ -4199,7 +4218,7 @@ function buildReadSkillTool(skills) {
 	}) };
 }
 /**
-* 系统提示词里的技能段落：只列名称 + 描述，正文交给 `read_skill` 按需加载。
+* 系统提示词里的技能段落：只列名称 + 描述，正文交给 `skill` 按需加载。
 * 没有技能时返回空串（调用方直接拼接即可）。
 */
 function buildSkillsPromptSection(skills) {
@@ -4209,16 +4228,16 @@ function buildSkillsPromptSection(skills) {
 		"用户在本机安装了一些技能，每个技能是一份带步骤的说明（可能还带脚本与参考资料）：",
 		...skills.map((s) => `- ${s.name}：${s.description}`),
 		"使用约定：",
-		"- 判断任务与某个技能相关时，**先调用 read_skill 读它的完整说明，再严格按说明执行**；不要凭技能名猜做法；",
-		"- 技能说明里提到的脚本 / 参考资料，用 read_skill 的 file 参数读取，或用 bash 以绝对路径执行；",
+		"- 判断任务与某个技能相关时，**先调用 skill 读它的完整说明，再严格按说明执行**；不要凭技能名猜做法；",
+		"- 技能说明里提到的脚本 / 参考资料，用 skill 的 file 参数读取，或用 bash 以绝对路径执行；",
 		"- 技能与当前任务无关时不要提及，也不要在正文里罗列技能清单。"
 	].join("\n"), [
 		"## Available skills",
 		"The user installed skills on this machine. Each skill is a step-by-step guide (possibly with scripts and references):",
 		...skills.map((s) => `- ${s.name}: ${s.description}`),
 		"Conventions:",
-		"- When a task relates to a skill, **first call read_skill to read its full instructions, then follow them strictly**; do not guess from the name;",
-		"- Read scripts/references mentioned by a skill with read_skill’s file parameter, or run them via bash with an absolute path;",
+		"- When a task relates to a skill, **first call skill to read its full instructions, then follow them strictly**; do not guess from the name;",
+		"- Read scripts/references mentioned by a skill with skill’s file parameter, or run them via bash with an absolute path;",
 		"- Do not mention skills unrelated to the current task and do not list them in the reply."
 	].join("\n"));
 }
@@ -5306,11 +5325,6 @@ function buildAgentTools(root, opts) {
 		if (versionOf(stat) !== prior) return `cannot write "${display}": file changed since it was read — re-read the file, then retry`;
 		return null;
 	};
-	/** 记下「这个文件现在是什么版本」（读成功 / 刚写完） */
-	const recordObserved = async (abs) => {
-		const stat = await backend.stat(abs);
-		if (stat) observed.set(abs, versionOf(stat));
-	};
 	/** 把按需加载的子目录规则附在工具结果后面（没有规则 / 钩子抛错就原样返回） */
 	const withNestedDocs = async (text, abs, isDirectory) => {
 		if (!opts.nestedDocs) return text;
@@ -5584,7 +5598,7 @@ function buildAgentTools(root, opts) {
 		* 结果进消息历史（见 model-messages 的 toToolOutput），刷新 / 切会话后由渲染端从
 		* part 里重建 —— 不需要另立一份服务端存储。
 		*/
-		todo_write: tool({
+		todo: tool({
 			description: tr("创建 / 更新本次任务的**待办清单**（todo list）。把多步骤任务拆成「一句话一个动作」的条目，边做边维护：完成一项就把它的 status 改成 completed、把下一项改成 in_progress。\n用法要点：\n- 每次调用都要传**当前完整的清单**（整份重发，不是增量 / 不是补丁）；顺序即执行顺序。\n- **规划是动态的**：做到某一步发现后面的安排不对、偏离目标、或冒出新需求时，直接改写后续条目（增 / 删 / 改 / 换序都行），让清单始终反映真实的下一步，而不是被最初的计划绑死。\n- 同一时刻最多保留一条 in_progress（手上正在做的那件）。\n- 单步骤 / 琐碎任务不要用这个工具；只在确实有三步以上、值得跟踪时才建清单。\n- 任务全部结束后，可以再调用一次传空数组把清单清掉（或全部标 completed 留作记录）。", "Create/update the **todo list** for this task. Break a multi-step task into one-action items and maintain progress as you go: mark finished items completed and the next one in_progress.\nUsage:\n- Every call must send the **current complete list** (full replacement, not a patch); order is execution order.\n- **Planning is dynamic**: when later steps no longer fit, the goal shifts, or new requirements appear, rewrite the remaining items (add/remove/edit/reorder) so the list always reflects the real next steps instead of being locked to the original plan.\n- Keep at most one in_progress item at a time.\n- Do not use this for single-step or trivial tasks; create a list only when there are genuinely 3+ steps worth tracking.\n- When everything is done, call once more with an empty array to clear it (or mark all completed to keep a record)."),
 			inputSchema: z.object({ todos: z.array(z.object({
 				content: z.string().describe(tr("这一项要做的事：一句话、具体、可执行（顺序即执行顺序）", "What to do for this item: one concrete, actionable sentence (order is execution order)")),
@@ -5814,7 +5828,7 @@ z.enum([
 z.enum(["once", "always"]);
 // packages/tools/src/ask-followup.ts
 /**
-* `ask_followup_question` 工具（**传输无关**的共享实现，桌面端 / server 共用）。
+* `ask` 工具（**传输无关**的共享实现，桌面端 / server 共用）。
 *
 * 这是「AI 在回合中途向用户收集结构化选择题答案」的工具：一次可以问一道或多道
 * （每道 single 单选 / multiSelect 多选，选项 2-4 个）。模型拿到答案后继续往下跑。
@@ -5824,28 +5838,28 @@ z.enum(["once", "always"]);
 * **同一个回合继续往下跑**。机制由调用方用不同的 sink 实现。
 */
 /** 工具名：模型用它向用户提问（对应工具定义里的 `name`） */
-var ASK_FOLLOWUP_TOOL = "ask_followup_question";
+var ASK_FOLLOWUP_TOOL = "ask";
 /**
 * 追加到系统提示词末尾的提示：工具光存在没用，模型得知道「什么时候该问、怎么问」。
 * 少了这一句，绝大多数模型会自己猜着往下做，工具一次都不会被调用。
 */
 var ASK_FOLLOWUP_HINT = [
 	"",
-	"需要用户做决定或补充信息时，用 ask_followup_question 工具向他提问：一次可以问一道或多道结构化选择题，",
+	"需要用户做决定或补充信息时，用 ask 工具向他提问：一次可以问一道或多道结构化选择题，",
 	"每道题 single 单选 / multiSelect 多选，选项 2-4 个（可以是纯文本，也可以带说明对象）。",
 	"非「是/否」型题目的选项里用户可以选「其他」并自行输入，回答会带 other 字段（此时 selected 可能为空）。",
 	"这个「其他」项由界面自动追加：options 里不要自己写「其他 / 其它 / Other」类的兜底项，写了会被丢弃。",
 	"用户不作答（跳过）时按最合理的方式继续，不要反复追问同一个问题。"
 ].join("\n");
 /**
-* 组装 `ask_followup_question` 工具。
+* 组装 `ask` 工具。
 *
 * ⚠️ 刻意**不走确认流程**：提问本身就是让用户在卡片上做决定，
 * 再套一层「是否允许执行该工具？」只会多一次没意义的点击。
 */
 function buildAskFollowupTool(sink, requestId) {
-	return { [ASK_FOLLOWUP_TOOL]: tool({
-		description: "Collect structured multiple-choice answers from the user. Provide one or more questions with options, and set multiSelect when multi-select is appropriate. MUST be invoked via the native tool_calls protocol; NEVER emit it as inline XML or pseudo-XML in assistant text (e.g. \"<ask_followup_question>...\"). Only use this tool when you are highly uncertain and must clarify the issue with the user. You should prefer resolving the problem through reasoning and other tools whenever possible.",
+	return { ["ask"]: tool({
+		description: "Collect structured multiple-choice answers from the user. Provide one or more questions with options, and set multiSelect when multi-select is appropriate. MUST be invoked via the native tool_calls protocol; NEVER emit it as inline XML or pseudo-XML in assistant text (e.g. \"<ask>...\"). Only use this tool when you are highly uncertain and must clarify the issue with the user. You should prefer resolving the problem through reasoning and other tools whenever possible.",
 		inputSchema: z.object({
 			title: z.string().optional().describe("Optional title for the questions form"),
 			questions: z.array(z.object({
@@ -7378,6 +7392,13 @@ var EventsService = class extends Service {
 		this.ctx.emit(name, ...args);
 	}
 	/**
+	* 安全广播：单个监听器抛错只记日志，不中断其余监听器，也不把异常抛回调用方。
+	* 长驻的会话状态钩子用它分发（见 `Context.emitSafe`）。
+	*/
+	emitSafe(name, ...args) {
+		this.ctx.emitSafe(name, ...args);
+	}
+	/**
 	* 拦截型钩子：监听器签名 `(...args, next)`，可读 / 改参数再 `next(...)` 继续，
 	* 或直接返回自己的结果**中断链路**（不再往下走）。
 	*/
@@ -7690,6 +7711,24 @@ var Context = class Context {
 		for (let c = this; c; c = c.parent) {
 			const set = c._listeners.get(name);
 			if (set) for (const listener of [...set]) listener(...args);
+		}
+	}
+	/**
+	* 安全广播：触发顺序与 `emit` 完全一致，但**单个监听器抛错只记日志**，不影响后面的
+	* 监听器、也不把异常抛回调用方。
+	*
+	* 长驻的会话状态钩子用这条：一个通知插件写坏（网络、格式化、空指针）不该让会话收尾
+	* 跟着炸，更不该让另一个插件的通知也发不出去。
+	*/
+	emitSafe(name, ...args) {
+		for (let c = this; c; c = c.parent) {
+			const set = c._listeners.get(name);
+			if (!set) continue;
+			for (const listener of [...set]) try {
+				listener(...args);
+			} catch (err) {
+				c.logger.warn(`监听器执行失败（${name}）：`, err);
+			}
 		}
 	}
 	/**
@@ -8124,6 +8163,19 @@ var ModelsService = class extends Service {
 * 能被同一轮的 `waterfall` / `emit` 看见；而 disposer 经 `bindEffect` 记在**插件 fiber** 上，
 * 插件卸载 / 下一轮重建时自动摘掉。
 * （对比：`ctx.events` 的实体是 **fiber-local** 的，在插件 fiber 上注册的监听器父层看不见。）
+*
+* ## 会话状态钩子（`conversation:*`）挂在**长驻宿主**上
+*
+* `turn:*` 是单轮内部的钩子，ACP / 容器型会话甚至没有这个 turn context；而「一轮开始 /
+* 结束 / 在等审批 / 在等回答」是**产品层面的会话状态**，必须跨后端、跨轮次存在。
+*
+* 所以服务端另建一份按工作区长驻的 hooks 宿主（`apps/server/src/server/conversation-hooks.ts`），
+* 从全局瞬时事件总线桥接这六个 hook。插件要接它们，用
+* `ctx.inject(['hooks'], (c) => c.hooks.on('conversation:finished', ...))` —— 不要写进
+* 顶层 `inject`（设置页的 inspect context 没有 hooks，写顶层会让整个插件被推迟挂载）。
+*
+* 监听器里**不要 await 网络请求**：这条总线是同步的，通知类插件应当 fire-and-forget
+* 并在自己的 Promise 上 catch。
 */
 /** 钩子名（用常量，避免各处手写字符串拼错） */
 var HOOKS = {
@@ -8136,7 +8188,19 @@ var HOOKS = {
 	/** 一轮开始（emit，参数 `TurnStartPayload`） */
 	turnStart: "turn:start",
 	/** 一轮收尾（emit，参数 `TurnFinishPayload`） */
-	turnFinish: "turn:finish"
+	turnFinish: "turn:finish",
+	/** 会话一轮开跑（emit，参数 `ConversationStartedPayload`） */
+	conversationStarted: "conversation:started",
+	/** 会话一轮收尾（落盘之后；emit，参数 `ConversationFinishedPayload`） */
+	conversationFinished: "conversation:finished",
+	/** 工具调用在等用户审批（emit，参数 `ConversationConfirmPayload`） */
+	conversationConfirm: "conversation:confirm",
+	/** 审批有了答复（emit，参数 `ConversationConfirmResolvedPayload`） */
+	conversationConfirmResolved: "conversation:confirm-resolved",
+	/** Agent 在等用户回答提问（emit，参数 `ConversationFollowupPayload`） */
+	conversationFollowup: "conversation:followup",
+	/** 提问有了答复（emit，参数 `ConversationFollowupResolvedPayload`） */
+	conversationFollowupResolved: "conversation:followup-resolved"
 };
 /**
 * `waterfall` 的兜底：取出「被改写的主体」。约定 —— 钩子带两个及以上参数时，
@@ -8476,7 +8540,7 @@ function stepBudgetReminder(state) {
 /**
 * 构建 Agent 系统提示词：说明工作区、工具约定与安全边界。
 *
-* `skills` 非空时追加「可用技能」段落（只有名称 + 描述，正文由 read_skill 按需加载，
+* `skills` 非空时追加「可用技能」段落（只有名称 + 描述，正文由 skill 按需加载，
 * 见 skills.ts 的渐进式披露说明）。
 *
 * `projectDoc` 是全局 + 工作区根合并后的规则文档（调用方用 `readProjectDoc` 读好传进来）：
@@ -8596,7 +8660,7 @@ function buildContainerStartSection(previewPort, autoStart) {
 /**
 * 任务规划与动态重规划。
 *
-* `todo_write` 的 schema 里已经写了怎么用它；这里补的是**跨工具的行为约定**：
+* `todo` 的 schema 里已经写了怎么用它；这里补的是**跨工具的行为约定**：
 * 什么时候该建清单、**做到一半发现计划不对时要主动改**（这才是「动态规划」的关键，
 * 光给工具不说这句，模型会倾向于把最初那份清单当成不可改的合同一路跑到底）、
 * 以及「清单是给自己对进度用的、不是给用户看的交付物」这个边界。
@@ -8604,14 +8668,14 @@ function buildContainerStartSection(previewPort, autoStart) {
 function buildPlanningSection() {
 	if (getLanguage() === "en") return [
 		"Task planning (multi-step tasks):",
-		"- For tasks with **three or more steps**, or that need repeated verification, first list the work in a todo list with `todo_write`, then proceed step by step;",
+		"- For tasks with **three or more steps**, or that need repeated verification, first list the work in a todo list with `todo`, then proceed step by step;",
 		"- **Planning is dynamic, not fixed upfront**: maintain the list as you go — mark finished items and set the next one in progress. More importantly, if later arrangements turn out wrong, drift from the user’s goal, or new needs appear, rewrite the remaining items (add/remove/edit/reorder) instead of blindly finishing the original list;",
 		"- Keep exactly one item in progress at a time; make items specific (“one sentence, one action”), not vague phases;",
 		"- Do not use a todo list for simple or single-step tasks. The list is for your own tracking; do not repeat it in the reply."
 	].join("\n");
 	return [
 		"任务规划（多步骤任务）：",
-		"- 遇到**三步以上**、或需要来回验证的任务，先用 `todo_write` 把要做的事列成待办清单，再逐步推进；",
+		"- 遇到**三步以上**、或需要来回验证的任务，先用 `todo` 把要做的事列成待办清单，再逐步推进；",
 		"- **规划是动态的，不是一次定死**：边做边维护清单 —— 完成一项就更新它的状态、把下一项设为进行中。更关键的是，做到某一步时如果发现**后面的安排不对 / 偏离了用户目标 / 冒出了新需求**，要主动回头改写后续条目（增、删、改、换序都行），而不是硬按最初的清单跑完；",
 		"- 同一时刻只留一条进行中；清单要具体到「一句话一个动作」，不要写成泛泛的大阶段；",
 		"- 简单任务、单步操作不要用清单；清单是给你自己对进度用的，不必在正文里复述一遍它。"
@@ -8676,7 +8740,7 @@ function webToolsPlugin(root, stopHooks = {}, backend) {
 }
 /**
 * 通用「工具袋」插件：把一批**已经构建好**的工具原样挂进注册表。
-* 用于 `extraTools`（transport 相关工具，如 ask_followup_question）与已连接好的 MCP 工具集。
+* 用于 `extraTools`（transport 相关工具，如 ask）与已连接好的 MCP 工具集。
 */
 function rawToolsPlugin(name, tools, opts = {}) {
 	return {
@@ -9789,7 +9853,7 @@ function buildAgentSetup(opts) {
 		...opts.getPermissionMode ? { getPermissionMode: opts.getPermissionMode } : {},
 		...opts.requestConfirm ? { requestConfirm: opts.requestConfirm } : {}
 	});
-	const askHint = "ask_followup_question" in tools ? ASK_FOLLOWUP_HINT : "";
+	const askHint = "ask" in tools ? ASK_FOLLOWUP_HINT : "";
 	const base = opts.workspace.path ? buildAgentSystemPrompt(opts.workspace.path, opts.workspace.name, opts.skills, opts.projectDoc ?? null, opts.browser) : "你是 Fizz 的对话助手。本会话没有绑定工作区，因此不能读写文件或执行命令，但可以使用 web_fetch 工具打开网页抓取资料；只能基于对话内容或抓取到的网页内容回答问题、整理思路。";
 	const intentHint = opts.toolIntent === false ? "" : toolIntentHint();
 	const budgetHint = typeof opts.maxSteps === "number" && Number.isFinite(opts.maxSteps) ? stepBudgetHint(Math.max(1, Math.trunc(opts.maxSteps))) : "";

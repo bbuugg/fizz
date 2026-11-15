@@ -29,6 +29,7 @@ import { discoverServerPlugins } from '@/lib/server/plugin-roots'
 import { syncPluginRootDeps } from '@/lib/server/plugin-deps'
 import { invalidateUploadProviders } from '@/lib/server/upload/registry'
 import { invalidatePluginModels, refreshPluginModels } from '@/lib/server/plugin-models'
+import { invalidateConversationHooks } from '@/lib/server/conversation-hooks'
 import { domain } from '@/lib/server/state'
 import { jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 import { listGlobal, listWorkspace, resolveWorkspace, type PluginScope } from '../_lib/list'
@@ -85,6 +86,7 @@ export async function POST(request: Request): Promise<Response> {
   // 两种 key 都清：`workspaceId` 那份（带项目的上传）与 '' 那份（不带项目的上传）
   await invalidateUploadProviders(workspace?.id)
   await invalidateUploadProviders()
+  await invalidateConversationHooks(workspace?.id)
   invalidatePluginModels()
   domain.deletePluginValues(pluginId)
   const global = domain.getGlobalPluginSettings()

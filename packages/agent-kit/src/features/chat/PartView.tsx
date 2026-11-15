@@ -401,7 +401,7 @@ function LiveOutputBlock({ live }: { live: { stdout: string; stderr: string } })
 }
 
 /**
- * 从 `todo_write` 的入参 / 结果里抠出清单条目。
+ * 从 `todo` 的入参 / 结果里抠出清单条目。
  *
  * 优先用**结果**（收口后的规范形态），结果还没到时退回到**入参**（模型刚提交的那份）——
  * 两者形状相同（都是 `{ todos: [{content, status}] }`），只是一个来自模型、一个来自工具返回。
@@ -424,7 +424,7 @@ function todoItemsOf(input: unknown, output: unknown): TodoItem[] {
 }
 
 /**
- * 待办清单（`todo_write` 的结果视图）：一行一项，勾选 / 进行中 / 待办三种图标。
+ * 待办清单（`todo` 的结果视图）：一行一项，勾选 / 进行中 / 待办三种图标。
  *
  * 与命令卡同样的直显外壳（`border + 圆角`），不铺「输入 / 输出 JSON」——
  * 清单本来就是给人看的进度，JSON 化等于白建。
@@ -634,7 +634,7 @@ function renderBuiltinDirect(
     case 'grep':
       subject = str(input.pattern) ?? str(input.query) ?? str(input.keyword)
       break
-    case 'read_skill':
+    case 'skill':
       subject = str(input.name) ?? str(input.skill) ?? str(input.path)
       break
     case 'web_fetch':
@@ -717,7 +717,7 @@ export interface PartViewProps {
    */
   turnLive?: boolean
   /**
-   * 该 part 是否是在等的 ask_followup_question：是则**不在消息流里渲染表单**，
+   * 该 part 是否是在等的 ask：是则**不在消息流里渲染表单**，
    * 只留一条「请在输入框里作答」的指引（真正的表单在 `ChatComposer` 的 cover 槽位）。
    */
   followupPending?: boolean
@@ -798,7 +798,7 @@ function PartViewInner({
     return <FilePartView part={part} />
   }
 
-  // ask_followup_question：正常待答时表单在**输入框槽位**里（`ChatComposer` 的 cover），
+  // ask：正常待答时表单在**输入框槽位**里（`ChatComposer` 的 cover），
   // 消息流这里只留一条指引，避免同一张表单出现两次；补答 / 已回答仍走卡片本身。
   if (part.toolName === ASK_FOLLOWUP_TOOL) {
     const { output, isError } = toolState(part)
@@ -851,13 +851,13 @@ function PartViewInner({
         }
       : undefined
 
-  // 待办清单（todo_write）：入参 / 结果都是结构化的 `{ todos: [...] }`，画成勾选清单，
+  // 待办清单（todo）：入参 / 结果都是结构化的 `{ todos: [...] }`，画成勾选清单，
   // 不铺「输入 / 输出 JSON」。这是「动态规划」在界面上的落点 —— 模型每改写一次清单，
   // 就多一张卡，用户能看到计划是怎么随执行推进而演变的。
   //
   // `!streamingInput`：入参还在流式生成时 `part.input` 还是 undefined（只有 inputText），
   // 这时抠不出条目，交给下面的流式预览分支；否则会闪一下「清单已清空」。
-  if (part.toolName === 'todo_write' && !streamingInput) {
+  if (part.toolName === 'todo' && !streamingInput) {
     const items = todoItemsOf(part.input, output)
     const done = items.filter((t) => t.status === 'completed').length
     return (

@@ -53,6 +53,10 @@ export function startBackgroundServices(): void {
   run('plugin-models', () => {
     void import('./plugin-models').then((m) => m.refreshPluginModels())
   })
+  // 会话状态钩子：订阅全局事件总线，按工作区挂长驻插件宿主（见 conversation-hooks.ts）
+  run('conversation-hooks', () => {
+    void import('./conversation-hooks').then((m) => m.startConversationHooks())
+  })
   // 定时任务调度器（进程内 cron）：cron / at 到点自动起会话
   run('triggers', () => {
     void import('./scheduler').then((m) => m.startTriggerScheduler())
@@ -119,6 +123,9 @@ export async function stopBackgroundServices(): Promise<void> {
     // 容器型项目：公网入口监听器（独立端口，`FIZZ_PUBLIC_HTTP_PORT`）
     const { stopPublicGateway } = await import('./container-projects/public-gateway')
     stopPublicGateway()
+    // 会话钩子：退订全局事件总线并回收长驻插件 context（通知插件的监听器一并摘掉）
+    const { stopConversationHooks } = await import('./conversation-hooks')
+    await stopConversationHooks()
   } catch (err) {
     console.error('[background] 停止后台服务失败：', err)
   }

@@ -2550,7 +2550,7 @@ export function createApi(
       }),
 
     /**
-     * 答复一次 ask_followup_question 提问（同 confirm 的反向通道约定）。
+     * 答复一次 ask 提问（同 confirm 的反向通道约定）。
      * `answer: null` = 用户跳过 / 未作答。
      */
     resolveFollowup: (id: string, answer: AskFollowupAnswer | null) => {

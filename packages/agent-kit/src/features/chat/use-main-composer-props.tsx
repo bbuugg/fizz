@@ -126,7 +126,7 @@ export function useMainComposerProps(
   const isAcp = turnIsAcp(app);
   const running = streaming;
   /**
-   * 正在等用户回答的提问（`ask_followup_question`）。服务端一次只挂一个；真有多条就
+   * 正在等用户回答的提问（`ask`）。服务端一次只挂一个；真有多条就
    * 先答当前这条，答复后下一条自然顶上来。
    */
   const pendingFollowup = Object.values(app.followupRequests)[0] ?? null;

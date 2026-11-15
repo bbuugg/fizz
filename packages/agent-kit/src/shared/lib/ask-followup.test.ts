@@ -1,7 +1,7 @@
 /**
  * 提问卡的归一化、选项判据、「补答」判据与文案拼装（纯逻辑，vitest 覆盖）。
  *
- * 背景：那一轮已经结束（应用退出 / 点了停止 / 进程崩了）时，`ask_followup_question`
+ * 背景：那一轮已经结束（应用退出 / 点了停止 / 进程崩了）时，`ask`
  * 的答案再也回填不到工具里 —— 前端把这张卡重新渲染成可作答的表单，答案当一条新消息
  * 发出去。这里钉住几条最容易错的边界：
  *
@@ -32,12 +32,12 @@ import {
   type NormalizedQuestion
 } from './ask-followup'
 
-/** 一张 ask_followup_question 的 tool-call part */
+/** 一张 ask 的 tool-call part */
 function followupPart(extra: Partial<AgentMessagePart> = {}): AgentMessagePart {
   return {
     type: 'tool-call',
     toolCallId: 'call-1',
-    toolName: 'ask_followup_question',
+    toolName: 'ask',
     input: {
       title: '新建项目的配置',
       questions: [

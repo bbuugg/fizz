@@ -26,7 +26,16 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
-import { Bot, ChevronLeft, Loader2, MessageSquare, RotateCw, Square, Unplug } from 'lucide-react'
+import {
+  Bot,
+  ChevronLeft,
+  CircleHelp,
+  Loader2,
+  MessageSquare,
+  RotateCw,
+  Square,
+  Unplug
+} from 'lucide-react'
 import { Button } from '@fizz/ui/button'
 import { SubagentViewProvider, type OpenSubagent } from '@fizz/agent-kit/features/chat/subagent-view'
 import { SUBAGENT_META, type SubagentDelegation } from '@fizz/contracts/types'
@@ -39,6 +48,7 @@ import {
 } from '@fizz/agent-kit/shared/ai-elements/conversation'
 import { Message, MessageContent } from '@fizz/agent-kit/shared/ai-elements/message'
 import { Skeleton } from '@fizz/ui/skeleton'
+import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { MessageOutline } from '@fizz/agent-kit/features/chat/MessageOutline'
 import { ChatFind } from '@fizz/agent-kit/features/chat/chat-find'
 import { ContextCompactionCard } from '@fizz/agent-kit/features/chat/ContextCompactionCard'
@@ -666,11 +676,11 @@ function DefaultEmptyState() {
 /**
  * 「第 N 次重试」提示条的入参。
  *
- * `resume` = 断点续跑：这一次不是从头重来，而是接着失败的那一步。文案要区分开 ——
- * 否则用户看着已经写好的正文还在、提示却说「重试」，会以为哪里重复了。
+ * `resume` = 断点续跑：这一次不是从头重来，而是接着失败的那一步（已渲染内容只回滚到
+ * 最后一个落定工具结果）。提示文案不再区分两种重试，统一显示「第 N 次重试」。
  *
- * `message` = 这次失败的原文（服务端 `retry.message` 透传）。有它就把原因跟在次数后面，
- * 用户能立刻分清是上游限流（改并发 / 等配额）还是网络断了（等着就行）。
+ * `message` = 这次失败的原文（服务端 `retry.message` 透传）。有它就显示成次数后面的
+ * 问号图标（悬停看全文），用户能立刻分清是上游限流（改并发 / 等配额）还是网络断了。
  */
 type RetryNoticeView = {
   attempt: number
@@ -686,10 +696,9 @@ type RetryNoticeView = {
  * （只在同一节点上改文本不会重新触发 CSS 动画）。因为 `retryNotice` 只有一份
  * （每次重试覆盖上一条），屏幕上任何时刻只有这一条。
  *
- * ⚠️ 失败原文**必须单行截断**（`truncate` + `title` 看全文）：这一行住在固定高度的
- * 状态槽里（见 `MessageList` 里那段 `min-h-5` 的说明），一条上游报文换行就会让内容高度
- * 在流式途中抖动。原文本身通常是英文一行（如 `AI_APICallError: concurrency reached,
- * current: 11, limit: 10`），截断后仍能看开头几个词判断性质。
+ * 失败原文放在问号图标的 tooltip 里，不再占行内宽度：这一行住在固定高度的状态槽里
+ * （见 `MessageList` 里那段 `min-h-5` 的说明），一条上游报文换行就会让内容高度在流式
+ * 途中抖动。没有原文时不渲染图标。
  */
 function RetryRow({ notice }: { notice: RetryNoticeView }) {
   const tr = useT()
@@ -700,25 +709,21 @@ function RetryRow({ notice }: { notice: RetryNoticeView }) {
       className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground animate-in fade-in slide-in-from-bottom-1 duration-300"
     >
       <RotateCw className="size-3.5 shrink-0 animate-spin" />
-      <span className="shrink-0">
-        {notice.resume
-          ? tr('第 {attempt} 次重试（接着上次的进度）', { attempt: notice.attempt })
-          : tr('第 {attempt} 次重试', { attempt: notice.attempt })}
-      </span>
+      <span className="shrink-0">{tr('第 {attempt} 次重试', { attempt: notice.attempt })}</span>
       {notice.message && (
-        <>
-          <span aria-hidden className="shrink-0">
-            ·
+        <IconTip
+          label={
+            <span className="block max-w-xs whitespace-pre-wrap break-words">{notice.message}</span>
+          }
+        >
+          <span
+            role="img"
+            aria-label={notice.message}
+            className="inline-flex cursor-help items-center text-destructive"
+          >
+            <CircleHelp className="size-3.5" />
           </span>
-          {/*
-            失败原文用 `text-destructive`：这行整体的 `text-muted-foreground` 是给
-            「第 N 次重试」这句状态用的，而后面跟的是**为什么失败**（上游限流 / 网络断）。
-            同一档灰里读不出「这轮出错了」，用户会当成一句普通的进度说明扫过去。
-          */}
-          <span className="min-w-0 truncate font-mono text-xs text-destructive" title={notice.message}>
-            {notice.message}
-          </span>
-        </>
+        </IconTip>
       )}
     </div>
   )
@@ -729,7 +734,7 @@ function RetryRow({ notice }: { notice: RetryNoticeView }) {
  *
  * - 断线重接中：连接断了（页面切后台 / 电脑休眠 / 网络切换最常见），服务端那轮还在跑。
  *   这条必须盖过其余两种 —— 不然用户看到「正在思考」转圈，以为模型在憋一个长回答。
- * - 模型重试中：第 N 次重试（整轮重来时已渲染的部分被清掉；断点续跑时保留，接着上次的进度）。
+ * - 模型重试中：第 N 次重试（失败原文挂在次数后的问号 tooltip 里）。
  * - 其余：普通「正在思考…」。
  */
 function StreamingStatusNotice({

@@ -138,7 +138,7 @@ export interface ConvSlice {
   } | null;
   /** confirm 模式下等用户答复的审批（按到达顺序；同一时刻服务端只放一条） */
   pendingConfirms: AgentConfirmRequest[];
-  /** 在等的 ask_followup_question 提问（按 toolCallId 索引，供工具卡片渲染提问表单） */
+  /** 在等的 ask 提问（按 toolCallId 索引，供工具卡片渲染提问表单） */
   followupRequests: Record<string, AskFollowupRequest>;
   /** 待发送队列：会话进行中用户继续发消息时先排这里，本轮结束依次执行 */
   queuedMessages: QueuedMessage[];
@@ -176,10 +176,9 @@ export interface ConvSlice {
     /** `true` = 断点续跑（已渲染的内容没被清空，只回滚了失败那一步） */
     resume?: boolean;
     /**
-     * 这次尝试失败的**原因原文**（服务端 `retry.message`）。有它就一并显示在次数后面 ——
-     * 「第 2 次重试 · AI_APICallError: concurrency reached…」比光一个次数信息量大得多：
-     * 用户能立刻判断是被上游限流（该降并发）还是断网（等着就行）。
-     * 缺省 = 服务端没给原因，提示里只显示次数。
+     * 这次尝试失败的**原因原文**（服务端 `retry.message`）。有它就显示成次数后的问号
+     * tooltip：用户能立刻判断是被上游限流（该降并发）还是断网（等着就行）。
+     * 缺省 = 服务端没给原因，不渲染问号图标。
      */
     message?: string;
   } | null;

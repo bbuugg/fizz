@@ -510,13 +510,13 @@ export const TOOL_LABELS: Record<string, string> = {
   send_keys: '发送按键',
   list_terminal_sessions: '列出终端会话',
   // Agent 自己维护的待办清单（每次整份重发；渲染端画成勾选清单）
-  todo_write: '更新待办清单',
+  todo: '更新待办清单',
   // 全局只读工具：不依赖工作区，任何会话（含未绑定目录的「任务」会话）都可用
   web_fetch: '抓取网页',
   screenshot: '网页截图',
   git_read: '读取 Git',
-  read_skill: '读取技能',
-  ask_followup_question: '向用户提问',
+  skill: '读取技能',
+  ask: '向用户提问',
   // ACP 外部 Agent 配置（只挂项目助手；改的是全局设置）
   list_acp_agents: '列出外部 Agent',
   detect_acp_agents: '探测外部 Agent',
@@ -740,8 +740,8 @@ export function toolDetailOf(part: ToolCallPart): string | undefined {
   return undefined
 }
 
-/** ask_followup_question 工具名（与 @fizz/tools 侧的 ASK_FOLLOWUP_TOOL 一致；web 不依赖 Node 侧包） */
-export const ASK_FOLLOWUP_TOOL = 'ask_followup_question'
+/** ask 工具名（与 @fizz/tools 侧的 ASK_FOLLOWUP_TOOL 一致；web 不依赖 Node 侧包） */
+export const ASK_FOLLOWUP_TOOL = 'ask'
 
 /** 把工具的入参 / 输出压成可读字符串（ai-elements 的 ToolInput/ToolOutput 吃 unknown） */
 export function previewValue(value: unknown, max = 2000): string {

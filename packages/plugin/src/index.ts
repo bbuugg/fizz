@@ -50,6 +50,20 @@ export type {
 } from './services/uploads'
 export { HOOKS, HooksService, hookValue } from './hooks'
 export type {
+  ConversationConfirmListener,
+  ConversationConfirmPayload,
+  ConversationConfirmResolvedListener,
+  ConversationConfirmResolvedPayload,
+  ConversationFinishedListener,
+  ConversationFinishedPayload,
+  ConversationFollowupListener,
+  ConversationFollowupPayload,
+  ConversationFollowupResolvedListener,
+  ConversationFollowupResolvedPayload,
+  ConversationHookPayload,
+  ConversationHookTarget,
+  ConversationStartedListener,
+  ConversationStartedPayload,
   HookName,
   PromptRenderListener,
   ToolCallListener,

@@ -19,7 +19,7 @@
  *   没有可用的 requestConfirm 通道时**按拒绝处理**（fail-closed）；
  * - `full`：放行。
  *
- * 只读类工具（read / glob / grep / read_skill）在任何模式下都不拦。
+ * 只读类工具（read / glob / grep / skill）在任何模式下都不拦。
  */
 import { spawn } from 'node:child_process'
 import { tool, type ToolSet } from 'ai'
@@ -106,7 +106,7 @@ export interface AgentToolOptions {
   onBackgroundCommand?: (req: { command: string; cwd: string; title: string }) => Promise<{
     id: string
   }>
-  /** 可用技能：给了才挂 `read_skill`（否则模型拿着一份空清单乱试） */
+  /** 可用技能：给了才挂 `skill`（否则模型拿着一份空清单乱试） */
   skills?: AgentSkill[]
   /**
    * 只暴露这些工具（按 key 白名单）；缺省 = 全给。
@@ -896,7 +896,7 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
      * 结果进消息历史（见 model-messages 的 toToolOutput），刷新 / 切会话后由渲染端从
      * part 里重建 —— 不需要另立一份服务端存储。
      */
-    todo_write: tool({
+    todo: tool({
       description:
         tr(
           '创建 / 更新本次任务的**待办清单**（todo list）。把多步骤任务拆成「一句话一个动作」的' +

@@ -1,7 +1,7 @@
 {
   "name": "@fizz/skills",
   "version": "0.1.0",
-  "description": "Fizz 的技能系统：技能文档扫描 / 渐进披露（提示词段落 + read_skill 工具）/ server 端技能发现，源码直接被打包",
+  "description": "Fizz 的技能系统：技能文档扫描 / 渐进披露（提示词段落 + skill 工具）/ server 端技能发现，源码直接被打包",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",

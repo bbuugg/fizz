@@ -381,6 +381,27 @@ export class Context {
   }
 
   /**
+   * 安全广播：触发顺序与 `emit` 完全一致，但**单个监听器抛错只记日志**，不影响后面的
+   * 监听器、也不把异常抛回调用方。
+   *
+   * 长驻的会话状态钩子用这条：一个通知插件写坏（网络、格式化、空指针）不该让会话收尾
+   * 跟着炸，更不该让另一个插件的通知也发不出去。
+   */
+  emitSafe(name: string, ...args: unknown[]): void {
+    for (let c: Context | null = this; c; c = c.parent) {
+      const set = c._listeners.get(name)
+      if (!set) continue
+      for (const listener of [...set]) {
+        try {
+          listener(...args)
+        } catch (err) {
+          c.logger.warn(`监听器执行失败（${name}）：`, err)
+        }
+      }
+    }
+  }
+
+  /**
    * 拦截型钩子：监听器签名 `(...args, next)`。可读 / 改参数再 `next(...)` 继续，
    * 或直接返回一个值**中断链路**（后面的监听器不再执行）。
    * `fallback` 是所有人都放行后的兜底（通常是内置行为）。

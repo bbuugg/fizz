@@ -19,6 +19,25 @@
  * `mutating: false` 就是这个意思（见 `project-tools.ts` 里 `create_plugin` 的
  * `mutating` 参数说明）。
  *
+ * ## 自动通知走会话状态钩子，而不是等模型调工具
+ *
+ * 除了 `notify` 工具，插件还接三个长驻钩子（见 `packages/plugin/src/hooks.ts` 的
+ * `conversation:*`）：
+ * - `conversation:finished`：一轮跑完（默认**不**发，避免刷群）；
+ * - `conversation:confirm`：工具在等用户审批（默认发 —— 错过审批代价更高）；
+ * - `conversation:followup`：Agent 在等用户回答问题（默认发）。
+ *
+ * 钩子由服务端按工作区建的长驻宿主分发（`apps/server/src/server/conversation-hooks.ts`），
+ * 所以这里用 `ctx.inject(['hooks'], …)`，**不能**写进顶层 `inject`（设置页 inspect
+ * 没有 hooks，写顶层会让整个插件被推迟、连设置表单都不出现）。
+ *
+ * ## 自动通知的三条纪律
+ *
+ * - **fire-and-forget**：钩子是同步总线，监听器里不能 await 网络；用 `void …catch`，
+ *   失败只记日志，绝不把异常抛回会话收尾；
+ * - **去重**：按 requestId / confirmId / followupId 记一份短表；
+ * - **节流**：两次自动通知至少隔 3 秒（企业微信限流 20 条/分钟），宁可晚一点也别撞 45009。
+ *
  * ## 三种消息类型，按「手机上读起来是否舒服」选
  *
  * - `text`：纯文本兜底（任何群都支持，最稳）。
@@ -45,6 +64,10 @@ const MAX_CONTENT_BYTES = 4096
 const TIMEOUT_MS = 15_000
 /** 截断后追加的标记（字节数够短，不会顶到上限） */
 const TRUNCATE_SUFFIX = '\n…（内容过长已截断）'
+/** 自动通知之间的最小间隔（企业微信限流 20 条/分钟；留足余量） */
+const MIN_NOTIFY_GAP_MS = 3_000
+/** 去重表上限：id 都是新生成的，理论上不会重复，这里只防异常重复投递 */
+const DEDUPE_LIMIT = 200
 
 /**
  * 插件图标：**通知铃铛**（自绘 SVG，企业微信品牌绿 `#07C160`）。
@@ -81,12 +104,18 @@ interface WecomConfig {
   enabled?: boolean
   webhookUrl?: string
   defaultMentions?: string
+  notifyOnFinish?: boolean
+  notifyOnWait?: boolean
 }
 
 interface WecomSettings {
   enabled: boolean
   webhookUrl: string
   defaultMentions: string[]
+  /** 一轮跑完自动推送（默认关：完成通知频繁，容易刷群） */
+  notifyOnFinish: boolean
+  /** 等审批 / 等回答自动推送（默认开：错过审批的代价更高） */
+  notifyOnWait: boolean
 }
 
 /** 取配置值：只去首尾空白，空串当「没配」 */
@@ -106,7 +135,10 @@ function readSettings(config?: WecomConfig): WecomSettings {
           .split(/[,，\s]+/)
           .map((x) => x.trim())
           .filter(Boolean)
-      : []
+      : [],
+    // 缺省口径与 UI 上的 default 保持一致：完成通知默认关，等待通知默认开
+    notifyOnFinish: config?.notifyOnFinish === true,
+    notifyOnWait: config?.notifyOnWait !== false
   }
 }
 
@@ -239,6 +271,94 @@ function mentionList(raw: string[], extra: string[] = []): string[] {
   return [...new Set(out)]
 }
 
+// ---------------------------------------------------------------------------
+// 会话状态钩子：payload 形态按 `@fizz/plugin` 的稳定窄接口手写（不 import）
+// ---------------------------------------------------------------------------
+
+interface ConversationHookBase {
+  conversationId: string
+  requestId: string
+  title: string
+  workspaceId?: string
+  workspaceName?: string
+}
+
+interface ConversationFinishedEvent extends ConversationHookBase {
+  finishReason: string
+  excerpt?: string
+  error?: string
+  stopReason?: string
+  steps?: number
+  finishedAt: number
+}
+
+interface ConversationConfirmEvent extends ConversationHookBase {
+  confirm: { id: string; toolName: string; command: string; intent?: string }
+}
+
+interface ConversationFollowupEvent extends ConversationHookBase {
+  followup: { id: string; title?: string; questions: Array<{ question: string }> }
+}
+
+interface HookBus {
+  on(name: string, listener: (payload: unknown) => void): unknown
+}
+
+/** 会话完成时的结果文案 */
+function finishedStatus(event: ConversationFinishedEvent): string {
+  if (event.finishReason === 'error') return '出错'
+  if (event.finishReason === 'aborted') return '已停止'
+  if (event.stopReason === 'max-steps') {
+    return event.steps !== undefined ? `已用满 ${event.steps} 步上限` : '已用满步数上限'
+  }
+  return '已完成'
+}
+
+function whereOf(event: ConversationHookBase): string {
+  return event.workspaceName ? ` · ${event.workspaceName}` : ''
+}
+
+function formatFinished(event: ConversationFinishedEvent): { title: string; content: string } {
+  const status = finishedStatus(event)
+  const lines = [`**${event.title}**`, `状态：${status}`]
+  if (event.error) lines.push('', `**失败原因**：${event.error}`)
+  else if (event.excerpt) lines.push('', event.excerpt)
+  return { title: `会话${status}${whereOf(event)}`, content: lines.join('\n') }
+}
+
+function formatConfirm(event: ConversationConfirmEvent): { title: string; content: string } {
+  const lines = [`**${event.title}** 正在等待你确认。`, '', `操作：${event.confirm.command}`]
+  if (event.confirm.intent) lines.push(`意图：${event.confirm.intent}`)
+  return { title: `待确认${whereOf(event)}`, content: lines.join('\n') }
+}
+
+function formatFollowup(event: ConversationFollowupEvent): { title: string; content: string } {
+  const first = event.followup.questions[0]?.question
+  const lines = [
+    `**${event.title}** 正在等待你回答。`,
+    '',
+    first ? `问题：${first}` : 'Agent 发来了一个问题表单。'
+  ]
+  if (event.followup.questions.length > 1) {
+    lines.push(`（共 ${event.followup.questions.length} 题，请回到 Fizz 作答）`)
+  }
+  return { title: `待回答${whereOf(event)}`, content: lines.join('\n') }
+}
+
+/** 短去重表：返回 true = 第一次见到这个 key */
+function createOnce(limit = DEDUPE_LIMIT): (key: string) => boolean {
+  const seen = new Set<string>()
+  return (key: string): boolean => {
+    if (seen.has(key)) return false
+    seen.add(key)
+    if (seen.size > limit) {
+      const first = seen.values().next().value
+      if (first !== undefined) seen.delete(first)
+    }
+    return true
+  }
+}
+
 /**
  * 插件参数类型是**结构化手写**的（不 import `@fizz/plugin`）：插件目录可能不在仓库里，
  * 指望解析到 workspace 包不可靠。`zod` / `ai` 是例外 —— 工具要用它们建 schema，
@@ -249,6 +369,8 @@ interface PluginCtx {
   inject(deps: string[], cb: (ctx: PluginCtx) => void | (() => void)): unknown
   ui: { icon(uri: string): unknown; setting(item: unknown): unknown }
   tools: { register(name: string, tool: unknown, opts?: unknown): unknown }
+  /** 只在 `ctx.inject(['hooks'], …)` 里可用（长驻会话钩子宿主提供） */
+  hooks?: HookBus
 }
 
 export default {
@@ -271,10 +393,11 @@ export default {
       c.ui.icon(ICON)
       c.ui.setting({
         id: 'enabled',
-        title: '启用 notify 工具',
+        title: '启用企业微信通知',
         type: 'boolean',
         default: true,
-        description: '开启后模型可以调用 notify 往企业微信群推消息；关掉则保留配置但不注册工具'
+        description:
+          '开启后模型可以调用 notify 工具，并按下方开关自动推送会话状态；关掉则保留配置但不再注册任何能力'
       })
       c.ui.setting({
         id: 'webhookUrl',
@@ -292,7 +415,23 @@ export default {
         type: 'string',
         placeholder: '@all 或 zhangsan,lisi',
         description:
-          '逗号分隔的企业微信用户 id（不是姓名），`@all` 表示所有人。每次调用可以再用 mentions 参数补充或覆盖。'
+          '逗号分隔的企业微信用户 id（不是姓名），`@all` 表示所有人。notify 工具与「等待确认 / 等待回答」通知会用它；会话完成通知不 @。'
+      })
+      c.ui.setting({
+        id: 'notifyOnFinish',
+        title: '会话完成时自动通知',
+        type: 'boolean',
+        default: false,
+        description:
+          '一轮对话跑完（含出错 / 被停止）后自动推一条带摘要的消息。默认关：定时任务多时容易刷屏。'
+      })
+      c.ui.setting({
+        id: 'notifyOnWait',
+        title: '等待确认 / 回答时自动通知',
+        type: 'boolean',
+        default: true,
+        description:
+          '工具等你审批、Agent 等你回答时自动推一条（会按「默认 @ 谁」提醒）。默认开：错过等待往往比错过完成更要紧。'
       })
     })
 
@@ -382,9 +521,83 @@ export default {
         { source: 'wecom', mutating: false }
       )
     })
+
+    // ---- 自动通知：长驻会话钩子宿主（只有 hooks，没有 tools 也能工作）----
+    if (!settings.webhookUrl || (!settings.notifyOnFinish && !settings.notifyOnWait)) return
+
+    /*
+     * 节流队列：企业微信每机器人每分钟 20 条。钩子回调是同步的，不能 await；这里用一条
+     * promise 链把「发送间隔至少 3 秒」串起来。链上某条失败不阻断后续（`chain = catch`），
+     * 但调用方拿到的仍是会 reject 的 task —— 由监听器自己的 catch 记日志。
+     */
+    let sendChain: Promise<void> = Promise.resolve()
+    let lastSentAt = 0
+    const enqueueSend = (
+      message: { title: string; content: string },
+      mention: boolean
+    ): Promise<void> => {
+      const task = sendChain.then(async () => {
+        const wait = lastSentAt + MIN_NOTIFY_GAP_MS - Date.now()
+        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait))
+        const ids = mention ? mentionList(settings.defaultMentions) : []
+        const inline = ids.map((id) => (id.startsWith('<') ? id : `<@${id}>`)).join(' ')
+        const content = `### ${message.title}\n${message.content}${inline ? `\n\n${inline}` : ''}`
+        // 和 notify 工具同一条截断规则：宁可截断，也别让企业微信回 400
+        const clamped = clampContent(content)
+        await send(settings, {
+          msgtype: 'markdown',
+          markdown: { content: clamped.text },
+          ...(ids.length ? { mentioned_list: ids } : {})
+        })
+        lastSentAt = Date.now()
+      })
+      sendChain = task.catch(() => {})
+      return task
+    }
+
+    ctx.inject(['hooks'], (c) => {
+      const hooks = c.hooks
+      if (!hooks) return
+      const once = createOnce()
+      const fail = (kind: string) => (err: unknown): void => {
+        c.logger.warn(`[wecom] ${kind}通知发送失败：`, err instanceof Error ? err.message : String(err))
+      }
+
+      if (settings.notifyOnFinish) {
+        hooks.on('conversation:finished', (payload) => {
+          const event = payload as ConversationFinishedEvent
+          // requestId 每轮唯一：同一轮重复投递只发一条
+          if (!once(`finished:${event.requestId}`)) return
+          void enqueueSend(formatFinished(event), false).catch(fail('会话完成'))
+        })
+      }
+
+      if (settings.notifyOnWait) {
+        hooks.on('conversation:confirm', (payload) => {
+          const event = payload as ConversationConfirmEvent
+          if (!event.confirm?.id || !once(`confirm:${event.confirm.id}`)) return
+          void enqueueSend(formatConfirm(event), true).catch(fail('待确认'))
+        })
+        hooks.on('conversation:followup', (payload) => {
+          const event = payload as ConversationFollowupEvent
+          if (!event.followup?.id || !once(`followup:${event.followup.id}`)) return
+          void enqueueSend(formatFollowup(event), true).catch(fail('待回答'))
+        })
+      }
+    })
   }
 }
 
 /** 只为验证脚本存在：把纯函数暴露出来，好让 `scripts/verify-wecom-webhook.mjs` 用
  * 假 fetch 钉住「校验 / 截断 / @ 拼接 / 错误码映射」这几件纯逻辑，不必真发消息。 */
-export const __internals = { readSettings, validateWebhook, clampContent, mentionList, explainCode }
+export const __internals = {
+  readSettings,
+  validateWebhook,
+  clampContent,
+  mentionList,
+  explainCode,
+  createOnce,
+  formatFinished,
+  formatConfirm,
+  formatFollowup
+}

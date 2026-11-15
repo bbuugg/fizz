@@ -538,7 +538,7 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
   }
 
   /**
-   * 提问（`ask_followup_question`）的推帧 / 挂起 / 答复：聊天与容器型项目共用同一个工厂
+   * 提问（`ask`）的推帧 / 挂起 / 答复：聊天与容器型项目共用同一个工厂
    * （见 `followup-gate.ts`），这里只传入会话坐标与广播出口。
    */
   const followupGate = createFollowupGate({

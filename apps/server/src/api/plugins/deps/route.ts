@@ -14,6 +14,7 @@
 import { resolveWorkspace, writableRoot } from '@/app/api/plugins/_lib/list'
 import { jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 import { syncPluginRootDeps } from '@/lib/server/plugin-deps'
+import { invalidateConversationHooks } from '@/lib/server/conversation-hooks'
 
 export async function POST(request: Request): Promise<Response> {
   const body = await parseJsonBody<{ scope?: unknown; workspaceId?: unknown }>(request)
@@ -36,6 +37,8 @@ export async function POST(request: Request): Promise<Response> {
   if (!result.ok) {
     return jsonError(400, result.output || '依赖安装失败')
   }
+  // 之前因缺依赖而加载失败的插件，装好后要重新挂一遍（源码指纹没变，宿主不会自己发现）
+  if (result.changed) await invalidateConversationHooks(workspace?.id)
   return Response.json({
     ok: true,
     /** 这个根里没有任何插件声明 dependencies（什么都没做） */

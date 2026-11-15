@@ -9,7 +9,7 @@
  *   `/fizz-skills/agents`）：**由 `lifecycle.ts` 只读挂载**（见 `skill-mounts.ts`）。
  *
  * 「用户自加目录」（`custom`）**没有挂载** —— 把它的路径直接发下去等于给模型一份
- * 「读得到名字、读不到内容」的清单：`read_skill` 会照着 `path` 去读，容器里那个文件不存在。
+ * 「读得到名字、读不到内容」的清单：`skill` 会照着 `path` 去读，容器里那个文件不存在。
  *
  * 两处兜底（都是「宁可不发，也不发一条读不到的路径」）：
  *
@@ -62,7 +62,7 @@ const MIRRORED_ROOT_OF: Partial<Record<SkillSource, string>> = {
   agents: CONTAINER_AGENTS_SKILLS_DIR
 }
 
-/** 容器内可用的一项技能；`path` = **容器内** SKILL.md 的绝对路径（`read_skill` 靠它锚定） */
+/** 容器内可用的一项技能；`path` = **容器内** SKILL.md 的绝对路径（`skill` 靠它锚定） */
 export interface ContainerSkill {
   name: string
   description: string

@@ -9,7 +9,7 @@
  *   同一会话的轮次**串行**（两个客户端同时操作同一会话也不会互相踩）。
  *
  * ⚠️ 与 ai-sdk 后端的能力差异（外部 agent 自己管，我们不再注入）：
- * 技能 / 系统提示词 / 模型配置 / ask_followup_question 都不参与；
+ * 技能 / 系统提示词 / 模型配置 / ask 都不参与；
  * 权限也不映射 —— agent 发 `session/request_permission` 时把它给的选项
  * （optionId / name / kind）原样转给用户挑，挑中的 optionId 原样回传。
  */

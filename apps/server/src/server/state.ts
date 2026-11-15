@@ -211,7 +211,7 @@ async function getState(): Promise<FizzState> {
   >()
 
   /**
-   * 等待用户答复的 ask_followup_question 提问：提问 id → 该轮的 requestId + 解铃回调。
+   * 等待用户答复的 ask 提问：提问 id → 该轮的 requestId + 解铃回调。
    * 与 `pendingConfirms` 同构，但答复体是 `AskFollowupAnswer | null`（null = 跳过）。
    */
   const pendingFollowups = new Map<

@@ -41,6 +41,7 @@ import { discoverServerPlugins, withRuntimeConfig } from '@/lib/server/plugin-ro
 import { syncPluginRootDeps } from '@/lib/server/plugin-deps'
 import { invalidatePluginModels, refreshPluginModels } from '@/lib/server/plugin-models'
 import { invalidateUploadProviders } from '@/lib/server/upload/registry'
+import { invalidateConversationHooks } from '@/lib/server/conversation-hooks'
 import { jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 import {
   listGlobal,
@@ -121,6 +122,8 @@ export async function POST(request: Request): Promise<Response> {
     await rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
     invalidatePluginModule()
     await invalidateUploadProviders(workspace?.id)
+    // 全局插件（workspace 为空）影响所有工作区；项目级只影响这一个
+    await invalidateConversationHooks(workspace?.id)
     invalidatePluginModels()
   }
 
@@ -201,6 +204,7 @@ export async function POST(request: Request): Promise<Response> {
     // 目录内文件都是新写的：整份缓存清掉最稳（安装是低频操作）
     invalidatePluginModule()
     await invalidateUploadProviders(workspace?.id)
+    await invalidateConversationHooks(workspace?.id)
     invalidatePluginModels()
     if (scope === 'global') await refreshPluginModels()
 

@@ -1,5 +1,5 @@
 /**
- * `ask_followup_question` 工具（**传输无关**的共享实现，桌面端 / server 共用）。
+ * `ask` 工具（**传输无关**的共享实现，桌面端 / server 共用）。
  *
  * 这是「AI 在回合中途向用户收集结构化选择题答案」的工具：一次可以问一道或多道
  * （每道 single 单选 / multiSelect 多选，选项 2-4 个）。模型拿到答案后继续往下跑。
@@ -14,7 +14,7 @@ import { z } from 'zod'
 import type { AskFollowupAnswer } from '@fizz/contracts/types'
 
 /** 工具名：模型用它向用户提问（对应工具定义里的 `name`） */
-export const ASK_FOLLOWUP_TOOL = 'ask_followup_question'
+export const ASK_FOLLOWUP_TOOL = 'ask'
 
 /** 提问最长等待时间：超时按「未作答」处理，工具继续往下跑而不是永远挂着 */
 export const ASK_FOLLOWUP_TIMEOUT_MS = 10 * 60 * 1000
@@ -25,7 +25,7 @@ export const ASK_FOLLOWUP_TIMEOUT_MS = 10 * 60 * 1000
  */
 export const ASK_FOLLOWUP_HINT = [
   '',
-  '需要用户做决定或补充信息时，用 ask_followup_question 工具向他提问：一次可以问一道或多道结构化选择题，',
+  '需要用户做决定或补充信息时，用 ask 工具向他提问：一次可以问一道或多道结构化选择题，',
   '每道题 single 单选 / multiSelect 多选，选项 2-4 个（可以是纯文本，也可以带说明对象）。',
   '非「是/否」型题目的选项里用户可以选「其他」并自行输入，回答会带 other 字段（此时 selected 可能为空）。',
   '这个「其他」项由界面自动追加：options 里不要自己写「其他 / 其它 / Other」类的兜底项，写了会被丢弃。',
@@ -78,7 +78,7 @@ interface AskFollowupRequest {
 }
 
 /**
- * 组装 `ask_followup_question` 工具。
+ * 组装 `ask` 工具。
  *
  * ⚠️ 刻意**不走确认流程**：提问本身就是让用户在卡片上做决定，
  * 再套一层「是否允许执行该工具？」只会多一次没意义的点击。
@@ -93,7 +93,7 @@ export function buildAskFollowupTool(
         'Collect structured multiple-choice answers from the user. Provide one or more questions with ' +
         'options, and set multiSelect when multi-select is appropriate. MUST be invoked via the native ' +
         'tool_calls protocol; NEVER emit it as inline XML or pseudo-XML in assistant text (e.g. ' +
-        '"<ask_followup_question>..."). Only use this tool when you are highly uncertain and must clarify ' +
+        '"<ask>..."). Only use this tool when you are highly uncertain and must clarify ' +
         'the issue with the user. You should prefer resolving the problem through reasoning and other tools ' +
         'whenever possible.',
       inputSchema: z.object({
