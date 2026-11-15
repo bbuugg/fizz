@@ -13,14 +13,18 @@ import { useEffect, useState } from 'react'
 export type AgentShortcutAction =
   | 'open-command-palette'
   | 'open-settings'
-  | 'toggle-sidebar'
+  | 'toggle-sidebar-alt'
   | 'toggle-terminal'
   | 'toggle-files'
   | 'toggle-git'
+  | 'toggle-assistant'
+  | 'open-workspace-in-file-manager'
   | 'git-push'
   | 'toggle-theme'
   | 'new-conversation'
   | 'close-tab'
+  | 'next-tab'
+  | 'prev-tab'
   | 'voice-input'
 
 export interface AgentShortcutConfig {
@@ -42,10 +46,14 @@ export const AGENT_SHORTCUT_ACTIONS: AgentShortcutMeta[] = [
   { action: 'open-command-palette', label: '打开命令面板', defaultAccelerator: 'CommandOrControl+Shift+P' },
   { action: 'open-settings', label: '打开设置', defaultAccelerator: 'CommandOrControl+Alt+S' },
   // desktop 标题栏最左那颗按钮也走这个动作（跨树广播）。
-  { action: 'toggle-sidebar', label: '打开 / 关闭侧边栏', defaultAccelerator: 'CommandOrControl+Alt+B' },
+  // 侧边栏只保留这一组键。action 名沿用 `toggle-sidebar-alt`：老配置里
+  // 它已经存着 Alt+1 的会被直接沿用；更早只有 `toggle-sidebar` 的配置不再读取。
+  { action: 'toggle-sidebar-alt', label: '打开 / 关闭侧边栏', defaultAccelerator: 'Alt+1' },
   { action: 'toggle-terminal', label: '打开 / 关闭终端', defaultAccelerator: 'CommandOrControl+Alt+T' },
   { action: 'toggle-files', label: '打开 / 关闭工作区文件', defaultAccelerator: 'CommandOrControl+Alt+F' },
   { action: 'toggle-git', label: '打开 / 关闭源代码管理', defaultAccelerator: 'CommandOrControl+Alt+G' },
+  { action: 'toggle-assistant', label: '打开 / 关闭 AI 助手', defaultAccelerator: 'CommandOrControl+Alt+H' },
+  { action: 'open-workspace-in-file-manager', label: '用文件管理器打开工作区', defaultAccelerator: 'CommandOrControl+Shift+E' },
   // 面板级动作：不在 app-shell 的全局分发里（见 PANEL_SCOPED_SHORTCUT_ACTIONS），
   // 由源代码管理面板自己在可见时挂 window 监听 —— 所以焦点在面板里任何地方都生效。
   { action: 'git-push', label: '推送（源代码管理）', defaultAccelerator: 'CommandOrControl+Shift+Enter' },
@@ -64,6 +72,11 @@ export const AGENT_SHORTCUT_ACTIONS: AgentShortcutMeta[] = [
    * 这是浏览器层面的限制，不是实现漏了；想覆盖的话用设置里的快捷键录制改成别的组合。
    */
   { action: 'close-tab', label: '关闭当前标签', defaultAccelerator: 'CommandOrControl+W' },
+  // 标签循环：只在当前焦点组里转，到头回绕。
+  // ⚠️ 浏览器把 Ctrl/Cmd+Tab 当保留键（切浏览器标签页），web 端页面收不到；
+  // 桌面端（Electron）可用，想换组合去设置里录制。
+  { action: 'next-tab', label: '切换到下一个标签', defaultAccelerator: 'CommandOrControl+Tab' },
+  { action: 'prev-tab', label: '切换到上一个标签', defaultAccelerator: 'CommandOrControl+Shift+Tab' },
   // 「按住说话」：按下开启麦克风、松开取消（松手时 Composer 会停止收音并聚焦输入框）。
   // 默认 Alt+V，可在设置里改；带 Alt 修饰，满足 isUsableAccelerator 的约束。
   { action: 'voice-input', label: '语音输入（按住说话）', defaultAccelerator: 'Alt+V' }
@@ -117,18 +130,12 @@ export function loadShortcuts(): AgentShortcutConfig[] {
     if (!raw) return fallback()
     const parsed = JSON.parse(raw) as Partial<AgentShortcutConfig>[]
     if (!Array.isArray(parsed)) return fallback()
-    // 以缺省清单为准（新增动作能自动补上），只覆盖用户改过的 accelerator
-    // 旧默认值的升级迁移：用户存的正好是**上一版默认值**时升级到新默认（已自定义的保持不动）。
-    // 终端：上一版是 `Ctrl/Cmd+Shift+\``；文件：上一版是 `Ctrl/Cmd+Alt+E`。
-    // 更早的终端默认 `Ctrl/Cmd+Alt+T` 现在又变回默认，不再需要迁移。
-    const LEGACY_DEFAULTS: Record<string, string> = {
-      'toggle-terminal': 'CommandOrControl+Shift+`',
-      'toggle-files': 'CommandOrControl+Alt+E'
-    }
+    // 以缺省清单为准（新增动作能自动补上），只采用用户存过的 accelerator。
+    // 不做「旧默认值 → 新默认值」的迁移：历史配置原样保留，改过的、没改过的都不动。
     return DEFAULT_AGENT_SHORTCUTS.map((def) => {
       const found = parsed.find((s) => s.action === def.action)
-      const stored = typeof found?.accelerator === 'string' ? found.accelerator : def.accelerator
-      const accelerator = stored === LEGACY_DEFAULTS[def.action] ? def.accelerator : stored
+      const accelerator =
+        typeof found?.accelerator === 'string' ? found.accelerator : def.accelerator
       return { action: def.action, accelerator }
     })
   } catch {

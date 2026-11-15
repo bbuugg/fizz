@@ -155,6 +155,25 @@ export function activeTabKey(s: PanelState = state): string | null {
   return s.groups[s.activeGroupId]?.activeTabId ?? null
 }
 
+/**
+ * 在**当前焦点组**里切到相邻标签（`delta=1` 向右，`-1` 向左），到头回绕。
+ *
+ * 只转动焦点组：分组布局由用户拖出来，切标签不该把焦点带到别的组。
+ * 单标签模式（手机壳）组里只有一颗，直接空操作。
+ */
+export function cycleTab(delta: 1 | -1): void {
+  update((s) => {
+    const group = s.groups[s.activeGroupId]
+    if (!group || group.tabIds.length < 2) return s
+    const active = group.activeTabId
+    if (!active) return s
+    const at = group.tabIds.indexOf(active)
+    if (at < 0) return s
+    const next = group.tabIds[(at + delta + group.tabIds.length) % group.tabIds.length]
+    return next === active ? s : activateTabPure(s, next)
+  })
+}
+
 // ---------------------------------------------------------------------------
 // 变更
 // ---------------------------------------------------------------------------

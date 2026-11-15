@@ -37,6 +37,7 @@ import { setPendingDraft } from "@fizz/agent-kit/shared/lib/pending-draft";
 import type { ProjectUiAction } from "@fizz/agent-kit/shared/lib/tool-actions";
 import {
   setAssistantPanelOpen,
+  toggleAssistantPanel,
   useAssistantPanelOpen,
 } from "@fizz/agent-kit/shared/lib/assistant-panel";
 import { AssistantPanel } from "@fizz/agent-kit/features/projects/AssistantPanel";
@@ -54,6 +55,7 @@ import {
 } from "@/app/layout/use-external-file-open";
 import {
   activeTabKey,
+  cycleTab,
   openTab,
   usePanelState,
 } from "@fizz/agent-kit/shared/lib/panel-store";
@@ -397,8 +399,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       case "open-settings":
         openSettings();
         break;
-      case "toggle-sidebar":
-        // 手机版侧栏是覆盖抽屉：开 / 合它，与顶栏那颗汉堡键同义
+      case "toggle-sidebar-alt":
+        // 侧边栏唯一快捷键（Alt+1）；手机版侧栏是覆盖抽屉
         setMobileSidebarOpen(!mobileSidebarOpen);
         break;
       case "toggle-terminal":
@@ -414,14 +416,44 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (hasDirectory) toggleSideTab("git");
         else toast.error("源代码管理不可用：请先选中有目录的工作区");
         break;
+      case "toggle-assistant":
+        toggleAssistantPanel();
+        break;
       case "toggle-theme":
         toggleTheme();
+        break;
+      case "next-tab":
+        cycleTab(1);
+        break;
+      case "prev-tab":
+        cycleTab(-1);
         break;
       case "new-conversation":
         // 与侧栏「新对话」同一条路：落到「创建新任务」页，**不建会话**
         // （会话类型在模型下拉里选，第一句发送时才建）
         startDraftConversation(hasWorkspace ? app.activeWorkspaceId! : null);
         break;
+      case "open-workspace-in-file-manager": {
+        const workspace = app.workspaces.find((w) => w.id === app.activeWorkspaceId);
+        if (!workspace?.path) {
+          toast.error("请先选择一个有目录的工作区");
+          break;
+        }
+        if (workspace.remote) {
+          toast.error("远端工作区不能用本机文件管理器打开");
+          break;
+        }
+        const host = getAgentHost();
+        const open = host.openFileManagerAt;
+        if (!open) {
+          toast.error("当前环境不支持在文件管理器中打开");
+          break;
+        }
+        void open.call(host, workspace.path).then((result) => {
+          if (!result.ok) toast.error(result.error ?? "打开文件管理器失败");
+        });
+        break;
+      }
     }
   };
 
