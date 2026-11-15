@@ -21,7 +21,7 @@ describe('normalizeCollabState', () => {
             {
               type: 'tool-call',
               toolCallId: 'c1',
-              toolName: 'read_file',
+              toolName: 'read',
               input: { path: 'a.ts' },
               output: 'body'
             },
@@ -31,7 +31,7 @@ describe('normalizeCollabState', () => {
       ]
     })
     expect(state.tasks[0]?.parts).toHaveLength(3)
-    expect(state.tasks[0]?.parts?.[1]).toMatchObject({ toolName: 'read_file', output: 'body' })
+    expect(state.tasks[0]?.parts?.[1]).toMatchObject({ toolName: 'read', output: 'body' })
   })
 
   it('形状不对的分支整条丢掉，不影响同一任务的其他字段', () => {

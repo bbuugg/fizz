@@ -191,7 +191,7 @@ describe('isUnansweredFollowup', () => {
   })
 
   it('别的工具、或解析不出题目的不算', () => {
-    expect(isUnansweredFollowup(followupPart({ toolName: 'read_file' }))).toBe(false)
+    expect(isUnansweredFollowup(followupPart({ toolName: 'read' }))).toBe(false)
     expect(isUnansweredFollowup(followupPart({ input: { questions: [] } }))).toBe(false)
   })
 })

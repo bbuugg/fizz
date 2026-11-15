@@ -1,7 +1,7 @@
 /**
  * 子进程管道的输出解码：**乐观 UTF-8、整行回退 GBK**。
  *
- * 为什么需要它：Windows 上 `execute_command` 走 Git Bash（见 `tools.ts` 的
+ * 为什么需要它：Windows 上 `bash` 走 Git Bash（见 `tools.ts` 的
  * `resolveShellSpawn`），Git Bash 的 coreutils 吐 UTF-8 —— 但命令里显式调用的
  * `powershell`（系统自带的 5.1）往管道写的是**系统 OEM 代码页**（中文 Windows 是
  * 936/GBK）。以前这里一律 `chunk.toString('utf8')`，于是 `Get-NetTCPConnection :

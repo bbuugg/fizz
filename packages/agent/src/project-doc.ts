@@ -7,13 +7,13 @@
  *    `CLAUDE.md` 作兼容回落）。跨项目通用的个人偏好放这里；
  * 2. **项目规则**：工作区根目录的 `AGENTS.md` / `CLAUDE.md`。
  *
- * **子目录规则**不整段注入，而是在模型 `read_file` / `list_files` 碰到该目录时按需追加
+ * **子目录规则**不整段注入，而是在模型 `read` / `glob` 碰到该目录时按需追加
  * （见 `readNestedProjectDocs`）—— 规则要作用于某目录的代码时才需要它，提前把所有
  * `AGENTS.md` 收进来只会稀释上下文。
  *
  * 两类来源都支持行内 `@相对路径` 导入（递归、循环保护、限制在工作区 / 配置目录内）。
  *
- * 为什么根文档**全文注入**，而不是「给个路径让模型自己 read_file」：
+ * 为什么根文档**全文注入**，而不是「给个路径让模型自己 read」：
  * 约束要在模型**动手之前**就生效。等它想起来去读时，第一版改动往往已经写歪了。
  * 渐进式披露（先给清单、正文按需加载）适合「技能」这种按任务触发的东西，
  * 不适合「全程适用的规则」—— 规则必须一直在场。
@@ -39,7 +39,7 @@ export const PROJECT_DOC_NAMES = ['AGENTS.md', 'CLAUDE.md'] as const
  *
  * 早先取 64K 是过于宽松的：本项目自己那份已经 13K，而按 64K 算还能再涨 5 倍；
  * 提示词里每多 1 万字符，就是每一轮请求都多付一次。超出部分由截断提示引导模型
- * 按需 `read_file` 补全 —— 成本从「每轮都付」变成「真用到才付」。
+ * 按需 `read` 补全 —— 成本从「每轮都付」变成「真用到才付」。
  */
 const MAX_PROJECT_DOC_CHARS = 16 * 1024
 
@@ -284,7 +284,7 @@ export function extractNestedDocPaths(history: unknown): Set<string> {
  * 读一份**子目录规则**（按需加载）：从目标路径所在目录向上找到工作区根，
  * 把还没注入过的 `AGENTS.md` / `CLAUDE.md` 依次收集（根目录的文档已整段注入，跳过）。
  *
- * 返回 null = 没有新规则；返回文本会附在 `read_file` / `list_files` 的结果后面。
+ * 返回 null = 没有新规则；返回文本会附在 `read` / `glob` 的结果后面。
  * `loaded` 由调用方持有（按会话恢复），同一个 marker 不会重复注入。
  */
 export async function readNestedProjectDocs(

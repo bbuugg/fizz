@@ -160,7 +160,7 @@ async function abortContainerRun(port: number, runId: string): Promise<void> {
 /**
  * 停掉容器里正在跑的那条命令（工具卡上的停止钮）。
  *
- * 容器型的 `execute_command` 在容器里跑，宿主的 `run.commandStops` 杀不到它的进程 ——
+ * 容器型的 `bash` 在容器里跑，宿主的 `run.commandStops` 杀不到它的进程 ——
  * 必须转发给容器的 `/runs/:id/command-stop`。旧镜像没有这个端点，会 404：只记日志，
  * 不影响这一轮（用户还可以用整轮停止兜底）。
  */
@@ -234,7 +234,7 @@ async function pumpContainerRun(ctx: ContainerPumpContext): Promise<RunAgentResu
   const dispatch = (frame: ContainerFrame): void => {
     if (frame.type === 'event') {
       /**
-       * 单条工具的「停止」入口：容器里的 `execute_command` / `web_fetch` 在容器内跑，
+       * 单条工具的「停止」入口：容器里的 `bash` / `web_fetch` 在容器内跑，
        * 宿主够不到它的进程 / 连接 —— 收到 `tool-call` 就在 `run.commandStops` 挂一个**转发器**，让
        * `POST /api/chat/command/stop` 与本地一轮走同一张表、同一个路由（不必新增契约）。
        * `tool-result` 到了就摘掉（命令已经结束，再点停止没有意义）。

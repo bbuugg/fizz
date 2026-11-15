@@ -56,7 +56,7 @@ describe('estimateTokens（CJK 加权刻度）', () => {
         {
           type: 'tool-result',
           toolCallId: 'c1',
-          toolName: 'read_file',
+          toolName: 'read',
           output: { type: 'text', value: 'x'.repeat(4000) }
         }
       ]
@@ -81,13 +81,13 @@ describe('compactModelMessages（轮中压缩）', () => {
       {
         role: 'assistant',
         content: [
-          { type: 'tool-call', toolCallId: `c${i}`, toolName: 'read_file', input: { path: `src/${i}.ts` } }
+          { type: 'tool-call', toolCallId: `c${i}`, toolName: 'read', input: { file_path: `src/${i}.ts` } }
         ]
       },
       {
         role: 'tool',
         content: [
-          { type: 'tool-result', toolCallId: `c${i}`, toolName: 'read_file', output: { type: 'text', value: LONG } }
+          { type: 'tool-result', toolCallId: `c${i}`, toolName: 'read', output: { type: 'text', value: LONG } }
         ]
       }
     ]

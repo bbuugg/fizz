@@ -124,7 +124,7 @@ export function TurnStepGroup({
    *
    * 只在「尾 part 是真在执行的、且支持单条停止」的工具上给（判据在 `message-parts.tsx`
    * 的 `groupHead`，与工具卡头部那颗钮同一套 `isStoppableToolRunning`）：
-   * `execute_command` / `web_fetch` / 派活工具（`agent-*`）。其它工具没有单条取消通道，
+   * `bash` / `web_fetch` / 派活工具（`agent-*`）。其它工具没有单条取消通道，
    * 挂上去要么点了没反应、要么等于偷偷中止整轮。
    *
    * 为什么需要它：过程一旦折进组里，工具卡自己的头部（连同那颗停止钮）就被收起来了。

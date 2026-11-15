@@ -547,5 +547,5 @@ export const WORKSPACE: Record<string, string> = {
   '这次提交没有可显示的文本改动（可能全是二进制文件或纯 mode 变更）。': 'This commit has no displayable text changes (they may all be binary or pure mode changes).',
   '二进制': 'Binary',
   '没有可展示的文本差异（二进制文件，或只有权限 / 模式变化）': 'No displayable text diff (binary file, or only permission / mode changes)',
-  '文件已删除（工具入参没有内容，无原文可对比）': 'File deleted (no content in the tool input, so there is no original to compare)',
+  '文件已删除（没有原文可对比）': 'File deleted (no original content to compare)',
 }

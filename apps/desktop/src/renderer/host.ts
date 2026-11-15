@@ -94,7 +94,7 @@ function readKey(key: string): string | null {
  *
  * ⚠️ 别再把它挂回 `DEV` 上。`DEV` 的判据是 `location.protocol === 'http:'`，**桌面端的
  * dev 形态**（渲染端由 Vite dev server 提供）也算 true —— 于是流式回复的**每一个分片**
- * 都要走一次 TextDecoder + console.log。`execute_command` 的实时输出 / 长正文下这是每秒
+ * 都要走一次 TextDecoder + console.log。`bash` 的实时输出 / 长正文下这是每秒
  * 成百上千次主线程日志：流式明显发卡，而且真出问题时的报错会被自己的日志淹掉（想排查
  * 「连接中断」时恰恰最需要看到那一行）。请求级 / 响应级的日志（每条请求一条）不受影响，
  * 仍旧跟着 `DEV` 走。

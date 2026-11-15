@@ -2,7 +2,7 @@
  * `toolCardHead` 的头部组装规则。
  *
  * 防的回归：
- * ① `execute_command` 的命令明细被当成「与结果正文重复的噪音」摘掉 —— 头部必须保留
+ * ① `bash` 的命令明细被当成「与结果正文重复的噪音」摘掉 —— 头部必须保留
  * `$ 命令`（挤不下就截断 + Tooltip，别让它消失），否则折叠状态下完全看不出跑的什么；
  * ② 有意图时明细丢了工具名 —— 「为什么」和「用什么干的」得同时看得到。
  */
@@ -22,15 +22,15 @@ const call = (toolName: string, input: Record<string, unknown> = {}): ToolCallPa
   ({ type: 'tool-call', toolCallId: 'call-1', toolName, input }) as ToolCallPart
 
 describe('toolCardHead', () => {
-  it('execute_command 的命令进明细（无意图时与工具名并列）', () => {
-    expect(toolCardHead(call('execute_command'), '$ npm run dev')).toEqual({
+  it('bash 的命令进明细（无意图时与工具名并列）', () => {
+    expect(toolCardHead(call('bash'), '$ npm run dev')).toEqual({
       title: '执行命令',
       detail: '$ npm run dev'
     })
   })
 
-  it('execute_command 有意图时：意图当标题，明细是「工具名 · 命令」', () => {
-    const head = toolCardHead(call('execute_command', { intent: '启动开发服务器' }), '$ npm run dev')
+  it('bash 有意图时：意图当标题，明细是「工具名 · 命令」', () => {
+    const head = toolCardHead(call('bash', { intent: '启动开发服务器' }), '$ npm run dev')
     expect(head.title).toBe('启动开发服务器')
     expect(head.detail).toBe('执行命令 · $ npm run dev')
   })
@@ -42,17 +42,17 @@ describe('toolCardHead', () => {
   })
 
   it('文件类工具：无意图时明细是路径，有意图时拼成「工具名 · 路径」', () => {
-    expect(toolCardHead(call('read_file'), 'src/parts.ts')).toEqual({
-      title: toolCardTitle('read_file'),
+    expect(toolCardHead(call('read'), 'src/parts.ts')).toEqual({
+      title: toolCardTitle('read'),
       detail: 'src/parts.ts'
     })
-    expect(toolCardHead(call('read_file', { intent: '看实现' }), ' src/parts.ts ').detail).toBe(
-      `${toolCardTitle('read_file')} · src/parts.ts`
+    expect(toolCardHead(call('read', { intent: '看实现' }), ' src/parts.ts ').detail).toBe(
+      `${toolCardTitle('read')} · src/parts.ts`
     )
   })
 
   it('关掉「工具意图」开关：标题回到工具名，明细仍是明细', () => {
-    expect(toolCardHead(call('execute_command', { intent: '启动开发服务器' }), '$ npm run dev', false)).toEqual(
+    expect(toolCardHead(call('bash', { intent: '启动开发服务器' }), '$ npm run dev', false)).toEqual(
       { title: '执行命令', detail: '$ npm run dev' }
     )
   })
@@ -66,11 +66,11 @@ describe('toolCardHead', () => {
  */
 describe('isStoppableToolName', () => {
   it('命令 / 抓取 / 派活都算，普通工具不算', () => {
-    expect(isStoppableToolName('execute_command')).toBe(true)
+    expect(isStoppableToolName('bash')).toBe(true)
     expect(isStoppableToolName('web_fetch')).toBe(true)
     // 前缀判定，不依赖具体 id：新增的 SubagentId 自动就有停止钮
     expect(isStoppableToolName('agent-explorer')).toBe(true)
-    expect(isStoppableToolName('read_file')).toBe(false)
+    expect(isStoppableToolName('read')).toBe(false)
   })
 })
 
@@ -123,7 +123,7 @@ describe('coalescePartFragments', () => {
   it('工具卡是边界：跨过它不合并，下标原样', () => {
     const { parts, originIndex } = coalescePartFragments([
       { type: 'text', text: '动手前' },
-      { type: 'tool-call', toolCallId: 'c1', toolName: 'read_file', input: {} },
+      { type: 'tool-call', toolCallId: 'c1', toolName: 'read', input: {} },
       { type: 'text', text: '看到了' }
     ])
     expect(parts.map((part) => part.type)).toEqual(['text', 'tool-call', 'text'])

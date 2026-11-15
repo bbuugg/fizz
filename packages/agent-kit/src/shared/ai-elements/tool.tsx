@@ -20,8 +20,6 @@ import {
   FilePlusIcon,
   FileSearchIcon,
   FileTextIcon,
-  FileXIcon,
-  FolderOpenIcon,
   FolderTreeIcon,
   SearchIcon,
   Square,
@@ -62,7 +60,7 @@ export type ToolHeaderProps = {
   /**
    * 明细（命令 / 主入参 / 读写的文件）：单行截断着排在标题右侧，**卡片收起时也看得见**。
    *
-   * 为什么值得占这一行的宽度：工具名本身（`read_file` / `bash`）几乎不携带信息，
+   * 为什么值得占这一行的宽度：工具名本身（`read` / `bash`）几乎不携带信息，
    * 「读的是哪个文件、跑的是哪条命令」才是扫一眼对话流时真正要确认的东西。
    *
    * 宽度：**不给固定上限**，按内容宽铺开（有位置就完整显示），只有真的超出行宽才由
@@ -332,31 +330,21 @@ function ToolHeadLabel({ titleText, detail }: { titleText: string; detail?: stri
  *
  * 终端助手那四个（`run_in_terminal` / `read_terminal_output` / `send_keys` /
  * `list_terminal_sessions`）用方形终端：它们敲在**用户眼前那条**终端里，与
- * `execute_command`（服务端起一个子进程）失败面完全不同 —— 理由与 `TOOL_LABELS` 里
+ * `bash`（服务端起一个子进程）失败面完全不同 —— 理由与 `TOOL_LABELS` 里
  * 那段说明一致，卡片上不该混成同一个图标。
  */
 const TOOL_HEAD_ICONS: Record<string, LucideIcon> = {
-  // 对齐 dsh 后的名字；旧名保留给历史会话（同一颗图标）
   bash: TerminalIcon,
   read: FileTextIcon,
   write: FilePlusIcon,
   edit: FilePenIcon,
   glob: FileSearchIcon,
   grep: SearchIcon,
-  str_replace_editor: FilePenIcon,
-  execute_command: TerminalIcon,
   run_in_terminal: SquareTerminalIcon,
   read_terminal_output: SquareTerminalIcon,
   send_keys: SquareTerminalIcon,
   list_terminal_sessions: SquareTerminalIcon,
-  // 文件类：名字取自 TOOL_LABELS，别按直觉另起（`read` / `Write` 之类是 ACP agent 自己的名）
-  read_file: FileTextIcon,
-  write_file: FilePlusIcon,
-  edit_file: FilePenIcon,
-  delete_file: FileXIcon,
-  search_files: SearchIcon,
-  find_files: FileSearchIcon,
-  list_files: FolderOpenIcon,
+  // 项目管理助手专用的目录浏览（工具名见 project-tools）
   list_dirs: FolderTreeIcon,
 };
 

@@ -184,7 +184,7 @@ export function createConfirmGate(input: {
   const requestConfirm = async (req: AgentConfirmInput): Promise<boolean> => {
     /*
      * 记忆键 = **这行命令本身**(审批卡上显示的原文,trim 后精确匹配)。
-     * 曾经按工具名记:点一次「始终允许」等于放行该工具的一切调用(execute_command
+     * 曾经按工具名记:点一次「始终允许」等于放行该工具的一切调用(bash
      * 换成 rm -rf 也不再问),而且没有任何入口能查看 / 收回 —— 用户就是被这个烫到的。
      */
     const command = req.command.trim()

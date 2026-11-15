@@ -294,7 +294,7 @@ function withLoginArgs(command: string, args: string[]): string[] {
 }
 
 /**
- * `execute_command` 这类**一次性命令执行**该用哪个 shell（只返回可执行文件路径，参数由调用方拼）。
+ * `bash` 这类**一次性命令执行**该用哪个 shell（只返回可执行文件路径，参数由调用方拼）。
  *
  * Windows 上优先 PowerShell 7（`pwsh`）：同一套语法但启动更快、UTF-8 默认行为更少坑；
  * 没装才退回系统自带的 `powershell.exe`（5.1）。POSIX 恒为 `/bin/bash`。
@@ -307,7 +307,7 @@ function withLoginArgs(command: string, args: string[]): string[] {
 /**
  * Git for Windows 的 `bash.exe` 绝对路径；没装返回 null。
  *
- * Agent 的 `execute_command` 在 Windows 上优先用它能拿到 POSIX 工具链（ls / grep / sed /
+ * Agent 的 `bash` 在 Windows 上优先用它能拿到 POSIX 工具链（ls / grep / sed /
  * 管道），与主流编码代理一致；没有 Git Bash 时回退 PowerShell（见 `commandShellPath()`）。
  *
  * 探测覆盖官方安装器（Program Files 下 32/64 位）、Git for Windows 便携版
@@ -327,7 +327,7 @@ export function gitBashPath(): string | null {
 }
 
 /**
- * `execute_command` 这类**一次性命令执行**该用哪个 shell（只返回可执行文件路径，参数由调用方拼）。
+ * `bash` 这类**一次性命令执行**该用哪个 shell（只返回可执行文件路径，参数由调用方拼）。
  *
  * Windows 上**优先 Git Bash**（拿到 POSIX 工具链，与主流编码代理一致）；没有 Git Bash 才退回
  * PowerShell 7（`pwsh`，启动更快、UTF-8 默认行为更少坑），再没装就退到系统自带的 5.1。

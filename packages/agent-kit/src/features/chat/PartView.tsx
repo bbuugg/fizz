@@ -40,7 +40,6 @@ import { t } from '@fizz/i18n'
 import { FileDiffView, type DiffHunk } from '@fizz/agent-kit/features/git/FileDiffView'
 import {
   ASK_FOLLOWUP_TOOL,
-  canonicalToolName,
   isCommandRunning,
   isStoppableToolName,
   isStoppableToolRunning,
@@ -206,56 +205,27 @@ function ToolCallCard({
  * 从工具入参构造「代码修改前后对比」。
  *
  * 故意只依赖入参、不依赖工具返回值：返回值会被原样送回模型，把整文件塞进去会灌爆上下文；
- * 而入参（edit_file 的 oldText/newText、write_file 的 content）本来就持久化在 part 里，
- * 刷新后照常能渲染。delete_file 入参没有内容，只能提示删了哪个文件。
+ * 而入参（edit 的 old_string/new_string、write 的 content）本来就持久化在 part 里，
+ * 刷新后照常能渲染。
  */
 function buildFileDiff(part: AgentMessagePart): {
   path: string
   hunks: DiffHunk[]
-  deleted?: boolean
 } | null {
   const p = part as { toolName?: string; input?: unknown }
   const input = p.input as
     | {
-        path?: string
         file_path?: string
         content?: string
         old_string?: string
         new_string?: string
-        edits?: Array<{ oldText?: string; newText?: string }>
-        command?: string
-        file_text?: string | null
-        old_str?: string | null
-        new_str?: string | null
       }
     | undefined
   if (!input) return null
-  const name = canonicalToolName(p.toolName ?? '')
-  const path = input.file_path ?? input.path ?? ''
+  const name = p.toolName ?? ''
+  const path = input.file_path ?? ''
 
-  // str_replace_editor：create / str_replace 能直接出 diff，insert 只有新内容、走通用卡
-  if (name === 'str_replace_editor') {
-    if (input.command === 'create') {
-      return {
-        path,
-        hunks: [{ header: t('@@ 新建 / 覆盖 @@'), lines: diffLines('', input.file_text ?? '') }]
-      }
-    }
-    if (input.command === 'str_replace') {
-      return {
-        path,
-        hunks: [
-          {
-            header: t('@@ 编辑 {index} @@', { index: 1 }),
-            lines: diffLines(input.old_str ?? '', input.new_str ?? '')
-          }
-        ]
-      }
-    }
-    return null
-  }
-  if (name === 'edit' && !Array.isArray(input.edits)) {
-    // 新 schema：一次一处字面量替换（old_string → new_string）
+  if (name === 'edit') {
     return {
       path,
       hunks: [
@@ -266,23 +236,11 @@ function buildFileDiff(part: AgentMessagePart): {
       ]
     }
   }
-  if (p.toolName === 'edit_file' && Array.isArray(input.edits)) {
-    return {
-      path: input.path ?? '',
-      hunks: input.edits.map((e, i) => ({
-        header: t('@@ 编辑 {index} @@', { index: i + 1 }),
-        lines: diffLines(e.oldText ?? '', e.newText ?? '')
-      }))
-    }
-  }
   if (name === 'write' && typeof input.content === 'string') {
     return {
       path,
       hunks: [{ header: t('@@ 新建 / 覆盖 @@'), lines: diffLines('', input.content) }]
     }
-  }
-  if (p.toolName === 'delete_file') {
-    return { path: input.path ?? '', hunks: [], deleted: true }
   }
   return null
 }
@@ -398,7 +356,7 @@ function StreamingInputBlock({ text, label, mono = true }: {
 }
 
 /**
- * execute_command 运行中的**实时输出区**（stdout / stderr 合并纯文本）。
+ * bash 运行中的**实时输出区**（stdout / stderr 合并纯文本）。
  *
  * - stderr 行首的 `[stderr] ` 前缀已在 parts 层加好（见 `appendStreamChunk`）——
  *   这里只负责展示，不再解析一次；
@@ -549,7 +507,7 @@ function renderAcpDirect(part: AgentMessagePart): DirectResult | null {
 
   for (const [i, item] of content.entries()) {
     if (item?.type === 'diff' && (item.newText !== undefined || item.oldText !== undefined)) {
-      // 文件修改：直接给前后对比（与内置 edit_file 的直显同一套视图）
+      // 文件修改：直接给前后对比（与内置 edit 的直显同一套视图）
       nodes.push(
         <FileDiffView
           key={`diff-${i}`}
@@ -618,7 +576,7 @@ function renderAcpDirect(part: AgentMessagePart): DirectResult | null {
  * 入参做主入参 → `detail`（工具名后面截断显示），结果抠成人话文本留在内容区。
  * 返回 null = 覆盖不到（回退通用折叠卡）。
  *
- * 文件类工具（write_file / edit_file / delete_file）不走这里 —— 它们由 buildFileDiff
+ * 文件类工具（write / edit）不走这里 —— 它们由 buildFileDiff
  * 生成前后对比，在直显分支里铺。
  */
 function renderBuiltinDirect(
@@ -639,8 +597,8 @@ function renderBuiltinDirect(
    * Result 两坨 JSON」的兜底卡：终端输出被 `JSON.stringify` 当 JSON 高亮，数字全被拆成
    * 独立 span（用户看到的「满屏乱跳的数字」，`x86_64` 还会被切成 `x` + `86` + `_` + `64`）。
    *
-   * 所以按 `execute_command` 的样子直显：`$ 命令` 铺在内容区第一行，后面接结果文本。
-   * 两处与 execute_command 不同：
+   * 所以按 `bash` 的样子直显：`$ 命令` 铺在内容区第一行，后面接结果文本。
+   * 两处与 bash 不同：
    * - **命令什么都没输出时不铺内容区**：工具会回一句「（等待期内没有捕获到新输出…）」，
    *   那是给模型的（免得它以为调用失败），摆给用户看就是一句废话；
    * - `send_keys` 只显示按了什么键：它的结果是一句固定回执（「已向 local:1 发送按键」），
@@ -662,13 +620,13 @@ function renderBuiltinDirect(
   }
 
   let subject: string | undefined
-  const name = canonicalToolName(part.toolName)
+  const name = part.toolName
   switch (name) {
     case 'bash':
       subject = str(input.command)
       break
     case 'read':
-      subject = str(input.file_path) ?? str(input.path)
+      subject = str(input.file_path)
       break
     case 'glob':
       subject = str(input.pattern) ?? str(input.query)
@@ -870,7 +828,7 @@ function PartViewInner({
   const { state, hasOutput, output, isError, streamingInput } = toolState(part)
 
   // 工具卡头部的停止钮**只给真有「单条取消」通道的工具**（`isStoppableToolName`：
-  // execute_command / web_fetch / 派活工具 `agent-*`）：其它工具没有这条通道，
+  // bash / web_fetch / 派活工具 `agent-*`）：其它工具没有这条通道，
   // 在它们上面挂停止钮要么是空操作、要么等于偷偷中止整轮，语义不诚实 —— 所以干脆不显示，
   // 要停整轮用输入框那颗停止钮。
   //
@@ -979,7 +937,7 @@ function PartViewInner({
     )
   }
 
-  // execute_command **运行中**（还没有 tool-result）：铺实时输出区 + 单条命令停止。
+  // bash **运行中**（还没有 tool-result）：铺实时输出区 + 单条命令停止。
   // 结果到达后 hasOutput 变 true，本分支让位给下面的直显分支（结果文本），
   // liveOutput 也已被 parts 层清口（见 applyEvent 的 tool-result case）。
   //
@@ -1030,7 +988,7 @@ function PartViewInner({
     )
   }
 
-  // 文件类工具（write_file / edit_file / delete_file）：从入参构造「修改前后对比」。
+  // 文件类工具（write / edit）：从入参构造「修改前后对比」。
   const fileDiff = buildFileDiff(part)
   // ACP 工具：diff / 文本 / 命令+输出 直显（renderAcpDirect 判据见函数注释）
   const acpDirect = renderAcpDirect(part)

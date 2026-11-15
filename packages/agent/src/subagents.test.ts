@@ -45,8 +45,8 @@ function fakeStream(text: string) {
     fullStream: (async function* () {
       yield { type: 'start-step' }
       if (text) yield { type: 'text-delta', text }
-      yield { type: 'tool-call', toolName: 'read_file', toolCallId: 'c1', input: { path: 'a.ts' } }
-      yield { type: 'tool-result', toolName: 'read_file', toolCallId: 'c1', output: '…' }
+      yield { type: 'tool-call', toolName: 'read', toolCallId: 'c1', input: { file_path: 'a.ts' } }
+      yield { type: 'tool-result', toolName: 'read', toolCallId: 'c1', output: '…' }
     })(),
     // 关键：最后一步没有正文 —— 真实场景里 AI SDK 给的就是空串
     text: Promise.resolve(''),

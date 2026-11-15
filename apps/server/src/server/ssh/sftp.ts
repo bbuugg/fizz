@@ -464,7 +464,7 @@ class SftpService {
    * 写整份远端文件（工作区后端的 `writeFile`）。
    *
    * `atomic`：先写同目录临时文件再 rename —— 断线 / 崩溃时不会在目标位置留下半份内容
-   * （工具 `write_file` 就是这么写的）。SFTP v3 的 rename 在 OpenSSH 上覆盖已有文件；
+   * （工具 `write` 就是这么写的）。SFTP v3 的 rename 在 OpenSSH 上覆盖已有文件；
    * 目标存在导致 rename 失败时退回「删目标再 rename」。
    */
   async writeBuffer(

@@ -147,7 +147,7 @@ export interface RunAgentOptions {
    */
   subagentMaxSteps?: Partial<Record<SubagentId, number>>
   /**
-   * confirm 模式下执行破坏性操作（execute_command / delete_file）前的请示。
+   * confirm 模式下执行破坏性操作（bash）前的请示。
    *
    * ⚠️ **不传就等于 full**：`buildAgentTools` 里 `needConfirm = 权限是 confirm && 有回调`，
    * 所以调用方必须真的提供一个会等待用户的回调（桌面端走 IPC、服务端走 SSE+POST、
@@ -155,14 +155,14 @@ export interface RunAgentOptions {
    */
   requestConfirm?: (req: AgentConfirmInput) => Promise<boolean>
   /**
-   * 命令停止表（toolCallId → 只停那一条 execute_command 的 stop）。调用方创建
+   * 命令停止表（toolCallId → 只停那一条 bash 的 stop）。调用方创建
    * （server 挂在 run 上：`run.commandStops`），runAgent 往里面登记 / 注销；
    * `POST /api/chat/command/stop` 与服务端外部的停止按钮命中它。不传 = 没有
    * 单条停止能力（与从前逐字节一致）。
    */
   commandStops?: Map<string, () => void>
   /**
-   * 后台命令登记：`execute_command` 带 `runInBackground` 时调它，拿到任务 id。
+   * 后台命令登记：`bash` 带 `runInBackground` 时调它，拿到任务 id。
    *
    * 由 server 注入（它持有任务登记表，也知道这条命令属于哪个会话）；不传 = 不提供
    * 后台执行（工具会如实回绝）。进程归登记表持有，本轮的 signal / 超时都打不到它。
@@ -1249,7 +1249,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
               },
               signal: runSignal,
               /**
-               * 单条停止：派活卡上的停止钮与 `execute_command` 走**同一张表**、
+               * 单条停止：派活卡上的停止钮与 `bash` 走**同一张表**、
                * 同一个 `POST /api/chat/command/stop` —— 停一个子任务不必废掉整轮。
                */
               ...(opts.commandStops ? { commandStops: opts.commandStops } : {}),

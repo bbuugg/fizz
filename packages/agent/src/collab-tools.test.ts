@@ -13,21 +13,21 @@ const noop = (): void => {}
 
 describe('pickCollabTools', () => {
   it('只保留白名单里的工具', () => {
-    const picked = pickCollabTools({ read_file: noop, write_file: noop }, ['read_file'])
-    expect(Object.keys(picked)).toEqual(['read_file'])
+    const picked = pickCollabTools({ read: noop, write: noop }, ['read'])
+    expect(Object.keys(picked)).toEqual(['read'])
   })
 
   it('read_skill 不在白名单里也保留', () => {
-    const picked = pickCollabTools({ read_file: noop, read_skill: noop }, ['read_file'])
-    expect(Object.keys(picked).sort()).toEqual(['read_file', 'read_skill'])
+    const picked = pickCollabTools({ read: noop, read_skill: noop }, ['read'])
+    expect(Object.keys(picked).sort()).toEqual(['read', 'read_skill'])
   })
 
   it('白名单里列了、工具集里没有的键不会凭空出现', () => {
-    const picked = pickCollabTools({ read_file: noop }, ['read_file', 'read_skill'])
-    expect(Object.keys(picked)).toEqual(['read_file'])
+    const picked = pickCollabTools({ read: noop }, ['read', 'read_skill'])
+    expect(Object.keys(picked)).toEqual(['read'])
   })
 
   it('没有技能可读时不留空壳', () => {
-    expect(Object.keys(pickCollabTools({ read_file: noop }, []))).toEqual([])
+    expect(Object.keys(pickCollabTools({ read: noop }, []))).toEqual([])
   })
 })

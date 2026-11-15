@@ -421,7 +421,7 @@ export function toolState(part: AgentMessagePart): {
 }
 
 /**
- * 这条 part 是不是「**execute_command 正在跑**」（命令已启动、还没有结果）。
+ * 这条 part 是不是「**bash 正在跑**」（命令已启动、还没有结果）。
  *
  * 实时输出区的开关，也是卡片头部停止钮「只停这一条命令」还是「中止整轮」的分流判据
  * （见 PartView 的 `onStop`）。判据刻意**不看 `liveOutput`**：
@@ -434,11 +434,11 @@ export function toolState(part: AgentMessagePart): {
  * 用户点不开内容区，也就摸不到原先挂在内容区里的停止钮，只能干等它自己结束。
  * 头部那颗停止钮（不依赖内容区，未结算态照样可点）正是为此补上的。
  *
- * 所以只看三件事：是 execute_command、结果还没到、入参已定型
+ * 所以只看三件事：是 bash、结果还没到、入参已定型
  * （`input-streaming` 时命令还没开始跑，该走「正在写入参」那个预览）。
  */
 export function isCommandRunning(part: AgentMessagePart): boolean {
-  if (part.type !== 'tool-call' || canonicalToolName(part.toolName) !== 'bash') return false
+  if (part.type !== 'tool-call' || part.toolName !== 'bash') return false
   const { hasOutput, streamingInput } = toolState(part)
   return !hasOutput && !streamingInput
 }
@@ -451,11 +451,11 @@ export function isCommandRunning(part: AgentMessagePart): boolean {
  * 工具自己在执行期登记 stop**，不需要新接口、也不需要新按钮。
  *
  * 目前三类：
- * - `bash`（旧名 `execute_command`）：杀那一棵进程树；
+ * - `bash`：杀那一棵进程树；
  * - `web_fetch`：abort 这一次抓取（抓境外站点动辄等 30s，不该为它废掉整轮）；
  * - 派活工具 `agent-<id>`：abort 这一个子 run（见 `isStoppableToolName` 的说明）。
  */
-export const STOPPABLE_TOOLS: ReadonlySet<string> = new Set(['bash', 'execute_command', 'web_fetch'])
+export const STOPPABLE_TOOLS: ReadonlySet<string> = new Set(['bash', 'web_fetch'])
 
 /**
  * 派活工具（`agent-<id>`）也支持单条停止 —— 前缀判定，**不要**把 id 一个个塞进
@@ -502,17 +502,7 @@ export const TOOL_LABELS: Record<string, string> = {
   glob: '查找文件',
   grep: '搜索内容',
   bash: '执行命令',
-  str_replace_editor: '查看与编辑文件',
-  // 旧名保留：历史会话里存的是当时的工具名，去掉这些 key 会让旧卡片变成裸英文
-  list_files: '列出目录',
-  find_files: '查找文件',
-  search_files: '搜索内容',
-  read_file: '读取文件',
-  write_file: '写入文件',
-  edit_file: '编辑文件',
-  delete_file: '删除文件',
-  execute_command: '执行命令',
-  // 终端助手（客户端执行）的四个工具。名字与 execute_command 刻意分开：前者在**用户
+  // 终端助手（客户端执行）的四个工具。名字与 bash 刻意分开：前者在**用户
   // 眼前那条终端**里敲（等同人手输入），后者是服务端起一个子进程，失败面完全不同，
   // 卡片上混成同一个名字会让人分不清命令到底跑在哪。
   run_in_terminal: '在终端执行',
@@ -563,25 +553,6 @@ export const TOOL_LABELS: Record<string, string> = {
   // 一张卡 + 「子任务 · xxx」的标题已经够读。
   'agent-explorer': '子任务 · 侦察',
   'agent-reviewer': '子任务 · 审查'
-}
-
-/**
- * 旧工具名 → 新名。历史会话（`conversation.json`）里存的是当时的名字，不做映射的话
- * 旧卡片会掉进通用 JSON 分支；新名字一律走 canonical 后再判定。
- */
-const LEGACY_TOOL_NAMES: Record<string, string> = {
-  read_file: 'read',
-  write_file: 'write',
-  edit_file: 'edit',
-  search_files: 'grep',
-  find_files: 'glob',
-  list_files: 'glob',
-  execute_command: 'bash'
-}
-
-/** 把历史工具名折算成当前名字（未知名字原样返回） */
-export function canonicalToolName(name: string): string {
-  return LEGACY_TOOL_NAMES[name] ?? name
 }
 
 /** ACP agent 不给 name 时的占位工具名（与 @fizz/acp 的 acp.ts 里 ACP_UNNAMED_TOOL 一致） */
@@ -745,7 +716,7 @@ export function toolDetailOf(part: ToolCallPart): string | undefined {
   // 文件类：内置 agent 用 path，ACP 的编辑工具则常见 filePath（opencode/claude 都是它）。
   const path = pick(['path', 'file_path', 'filePath'])
   if (path) return oneLine(path)
-  // 搜索类：内置 search_files 是 pattern，ACP 的 glob / grep 常见 query / keyword。
+  // 搜索类：内置 grep 是 pattern，ACP 的 glob / grep 常见 query / keyword。
   const pattern = pick(['pattern', 'query', 'keyword'])
   if (pattern) return oneLine(pattern)
   // 抓取 / 截图类主入参是 URL。

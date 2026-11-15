@@ -936,7 +936,7 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
       // 单条命令停止表（POST /api/chat/command/stop 命中它；run 级，收尾时清空）
       commandStops: run.commandStops,
       /**
-       * 后台命令（`execute_command` 的 `runInBackground`）：登记成一条**属于本会话**的
+       * 后台命令（`bash` 的 `runInBackground`）：登记成一条**属于本会话**的
        * 后台任务，进程归登记表持有 —— 本轮的 abort 与超时都打不到它，这正是「dev server
        * 活过这一轮」的实现方式。
        *

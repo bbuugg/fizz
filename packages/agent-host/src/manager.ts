@@ -185,7 +185,7 @@ class BackendManager {
         setTimeout(resolve, ms)
       })
     /*
-     * 后台命令（`execute_command` 的 `runInBackground` 起的 dev server / watch）。
+     * 后台命令（`bash` 的 `runInBackground` 起的 dev server / watch）。
      *
      * 它们**故意活过一轮对话**（那是这个能力的意义），所以既不在 `commandStops` 里、
      * 也不受 `abortRun` 影响 —— 只有进程退出时这一处能收它们。POSIX 上是 `detached`

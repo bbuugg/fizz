@@ -138,7 +138,7 @@ RUN mkdir -p /data /workspace
 #   ca-certificates —— https 远端与各种 TLS 请求的根证书
 #   curl            —— agent 下载 / 探活常用，进容器排查也方便
 #   less            —— git log / diff 的分页器（终端面板里看历史才顺手）
-#   ripgrep         —— agent 搜代码时几乎必敲 rg（应用内置的 search_files 不依赖它）
+#   ripgrep         —— agent 搜代码时几乎必敲 rg（应用内置的 grep 不依赖它）
 #   procps          —— ps / top / free：看容器里到底跑着什么
 #   gosu            —— 启动时按 PUID/PGID 降权（见 docker-entrypoint.sh）；它是 exec 而不是
 #                      fork，node 直接当 PID 1 收得到 SIGTERM，docker stop 才能优雅退出

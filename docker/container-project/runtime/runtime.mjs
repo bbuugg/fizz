@@ -116,8 +116,7 @@ var CONTAINER_AGENT_TOOL_KEYS = [
 	"todo_write",
 	"read_skill",
 	"web_fetch",
-	"ask_followup_question",
-	"str_replace_editor"
+	"ask_followup_question"
 ];
 /**
 * 容器内运行时协议的版本号。
@@ -374,7 +373,7 @@ function resolveModel(config) {
 /**
 * 非字符串工具结果回给模型时的字符上限。
 *
-* 字符串结果由工具自己负责分页（read_file / search_files）或落盘（output-log）；
+* 字符串结果由工具自己负责分页（read / grep）或落盘（output-log）；
 * 但**结构化结果没人管** —— `JSON.stringify` 出来的数组 / 对象能任意大，
 * 且它不在工具作者的控制范围内（工具只是返回一个对象）。这里兜一道底：
 * 超限就截断并明确告诉模型「截断位置」，而不是让它以为拿到的是完整数据。
@@ -386,9 +385,9 @@ var MAX_STRUCTURED_OUTPUT_CHARS = 8e3;
 /**
 * 工具结果 -> 模型消息的输出结构（字符串走 text，其余序列化成 json；失败走 error-text）。
 *
-* 这里**不做落盘**：output-log（全文落盘 + 行号续读）只用于 execute_command /
+* 这里**不做落盘**：output-log（全文落盘 + 行号续读）只用于 bash /
 * web_fetch（见 @fizz/tools 的 output-log.ts），其余工具的超长输出要么靠自己的参数
-* 分页（read_file / search_files），要么在这里按字符上限截断 —— 结构化结果至少
+* 分页（read / grep），要么在这里按字符上限截断 —— 结构化结果至少
 * 要有上限，否则一个返回大数组的工具能把整轮上下文顶爆。
 */
 function toToolOutput(output, isError) {
@@ -1034,7 +1033,7 @@ function extractModelFileOps(messages, ops) {
 			if (part.type !== "tool-call") continue;
 			const path = inputPathOf(part.input);
 			if (!path) continue;
-			if (part.toolName === "read" || part.toolName === "read_file") ops.read.add(path);
+			if (part.toolName === "read") ops.read.add(path);
 			else if (WRITE_TOOL_NAMES.has(part.toolName ?? "")) ops.modified.add(path);
 		}
 	}
@@ -1269,26 +1268,23 @@ function createFileOps() {
 		modified: /* @__PURE__ */ new Set()
 	};
 }
-/** 会改文件的工具名：新名（dsh 对齐后的 `write` / `edit`）与历史里的旧名都认 */
+/** 会改文件的工具名 */
 var WRITE_TOOL_NAMES = /* @__PURE__ */ new Set([
 	"write",
-	"edit",
-	"write_file",
-	"edit_file"
+	"edit"
 ]);
-/** 工具入参里的路径：新 schema 叫 `file_path`，旧历史里叫 `path` */
+/** 工具入参里的路径 */
 function inputPathOf(input) {
-	const value = input?.file_path ?? input?.path;
+	const value = input?.file_path;
 	return typeof value === "string" ? value : void 0;
 }
-/** fizz 的工具名：`read` / `write` / `edit`（旧历史里是 `read_file` 等） */
 function extractFileOps(history, ops) {
 	for (const m of history) for (const part of m.parts) {
 		if (part.type !== "tool-call") continue;
 		const call = part;
 		const path = inputPathOf(call.input);
 		if (!path) continue;
-		if (call.toolName === "read" || call.toolName === "read_file") ops.read.add(path);
+		if (call.toolName === "read") ops.read.add(path);
 		else if (WRITE_TOOL_NAMES.has(call.toolName ?? "")) ops.modified.add(path);
 	}
 }
@@ -1710,7 +1706,7 @@ function findPwsh() {
 	]) ?? findInPath("pwsh");
 }
 /**
-* `execute_command` 这类**一次性命令执行**该用哪个 shell（只返回可执行文件路径，参数由调用方拼）。
+* `bash` 这类**一次性命令执行**该用哪个 shell（只返回可执行文件路径，参数由调用方拼）。
 *
 * Windows 上优先 PowerShell 7（`pwsh`）：同一套语法但启动更快、UTF-8 默认行为更少坑；
 * 没装才退回系统自带的 `powershell.exe`（5.1）。POSIX 恒为 `/bin/bash`。
@@ -1723,7 +1719,7 @@ function findPwsh() {
 /**
 * Git for Windows 的 `bash.exe` 绝对路径；没装返回 null。
 *
-* Agent 的 `execute_command` 在 Windows 上优先用它能拿到 POSIX 工具链（ls / grep / sed /
+* Agent 的 `bash` 在 Windows 上优先用它能拿到 POSIX 工具链（ls / grep / sed /
 * 管道），与主流编码代理一致；没有 Git Bash 时回退 PowerShell（见 `commandShellPath()`）。
 *
 * 探测覆盖官方安装器（Program Files 下 32/64 位）、Git for Windows 便携版
@@ -1740,7 +1736,7 @@ function gitBashPath() {
 	]) ?? findInPath("bash.exe");
 }
 /**
-* `execute_command` 这类**一次性命令执行**该用哪个 shell（只返回可执行文件路径，参数由调用方拼）。
+* `bash` 这类**一次性命令执行**该用哪个 shell（只返回可执行文件路径，参数由调用方拼）。
 *
 * Windows 上**优先 Git Bash**（拿到 POSIX 工具链，与主流编码代理一致）；没有 Git Bash 才退回
 * PowerShell 7（`pwsh`，启动更快、UTF-8 默认行为更少坑），再没装就退到系统自带的 5.1。
@@ -1859,7 +1855,7 @@ function matchSegments(rule, path, anchored) {
 * `.gitignore` 的进程内缓存：**按 mtime + 大小做失效判据**。
 *
 * 早先只缓存规则、永不失效，于是「用户把某条规则删掉 / 补上一条」之后，文件树与
-* `list_files` 仍旧拿旧规则过滤，看起来就像「文件莫名消失」，只能重启服务端才好
+* `glob` 仍旧拿旧规则过滤，看起来就像「文件莫名消失」，只能重启服务端才好
 * —— 这种"改了没反应"最难排查。现在每次判定前先 `stat` 一下（比读文件便宜得多），
 * 文件没动就直接吃缓存、动了（或第一次出现、或被删掉）才重新解析。
 */
@@ -4235,7 +4231,7 @@ function buildSkillsPromptSection(skills) {
 * 子进程的输出是**终端字节流**：颜色（`\u001b[32m➜\u001b[39m`）、加粗、清行、光标显隐、
 * 超链接（OSC 8）全在里面。这些字节只在真终端上有意义，落到两个地方就是纯噪音：
 *
-* 1. **工具结果**（`execute_command` 回给模型的文本）：模型看到的是 `[32m` 这种残渣，
+* 1. **工具结果**（`bash` 回给模型的文本）：模型看到的是 `[32m` 这种残渣，
 *    既占预算又可能被当成正文照抄；
 * 2. **后台任务日志**（`background-tasks.ts` 的每行）：界面是纯文本渲染，用户会看到
 *    `[1mLocal[22m:` 这种半截转义。
@@ -4285,7 +4281,7 @@ var MAX_HELD_TAIL = 512;
 * 扣住的是「上一块末尾那个还没收全的转义序列」，最长 `MAX_HELD_TAIL` 字符；超了说明上游
 * 根本不是转义序列（或者是永远收不了尾的 OSC），直接 `stripAnsi` 放出去，不再等。
 *
-* 用途：`execute_command` 的实时输出（`liveOutput`）—— 那里是**渲染态**，逐块追加，
+* 用途：`bash` 的实时输出（`liveOutput`）—— 那里是**渲染态**，逐块追加，
 * 漏出去半截转义就会一直显示到这张卡片消失。
 */
 function createAnsiStripper() {
@@ -4311,7 +4307,7 @@ function createAnsiStripper() {
 /**
 * 子进程管道的输出解码：**乐观 UTF-8、整行回退 GBK**。
 *
-* 为什么需要它：Windows 上 `execute_command` 走 Git Bash（见 `tools.ts` 的
+* 为什么需要它：Windows 上 `bash` 走 Git Bash（见 `tools.ts` 的
 * `resolveShellSpawn`），Git Bash 的 coreutils 吐 UTF-8 —— 但命令里显式调用的
 * `powershell`（系统自带的 5.1）往管道写的是**系统 OEM 代码页**（中文 Windows 是
 * 936/GBK）。以前这里一律 `chunk.toString('utf8')`，于是 `Get-NetTCPConnection :
@@ -4963,7 +4959,7 @@ function buildSearchContext(hits, source, context) {
 }
 // packages/tools/src/output-log.ts
 /**
-* 超长工具输出的落盘：**execute_command** / **web_fetch** 结果太长时，把全文写进工作区的
+* 超长工具输出的落盘：**bash** / **web_fetch** 结果太长时，把全文写进工作区的
 * `.fizz/tool-output/`，只回「头 + 尾」正文，外加一组**行号坐标**让模型自己把剩下的读完。
 *
 * ## 为什么落进工作区，而不是数据目录
@@ -4971,21 +4967,21 @@ function buildSearchContext(hits, source, context) {
 * 早先这一层把全文写到数据目录（`~/.fizz-server/tool-logs/`）并配一个专用 `read_log`
 * 工具（按字符区间读）。那套有两个绕不开的代价：
 *
-* 1. **只有专用工具能读**。数据目录在工作区之外，`read_file` 的 `resolveInside` 够不着；
+* 1. **只有专用工具能读**。数据目录在工作区之外，`read` 的 `resolveInside` 够不着；
 *    于是模型想精读中段，只能用 `read_log`（字符偏移，与它熟悉的按行翻页是两套心智），
-*    或者 `execute_command` 拼 `sed`/`grep` —— 而只读模式下 execute_command 被 guardWrite 拦死，
+*    或者 `bash` 拼 `sed`/`grep` —— 而只读模式下 bash 被 guardWrite 拦死，
 *    那份数据**根本读不回来**。
 * 2. **多一个要维护的工具**：schema、系统提示词、只读子任务白名单里都得带着它。
 *
 * 现在落在工作区内（`.fizz/tool-output/`），两个问题一起消失：
-* - `read_file` 直接能读，**任何权限模式**都行（它是纯读工具，readonly 不拦）；
-* - `search_files` 还能直接对它做关键词检索（`pattern="error"`），这是读日志最常用的动作；
-* - 行号对行号，和 `read_file` 的 offset/limit 同一套坐标。
+* - `read` 直接能读，**任何权限模式**都行（它是纯读工具，readonly 不拦）；
+* - `grep` 还能直接对它做关键词检索（`pattern="error"`），这是读日志最常用的动作；
+* - 行号对行号，和 `read` 的 offset/limit 同一套坐标。
 *
 * ## 为什么不心疼「往用户仓库里写文件」
 *
 * `.fizz` 是 Fizz 自己的本地环境数据目录（见 contracts/workspace 的
-* `DEFAULT_IGNORE_DIRS`）：文件树、`list_files` / `search_files` 都跳过它；同名
+* `DEFAULT_IGNORE_DIRS`）：文件树、`glob` / `grep` 都跳过它；同名
 * `.gitignore`（内容 `*`）保证缓存不进版本库。落盘时会顺手把这份 `.gitignore` 补上。
 * 这不是「替用户改文件」，所以不走 guardWrite —— 而恰恰因为不走审批，只读会话也能落 + 也能读。
 *
@@ -4999,7 +4995,7 @@ function buildSearchContext(hits, source, context) {
 /**
 * 单个工具结果回给模型的字符预算（也是命令输出落盘的触发阈值）。
 *
-* read_file / search_files 用它做行裁剪提示的分界，execute_command 用它决定是否落盘。
+* read / grep 用它做行裁剪提示的分界，bash 用它决定是否落盘。
 */
 var MAX_TOOL_RESULT_CHARS = 4e3;
 /** 摘要里留给「头 + 尾」正文的额度：剩下的 ~1600 字符给说明块，保证整体塞得进预算 */
@@ -5023,7 +5019,7 @@ function countLines(text) {
 * 从 `approx` 起往后找最近的换行，返回它**之后**那个下标。
 *
 * 用来把「按字符数切的头 / 尾」退到整行边界上：坐标对模型说的都是行号，
-* 返回一段被劈成半行的正文会让行号与内容对不上（模型按行号 read_file 会读串行）。
+* 返回一段被劈成半行的正文会让行号与内容对不上（模型按行号 read 会读串行）。
 */
 function lineAlignedStart(text, approx) {
 	if (approx <= 0) return 0;
@@ -5118,225 +5114,11 @@ async function summarizeLongOutput(full, meta) {
 		...meta.extra ? [`- 补充：${meta.extra}`] : []
 	].join("\n")}`;
 }
-/** 按预算裁一段文本，尽量裁在换行处（read_file / search_files 用） */
+/** 按预算裁一段文本，尽量裁在换行处（read / grep 用） */
 function clipToBudget(text, max = SUMMARY_BODY_CHARS) {
 	if (text.length <= max) return text;
 	const cut = text.lastIndexOf("\n", max);
 	return `${text.slice(0, cut > max * .6 ? cut : max)}\n…（本段已按预算裁剪）`;
-}
-// packages/tools/src/str-replace-editor.ts
-/**
-* `str_replace_editor`：Anthropic 风格的「一个工具四个子命令」。
-*
-* 存在的意义不是再抄一遍 `read` / `write` / `edit`，而是**兼容**：很多提示词、技能、
-* 从 Claude Code 搬来的工作流都会直接调这个名字。语义上它是一个独立面：
-* - `view`：带行号看文件（`     1  content`），或看目录（最多两层）；
-* - `create`：**只能新建**，目标已存在就报错（覆盖属于 `write`）；
-* - `str_replace`：`old_str` 必须**唯一命中**，`new_str` 省略 = 删掉；
-* - `insert`：在 `insert_line` 那行**之后**插入。
-*
-* 唯一一处刻意偏差：这个工具原本要求**绝对路径**，而 Fizz 的模型一直按
-* 「相对工作区根」工作 —— 所以这里相对路径按工作区解析，绝对路径只要落在工作区内
-* 也接受。错误文案保持原样。
-*
-* 读后写：`str_replace` / `insert` 与内置 `edit` 走同一张观察表（改之前必须读过），
-* 否则「唯一命中」这条硬要求会让模型在没看过文件时反复瞎猜。
-*/
-/** view 的默认输出上限 */
-var VIEW_MAX_OUTPUT_CHARS = 16e3;
-var TRUNCATED_MESSAGE = "<response clipped><NOTE>To save on context only part of this file has been shown to you. You should retry this tool after you have searched inside the file with `grep -n` in order to find the line numbers of what you are looking for.</NOTE>";
-var DEFAULT_DESCRIPTION = `Custom editing tool for viewing, creating and editing files
-* State is persistent across command calls and discussions with the user
-* If \`path\` is a file, \`view\` displays the result of applying \`cat -n\`. If \`path\` is a directory, \`view\` lists non-hidden files and directories up to 2 levels deep
-* The \`create\` command cannot be used if the specified \`path\` already exists as a file
-* If a \`command\` generates a long output, it will be truncated and marked with \`<response clipped>\`
-* A null placeholder for a parameter unused by the selected command is treated as omitted. Required parameters still need values; omit \`str_replace.new_str\` rather than setting it to null when deleting a match
-
-Notes for using the \`str_replace\` command:
-* The \`old_str\` parameter should match EXACTLY one or more consecutive lines from the original file. Be mindful of whitespaces!
-* If the \`old_str\` parameter is not unique in the file, the replacement will not be performed. Make sure to include enough context in \`old_str\` to make it unique
-* The \`new_str\` parameter should contain the edited lines that should replace the \`old_str\`
-`.trim();
-function maybeTruncate(content, maxOutputChars) {
-	return content.length <= maxOutputChars ? content : content.slice(0, maxOutputChars) + TRUNCATED_MESSAGE;
-}
-/** 文件内容 → `cat -n` 风格（6 位右对齐行号 + 两个空格） */
-function formatFileView(path, content, viewRange, maxOutputChars = VIEW_MAX_OUTPUT_CHARS) {
-	const allLines = content.split("\n");
-	let lines = allLines;
-	let initialLine = 1;
-	let finalLine;
-	let prompt = `Here's the content of ${path} with line numbers (which has a total of ${allLines.length} lines)`;
-	if (viewRange !== void 0) {
-		const [requestedInitial, requestedFinal] = viewRange;
-		if (viewRange.length !== 2 || requestedInitial === void 0 || requestedFinal === void 0 || !viewRange.every(Number.isInteger)) throw new Error("Invalid `view_range`. It should be a list of two integers.");
-		initialLine = requestedInitial;
-		finalLine = requestedFinal;
-		if (initialLine < 1 || initialLine > allLines.length) throw new Error(`Invalid \`view_range\`: [${viewRange.join(", ")}]. Its first element \`${initialLine}\` should be within the range of lines of the file: [1, ${allLines.length}]`);
-		if (finalLine > allLines.length) throw new Error(`Invalid \`view_range\`: [${viewRange.join(", ")}]. Its second element \`${finalLine}\` should be smaller than the number of lines in the file: \`${allLines.length}\``);
-		if (finalLine !== -1 && finalLine < initialLine) throw new Error(`Invalid \`view_range\`: [${viewRange.join(", ")}]. Its second element \`${finalLine}\` should be larger or equal than its first \`${initialLine}\``);
-		lines = finalLine === -1 ? allLines.slice(initialLine - 1) : allLines.slice(initialLine - 1, finalLine);
-		prompt += ` with view_range=[${initialLine}, ${finalLine}]`;
-	}
-	const numbered = lines.map((line, index) => `${String(initialLine + index).padStart(6, " ")}  ${line}`).join("\n");
-	return maybeTruncate(`${prompt}:\n${numbered}\n`, maxOutputChars);
-}
-/** 唯一命中才替换；返回替换后的全文 */
-function replaceUnique(before, oldStr, newStr, path) {
-	const offset = before.indexOf(oldStr);
-	if (offset < 0) throw new Error(`No replacement was performed, old_str \`${oldStr}\` did not appear verbatim in ${path}.`);
-	if (before.indexOf(oldStr, offset + oldStr.length) >= 0) {
-		const lines = [];
-		let scan = before.indexOf(oldStr);
-		let line = 1;
-		let cursor = 0;
-		while (scan >= 0) {
-			while (cursor < scan) {
-				if (before[cursor] === "\n") line += 1;
-				cursor += 1;
-			}
-			lines.push(line);
-			scan = before.indexOf(oldStr, scan + oldStr.length);
-		}
-		throw new Error(`No replacement was performed. Multiple occurrences of old_str \`${oldStr}\` in lines [${lines.join(", ")}]. Please ensure it is unique`);
-	}
-	return before.slice(0, offset) + newStr + before.slice(offset + oldStr.length);
-}
-/** 在第 `insertLine` 行**之后**插入（0 = 文件最前面） */
-function insertAfterLine(before, insertLine, newStr) {
-	const lines = before.split("\n");
-	if (!Number.isInteger(insertLine) || insertLine < 0 || insertLine > lines.length) throw new Error(`Invalid \`insert_line\` parameter: ${insertLine}. It should be within the range of lines of the file: [0, ${lines.length}]`);
-	return [
-		...lines.slice(0, insertLine),
-		...newStr.split("\n"),
-		...lines.slice(insertLine)
-	].join("\n");
-}
-/** 组装 `str_replace_editor` 工具 */
-function buildStrReplaceEditorTool(deps) {
-	const { backend } = deps;
-	const maxOutputChars = deps.maxOutputChars ?? 16e3;
-	/** 路径 → 绝对路径（相对工作区解析；越界由 backend.resolve 抛错） */
-	const resolveTarget = (path) => {
-		if (path.trim().length === 0) throw new Error("path must be a non-empty string");
-		const abs = backend.resolve(path);
-		return {
-			abs,
-			display: backend.rel(abs)
-		};
-	};
-	/** 目录树：最多两层，跳过隐藏项 / node_modules / __pycache__ */
-	const listDirectory = async (abs, display) => {
-		const rows = [`d\t${display}`];
-		const visit = async (dir, depth) => {
-			const entries = [...await backend.readDir(dir)].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
-			for (const entry of entries) {
-				if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === "__pycache__") continue;
-				const child = backend.join(dir, entry.name);
-				const type = entry.type === "dir" ? "d" : entry.type === "file" ? "f" : "?";
-				rows.push(`${type}\t${backend.rel(child)}`);
-				if (entry.type === "dir" && depth < 1) await visit(child, depth + 1);
-			}
-		};
-		await visit(abs, 0);
-		return `Here're the files and directories up to 2 levels deep in ${display}, excluding hidden items, node_modules, and Python cache directories:\n${maybeTruncate(`${rows.join("\n")}\n`, maxOutputChars)}\n`;
-	};
-	return tool({
-		description: deps.description ?? DEFAULT_DESCRIPTION,
-		inputSchema: z.object({
-			command: z.enum([
-				"view",
-				"create",
-				"str_replace",
-				"insert"
-			]).describe("The commands to run. Allowed options are: `view`, `create`, `str_replace`, `insert`."),
-			path: z.string().describe("Path to a file or directory, e.g. `src/app.ts` or `src`. Relative paths resolve against the workspace root; absolute paths inside the workspace are also accepted."),
-			file_text: z.string().nullish().describe("Required string parameter of `create` command, with the content of the file to be created. A null placeholder is treated as omitted by commands that do not use this parameter."),
-			insert_line: z.number().nullish().describe("Required integer parameter of `insert` command. The `new_str` will be inserted AFTER the line `insert_line` of `path`. A null placeholder is treated as omitted by commands that do not use this parameter."),
-			new_str: z.string().nullish().describe("Optional string parameter of `str_replace` command containing the new string (if omitted, no string will be added). Required string parameter of `insert` command containing the string to insert. A null placeholder is accepted only by commands that do not use this parameter."),
-			old_str: z.string().nullish().describe("Required string parameter of `str_replace` command containing the string in `path` to replace. A null placeholder is treated as omitted by commands that do not use this parameter."),
-			view_range: z.array(z.number()).nullish().describe("Optional parameter of `view` command when `path` points to a file. If omitted or null, the full file is shown. If provided, the file will be shown in the indicated line number range, e.g. [11, 12] will show lines 11 and 12. Indexing at 1 to start. Setting `[start_line, -1]` shows all lines from `start_line` to the end of the file.")
-		}),
-		execute: async (input, options) => {
-			const { command } = input;
-			const { abs, display } = resolveTarget(input.path);
-			const stat = await backend.stat(abs);
-			if (command === "view") {
-				if (!stat) throw new Error(`The path ${display} does not exist. Please provide a valid path.`);
-				if (stat.type === "dir") {
-					if (input.view_range) throw new Error("The `view_range` parameter is not allowed when `path` points to a directory.");
-					const listing = await listDirectory(abs, display);
-					if (!deps.nestedDocs) return listing;
-					const extra = await deps.nestedDocs(abs, true).catch(() => null);
-					return extra ? `${listing}\n${extra}` : listing;
-				}
-				if (stat.type !== "file") throw new Error(`cannot view "${display}": not a regular file or directory`);
-				const text = await readText(backend, abs);
-				await deps.recordObserved(abs);
-				const out = formatFileView(display, text, input.view_range ?? void 0, maxOutputChars);
-				if (!deps.nestedDocs) return out;
-				const extra = await deps.nestedDocs(abs, false).catch(() => null);
-				return extra ? `${out}\n${extra}` : out;
-			}
-			if (command === "create") {
-				if (input.file_text === void 0 || input.file_text === null) throw new Error("Parameter `file_text` is required for command: create");
-				if (stat) throw new Error(`File already exists at: ${display}. Cannot overwrite files using command \`create\`.`);
-				const refused = await deps.guardWrite("文件未写入", {
-					toolCallId: options.toolCallId,
-					toolName: "str_replace_editor",
-					command: `新建文件 ${display}（${input.file_text.length} 字符）`
-				});
-				if (refused) return refused;
-				await backend.writeFile(abs, input.file_text, { createParents: true });
-				await deps.recordObserved(abs);
-				return `New file created successfully at: ${display}`;
-			}
-			if (command === "str_replace") {
-				if (input.new_str === null) throw new Error("Parameter `new_str` must be omitted or contain a string for command: str_replace");
-				const oldStr = input.old_str ?? void 0;
-				if (oldStr === void 0) throw new Error("Parameter `old_str` is required for command: str_replace");
-				if (oldStr.length === 0) throw new Error("Parameter `old_str` is empty for command: str_replace");
-				const refuse = await deps.checkObserved(abs, display);
-				if (refuse) throw new Error(refuse);
-				if (!stat || stat.type !== "file") throw new Error(`cannot edit "${display}": not a regular file`);
-				const after = replaceUnique(await readText(backend, abs), oldStr, input.new_str ?? "", display);
-				const refused = await deps.guardWrite("文件未被编辑", {
-					toolCallId: options.toolCallId,
-					toolName: "str_replace_editor",
-					command: `编辑文件 ${display}（1 处替换）`
-				});
-				if (refused) return refused;
-				await backend.writeFile(abs, after, { createParents: true });
-				await deps.recordObserved(abs);
-				return `The file ${display} has been edited successfully.`;
-			}
-			if (input.insert_line === void 0 || input.insert_line === null) throw new Error("Parameter `insert_line` is required for command: insert");
-			if (input.new_str === void 0 || input.new_str === null) throw new Error("Parameter `new_str` is required for command: insert");
-			const refuse = await deps.checkObserved(abs, display);
-			if (refuse) throw new Error(refuse);
-			if (!stat || stat.type !== "file") throw new Error(`cannot insert into "${display}": not a regular file`);
-			const after = insertAfterLine(await readText(backend, abs), input.insert_line, input.new_str);
-			const refused = await deps.guardWrite("文件未被编辑", {
-				toolCallId: options.toolCallId,
-				toolName: "str_replace_editor",
-				command: `编辑文件 ${display}（在第 ${input.insert_line} 行后插入）`
-			});
-			if (refused) return refused;
-			await backend.writeFile(abs, after, { createParents: true });
-			await deps.recordObserved(abs);
-			return `The file ${display} has been edited successfully.`;
-		}
-	});
-}
-/** 读文本（二进制 / 超大直接报错，与 read 同一口径） */
-async function readText(backend, abs) {
-	const stat = await backend.stat(abs);
-	const display = backend.rel(abs);
-	if (!stat) throw new Error(`The path ${display} does not exist. Please provide a valid path.`);
-	if (stat.type !== "file") throw new Error(`cannot view "${display}": not a regular file or directory`);
-	const buf = await backend.readFile(abs);
-	if (buf.includes(0)) throw new Error(`cannot view "${display}": binary file`);
-	return buf.toString("utf8");
 }
 // packages/tools/src/tools.ts
 /**
@@ -5789,19 +5571,6 @@ function buildAgentTools(root, opts) {
 					options.abortSignal?.removeEventListener("abort", stop);
 				}
 			}
-		}),
-		/**
-		* Anthropic 风格的兼容编辑器（`view` / `create` / `str_replace` / `insert`）。
-		*
-		* 它与 `read` / `write` / `edit` 并存而不是替代：从 Claude Code 搬来的技能与提示词
-		* 会直接点名它。语义细节见 `str-replace-editor.ts` 的文件头。
-		*/
-		str_replace_editor: buildStrReplaceEditorTool({
-			backend,
-			guardWrite,
-			checkObserved,
-			recordObserved,
-			...opts.nestedDocs ? { nestedDocs: opts.nestedDocs } : {}
 		}),
 		/**
 		* 待办清单（todo list）：把一个**多步骤**任务拆成可勾选条目，边做边维护进度。
@@ -8396,13 +8165,13 @@ var HooksService = class extends EventsService {
 *    `CLAUDE.md` 作兼容回落）。跨项目通用的个人偏好放这里；
 * 2. **项目规则**：工作区根目录的 `AGENTS.md` / `CLAUDE.md`。
 *
-* **子目录规则**不整段注入，而是在模型 `read_file` / `list_files` 碰到该目录时按需追加
+* **子目录规则**不整段注入，而是在模型 `read` / `glob` 碰到该目录时按需追加
 * （见 `readNestedProjectDocs`）—— 规则要作用于某目录的代码时才需要它，提前把所有
 * `AGENTS.md` 收进来只会稀释上下文。
 *
 * 两类来源都支持行内 `@相对路径` 导入（递归、循环保护、限制在工作区 / 配置目录内）。
 *
-* 为什么根文档**全文注入**，而不是「给个路径让模型自己 read_file」：
+* 为什么根文档**全文注入**，而不是「给个路径让模型自己 read」：
 * 约束要在模型**动手之前**就生效。等它想起来去读时，第一版改动往往已经写歪了。
 * 渐进式披露（先给清单、正文按需加载）适合「技能」这种按任务触发的东西，
 * 不适合「全程适用的规则」—— 规则必须一直在场。
@@ -8536,7 +8305,7 @@ function extractNestedDocPaths(history) {
 * 读一份**子目录规则**（按需加载）：从目标路径所在目录向上找到工作区根，
 * 把还没注入过的 `AGENTS.md` / `CLAUDE.md` 依次收集（根目录的文档已整段注入，跳过）。
 *
-* 返回 null = 没有新规则；返回文本会附在 `read_file` / `list_files` 的结果后面。
+* 返回 null = 没有新规则；返回文本会附在 `read` / `glob` 的结果后面。
 * `loaded` 由调用方持有（按会话恢复），同一个 marker 不会重复注入。
 */
 async function readNestedProjectDocs(workspacePath, targetPath, loaded, isDirectory) {
@@ -8865,7 +8634,7 @@ function buildPlanningSection() {
 */
 var BUILTIN_ORIGIN = "builtin";
 /**
-* 文件 / 命令工具插件（list_files / read_file / write_file / execute_command …）。
+* 文件 / 命令工具插件（glob / read / write / bash …）。
 * `root` 为空（未绑定工作区的「任务」会话）时**不注册任何工具** —— 与从前的行为一致，
 * 避免工具拿空路径当 cwd 乱写文件。
 */
@@ -9045,8 +8814,8 @@ function wrapToolsWithHooks(tools, hooks) {
 /**
 * 只读子任务的工具白名单。
 *
-* ⚠️ 刻意**不含** `execute_command`：它既能读也能写（`rm` / `git checkout` 都能毁东西），
-* 「只读 agent 带 execute_command」是个假承诺。git 只读视图走单独的 `git_read`
+* ⚠️ 刻意**不含** `bash`：它既能读也能写（`rm` / `git checkout` 都能毁东西），
+* 「只读 agent 带 bash」是个假承诺。git 只读视图走单独的 `git_read`
 * （窄接口 + 输出预算），见 tools/src/git-read.ts。
 *
 * ⚠️ 刻意**不含**技能工具：技能可能在别的工作区路径上，派出去反而读错东西；侦察只看代码。
@@ -10474,7 +10243,7 @@ async function runAgent(opts) {
 				},
 				signal: runSignal,
 				/**
-				* 单条停止：派活卡上的停止钮与 `execute_command` 走**同一张表**、
+				* 单条停止：派活卡上的停止钮与 `bash` 走**同一张表**、
 				* 同一个 `POST /api/chat/command/stop` —— 停一个子任务不必废掉整轮。
 				*/
 				...opts.commandStops ? { commandStops: opts.commandStops } : {},

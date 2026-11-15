@@ -36,14 +36,14 @@ describe('applyCollabEvent', () => {
       agentId: 'a1',
       taskId: 't1',
       toolCallId: 'c1',
-      toolName: 'read_file',
+      toolName: 'read',
       phase: 'start',
       label: 'a.ts',
-      input: '{"path":"a.ts"}',
+      input: '{"file_path":"a.ts"}',
     })
-    // 入参会被还原成对象：卡片抬头的明细（toolDetailOf）只认 path / command 这些键
+    // 入参会被还原成对象：卡片抬头的明细（toolDetailOf）只认 file_path / command 这些键
     expect(next.liveParts.a1).toEqual([
-      { type: 'tool-call', toolCallId: 'c1', toolName: 'read_file', input: { path: 'a.ts' } },
+      { type: 'tool-call', toolCallId: 'c1', toolName: 'read', input: { file_path: 'a.ts' } },
     ])
   })
 
@@ -52,13 +52,13 @@ describe('applyCollabEvent', () => {
       type: 'collab-tool',
       agentId: 'a1',
       toolCallId: 'c2',
-      toolName: 'write_file',
+      toolName: 'write',
       phase: 'start',
-      input: '{"path":"a.ts","content":"半截',
+      input: '{"file_path":"a.ts","content":"半截',
     })
     expect(next.liveParts.a1?.[0]).toMatchObject({
-      toolName: 'write_file',
-      input: '{"path":"a.ts","content":"半截',
+      toolName: 'write',
+      input: '{"file_path":"a.ts","content":"半截',
     })
   })
 
@@ -67,15 +67,15 @@ describe('applyCollabEvent', () => {
       type: 'collab-tool',
       agentId: 'a1',
       toolCallId: 'c1',
-      toolName: 'execute_command',
+      toolName: 'bash',
       phase: 'start',
-      input: 'pnpm test',
+      input: '{"command":"pnpm test"}',
     })
     state = applyCollabEvent(state, {
       type: 'collab-tool',
       agentId: 'a1',
       toolCallId: 'c1',
-      toolName: 'execute_command',
+      toolName: 'bash',
       phase: 'end',
       ok: false,
       output: 'boom',
@@ -96,9 +96,9 @@ describe('applyCollabEvent', () => {
       type: 'collab-tool',
       agentId: 'a1',
       toolCallId: 'c1',
-      toolName: 'read_file',
+      toolName: 'read',
       phase: 'start',
-      input: 'a.ts',
+      input: '{"file_path":"a.ts"}',
     })
     state = applyCollabEvent(state, {
       type: 'collab-delta',
@@ -118,7 +118,7 @@ describe('applyCollabEvent', () => {
       type: 'collab-tool',
       agentId: 'a1',
       toolCallId: 'c1',
-      toolName: 'read_file',
+      toolName: 'read',
       phase: 'start',
       input: 'a.ts',
     })

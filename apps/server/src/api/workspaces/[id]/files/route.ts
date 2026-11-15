@@ -30,7 +30,7 @@ export async function GET(
   /**
    * `?ignored=1`：**连命中忽略规则的条目也一起列**（文件树的「显示被忽略」开关）。
    *
-   * 默认过滤是给 Agent 的 `list_files` / `search_files` 准备的（别把 node_modules 翻成
+   * 默认过滤是给 Agent 的 `glob` / `grep` 准备的（别把 node_modules 翻成
    * 上下文），但人翻文件时经常就是要去 .env / vendor / dist 里看一眼 —— 从前这条路
    * 在界面上是**不存在**的，用户只能得出「我文件不见了」。打开这个开关时条目会带
    * `ignored: true`，由界面压暗，两边都不含糊。

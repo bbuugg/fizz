@@ -236,7 +236,7 @@ describe('output-log · 落盘', () => {
   it('超预算时写进 .fizz/tool-output 并补 .gitignore', async () => {
     const backend = createLocalBackend(root)
     const text = Array.from({ length: 1200 }, (_, i) => `line ${i + 1}`).join('\n')
-    const summary = await summarizeLongOutput(text, { backend, tool: 'execute_command' })
+    const summary = await summarizeLongOutput(text, { backend, tool: 'bash' })
     expect(summary).toContain('.fizz/tool-output/')
     expect(summary).toContain('共 1200 行')
     expect(await fs.readFile(join(root, '.fizz', '.gitignore'), 'utf8')).toBe('*')
@@ -247,7 +247,7 @@ describe('output-log · 落盘', () => {
 
   it('backend 为 null 时只截断、不落盘', async () => {
     const text = 'x'.repeat(10_000)
-    const summary = await summarizeLongOutput(text, { backend: null, tool: 'execute_command' })
+    const summary = await summarizeLongOutput(text, { backend: null, tool: 'bash' })
     expect(summary).toContain('无法落盘')
     expect(summary.length).toBeLessThan(text.length)
   })

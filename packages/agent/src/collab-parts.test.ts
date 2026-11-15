@@ -42,7 +42,7 @@ describe('appendPartDelta', () => {
   it('工具调用是边界：跨过工具卡就另起一段', () => {
     const parts: AgentMessagePart[] = []
     appendPartDelta(parts, 'text', '动手前')
-    appendToolCall(parts, { toolCallId: 'c1', toolName: 'read_file', input: {} })
+    appendToolCall(parts, { toolCallId: 'c1', toolName: 'read', input: {} })
     appendPartDelta(parts, 'text', '看到了')
     expect(parts.map((part) => part.type)).toEqual(['text', 'tool-call', 'text'])
   })
@@ -60,14 +60,14 @@ describe('appendPartDelta', () => {
 describe('工具结果折叠', () => {
   it('结果回填到同一次调用上，不单起一条结果', () => {
     const parts: AgentMessagePart[] = []
-    appendToolCall(parts, { toolCallId: 'c1', toolName: 'read_file', input: { path: 'a.ts' } })
+    appendToolCall(parts, { toolCallId: 'c1', toolName: 'read', input: { file_path: 'a.ts' } })
     foldToolResult(parts, { toolCallId: 'c1', output: 'file body' })
     expect(parts).toEqual([
       {
         type: 'tool-call',
         toolCallId: 'c1',
-        toolName: 'read_file',
-        input: { path: 'a.ts' },
+        toolName: 'read',
+        input: { file_path: 'a.ts' },
         output: 'file body'
       }
     ])
@@ -75,7 +75,7 @@ describe('工具结果折叠', () => {
 
   it('失败标记一起回填', () => {
     const parts: AgentMessagePart[] = []
-    appendToolCall(parts, { toolCallId: 'c1', toolName: 'execute_command', input: 'pnpm test' })
+    appendToolCall(parts, { toolCallId: 'c1', toolName: 'bash', input: { command: 'pnpm test' } })
     foldToolResult(parts, { toolCallId: 'c1', output: 'boom', isError: true })
     const part = parts[0]
     expect(part && part.type === 'tool-call' && part.isError).toBe(true)

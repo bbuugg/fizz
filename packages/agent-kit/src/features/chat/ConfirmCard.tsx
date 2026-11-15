@@ -1,7 +1,7 @@
 /**
  * 命令执行审批卡（confirm 模式）。
  *
- * 服务端在要执行破坏性操作（`execute_command` / `delete_file`）或 ACP agent 发来
+ * 服务端在要执行破坏性操作（`bash`）或 ACP agent 发来
  * 权限请求（`session/request_permission`）时**停住等答复**，流里推一帧 `confirm`；
  * 这里渲染成一张卡，用户点选后 POST 回去，流才继续。
  *

@@ -63,12 +63,12 @@ describe('applyEvent · 子任务过程', () => {
       {
         type: 'subagent-event',
         toolCallId: 'parent-1',
-        event: { type: 'tool-call', toolCallId: 'child-1', toolName: 'read_file', input: { path: 'a.ts' } }
+        event: { type: 'tool-call', toolCallId: 'child-1', toolName: 'read', input: { file_path: 'a.ts' } }
       },
       {
         type: 'subagent-event',
         toolCallId: 'parent-1',
-        event: { type: 'tool-result', toolCallId: 'child-1', toolName: 'read_file', output: 'export const a = 1' }
+        event: { type: 'tool-result', toolCallId: 'child-1', toolName: 'read', output: 'export const a = 1' }
       },
       { type: 'subagent-event', toolCallId: 'parent-1', event: { type: 'text-delta', delta: '在 a.ts 里' } }
     ])
@@ -77,15 +77,15 @@ describe('applyEvent · 子任务过程', () => {
     expect(delegation.parts.map((p) => p.type)).toEqual(['reasoning', 'tool-call', 'text'])
     const toolPart = delegation.parts[1]
     if (toolPart.type !== 'tool-call') throw new Error('第二个 part 应该是工具调用')
-    expect(toolPart.toolName).toBe('read_file')
-    expect(toolPart.input).toEqual({ path: 'a.ts' })
+    expect(toolPart.toolName).toBe('read')
+    expect(toolPart.input).toEqual({ file_path: 'a.ts' })
     expect(toolPart.output).toBe('export const a = 1')
 
     // 派活卡上的轻量进度同时维护（两者是不同消费者，不能只剩一边）
     const card = parts[0]
     if (card.type !== 'tool-call') throw new Error('第一个 part 应该是派活卡')
     expect(card.subagentText).toBe('在 a.ts 里')
-    expect(card.subagentTool).toBe('read_file')
+    expect(card.subagentTool).toBe('read')
     expect(card.subagentToolCount).toBe(1)
   })
 

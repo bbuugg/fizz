@@ -30,14 +30,12 @@ import type { AiPermissionMode, CollabAgentConfig } from '@fizz/contracts/types'
 
 /** 工具白名单的可选项（勾上的才会挂给这个 Agent） */
 const TOOL_OPTIONS: Array<{ key: string; label: string; hint: string }> = [
-  { key: 'read_file', label: '读文件', hint: 'read_file' },
-  { key: 'list_files', label: '列目录', hint: 'list_files' },
-  { key: 'search_files', label: '搜内容', hint: 'search_files' },
-  { key: 'find_files', label: '找文件', hint: 'find_files' },
-  { key: 'write_file', label: '写文件', hint: 'write_file' },
-  { key: 'edit_file', label: '改文件', hint: 'edit_file' },
-  { key: 'delete_file', label: '删文件', hint: 'delete_file' },
-  { key: 'execute_command', label: '执行命令', hint: 'execute_command' },
+  { key: 'read', label: '读文件', hint: 'read' },
+  { key: 'glob', label: '列目录 / 找文件', hint: 'glob' },
+  { key: 'grep', label: '搜内容', hint: 'grep' },
+  { key: 'write', label: '写文件', hint: 'write' },
+  { key: 'edit', label: '改文件', hint: 'edit' },
+  { key: 'bash', label: '执行命令', hint: 'bash' },
   { key: 'web_fetch', label: '抓网页', hint: 'web_fetch' }
 ]
 

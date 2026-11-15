@@ -441,7 +441,7 @@ function MessagePartsInner({
     const toolName = tail.part.type === 'tool-call' ? tail.part.toolName : undefined
     /*
      * 「这一组现在能不能停」的唯一判据，与工具卡头部那颗钮同源（`isStoppableToolRunning`：
-     * execute_command / web_fetch / 派活工具 `agent-*`，且已拿到完整入参、还没出结果）。
+     * bash / web_fetch / 派活工具 `agent-*`，且已拿到完整入参、还没出结果）。
      *
      * 三条同时成立才给：
      * - `isStreamingLast`：历史里因中止 / 断线残留的未结算 part 也停在 `input-available`，

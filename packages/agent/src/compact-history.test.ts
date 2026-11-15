@@ -83,8 +83,8 @@ function toolTurn(n: number): AgentChatMessage[] {
         {
           type: 'tool-call',
           toolCallId: `c${n}`,
-          toolName: 'read_file',
-          input: { path: `src/${n}.ts` },
+          toolName: 'read',
+          input: { file_path: `src/${n}.ts` },
           // 落盘形状：结果挂在 tool-call 的 output 上（见 agent-parts.ts）
           output: LONG
         }

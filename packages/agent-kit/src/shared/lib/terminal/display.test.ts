@@ -58,14 +58,14 @@ describe('terminalOutputForDisplay', () => {
 })
 
 describe('isTerminalTool', () => {
-  it('只认客户端终端工具，不把 execute_command 算进来', () => {
+  it('只认客户端终端工具，不把 bash 算进来', () => {
     expect(isTerminalTool('run_in_terminal')).toBe(true)
     expect(isTerminalTool('read_terminal_output')).toBe(true)
     expect(isTerminalTool('send_keys')).toBe(true)
     expect(isTerminalTool('list_terminal_sessions')).toBe(true)
     // 服务端子进程那条命令是另一套（有自己的直显分支），不能混
-    expect(isTerminalTool('execute_command')).toBe(false)
-    expect(isTerminalTool('read_file')).toBe(false)
+    expect(isTerminalTool('bash')).toBe(false)
+    expect(isTerminalTool('read')).toBe(false)
     expect(isTerminalTool(undefined)).toBe(false)
     expect(isTerminalTool('')).toBe(false)
   })

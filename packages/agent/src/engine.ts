@@ -66,7 +66,7 @@ export interface AgentEngineOptions {
   }
   /**
    * 同时执行的工具调用上限。模型一批并行下发 tool-call 时，全放开会把彼此的
-   * 命令 / 输出拖到超时（`execute_command` 尤其明显）。
+   * 命令 / 输出拖到超时（`bash` 尤其明显）。
    */
   toolCallConcurrency?: number
   onStepBoundary?: (

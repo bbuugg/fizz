@@ -721,7 +721,7 @@ export interface ConversationSlice {
    */
   stopConversation: (conversationId: string) => Promise<void>;
   /**
-   * 只停这一条 execute_command（工具卡头部那颗停止钮，命令在执行时命中它）。
+   * 只停这一条 bash（工具卡头部那颗停止钮，命令在执行时命中它）。
    * 拿当前会话在跑那轮的 requestId + 该命令的 toolCallId 打
    * `POST /api/chat/command/stop`；服务端杀进程树，工具结果收尾成「（已中止）」，
    * Agent 同一回合继续。**不动整轮**（那叫 `stop`）。

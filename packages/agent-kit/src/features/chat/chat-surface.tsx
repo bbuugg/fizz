@@ -598,7 +598,7 @@ export function MessageList({
                     {/* 文档入口：紧贴正文之下（交付物）。「本轮用量」不在这里 —— 它是操作行
                         最前面那颗图标（见 `renderActions` / `MessageActionRow`）。
 
-                        ⚠️ **本轮没结束时一律不渲染**：`write_file` 一返回 `presentedDocsOf`
+                        ⚠️ **本轮没结束时一律不渲染**：`write` 一返回 `presentedDocsOf`
                         就能认出文档，但流式期间把 chip 挂出来会让「交付物」在模型还没说完时
                         提前出现（还会把下面的内容高度顶一下）。等这一轮真正落定（`isStreamingLast`
                         为假）再显示 —— 与操作行 / 用量的出现时机一致。 */}
@@ -1128,7 +1128,7 @@ function findDelegation(
 interface RunningSubagentItem {
   toolCallId: string
   delegation: SubagentDelegation
-  /** 子 agent 此刻正在用的工具（`read_file` 之类）；还没动手时没有 */
+  /** 子 agent 此刻正在用的工具（`read` 之类）；还没动手时没有 */
   tool?: string
 }
 

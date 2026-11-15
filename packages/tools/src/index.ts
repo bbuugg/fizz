@@ -30,7 +30,6 @@
 export * from './tools'
 export * from './acp-tools'
 export * from './ripgrep'
-export * from './str-replace-editor'
 export * from './backend'
 export * from './output-decoder'
 export * from './ask-followup'

@@ -41,7 +41,6 @@ import {
   resolveShellSpawn
 } from './backend'
 import { summarizeLongOutput } from './output-log'
-import { buildStrReplaceEditorTool } from './str-replace-editor'
 
 export type AgentPermissionMode = 'full' | 'confirm' | 'readonly'
 
@@ -74,7 +73,7 @@ function versionOf(stat: { size: number; mtimeMs?: number }): string {
 }
 
 export interface AgentToolOptions {
-  /** 确认模式下 execute_command 执行前需用户批准（整轮固定的静态档） */
+  /** 确认模式下 bash 执行前需用户批准（整轮固定的静态档） */
   permissionMode: AgentPermissionMode
   /**
    * **运行中实时读取权限档**（优先于上面的静态 `permissionMode`）。
@@ -500,12 +499,6 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
     return null
   }
 
-  /** 记下「这个文件现在是什么版本」（读成功 / 刚写完） */
-  const recordObserved = async (abs: string): Promise<void> => {
-    const stat = await backend.stat(abs)
-    if (stat) observed.set(abs, versionOf(stat))
-  }
-
   /** 把按需加载的子目录规则附在工具结果后面（没有规则 / 钩子抛错就原样返回） */
   const withNestedDocs = async (text: string, abs: string, isDirectory: boolean): Promise<string> => {
     if (!opts.nestedDocs) return text
@@ -889,20 +882,6 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
           options.abortSignal?.removeEventListener('abort', stop)
         }
       }
-    }),
-
-    /**
-     * Anthropic 风格的兼容编辑器（`view` / `create` / `str_replace` / `insert`）。
-     *
-     * 它与 `read` / `write` / `edit` 并存而不是替代：从 Claude Code 搬来的技能与提示词
-     * 会直接点名它。语义细节见 `str-replace-editor.ts` 的文件头。
-     */
-    str_replace_editor: buildStrReplaceEditorTool({
-      backend,
-      guardWrite,
-      checkObserved,
-      recordObserved,
-      ...(opts.nestedDocs ? { nestedDocs: opts.nestedDocs } : {})
     }),
 
     /**

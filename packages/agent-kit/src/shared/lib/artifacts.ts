@@ -2,7 +2,7 @@
  * 会话里的「文档产物」：从消息 parts 里抽出**本轮写出的 markdown 文档**，
  * 在消息下方挂一个可点击的入口（见 `ai-elements/artifact-chips.tsx`）。
  *
- * 数据来源 = 本轮助手的 `write_file` / `edit_file` 工具调用里，`path` 以
+ * 数据来源 = 本轮助手的 `write` / `edit` 工具调用里，`file_path` 以
  * `.md` / `.mdx` / `.markdown` 结尾、且**确实写成功**的那些文件。
  *
  * 为什么是「兜底识别」而不是等模型显式投递：曾经有个 `present_document` 工具让模型
@@ -28,8 +28,8 @@ export interface PresentedDoc {
   title: string
 }
 
-/** 会产生 markdown 文档的写文件工具（其它工具不改文件，不参与识别；旧名留给历史会话） */
-const DOC_TOOL_NAMES = new Set(['write', 'edit', 'write_file', 'edit_file'])
+/** 会产生 markdown 文档的写文件工具（其它工具不改文件，不参与识别） */
+const DOC_TOOL_NAMES = new Set(['write', 'edit'])
 
 /** 工具调用 part 运行时携带的字段（合同类型没声明结果回填字段，与 `parts.ts` 同口径收窄） */
 type ToolCallPart = Extract<AgentMessagePart, { type: 'tool-call' }> & {
@@ -49,7 +49,7 @@ function docPathOfCall(part: ToolCallPart): string | null {
   const input = part.input
   if (!input || typeof input !== 'object') return null
   const fields = input as Record<string, unknown>
-  const raw = fields.file_path ?? fields.path
+  const raw = fields.file_path
   if (typeof raw !== 'string') return null
   const rel = raw.trim().replace(/\\/g, '/')
   if (!rel || !isDocPath(rel)) return null
@@ -103,7 +103,7 @@ function fileNameOf(path: string): string {
 
 /**
  * 一条消息里写出的 markdown 文档（按写出顺序，同一路径只留最后一条 ——
- * 先 write_file 建、再 edit_file 改会命中两次，入口只该有一颗）。
+ * 先 write 建、再 edit 改会命中两次，入口只该有一颗）。
  *
  * 只认助手消息：用户消息不会有工具调用，早退省一次遍历。
  */

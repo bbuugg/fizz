@@ -47,7 +47,7 @@ describe('审批挂起期间的停止钮', () => {
 
     const pending = gate.requestConfirm({
       toolCallId: 'tc-1',
-      toolName: 'execute_command',
+      toolName: 'bash',
       command: 'npm test',
       intent: '跑一下单测'
     })
@@ -77,7 +77,7 @@ describe('审批挂起期间的停止钮', () => {
     })
     const pending = gate.requestConfirm({
       toolCallId: 'tc-2',
-      toolName: 'execute_command',
+      toolName: 'bash',
       command: 'npm run build'
     })
 

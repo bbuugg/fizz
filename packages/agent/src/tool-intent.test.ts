@@ -21,13 +21,13 @@ async function schemaOf(entry: unknown) {
 describe('withToolIntent', () => {
   it('把 intent 放在 schema 第一位并标记必填', async () => {
     const tools = await withToolIntent({
-      write_file: tool({
+      write: tool({
         description: 'x',
         inputSchema: z.object({ path: z.string(), content: z.string() }),
         execute: async () => 'ok'
       })
     })
-    const json = await schemaOf(tools.write_file)
+    const json = await schemaOf(tools.write)
     expect(Object.keys(json.properties ?? {})[0]).toBe(TOOL_INTENT_FIELD)
     expect(json.required?.[0]).toBe(TOOL_INTENT_FIELD)
     // 原字段一个不少
@@ -36,14 +36,14 @@ describe('withToolIntent', () => {
 
   it('校验后 intent 仍在入参里（原字段照旧解析）', async () => {
     const tools = await withToolIntent({
-      write_file: tool({
+      write: tool({
         description: 'x',
         inputSchema: z.object({ path: z.string() }),
         execute: async () => 'ok'
       })
     })
     const parsed = await asSchema(
-      (tools.write_file as { inputSchema: never }).inputSchema
+      (tools.write as { inputSchema: never }).inputSchema
     ).validate!({ [TOOL_INTENT_FIELD]: '  修复类型错误  ', path: 'a.ts' })
     expect(parsed.success).toBe(true)
     expect(parsed).toMatchObject({ value: { [TOOL_INTENT_FIELD]: '修复类型错误', path: 'a.ts' } })
@@ -90,14 +90,14 @@ describe('withToolIntent', () => {
 
   it('模型漏填 intent 时校验照样通过（界面退回工具名当标题）', async () => {
     const tools = await withToolIntent({
-      write_file: tool({
+      write: tool({
         description: 'x',
         inputSchema: z.object({ path: z.string() }),
         execute: async () => 'ok'
       })
     })
     const parsed = await asSchema(
-      (tools.write_file as { inputSchema: never }).inputSchema
+      (tools.write as { inputSchema: never }).inputSchema
     ).validate!({ path: 'a.ts' })
     expect(parsed.success).toBe(true)
   })

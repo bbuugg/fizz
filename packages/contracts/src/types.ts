@@ -720,8 +720,7 @@ export const CONTAINER_AGENT_TOOL_KEYS: readonly string[] = [
   'todo_write',
   'read_skill',
   'web_fetch',
-  'ask_followup_question',
-  'str_replace_editor'
+  'ask_followup_question'
 ]
 
 /**
@@ -1375,26 +1374,6 @@ export const DEFAULT_COLLAB_SETTINGS: CollabSettings = {
   maxTasksPerTurn: 16
 }
 
-/**
- * 旧工具名 → 对齐 dsh 之后的新名。
- *
- * 持久化配置（`config.json` 的 `collab.agents[].tools`）里存的是**当时的工具名**，改名单后
- * 老配置会指向一个不存在的 key，而 `pickCollabTools` 对未知 key 是**静默丢弃**的 ——
- * 不迁移的话老协作 Agent 会悄悄失去全部文件工具。这里在归一化时统一换算。
- *
- * `list_files` / `delete_file` 在 dsh 里没有对应工具，就近映射到能力最接近的 `glob` / `bash`。
- */
-export const LEGACY_TOOL_ALIASES: Record<string, string> = {
-  read_file: 'read',
-  write_file: 'write',
-  edit_file: 'edit',
-  search_files: 'grep',
-  find_files: 'glob',
-  list_files: 'glob',
-  execute_command: 'bash',
-  delete_file: 'bash'
-}
-
 const COLLAB_DEFAULT_TOOLS = ['read', 'glob', 'grep', 'web_fetch']
 
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {
@@ -1419,9 +1398,7 @@ export function normalizeCollabSettings(value: unknown): CollabSettings {
     const tools = Array.isArray(item.tools)
       ? [
           ...new Set(
-            item.tools
-              .filter((t): t is string => typeof t === 'string' && !!t.trim())
-              .map((t) => LEGACY_TOOL_ALIASES[t] ?? t)
+            item.tools.filter((t): t is string => typeof t === 'string' && !!t.trim())
           )
         ]
       : [...COLLAB_DEFAULT_TOOLS]
@@ -1937,7 +1914,7 @@ export type AgentMessagePart =
        * 子任务**最近一次**工具调用（只给工具名，不铺开结果）。
        *
        * 与 `subagentText` 一样只喂渲染、不进落盘历史。子 agent 在长时间翻代码、
-       * 还没吐出正文时，卡片靠它显示「正在 read_file」，避免看起来像卡死。
+       * 还没吐出正文时，卡片靠它显示「正在 read」，避免看起来像卡死。
        */
       subagentTool?: string
       /** 子任务已经发起过多少次工具调用（只增不减） */
@@ -2195,7 +2172,7 @@ export type AgentStreamEvent =
   | {
       /**
        * 工具**输出的流式增量**：命令执行期间 stdout / stderr 实时上来
-       * （execute_command 的实时输出）。与 `tool-call-delta` 的关系同 `text-delta`
+       * （bash 的实时输出）。与 `tool-call-delta` 的关系同 `text-delta`
        * 之于 text part —— 增量只喂渲染，收敛以完整 `tool-result` 为准。
        *
        * 服务端 `foldEventIntoParts` 刻意不认它（不进落盘历史）：跑完 `tool-result`
@@ -2394,7 +2371,7 @@ export interface AgentConfirmOption {
   kind: AgentPermissionOptionKind
 }
 
-/** Agent 确认模式下 execute_command 执行前的主进程请示 */
+/** Agent 确认模式下 bash 执行前的主进程请示 */
 export interface AgentConfirmRequest {
   /** 确认请求 id，回复时原样带回 */
   id: string
@@ -2537,7 +2514,7 @@ export interface ConversationFollowupResolvedEvent extends ConversationEventBase
 }
 
 /**
- * 容器型项目里 agent 改了文件（`write_file` / `edit_file` / `delete_file` 成功）。
+ * 容器型项目里 agent 改了文件（`write` / `edit` 成功）。
  *
  * 只带 workspaceId：前端只需要知道「这个项目的文件变了、该刷预览了」，具体路径不参与
  * 决策（一次改多个文件也只刷一次）。容器内 Vite 镜像有 HMR，这个事件是给**没有 HMR 的

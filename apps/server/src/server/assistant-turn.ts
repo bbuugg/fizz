@@ -433,7 +433,7 @@ export async function startAssistantTurn(input: AssistantSendInput): Promise<Sta
    *   没有 read 就成死路；
    * - `todo_write`：多步任务清单（本轮内存状态，不碰磁盘）。
    *
-   * `write` / `edit` / `str_replace_editor` / `delete_file` / `glob` / `grep` / `git_read`
+   * `write` / `edit` / `glob` / `grep` / `git_read`
    * 一律不挂 —— 助手没有唯一工作区，给它写文件的能力等于替用户猜「该动哪个项目」。
    * 只读的 `read` 仅作命令输出的续读口子，是这条约束里唯一的例外。
    *

@@ -31,7 +31,7 @@ export interface MountedPlugin {
 const BUILTIN_ORIGIN: ToolOrigin = 'builtin'
 
 /**
- * 文件 / 命令工具插件（list_files / read_file / write_file / execute_command …）。
+ * 文件 / 命令工具插件（glob / read / write / bash …）。
  * `root` 为空（未绑定工作区的「任务」会话）时**不注册任何工具** —— 与从前的行为一致，
  * 避免工具拿空路径当 cwd 乱写文件。
  */
@@ -62,7 +62,7 @@ export function fileToolsPlugin(root: string, options: AgentToolOptions): Plugin
  */
 export function webToolsPlugin(
   root: string,
-  /** 单条抓取的停止钩子（与 execute_command 同一张表，见 agent.ts 的 commandStops） */
+  /** 单条抓取的停止钩子（与 bash 同一张表，见 agent.ts 的 commandStops） */
   stopHooks: Parameters<typeof buildWebFetchTool>[1] = {},
   /** 落盘后端（远端工作区把超长正文写回远端）；不传 = 用 root 现建本地后端 */
   backend?: WorkspaceBackend

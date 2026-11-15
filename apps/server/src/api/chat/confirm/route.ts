@@ -1,5 +1,5 @@
 ﻿/**
- * 审批答复（confirm 模式）：解开对应那条 execute_command 的 await。
+ * 审批答复（confirm 模式）：解开对应那条 bash 的 await。
  * POST /api/chat/confirm
  */
 import type { ConfirmReplyInput } from '@fizz/contracts/agent-api'

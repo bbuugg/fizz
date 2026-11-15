@@ -9,7 +9,7 @@
  * 工具过程必须用**原生 tool-call / tool-result 结构**，不能压成
  * `[调用工具 xxx]` / `[工具 xxx 返回] xxx` 这类纯文本摘要 ——
  * 模型会把这个格式当成「助手的说话方式」，在自己的正文里照抄出来
- * （实测：多步工具链后开始输出 `[调用工具 read_file]` 这种假调用文本）。
+ * （实测：多步工具链后开始输出 `[调用工具 read]` 这种假调用文本）。
  *
  * 一轮里的工具过程是扁平交错的（text, call, result, text, call, result…），
  * 按「一批 tool-call 及其全部结果」切成若干段：每段 = assistant（文本 + tool-call）
@@ -61,7 +61,7 @@ type ToolResultOutput = ToolResultPart['output']
 /**
  * 非字符串工具结果回给模型时的字符上限。
  *
- * 字符串结果由工具自己负责分页（read_file / search_files）或落盘（output-log）；
+ * 字符串结果由工具自己负责分页（read / grep）或落盘（output-log）；
  * 但**结构化结果没人管** —— `JSON.stringify` 出来的数组 / 对象能任意大，
  * 且它不在工具作者的控制范围内（工具只是返回一个对象）。这里兜一道底：
  * 超限就截断并明确告诉模型「截断位置」，而不是让它以为拿到的是完整数据。
@@ -74,9 +74,9 @@ const MAX_STRUCTURED_OUTPUT_CHARS = 8000
 /**
  * 工具结果 -> 模型消息的输出结构（字符串走 text，其余序列化成 json；失败走 error-text）。
  *
- * 这里**不做落盘**：output-log（全文落盘 + 行号续读）只用于 execute_command /
+ * 这里**不做落盘**：output-log（全文落盘 + 行号续读）只用于 bash /
  * web_fetch（见 @fizz/tools 的 output-log.ts），其余工具的超长输出要么靠自己的参数
- * 分页（read_file / search_files），要么在这里按字符上限截断 —— 结构化结果至少
+ * 分页（read / grep），要么在这里按字符上限截断 —— 结构化结果至少
  * 要有上限，否则一个返回大数组的工具能把整轮上下文顶爆。
  */
 function toToolOutput(output: unknown, isError?: boolean): ToolResultOutput {

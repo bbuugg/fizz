@@ -724,7 +724,7 @@ export const API_ROUTES = {
    */
   chatConfirm: "/api/chat/confirm",
   /**
-   * 单条命令停止（execute_command 执行期间）：POST /api/chat/command/stop
+   * 单条命令停止（bash 执行期间）：POST /api/chat/command/stop
    *
    * body `CommandStopInput`（requestId + toolCallId）。与 confirm 同款「另开的
    * 一条 HTTP 请求」：SSE 只有下行，停一条在跑的命令要一条并行上行。命中就杀
@@ -2179,7 +2179,7 @@ export interface ClientToolResult {
 /**
  * 单条命令停止（POST /api/chat/command/stop）。
  *
- * `toolCallId` = 这次 execute_command 的 toolCallId（前端从工具卡 part 上拿）；
+ * `toolCallId` = 这次 bash 的 toolCallId（前端从工具卡 part 上拿）；
  * 它不是 ACP / 整轮的停止，命中就只杀那一条命令的进程树。
  */
 export interface CommandStopInput {

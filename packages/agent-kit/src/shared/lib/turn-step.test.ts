@@ -33,8 +33,8 @@ describe('turnStepSummary', () => {
     expect(
       turnStepSummary([
         reasoning(),
-        call('read_file'),
-        call('execute_command'),
+        call('read'),
+        call('bash'),
         call(ASK_FOLLOWUP_TOOL)
       ])
     ).toBe('思考 ×1 · 工具调用 ×2 · 提问 ×1')
@@ -49,11 +49,11 @@ describe('turnStepSummary', () => {
 describe('isStepInFlight', () => {
   it('思考 / 还没拿到结果的工具算在跑', () => {
     expect(isStepInFlight(reasoning())).toBe(true)
-    expect(isStepInFlight(call('execute_command'))).toBe(true)
+    expect(isStepInFlight(call('bash'))).toBe(true)
   })
 
   it('拿到结果、等用户作答、正文都不算在跑', () => {
-    expect(isStepInFlight(call('execute_command', { output: '退出码 0' }))).toBe(false)
+    expect(isStepInFlight(call('bash', { output: '退出码 0' }))).toBe(false)
     expect(isStepInFlight(call(ASK_FOLLOWUP_TOOL))).toBe(false)
     expect(isStepInFlight({ type: 'text', text: '结论' })).toBe(false)
   })
@@ -68,8 +68,8 @@ describe('turnStepActivity（左格：最后做的那件事）', () => {
   })
 
   it('工具报模型填的 intent（跑没跑完都是同一句话）', () => {
-    const running = call('execute_command', { input: { command: 'pnpm test', intent: '跑一下单测' } })
-    const done = call('execute_command', {
+    const running = call('bash', { input: { command: 'pnpm test', intent: '跑一下单测' } })
+    const done = call('bash', {
       input: { command: 'pnpm test', intent: '跑一下单测' },
       output: '退出码 0'
     })
@@ -78,32 +78,32 @@ describe('turnStepActivity（左格：最后做的那件事）', () => {
   })
 
   it('没有 intent 退回工具名（命令类不再是「执行命令中…」）', () => {
-    expect(turnStepActivity([call('execute_command', { input: { command: 'pnpm test' } })])).toBe(
-      toolCardTitle('execute_command')
+    expect(turnStepActivity([call('bash', { input: { command: 'pnpm test' } })])).toBe(
+      toolCardTitle('bash')
     )
-    expect(turnStepActivity([call('read_file', { input: { path: 'a.ts' }, output: 'ok' })])).toBe(
-      toolCardTitle('read_file')
+    expect(turnStepActivity([call('read', { input: { file_path: 'a.ts' }, output: 'ok' })])).toBe(
+      toolCardTitle('read')
     )
     expect(turnStepActivity([call(ASK_FOLLOWUP_TOOL)])).toBe(toolCardTitle(ASK_FOLLOWUP_TOOL))
   })
 
   it('关掉「工具意图」开关：历史里的 intent 也不显示（与工具卡同一开关）', () => {
-    const part = call('read_file', { input: { path: 'a.ts', intent: '看看落盘' } })
+    const part = call('read', { input: { file_path: 'a.ts', intent: '看看落盘' } })
     expect(turnStepActivity([part])).toBe('看看落盘')
-    expect(turnStepActivity([part], { showIntent: false })).toBe(toolCardTitle('read_file'))
+    expect(turnStepActivity([part], { showIntent: false })).toBe(toolCardTitle('read'))
   })
 
   it('只看最后一步：前面的历史不影响抬头', () => {
     expect(
-      turnStepActivity([reasoning(), call('read_file', { output: 'ok' }), reasoning('再想想')], {
+      turnStepActivity([reasoning(), call('read', { output: 'ok' }), reasoning('再想想')], {
         active: true
       })
     ).toBe('思考中…')
     expect(
       turnStepActivity([
         reasoning(),
-        call('read_file', { output: 'ok' }),
-        call('execute_command', { input: { command: 'ls', intent: '列一下目录' } })
+        call('read', { output: 'ok' }),
+        call('bash', { input: { command: 'ls', intent: '列一下目录' } })
       ])
     ).toBe('列一下目录')
   })
@@ -120,14 +120,14 @@ describe('turnStepPreview（右格：这一步的内容）', () => {
   })
 
   it('命令压成一行并带 $ 前缀（与工具卡内容区同一写法）', () => {
-    expect(turnStepPreview([call('execute_command', { input: { command: 'pnpm test\n  && echo hi' } })])).toEqual({
+    expect(turnStepPreview([call('bash', { input: { command: 'pnpm test\n  && echo hi' } })])).toEqual({
       text: '$ pnpm test && echo hi',
       lineKey: -1
     })
   })
 
   it('文件类工具报路径、搜索类报搜索词', () => {
-    expect(turnStepPreview([call('read_file', { input: { path: 'src/parts.ts' } })])).toEqual({
+    expect(turnStepPreview([call('read', { input: { file_path: 'src/parts.ts' } })])).toEqual({
       text: 'src/parts.ts',
       lineKey: -1
     })
@@ -137,10 +137,10 @@ describe('turnStepPreview（右格：这一步的内容）', () => {
     })
   })
 
-  it('编辑文件也要报路径（内置 path / ACP 的 filePath 两种形状）', () => {
+  it('编辑文件也要报路径（内置 file_path / ACP 的 filePath 两种形状）', () => {
     expect(
       turnStepPreview([
-        call('edit_file', { input: { path: 'src/parts.ts', edits: [{ oldText: 'a', newText: 'b' }] } })
+        call('edit', { input: { file_path: 'src/parts.ts', old_string: 'a', new_string: 'b' } })
       ])
     ).toEqual({ text: 'src/parts.ts', lineKey: -1 })
     expect(
@@ -160,15 +160,15 @@ describe('turnStepPreview（右格：这一步的内容）', () => {
   it('尾巴是孤儿 tool-result 时，往前找最近一条有内容的 tool-call', () => {
     expect(
       turnStepPreview([
-        call('read_file', { input: { path: 'README.md' }, output: 'ok' }),
-        { type: 'tool-result', toolCallId: 'orphan', toolName: 'read_file', output: 'ok' }
+        call('read', { input: { file_path: 'README.md' }, output: 'ok' }),
+        { type: 'tool-result', toolCallId: 'orphan', toolName: 'read', output: 'ok' }
       ] as AgentMessagePart[])
     ).toEqual({ text: 'README.md', lineKey: -1 })
   })
 
   it('入参还在流式生成（inputText 半截 JSON）也要认得', () => {
     expect(
-      turnStepPreview([call('execute_command', { inputText: '{"command": "pnpm test", "path": ' })])
+      turnStepPreview([call('bash', { inputText: '{"command": "pnpm test", "path": ' })])
     ).toEqual({ text: '$ pnpm test', lineKey: -1 })
   })
 

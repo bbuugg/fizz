@@ -7,7 +7,7 @@
  *
  * - 目录名以 `.` 开头，并自带一份 `.gitignore`（内容 `*`），不会进版本库；
  * - 已注册进本包 `workspace.ts` 的 `DEFAULT_IGNORE_DIRS`，工作区文件树与 Agent 的
- *   list_files / search_files 都会跳过它（配置是给人用的，不该混进代码里）。
+ *   glob / grep 都会跳过它（配置是给人用的，不该混进代码里）。
  *
  * 主进程负责落盘（services/ai/workspace-config.ts），渲染端只经 IPC 读写；
  * 两侧都过一遍 `normalizeWorkspaceConfig`，手改过的文件也不会把 UI 打崩。

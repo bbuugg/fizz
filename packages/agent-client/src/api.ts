@@ -2403,7 +2403,7 @@ export function createApi(
       }),
 
     /**
-     * 只停这一条 execute_command（杀进程树，不影响整轮）。幂等：命令已结束 /
+     * 只停这一条 bash（杀进程树，不影响整轮）。幂等：命令已结束 /
      * run 已结束 = `{ stopped: false }`。
      */
     stopCommand: (requestId: string, toolCallId: string) =>

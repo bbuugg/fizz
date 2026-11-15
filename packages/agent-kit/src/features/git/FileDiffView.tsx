@@ -2,8 +2,8 @@
  * 「代码修改前后对比」：git 风格的 unified diff 视图。
  *
  * 两个来源共用这一个视图：
- * - 工具卡（见 PartView 里的 `buildFileDiff`）：edit_file 的 oldText / newText 做行级
- *   diff、write_file 的整文件当作「空 → 全文」的全量新增、delete_file 只给一句提示；
+ * - 工具卡（见 PartView 里的 `buildFileDiff`）：edit 的 old_string / new_string 做行级
+ *   diff、write 的整文件当作「空 → 全文」的全量新增；
  * - 源代码管理面板：`git diff` 的原始文本解析出来的 hunks（见 `parseUnifiedDiff`）。
  *
  * 不放进工具返回值、不送回模型：那样会把整文件灌进模型上下文。
@@ -36,7 +36,7 @@ export function FileDiffView({
 }: {
   path: string
   hunks: DiffHunk[]
-  /** delete_file：入参没有内容，无法对比，只提示删了哪个文件 */
+  /** 文件已删除、没有正文可对比（git 的删除项） */
   deleted?: boolean
   /** 调用方自己已展示路径与增删计数时（如提交详情的文件行）隐藏文件头 */
   hideHeader?: boolean
@@ -63,7 +63,7 @@ export function FileDiffView({
 
       {deleted ? (
         <div className="px-2 py-1.5 text-muted-foreground">
-          {t('文件已删除（工具入参没有内容，无原文可对比）')}
+          {t('文件已删除（没有原文可对比）')}
         </div>
       ) : hunks.length === 0 ? (
         <div className="px-2 py-1.5 text-muted-foreground">

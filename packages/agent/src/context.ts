@@ -457,7 +457,7 @@ function extractModelFileOps(messages: ModelMessage[], ops: FileOperations): voi
       if (part.type !== 'tool-call') continue
       const path = inputPathOf(part.input)
       if (!path) continue
-      if (part.toolName === 'read' || part.toolName === 'read_file') ops.read.add(path)
+      if (part.toolName === 'read') ops.read.add(path)
       else if (WRITE_TOOL_NAMES.has(part.toolName ?? '')) ops.modified.add(path)
     }
   }
@@ -787,16 +787,15 @@ function createFileOps(): FileOperations {
   return { read: new Set(), modified: new Set() }
 }
 
-/** 会改文件的工具名：新名（dsh 对齐后的 `write` / `edit`）与历史里的旧名都认 */
-const WRITE_TOOL_NAMES = new Set(['write', 'edit', 'write_file', 'edit_file'])
+/** 会改文件的工具名 */
+const WRITE_TOOL_NAMES = new Set(['write', 'edit'])
 
-/** 工具入参里的路径：新 schema 叫 `file_path`，旧历史里叫 `path` */
+/** 工具入参里的路径 */
 function inputPathOf(input: Record<string, unknown> | undefined): string | undefined {
-  const value = input?.file_path ?? input?.path
+  const value = input?.file_path
   return typeof value === 'string' ? value : undefined
 }
 
-/** fizz 的工具名：`read` / `write` / `edit`（旧历史里是 `read_file` 等） */
 function extractFileOps(history: AgentChatMessage[], ops: FileOperations): void {
   for (const m of history) {
     for (const part of m.parts) {
@@ -804,7 +803,7 @@ function extractFileOps(history: AgentChatMessage[], ops: FileOperations): void 
       const call = part as unknown as { toolName?: string; input?: Record<string, unknown> }
       const path = inputPathOf(call.input)
       if (!path) continue
-      if (call.toolName === 'read' || call.toolName === 'read_file') ops.read.add(path)
+      if (call.toolName === 'read') ops.read.add(path)
       else if (WRITE_TOOL_NAMES.has(call.toolName ?? '')) ops.modified.add(path)
     }
   }

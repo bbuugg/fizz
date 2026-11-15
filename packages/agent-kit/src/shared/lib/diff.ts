@@ -3,7 +3,7 @@
  *
  * 为什么自己写一个而不是引库：
  * - 项目里没有 `diff` 依赖，为这么一个工具卡加一个依赖不划算；
- * - 我们只在工具卡里用，输入是「edit_file 的 oldText/newText 片段」或「write_file 的整文件」，
+ * - 我们只在工具卡里用，输入是「edit 的 old_string/new_string 片段」或「write 的整文件」，
  *   规模小、对性能不敏感，一个 O(n·m) 的 LCS 足够（见 `MIN_LCS_COST` 兜底）。
  *
  * 产出的是扁平的「行类型 + 文本」列表，由视图层负责拼成带 `@@` 头与配色的 unified diff。
