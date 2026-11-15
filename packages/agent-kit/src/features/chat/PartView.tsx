@@ -598,7 +598,11 @@ function renderAcpDirect(part: AgentMessagePart): DirectResult | null {
     const command = input?.command ?? input?.cmd ?? input?.title
     if (command) detail = `$ ${command}`
     // output 是 tool-result 回填进来的（contracts 的 tool-call 形状没声明）：运行时一定在
-    const outputText = toolOutputText((part as { output?: unknown }).output)
+    // 失败时只留命令回声：错误正文由外层统一的 `⚠️` 块渲染，别再拼一遍
+    const outputText =
+      part.isError === true
+        ? null
+        : toolOutputText((part as { output?: unknown }).output)
     // 命令在触发行右侧已截断显示（见 ToolHeaderProps.detail）：内容区再回声一份完整的，
     // 长命令在头部只剩半截时，展开就能看到跑的到底是什么。
     const echoed = [command ? `$ ${command}` : '', outputText ?? ''].filter(Boolean).join('\n')
@@ -688,6 +692,12 @@ function renderBuiltinDirect(
 
   const isExec = name === 'bash'
   const detail = isExec ? `$ ${subject}` : subject
+  /**
+   * 工具失败时**不再铺结果正文**：外层直显分支已经会渲染那条 `⚠️` 错误；
+   * 这里再把 `output`（就是错误文本）拼进去，同一句话会出现两次。
+   * 保留 detail（命令 / 路径 / 模式），头部仍能看出是哪一次调用失败。
+   */
+  if (part.isError === true) return { content: null, detail }
   // 结果文本：抠不出来（结构化对象 / 还没结果）就不硬造一块 —— 有结果才给
   const outputText = toolOutputText(output)
   // bash 的结果文本只有 stdout / stderr / 退出码标记（与 dsh 的 renderResult 一致），
