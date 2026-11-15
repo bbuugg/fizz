@@ -14,6 +14,7 @@
  * 工作台那边是「权限 / 容器 Agent 的模型」—— 语义不同，所以做成槽位而不是写死。
  */
 import { getAgentHost } from '@fizz/agent-client/host'
+import { toast } from 'sonner'
 import { WorkBars } from '@fizz/agent-kit/shared/ai-elements/work-bars'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { useVoiceInput } from '@fizz/agent-kit/shared/hooks/useVoiceInput'
@@ -308,7 +309,16 @@ export function Composer({
       const separator = value && !value.endsWith(' ') ? ' ' : ''
       onChange(value + separator + text)
     },
-    silenceTimeoutMs: silenceSec > 0 ? silenceSec * 1000 : 0
+    silenceTimeoutMs: silenceSec > 0 ? silenceSec * 1000 : 0,
+    /*
+     * 构造器和 start() 都在、引擎却一直没接管麦克风（国产 Chromium 壳 / 识别服务
+     * 不可达）：看门狗到点后会走这里。必须告诉用户，否则按钮一直亮着、什么都收不到。
+     */
+    onUnavailable: () => {
+      toast.error(
+        tr('语音识别服务没有接管麦克风（按钮会显示录音中，但实际收不到声音）。可换用 Chrome 或检查网络后再试。')
+      )
+    }
   })
 
   /**

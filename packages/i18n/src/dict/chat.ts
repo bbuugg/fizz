@@ -310,6 +310,7 @@ export const CHAT: Record<string, string> = {
   '松开以添加附件': 'Release to attach',
   '停止录音': 'Stop recording',
   '语音输入（也可按住 Alt+V 说话）': 'Voice input (or hold Alt+V to talk)',
+  '语音识别服务没有接管麦克风（按钮会显示录音中，但实际收不到声音）。可换用 Chrome 或检查网络后再试。': 'The speech recognition service did not start capturing audio (the button shows recording, but no sound is received). Try Chrome or check your network and retry.',
   '停止本轮': 'Stop this turn',
   '正在创建会话…': 'Creating conversation…',
   '正在创建会话': 'Creating conversation',

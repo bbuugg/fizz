@@ -9,13 +9,33 @@
  *    与 server 托管的 web 端（同域 `fizz.web.*`）天然隔离，但真被远程加载时也不该串数据；
  * 2. **服务端地址是绝对地址**（`main.tsx` 用 `setServerBase()` 注入）：页面自己的 origin
  *    是 `https://localhost`，相对路径的 `/api` / SSE / WS 一条都到不了 server；
- * 3. `capabilities.voice = false`：安卓 WebView 不实现 Web Speech API，语音输入按钮
- *    留着只会点了没反应；
+ * 3. `capabilities.voice` **按运行时探测**（见下面的 `detectVoiceInput`）：APK 的安卓
+ *    WebView 不实现 Web Speech API，探出来就是 false；hosted `/m/` 跑在手机浏览器的真
+ *    引擎里，该有按钮就有。别按「手机包」身份写死 —— 同一份产物两种运行环境都要用；
  * 4. 不注册 Service Worker（见 `app/client-root.tsx`）。
  */
 import type { AiPermissionMode } from '@fizz/contracts/agent-api'
 import { normalizeServerBase, type Connection } from '@fizz/agent-client/api'
 import { getServerBaseOverride, type AgentHost } from '@fizz/agent-client/host'
+
+/**
+ * 语音输入能力：`SpeechRecognition` 构造器存在、且页面处于安全上下文时才算有。
+ *
+ * - APK（Capacitor WebView）：安卓 WebView 不实现该 API → 构造器不存在 → false；
+ * - hosted `/m/`（手机浏览器直接访问）：Chrome Android 有 `webkitSpeechRecognition` → true。
+ *   但语音识别是 secure-context-only 的 API，用 `http://局域网IP` 打开时不给按钮，
+ *   免得用户点了只拿到一个 `not-allowed`。
+ *
+ * 判据与 `useVoiceInput` 保持一致（那边同样只认这两个构造器），改一处要想到另一处。
+ */
+function detectVoiceInput(): boolean {
+  if (!window.isSecureContext) return false
+  const w = window as unknown as {
+    SpeechRecognition?: unknown
+    webkitSpeechRecognition?: unknown
+  }
+  return Boolean(w.SpeechRecognition || w.webkitSpeechRecognition)
+}
 
 /** 连接信息（token 与桌面端的「密钥」同级敏感，别塞进 URL） */
 const CONNECTION_KEY = 'fizz.mobile.connection'
@@ -130,8 +150,8 @@ export const mobileHost: AgentHost = {
   platform: 'web',
   capabilities: {
     nativeTitleBar: false,
-    /** 安卓 WebView 没有 Web Speech API：麦克风按钮别出现 */
-    voice: false,
+    /** 运行时探测：APK 的 WebView 探出来是 false，手机浏览器里的 hosted `/m/` 是 true */
+    voice: detectVoiceInput(),
     localServer: false,
     localMediaFetch: false,
     webview: false
