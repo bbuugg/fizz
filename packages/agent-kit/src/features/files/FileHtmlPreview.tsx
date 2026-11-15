@@ -377,7 +377,15 @@ export function FileHtmlPreview({
 }) {
   /** `null` + preparing = 正在取资源；拿到结果后是改写过的 HTML */
   const [prepared, setPrepared] = useState<string | null>(null)
-  const [preparing, setPreparing] = useState(false)
+  /**
+   * 初始化就进「准备中」：给了 source / path 时必须先内联资源，不能先把原始 HTML
+   * 塞进 iframe 再换掉 —— 那会多挂一个中间 iframe，某些情况下（尤其 srcdoc 很大）
+   * 最终内容不会重绘，表现为打开 HTML 直接空白、切一次编辑/预览才正常。
+   */
+  const needsInline = source !== undefined && path !== undefined
+  const [preparing, setPreparing] = useState(needsInline)
+  /** 每次准备完成都换 key：强制 iframe 以新 srcDoc 重新挂载，绕开 srcdoc 更新不重载的竞态 */
+  const [docKey, setDocKey] = useState(0)
 
   useEffect(() => {
     if (!source || path === undefined) {
@@ -390,12 +398,16 @@ export function FileHtmlPreview({
     setPreparing(true)
     void inlineHtmlResources(html, source, path)
       .then((out) => {
-        if (!cancelled) setPrepared(out)
+        if (cancelled) return
+        setPrepared(out)
+        setDocKey((n) => n + 1)
       })
       .catch((err: unknown) => {
         // 内联整体失败（极少见）就退回原始 HTML：至少还能看到页面骨架 / 报错
         console.warn('[html-preview] 资源内联失败，退回原始 HTML', err)
-        if (!cancelled) setPrepared(html)
+        if (cancelled) return
+        setPrepared(html)
+        setDocKey((n) => n + 1)
       })
       .finally(() => {
         if (!cancelled) setPreparing(false)
@@ -417,6 +429,8 @@ export function FileHtmlPreview({
 
   return (
     <iframe
+      // 见 docKey 注释：内容准备完成 / 内联失败回退时都重新挂载，避免直接打开空白
+      key={`${path ?? ''}#${docKey}`}
       title="HTML 预览"
       srcDoc={srcDoc}
       sandbox="allow-scripts allow-popups allow-forms"
