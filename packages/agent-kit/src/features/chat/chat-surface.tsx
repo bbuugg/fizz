@@ -48,7 +48,9 @@ import {
 } from '@fizz/agent-kit/shared/ai-elements/conversation'
 import { Message, MessageContent } from '@fizz/agent-kit/shared/ai-elements/message'
 import { Skeleton } from '@fizz/ui/skeleton'
+import { Popover, PopoverContent, PopoverTrigger } from '@fizz/ui/popover'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
+import { isTouchOnlyInput } from '@fizz/agent-kit/shared/hooks/useVirtualKeyBar'
 import { MessageOutline } from '@fizz/agent-kit/features/chat/MessageOutline'
 import { ChatFind } from '@fizz/agent-kit/features/chat/chat-find'
 import { ContextCompactionCard } from '@fizz/agent-kit/features/chat/ContextCompactionCard'
@@ -690,15 +692,57 @@ type RetryNoticeView = {
 }
 
 /**
+ * 重试失败原因的问号提示。
+ *
+ * `Tooltip` 在触屏上被整体停用（`packages/ui/tooltip.tsx`：没有悬停语义），问号会变成
+ * 「点了没反应」。所以触屏改用**点开**的 Popover —— 判据与虚拟键条同源（输入能力，
+ * 不是视口宽度），手机横屏 / 平板一样命中。
+ */
+function RetryErrorHint({ message }: { message: string }) {
+  if (isTouchOnlyInput()) {
+    return (
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            aria-label={message}
+            className="inline-flex items-center text-destructive"
+          >
+            <CircleHelp className="size-3.5" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          side="top"
+          className="w-auto max-w-xs text-xs whitespace-pre-wrap break-words"
+        >
+          {message}
+        </PopoverContent>
+      </Popover>
+    )
+  }
+  return (
+    <IconTip label={<span className="block max-w-xs whitespace-pre-wrap break-words">{message}</span>}>
+      <span
+        role="img"
+        aria-label={message}
+        className="inline-flex cursor-help items-center text-destructive"
+      >
+        <CircleHelp className="size-3.5" />
+      </span>
+    </IconTip>
+  )
+}
+
+/**
  * 「第 N 次重试」提示条（单条自替换）。
  *
  * 调用方用 `key={attempt}` —— 次数变化时整条重建，从而**重放一遍入场动画**
  * （只在同一节点上改文本不会重新触发 CSS 动画）。因为 `retryNotice` 只有一份
  * （每次重试覆盖上一条），屏幕上任何时刻只有这一条。
  *
- * 失败原文放在问号图标的 tooltip 里，不再占行内宽度：这一行住在固定高度的状态槽里
- * （见 `MessageList` 里那段 `min-h-5` 的说明），一条上游报文换行就会让内容高度在流式
- * 途中抖动。没有原文时不渲染图标。
+ * 失败原文放在问号的提示里（桌面悬停 / 触屏点开），不再占行内宽度：这一行住在固定高度的
+ * 状态槽里（见 `MessageList` 里那段 `min-h-5` 的说明），一条上游报文换行就会让内容高度在
+ * 流式途中抖动。没有原文时不渲染图标。
  */
 function RetryRow({ notice }: { notice: RetryNoticeView }) {
   const tr = useT()
@@ -710,21 +754,7 @@ function RetryRow({ notice }: { notice: RetryNoticeView }) {
     >
       <RotateCw className="size-3.5 shrink-0 animate-spin" />
       <span className="shrink-0">{tr('第 {attempt} 次重试', { attempt: notice.attempt })}</span>
-      {notice.message && (
-        <IconTip
-          label={
-            <span className="block max-w-xs whitespace-pre-wrap break-words">{notice.message}</span>
-          }
-        >
-          <span
-            role="img"
-            aria-label={notice.message}
-            className="inline-flex cursor-help items-center text-destructive"
-          >
-            <CircleHelp className="size-3.5" />
-          </span>
-        </IconTip>
-      )}
+      {notice.message && <RetryErrorHint message={notice.message} />}
     </div>
   )
 }
