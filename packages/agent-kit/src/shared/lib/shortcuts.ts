@@ -43,8 +43,8 @@ export const AGENT_SHORTCUT_ACTIONS: AgentShortcutMeta[] = [
   { action: 'open-settings', label: '打开设置', defaultAccelerator: 'CommandOrControl+Alt+S' },
   // desktop 标题栏最左那颗按钮也走这个动作（跨树广播）。
   { action: 'toggle-sidebar', label: '打开 / 关闭侧边栏', defaultAccelerator: 'CommandOrControl+Alt+B' },
-  { action: 'toggle-terminal', label: '打开 / 关闭终端', defaultAccelerator: 'CommandOrControl+Shift+`' },
-  { action: 'toggle-files', label: '打开 / 关闭工作区文件', defaultAccelerator: 'CommandOrControl+Alt+E' },
+  { action: 'toggle-terminal', label: '打开 / 关闭终端', defaultAccelerator: 'CommandOrControl+Alt+T' },
+  { action: 'toggle-files', label: '打开 / 关闭工作区文件', defaultAccelerator: 'CommandOrControl+Alt+F' },
   { action: 'toggle-git', label: '打开 / 关闭源代码管理', defaultAccelerator: 'CommandOrControl+Alt+G' },
   // 面板级动作：不在 app-shell 的全局分发里（见 PANEL_SCOPED_SHORTCUT_ACTIONS），
   // 由源代码管理面板自己在可见时挂 window 监听 —— 所以焦点在面板里任何地方都生效。
@@ -118,9 +118,12 @@ export function loadShortcuts(): AgentShortcutConfig[] {
     const parsed = JSON.parse(raw) as Partial<AgentShortcutConfig>[]
     if (!Array.isArray(parsed)) return fallback()
     // 以缺省清单为准（新增动作能自动补上），只覆盖用户改过的 accelerator
-    // 旧默认值的升级迁移：用户存的正好是上一版默认值时，升级到新默认（已自定义的保持不动）
+    // 旧默认值的升级迁移：用户存的正好是**上一版默认值**时升级到新默认（已自定义的保持不动）。
+    // 终端：上一版是 `Ctrl/Cmd+Shift+\``；文件：上一版是 `Ctrl/Cmd+Alt+E`。
+    // 更早的终端默认 `Ctrl/Cmd+Alt+T` 现在又变回默认，不再需要迁移。
     const LEGACY_DEFAULTS: Record<string, string> = {
-      'toggle-terminal': 'CommandOrControl+Alt+T'
+      'toggle-terminal': 'CommandOrControl+Shift+`',
+      'toggle-files': 'CommandOrControl+Alt+E'
     }
     return DEFAULT_AGENT_SHORTCUTS.map((def) => {
       const found = parsed.find((s) => s.action === def.action)
