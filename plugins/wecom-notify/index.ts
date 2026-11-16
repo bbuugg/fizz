@@ -38,6 +38,17 @@
  * - **去重**：按 requestId / confirmId / followupId 记一份短表；
  * - **节流**：两次自动通知至少隔 3 秒（企业微信限流 20 条/分钟），宁可晚一点也别撞 45009。
  *
+ * ## 失败必须能被看见
+ *
+ * 通知是**看不见结果**的一类功能：发成功了群里才有消息，发失败则什么都看不到。所以这条
+ * 链路每一步都留日志（都走 `ctx.logger`，宿主接进应用日志 → 日志面板「插件」页）：
+ * - 没挂上的原因（没配 webhook / 两个开关都关）—— 去重后只记一次，免得每轮刷一条；
+ * - 挂上了哪几种通知（`自动通知已挂上：会话完成、待确认、待回答`）；
+ * - 每次推送成功 / 失败（失败带企业微信的错误码原文）。
+ *
+ * 别把这些日志删成 `console.warn`：打包后的桌面端没有控制台，等于没记 —— 这正是
+ * 「通知没发出去、界面上也查不到为什么」的由来。
+ *
  * ## 三种消息类型，按「手机上读起来是否舒服」选
  *
  * - `text`：纯文本兜底（任何群都支持，最稳）。
@@ -360,12 +371,34 @@ function createOnce(limit = DEDUPE_LIMIT): (key: string) => boolean {
 }
 
 /**
+ * 同一个原因只播报一次。
+ *
+ * `apply` 会在**每个 context** 里各跑一遍（每轮对话、设置页 inspect、长驻钩子宿主），
+ * 无条件 `logger.info` 会把日志面板刷满；而这几条恰恰是「通知为什么没挂上」的答案，
+ * 又不能不打。所以按正文去重：同一句话进程内只记一次，原因变了才重新记。
+ *
+ * 模块级变量（不是 apply 内）才有这个效果：插件模块由 `@fizz/plugin/loader` 缓存，
+ * 多次 apply 拿到的是同一个模块实例。
+ */
+let lastAnnounce = ''
+function announce(logger: PluginCtx['logger'], message: string): void {
+  if (lastAnnounce === message) return
+  lastAnnounce = message
+  logger.info(`[wecom] ${message}`)
+}
+
+/**
  * 插件参数类型是**结构化手写**的（不 import `@fizz/plugin`）：插件目录可能不在仓库里，
  * 指望解析到 workspace 包不可靠。`zod` / `ai` 是例外 —— 工具要用它们建 schema，
  * 而内置插件根随仓库分发，这条依赖是明确的（见 skills/create-fizz-plugin/SKILL.md）。
  */
 interface PluginCtx {
-  logger: { warn: (...args: unknown[]) => void }
+  /**
+   * `info` / `warn` 都会进应用日志（宿主用 `setPluginLogSink` 接了出口，见
+   * `apps/server/src/server/plugin-log-sink.ts`）—— 打包后的桌面端没有控制台，
+   * 只写 console 等于没记。
+   */
+  logger: { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void }
   inject(deps: string[], cb: (ctx: PluginCtx) => void | (() => void)): unknown
   ui: { icon(uri: string): unknown; setting(item: unknown): unknown }
   tools: { register(name: string, tool: unknown, opts?: unknown): unknown }
@@ -435,7 +468,10 @@ export default {
       })
     })
 
-    if (!settings.enabled) return
+    if (!settings.enabled) {
+      announce(ctx.logger, '插件被关掉了：notify 工具与会话状态通知都不注册')
+      return
+    }
 
     // ---- 工具：挂有 tools 的回合（长驻 context 里没人用注册表，静默不注册）----
     ctx.inject(['tools'], (c) => {
@@ -523,7 +559,18 @@ export default {
     })
 
     // ---- 自动通知：长驻会话钩子宿主（只有 hooks，没有 tools 也能工作）----
-    if (!settings.webhookUrl || (!settings.notifyOnFinish && !settings.notifyOnWait)) return
+    // 这两条 return 就是「hook 没生效」的两种最常见原因，各记一条（去重后只出现一次）
+    if (!settings.webhookUrl) {
+      announce(ctx.logger, '自动通知没挂上：还没配「群机器人 Webhook 地址」')
+      return
+    }
+    if (!settings.notifyOnFinish && !settings.notifyOnWait) {
+      announce(ctx.logger, '自动通知没挂上：「会话完成」与「等待确认 / 回答」两个开关都关着')
+      return
+    }
+
+    /** 自动通知这条半边的日志出口（宿主接进了应用日志，桌面端才看得见） */
+    const log = ctx.logger
 
     /*
      * 节流队列：企业微信每机器人每分钟 20 条。钩子回调是同步的，不能 await；这里用一条
@@ -534,7 +581,9 @@ export default {
     let lastSentAt = 0
     const enqueueSend = (
       message: { title: string; content: string },
-      mention: boolean
+      mention: boolean,
+      /** 通知种类（「会话完成」/「待确认」/「待回答」），只用于日志 */
+      label: string
     ): Promise<void> => {
       const task = sendChain.then(async () => {
         const wait = lastSentAt + MIN_NOTIFY_GAP_MS - Date.now()
@@ -550,6 +599,11 @@ export default {
           ...(ids.length ? { mentioned_list: ids } : {})
         })
         lastSentAt = Date.now()
+        /*
+         * 成功也记一条。只记失败的话，「日志里什么都没有」既可能是成功了、也可能是
+         * 压根没触发 —— 排查「通知到底发没发」时这两种必须能区分开。
+         */
+        log.info(`[wecom] 已推送「${label}」通知`)
       })
       sendChain = task.catch(() => {})
       return task
@@ -560,30 +614,36 @@ export default {
       if (!hooks) return
       const once = createOnce()
       const fail = (kind: string) => (err: unknown): void => {
-        c.logger.warn(`[wecom] ${kind}通知发送失败：`, err instanceof Error ? err.message : String(err))
+        log.warn(`[wecom] ${kind}通知发送失败：`, err instanceof Error ? err.message : String(err))
       }
 
+      const registered: string[] = []
       if (settings.notifyOnFinish) {
         hooks.on('conversation:finished', (payload) => {
           const event = payload as ConversationFinishedEvent
           // requestId 每轮唯一：同一轮重复投递只发一条
           if (!once(`finished:${event.requestId}`)) return
-          void enqueueSend(formatFinished(event), false).catch(fail('会话完成'))
+          void enqueueSend(formatFinished(event), false, '会话完成').catch(fail('会话完成'))
         })
+        registered.push('会话完成')
       }
 
       if (settings.notifyOnWait) {
         hooks.on('conversation:confirm', (payload) => {
           const event = payload as ConversationConfirmEvent
           if (!event.confirm?.id || !once(`confirm:${event.confirm.id}`)) return
-          void enqueueSend(formatConfirm(event), true).catch(fail('待确认'))
+          void enqueueSend(formatConfirm(event), true, '待确认').catch(fail('待确认'))
         })
         hooks.on('conversation:followup', (payload) => {
           const event = payload as ConversationFollowupEvent
           if (!event.followup?.id || !once(`followup:${event.followup.id}`)) return
-          void enqueueSend(formatFollowup(event), true).catch(fail('待回答'))
+          void enqueueSend(formatFollowup(event), true, '待回答').catch(fail('待回答'))
         })
+        registered.push('待确认', '待回答')
       }
+
+      // 挂上了哪些：与宿主那条「宿主已就绪」一起，把「有没有接上事件」变成可查的事实
+      announce(log, `自动通知已挂上：${registered.join('、')}`)
     })
   }
 }

@@ -451,6 +451,11 @@ interface AcpSessionEntry {
   agentId: string;
   conversationId: string;
   proc: ChildProcess;
+  /**
+   * agent 进程的 cwd（会话所属工作区；探针场景给主目录）。
+   * 留着是为了 spawn 失败时能说清「是命令的问题还是目录的问题」——见 `describeSpawnError`。
+   */
+  cwd: string;
   session: acp.ActiveSession | null;
   /** 建立会话时的 client 上下文（模型下发的 `session/set_config_option` 用它） */
   cx: acp.ClientContext | null;
@@ -780,6 +785,56 @@ function spawnCommand(
   });
 }
 
+/**
+ * 探针的 cwd：给过来的路径**不是现存目录**就退回主目录。
+ *
+ * 为什么必须判：`/api/acp/agents/:id/models`、`/capabilities` 两个接口把「登记表里第一个
+ * 工作区」当 cwd 传进来，而登记表里常年躺着已经被删掉的「临时会话」（scratch，目录在
+ * `<数据目录>/conversations/<会话 id>`，会话一删目录就没了）。目录不存在时 `spawn` 报的是
+ * **`spawn codebuddy ENOENT`** —— libuv 在 chdir 失败时也回 ENOENT，而报错里只有命令名，
+ * 看着像「命令没装 / 系统坏了」。用户侧的表现是：**设置页里所有 ACP agent 都拉不到模型，
+ * 换一台数据目录干净的机器（比如服务器）又全好**。
+ *
+ * 探针不需要真实项目，退回主目录即可（与 `ensureSession` 里「任务会话没有工作区」一致）。
+ */
+export function resolveProbeCwd(path?: string): string {
+  const given = path?.trim();
+  if (given) {
+    try {
+      if (statSync(given).isDirectory()) return given;
+    } catch {
+      // 目录没了（工作区被删 / 路径是远端主机的 POSIX 路径），落到主目录
+    }
+  }
+  return homedir();
+}
+
+/**
+ * spawn 失败时把「命令 + 工作目录」补进报错里。
+ *
+ * Node 对 `spawn(xxx)` 只给一句 `spawn xxx ENOENT`，而 ENOENT 有两种完全不同的原因：
+ * 命令不在 PATH 上，**或者 cwd 不存在**（见 `resolveProbeCwd` 的注释）。不补这一句，
+ * 排查方向会被「命令名」带偏（去查 PATH、重装 CLI、怀疑系统）。
+ */
+export function describeSpawnError(
+  err: Error,
+  command: string,
+  cwd: string,
+): Error {
+  if ((err as NodeJS.ErrnoException).code !== "ENOENT") return err;
+  let cwdExists = false;
+  try {
+    cwdExists = statSync(cwd).isDirectory();
+  } catch {
+    cwdExists = false;
+  }
+  return new Error(
+    cwdExists
+      ? `启动 ${command} 失败：命令不存在或无法执行（工作目录 ${cwd}）`
+      : `启动 ${command} 失败：工作目录不存在（${cwd}）`,
+  );
+}
+
 /** 杀掉整棵进程树（Windows 用 taskkill /T，避免 cmd.exe 包装层残留） */
 function killProcessTree(proc: ChildProcess): void {
   try {
@@ -1020,7 +1075,7 @@ async function connectEntry(
       if (sessions.get(`${entry.agentId}::${entry.conversationId}`) === entry) {
         sessions.delete(`${entry.agentId}::${entry.conversationId}`);
       }
-      rejectCx(err);
+      rejectCx(describeSpawnError(err, agent.command, entry.cwd));
     });
     void acp
       .client({ name: "Fizz Server" })
@@ -1613,7 +1668,7 @@ export async function probeAcpModels(opts: {
     return await listAcpModels({
       agent: opts.agent,
       conversationId,
-      workspacePath: opts.workspacePath?.trim() || homedir(),
+      workspacePath: resolveProbeCwd(opts.workspacePath),
     });
   } finally {
     teardown(key);
@@ -1648,7 +1703,7 @@ export async function probeAcpCapabilities(opts: {
 }): Promise<AcpProbeResult> {
   const conversationId = `probe::${opts.agent.id}`;
   const key = `${opts.agent.id}::${conversationId}`;
-  const workspacePath = opts.workspacePath?.trim() || homedir();
+  const workspacePath = resolveProbeCwd(opts.workspacePath);
   try {
     const entry = getOrCreateEntry({
       agent: opts.agent,
@@ -2049,15 +2104,13 @@ function getOrCreateEntry(opts: {
     return entry;
   }
   // 「任务」会话没有工作区目录：agent 进程的 cwd 兜底到主目录
-  const proc = spawnCommand(
-    opts.agent.command,
-    opts.agent.args ?? [],
-    opts.workspacePath || homedir(),
-  );
+  const cwd = opts.workspacePath || homedir();
+  const proc = spawnCommand(opts.agent.command, opts.agent.args ?? [], cwd);
   entry = {
     agentId: opts.agent.id,
     conversationId: opts.conversationId,
     proc,
+    cwd,
     session: null,
     cx: null,
     availableModes: [],

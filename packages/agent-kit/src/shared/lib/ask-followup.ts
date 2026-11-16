@@ -83,6 +83,29 @@ export function needsOtherOption(q: NormalizedQuestion): boolean {
   return !isYesNoQuestion(q)
 }
 
+/**
+ * 一题算不算「已作答」—— 决定主按钮是「提交」还是「下一题」、底部圆点实不实心。
+ *
+ * 判据两条取其一：**选了至少一个预设项**，或者**选了「其他」并且真的写了内容**。
+ *
+ * ⚠️ 空着的「其他」**不能否掉已经选好的预设项**。以前这里写的是「只要勾了其他却没写字，
+ * 整题就算没答」，于是多选场景下会这样：勾了几项 → 主按钮变「提交」；随手点一下
+ * 「其他补充…」（还没打字）→ 整题被打回未答、按钮退回「下一题」，用户只能去点输入框
+ * 右边那颗 ✕ 才能变回「提交」。空「其他」的意思是「开了个输入框、还没写」，
+ * 不是「撤掉了前面的选择」。
+ *
+ * 反过来的边界同样要守住：文字留在输入框里但哨兵已被取消（用户点了 ✕），那段文字
+ * **不算**这次作答 —— 与 `FollowupForm` 的 `submit()` 一致（那里也按哨兵在不在决定带不带 `other`）。
+ */
+export function isQuestionAnswered(
+  selected: readonly string[] | undefined,
+  otherText: string | undefined
+): boolean {
+  const sel = selected ?? []
+  const hasOther = sel.includes(OTHER_OPTION_LABEL)
+  return sel.some((label) => label !== OTHER_OPTION_LABEL) || (hasOther && !!otherText?.trim())
+}
+
 /** 模型给的是任意 JSON，这里做一次防御式归一化（缺字段也要能渲染出一张能用的卡） */
 export function normalizeFollowup(input: unknown): NormalizedFollowup {
   const obj = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>

@@ -23,7 +23,7 @@
  * ⚠️ 这里刻意**只放内存**：run 随进程重启丢失，本来也没有历史需要保留。
  */
 import type { AssistantSendInput } from '@fizz/contracts/agent-api'
-import { isRemoteWorkspace, resolveContextWindow } from '@fizz/contracts/types'
+import { resolveContextWindow } from '@fizz/contracts/types'
 import type { AgentChatMessage, AgentStreamEvent, AiPermissionMode, TurnUsage } from '@fizz/contracts/types'
 import { defaultContextWindowFromEnv, runAgent, type RunAgentResult } from '@fizz/agent'
 import { homedir } from 'node:os'
@@ -55,6 +55,7 @@ import {
 } from './task-triggers'
 import { createPluginFile } from './plugin-create'
 import { detectAcpAgents } from './acp-detect'
+import { acpProbeCwd } from './acp-probe'
 import { createRun, emit, findActiveByConversation, finishRun, type ChatRun } from './chat-run'
 import { describeError } from './lib/http'
 
@@ -68,12 +69,8 @@ export type StartAssistantTurnResult =
  */
 function assistantBashRoot(): string {
   // 远端工作区的 path 是 SSH 主机上的 POSIX 路径，本地后端根本到不了；
-  // dirMissing 的目录已经不在了，spawn 会直接 ENOENT。两者都跳过。
-  return (
-    domain
-      .listWorkspaces()
-      .find((w) => !!w.path && !isRemoteWorkspace(w) && !w.dirMissing)?.path || homedir()
-  )
+  // dirMissing 的目录已经不在了，spawn 会直接 ENOENT。两者都由 `acpProbeCwd` 跳过。
+  return acpProbeCwd() ?? homedir()
 }
 
 /**
@@ -402,7 +399,7 @@ export async function startAssistantTurn(input: AssistantSendInput): Promise<Sta
             // 一次性起 agent 进程问模型清单（问完就收掉），与设置页的能力探针同源
             probeModels: async (id) => {
               const agent = domain.resolveAcpAgent(id)
-              const workspacePath = domain.listWorkspaces()[0]?.path
+              const workspacePath = acpProbeCwd()
               const result = await probeAcpModels({
                 agent,
                 ...(workspacePath ? { workspacePath } : {})

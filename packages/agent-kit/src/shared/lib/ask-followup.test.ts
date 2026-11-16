@@ -18,6 +18,9 @@
  *    `label === '其他'` 时才展开 —— 于是模型写「其他」的那道题能输入，写「其他（请说明）」
  *    的那道题点上去只是个普通选项、连输入框都不出现，同一个面板里两题行为还不一样。
  *    选项该不该开放输入是**界面**的决定，不该由模型措辞决定。
+ * 6. **空着的「其他」不许否掉已经选好的预设项**（`isQuestionAnswered`）：多选里勾了几项
+ *    再点一下「其他补充…」却没打字，主按钮会从「提交」退回「下一题」、整题被打回未答，
+ *    用户只能去点输入框右边那颗 ✕ 才恢复 —— 已选中的答案并没有被撤掉，这不该发生。
  */
 import { describe, expect, it } from 'vitest'
 import type { AgentMessagePart } from '@fizz/contracts/types'
@@ -26,6 +29,7 @@ import {
   formatFollowupAnswer,
   getResumedFollowup,
   isUnansweredFollowup,
+  isQuestionAnswered,
   markFollowupResumed,
   needsOtherOption,
   normalizeFollowup,
@@ -150,6 +154,36 @@ describe('needsOtherOption', () => {
         question({ options: [{ label: '是' }, { label: '否' }], otherRequested: true })
       )
     ).toBe(true)
+  })
+})
+
+describe('isQuestionAnswered', () => {
+  it('多选：选了预设项之后再点「其他」但没写字，仍算已作答', () => {
+    expect(isQuestionAnswered(['React', OTHER_OPTION_LABEL], '')).toBe(true)
+    expect(isQuestionAnswered(['React', OTHER_OPTION_LABEL], '   ')).toBe(true)
+    expect(isQuestionAnswered(['React', OTHER_OPTION_LABEL], undefined)).toBe(true)
+  })
+
+  it('只勾「其他」却没写字 = 未作答（等于交了个空答案）', () => {
+    expect(isQuestionAnswered([OTHER_OPTION_LABEL], '')).toBe(false)
+    expect(isQuestionAnswered([OTHER_OPTION_LABEL], '   ')).toBe(false)
+    expect(isQuestionAnswered([OTHER_OPTION_LABEL], undefined)).toBe(false)
+  })
+
+  it('只勾「其他」写了字 = 已作答', () => {
+    expect(isQuestionAnswered([OTHER_OPTION_LABEL], '导出 PDF')).toBe(true)
+  })
+
+  it('取消「其他」后输入框里残留的文字不算答案（哨兵不在就不带它）', () => {
+    expect(isQuestionAnswered([], '之前写的')).toBe(false)
+    expect(isQuestionAnswered(undefined, '之前写的')).toBe(false)
+    // 但预设项还在，就仍然是已作答
+    expect(isQuestionAnswered(['React'], '之前写的')).toBe(true)
+  })
+
+  it('什么都没选 = 未作答', () => {
+    expect(isQuestionAnswered([], '')).toBe(false)
+    expect(isQuestionAnswered(undefined, undefined)).toBe(false)
   })
 })
 

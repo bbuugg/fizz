@@ -26,6 +26,11 @@ export interface GroupActions {
   focusGroup: (groupId: string) => void
   /** 点标签：切过去，再同步「当前会话」 */
   activateAndSync: (key: string) => void
+  /**
+   * 快捷键切到相邻标签（`delta=1` 向右 / `-1` 向左）：切完**必须**同步「当前会话」，
+   * 否则顶栏按钮与它们的快捷键会继续操作上一个标签的会话（见 `group-actions.tsx`）。
+   */
+  cycleAndSync: (delta: 1 | -1) => void
   /** 关一批标签，再把「当前会话」对齐到焦点组顺移后的活动标签 */
   closeAndSync: (keys: string[]) => void
   /** 关掉整组（组里全部标签），再把「当前会话」对齐到焦点组顺移后的活动标签 */

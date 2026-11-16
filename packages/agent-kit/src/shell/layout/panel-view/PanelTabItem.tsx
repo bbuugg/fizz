@@ -34,7 +34,6 @@ import {
   type TabDropZone,
 } from '@fizz/agent-kit/shared/lib/dnd-context'
 import {
-  activateTab,
   moveTab,
   reorderTab,
   splitTab,
@@ -98,6 +97,16 @@ export function PanelTabItem({
   const renamable = tabKey !== NEW_TAB_KEY
 
   /**
+   * 拖放落点的「并入本组并切过去」要用**最新**的 `onActivate`（= `activateAndSync`）。
+   *
+   * ⚠️ 不能写进 `useDrop` 的 deps（原因见下面那段长注释：它每次渲染都是新引用，
+   * spec 会重算、handlerId 漂移、落点直接失效）。走 ref 读现值，与 `PanelView` 的
+   * `closeRef` 同款。
+   */
+  const onActivateRef = useRef(onActivate)
+  onActivateRef.current = onActivate
+
+  /**
    * ⚠️ `useDrag` / `useDrop` **必须用「工厂函数 + deps 数组」形式**，不能直接传对象字面量。
    *
    * react-dnd 的 `useOptionalFactory(arg, deps)` 在 `deps == null` 且 `arg` 不是函数时，
@@ -133,7 +142,12 @@ export function PanelTabItem({
         if (target === 'inside') {
           // 并入本标签所在的组（追加到组尾），并切过去
           moveTab(item.key, groupId)
-          activateTab(item.key)
+          /*
+           * 走 `onActivate`（= `activateAndSync`）而不是裸 `activateTab`：切过去的同时
+           * 要把「当前会话」也带过去，否则顶栏按钮与快捷键会继续操作拖之前那个标签
+           * （与 Ctrl+Tab 那条同一个坑，见 `group-actions.tsx` 的 `cycleAndSync`）。
+           */
+          onActivateRef.current(item.key)
           return
         }
         // 同组重排 / 跨组移动：目标下标 = 本标签下标（插到它前）或 +1（插到它后）

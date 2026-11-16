@@ -42,6 +42,7 @@ import {
   // 哨兵 label 与「要不要补这一项」的判据都在 ask-followup：那两件事与归一化去重
   // 是同一个问题的两面（同题不能有两个「其他」），分开写一定会漂
   OTHER_OPTION_LABEL as OTHER_LABEL,
+  isQuestionAnswered,
   needsOtherOption,
   normalizeFollowup,
   getResumedFollowup,
@@ -221,16 +222,13 @@ function FollowupForm({
     otherInputRef.current?.focus()
   })
 
-  /** 一题算「已作答」：要么真选了至少一个预设项，要么选了「其他」且填了内容。
-   *  「其他」勾了却没写字视同未答 —— 否则等于交了一个空答案给模型。 */
-  const isAnswered = (q: NormalizedQuestion): boolean => {
-    const sel = selected[q.id] ?? []
-    const real = sel.filter((x) => x !== OTHER_LABEL)
-    const otherVal = (otherText[q.id] ?? '').trim()
-    const hasOther = sel.includes(OTHER_LABEL)
-    if (hasOther && !otherVal) return false
-    return real.length > 0 || (hasOther && otherVal.length > 0)
-  }
+  /**
+   * 一题算「已作答」：真选了至少一个预设项，或选了「其他」且填了内容。
+   * 判据本身在 `isQuestionAnswered`（纯函数，有单测）：**空着的「其他」不许否掉
+   * 已经选好的预设项** —— 否则多选时点一下「其他补充…」就会把「提交」打回「下一题」。
+   */
+  const isAnswered = (q: NormalizedQuestion): boolean =>
+    isQuestionAnswered(selected[q.id], otherText[q.id])
 
   const canSubmit = questions.length > 0 && questions.every(isAnswered)
   const answeredCount = questions.filter(isAnswered).length

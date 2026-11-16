@@ -43,11 +43,15 @@ export function startBackgroundServices(): void {
   }
   // 应用日志：注册内置命名空间 + 建目录 + 回填落盘尾部。**必须排在所有子任务之前** ——
   // 后面任何一个服务启动失败都要能记进日志里，日志自己没就绪就等于最该被记录的那批事件丢了。
+  // 收尾处顺手把插件 Logger 接进应用日志：打包后的桌面端没有控制台，插件侧的
+  // 「通知发不出去 / 加载失败」只写 console 就等于没记（见 `plugin-log-sink.ts`）。
   run('app-log', () => {
     return import('./app-log-namespaces')
       .then((m) => m.registerBuiltinNamespaces())
       .then(() => import('@fizz/workspace'))
       .then((m) => m.appLog.init(resolveDataDir()))
+      .then(() => import('./plugin-log-sink'))
+      .then((m) => m.installPluginLogSink())
   })
   // 插件注册的模型配置：启动时就挂一遍全局插件，设置页 / 会话立刻能看到（异步，不挡启动）
   run('plugin-models', () => {

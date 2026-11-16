@@ -38,7 +38,8 @@ import { setPendingDraft } from "@fizz/agent-kit/shared/lib/pending-draft";
 import type { ProjectUiAction } from "@fizz/agent-kit/shared/lib/tool-actions";
 import { Sidebar } from "@fizz/agent-kit/shell/layout/Sidebar";
 import { ActivityBar } from "@fizz/agent-kit/shell/layout/ActivityBar";
-import { useMobileSidebarOpen } from "@fizz/agent-kit/shared/lib/mobile-sidebar";
+import { setMobileSidebarOpen, useMobileSidebarOpen } from "@fizz/agent-kit/shared/lib/mobile-sidebar";
+import { resolveSidebarToggleTarget } from "@fizz/agent-kit/shared/lib/sidebar-toggle";
 import { WebTitleBar } from "@fizz/agent-kit/shell/layout/WebTitleBar";
 import {
   openHostTab,
@@ -49,8 +50,14 @@ import {
   useDirtyTabCountSync,
   useExternalFileOpen,
 } from "@fizz/agent-kit/shell/layout/use-external-file-open";
-import { cycleTab, openTab } from "@fizz/agent-kit/shared/lib/panel-store";
+import { openTab } from "@fizz/agent-kit/shared/lib/panel-store";
 import { NEW_TAB_KEY } from "@fizz/agent-kit/shared/lib/panel-tabs";
+/*
+ * 标签手势（切 / 关 / 聚焦）→ 「当前会话」的同步只有这一份实现，在 `useGroupActions` 里。
+ * 快捷键「上一个 / 下一个标签」必须复用它：裸 `cycleTab` 只翻面板 store，不动
+ * `app.activeConversationId`，之后所有按 `sessionKey` 找面板现场的快捷键都会打到旧标签上。
+ */
+import { useGroupActions } from "@fizz/agent-kit/shell/layout/panel-view/group-actions";
 import { useActiveActivity } from "@fizz/agent-kit/shell/activities";
 import type { NewInWorkspaceKind } from "@fizz/agent-kit/shared/lib/new-in-workspace";
 import { StatusBar } from "@fizz/agent-kit/shell/layout/StatusBar";
@@ -126,6 +133,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     quickManageOpen,
     setQuickManageOpen,
   } = useAppContext();
+
+  /** 标签手势的统一实现（切标签要同步「当前会话」，见 import 处的注释） */
+  const { cycleAndSync } = useGroupActions();
 
   /** 打开主区域标签前先站到会渲染面板的那块视图上（面板只在对话视图渲染） */
 
@@ -304,7 +314,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    * 当前功能区：侧边栏显示什么由它决定（活动栏点击切换 / 折叠）。
    * `sidebarVisible` 已经把「这个功能区没有侧边栏」也算进去了 —— 外壳只认它。
    */
-  const { sidebarVisible } = useActiveActivity();
+  const { activity, sidebarVisible } = useActiveActivity();
   /** AI 助手面板开关(全局,记 localStorage;见 lib/assistant-panel.ts) */
   const assistantOpen = useAssistantPanelOpen();
   // 手机形态下侧栏是**覆盖抽屉**，没有「收起」这回事：折叠态只在非手机形态生效。
@@ -399,10 +409,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       case "open-settings":
         openSettings();
         break;
-      case "toggle-sidebar-alt":
-        // 侧边栏唯一快捷键（Alt+1）。desktop 标题栏最左那颗按钮也走同一个模块状态。
-        setSidebarCollapsed(!sidebarCollapsed);
+      case "toggle-sidebar-alt": {
+        /*
+         * 侧边栏唯一快捷键（Alt+1）。desktop 标题栏最左那颗按钮也走同一个模块状态。
+         *
+         * ⚠️ **手机形态（含把窗口缩到 <768px）写的是另一份状态**：侧栏是覆盖抽屉
+         * （`mobile-sidebar.ts`），折叠偏好在窄屏完全无效（`sidebarHidden` 在
+         * `isMobile` 时恒为 false、侧栏容器宽度也恒为 0）。早先这里只写
+         * `setSidebarCollapsed`，于是窄屏按 Alt+1 界面上什么都不动（用户报过）。
+         * 选哪一份由 `resolveSidebarToggleTarget` 决定，语义与顶栏那颗
+         * `MobileSidebarToggle` 一致。
+         */
+        const target = resolveSidebarToggleTarget({
+          isMobile,
+          hasSidebar: Boolean(activity.sidebar),
+        });
+        if (target === "drawer") setMobileSidebarOpen(!mobileSidebarOpen);
+        else if (target === "collapsed") setSidebarCollapsed(!sidebarCollapsed);
         break;
+      }
       case "toggle-terminal":
         // 与顶栏终端主按钮同一套语义：正看着某条终端就收起面板，否则回到最后一条 / 新开一条
         if (canTerminal) toggleTerminalPanel();
@@ -422,11 +447,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       case "toggle-theme":
         toggleTheme();
         break;
+      /*
+       * 切相邻标签（Ctrl / ⌘ + Tab）：走 `cycleAndSync` 而不是裸的 `cycleTab`。
+       *
+       * ⚠️ 裸 `cycleTab` 只翻面板 store，**不动「当前会话」**（`app.activeConversationId`）——
+       * 于是切到 B 标签后，顶栏的文件 / 源码管理 / 终端按钮和它们的快捷键仍按 A 的
+       * `sessionKey` 找面板现场：既改不到眼前这个标签，还会把 A 的面板改脏。
+       * 同步逻辑只有一份，在 `useGroupActions` 的 `cycleAndSync`（点标签那条也是它）。
+       */
       case "next-tab":
-        cycleTab(1);
+        cycleAndSync(1);
         break;
       case "prev-tab":
-        cycleTab(-1);
+        cycleAndSync(-1);
         break;
       case "new-conversation":
         // 与侧栏「新对话」同一条路：落到「创建新任务」页，**不建会话**

@@ -6,7 +6,8 @@
  * 刻意不从这里导出 —— 免得只想用 Core 的调用方（尤其前端）被迫吃进 Node-only 依赖。
  */
 export * from './types'
-export { Logger } from './logger'
+export { Logger, setPluginLogSink } from './logger'
+export type { PluginLogLevel, PluginLogRecord, PluginLogSink } from './logger'
 export { Service } from './service'
 export { Context, Fork, createAppContext } from './context'
 export { EventsService } from './services/events'

@@ -9,6 +9,7 @@ import { requestReloadTab } from '../tab-reload'
 import {
   activateTab,
   activeTabKey,
+  cycleTab,
   getPanelState,
   requestCloseGroup,
   requestCloseTabs,
@@ -80,6 +81,34 @@ export function useGroupActions(): GroupActions {
     (key: string): void => {
       activateTab(key)
       syncConversation(key)
+    },
+    [syncConversation]
+  )
+
+  /**
+   * 快捷键「上一个 / 下一个标签」（默认 Ctrl / ⌘ + Tab，可改）—— 等价于点相邻那颗标签。
+   *
+   * ## 为什么必须和 `activateAndSync` 走同一份同步（这条修的是真 bug）
+   *
+   * `cycleTab` 只写面板 store（哪个标签是激活的），而**「当前会话」是另一份状态**
+   * （`app.activeConversationId`）。两份状态的同步一直只由**用户手势**触发（见上面
+   * `syncConversation` 的长注释：不能放进观察面板状态的 effect，会死循环）。
+   *
+   * 早先快捷键这条只调了 `cycleTab`、没有同步 —— 于是按 Ctrl+Tab 换到 B 标签后，
+   * `app.activeConversationId` 还停在 A：顶栏的文件 / 源码管理 / 终端按钮、以及它们
+   * 的快捷键（`toggle-files` / `toggle-git` / `toggle-terminal`）全都按 `sessionKey`
+   * 去找面板现场，改的是 **A 的面板**。用户看到的就是「切了标签，快捷键还在上一个
+   * 标签里操作」，而且 A 那边还被真的改脏了（再切回去文件面板已经莫名打开）。
+   *
+   * ⚠️ `cycleTab` 是同步写 store 的，所以切完立刻读 `activeTabKey()` 拿到的就是新标签
+   * —— 与 `closeAndSync` 同一个套路。组里只有一颗标签时 `cycleTab` 空操作，这里读回来
+   * 还是原来那颗，`syncConversation` 自己会早退，不会白拉一次历史。
+   */
+  const cycleAndSync = useCallback(
+    (delta: 1 | -1): void => {
+      cycleTab(delta)
+      const key = activeTabKey()
+      if (key) syncConversation(key)
     },
     [syncConversation]
   )
@@ -179,7 +208,15 @@ export function useGroupActions(): GroupActions {
     [syncConversation]
   )
 
-  return { focusGroup, activateAndSync, closeAndSync, closeGroupAndSync, renameTab, reloadTab }
+  return {
+    focusGroup,
+    activateAndSync,
+    cycleAndSync,
+    closeAndSync,
+    closeGroupAndSync,
+    renameTab,
+    reloadTab,
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@
  */
 import { probeAcpModels, type AcpAgentConfig } from '@fizz/acp'
 import { domain } from '@/lib/server/state'
+import { acpProbeCwd } from '@/lib/server/acp-probe'
 import { describeError, jsonError } from '@/app/api/_lib/auth'
 
 export async function GET(
@@ -22,7 +23,8 @@ export async function GET(
     return jsonError(status, message)
   }
   try {
-    const workspacePath = domain.listWorkspaces()[0]?.path
+    // cwd 只用来起进程：第一个**目录还在**的项目，没有就交给 `probeAcpModels` 退回主目录
+    const workspacePath = acpProbeCwd()
     return Response.json(await probeAcpModels({ agent, ...(workspacePath ? { workspacePath } : {}) }))
   } catch (err) {
     const { status, message } = describeError(err)

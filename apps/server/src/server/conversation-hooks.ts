@@ -163,6 +163,18 @@ async function buildHost(key: string, workspacePath?: string): Promise<HostEntry
     registry().hosts.set(key, entry)
     // 先换上新宿主，再回收旧的：期间到达的事件会落到新宿主上，不会撞到正在 dispose 的
     if (cached) await cached.ctx.dispose().catch(() => {})
+    /*
+     * 留一条「宿主起来了」的记录。
+     *
+     * 这是排查「通知没发」的**第一个分界点**：有这条 = 插件已在宿主里挂载过（接下来该看
+     * 插件自己的日志）；没有这条 = 事件根本没走到插件（宿主构建失败 / 服务没起）。
+     * 只在真正重建时打，命中缓存不重复记。
+     */
+    appLog.info(
+      'plugin',
+      `会话钩子宿主已就绪：挂载 ${loaded.length} 个插件`,
+      [key ? `工作区：${key}` : '没有工作区（全局宿主）', ...loaded.map((item) => item.id)].join('\n')
+    )
     return entry
   } catch (err) {
     appLog.warn(
@@ -190,7 +202,24 @@ async function drain(key: string, lane: Lane): Promise<void> {
     const batch = lane.events.splice(0)
     const workspacePath = batch.find((item) => item.workspacePath)?.workspacePath
     const host = await ensureHost(key, workspacePath)
-    if (!host) continue
+    if (!host) {
+      /*
+       * 宿主没建起来：这一批事件**没有任何插件能收到**。
+       *
+       * 必须留一条 —— 否则界面上的表现就是「hook 静默不生效」：`buildHost` 里那次失败
+       * 可能发生在上一批（或首次事件），用户既没有通知也没有报错，只能靠猜。
+       * 按批记一条（不是每个事件一条），列表里能看出是哪个 hook、几个事件、哪个工作区。
+       */
+      appLog.warn(
+        'plugin',
+        `会话钩子没有宿主，丢弃 ${batch.length} 个事件`,
+        [
+          key ? `工作区：${key}` : '没有工作区（全局宿主）',
+          `事件：${[...new Set(batch.map((item) => item.hook))].join('、')}`
+        ].join('\n')
+      )
+      continue
+    }
     for (const item of batch) {
       if (host.ctx.disposed) break
       // emitSafe：单个监听器抛错只记日志，不影响同批的其它插件

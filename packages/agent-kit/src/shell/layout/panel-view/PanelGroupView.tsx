@@ -23,7 +23,6 @@ import {
 } from '@fizz/agent-kit/shared/lib/dnd-context'
 import { collectGroupIds } from '@fizz/agent-kit/shared/lib/pane-layout'
 import {
-  activateTab,
   moveGroup,
   moveTab,
   splitTab,
@@ -40,6 +39,16 @@ export function PanelGroupView({ groupId }: { groupId: string }) {
     useGroupActions()
   const group = state.groups[groupId]
   const isActiveGroup = state.activeGroupId === groupId
+
+  /**
+   * 拖放落点的「并入本组并切过去」要用**最新**的 `activateAndSync`。
+   *
+   * ⚠️ 不能把它写进 `useDrop` 的 deps：它依赖 `app`（每次渲染都是新对象），
+   * spec 会每帧重算 → handlerId 漂移 → 拖拽再也匹配不上落点（见 `PanelTabItem`
+   * 里那段 `useDrag` 的长注释）。所以照 `PanelView` 的 `closeRef` 同款：走 ref 读现值。
+   */
+  const activateRef = useRef(activateAndSync)
+  activateRef.current = activateAndSync
 
   const bodyRef = useRef<HTMLDivElement | null>(null)
   /** 标签条的横向滚动容器（活动标签要能被滚进来，见下面的 effect） */
@@ -149,7 +158,12 @@ export function PanelGroupView({ groupId }: { groupId: string }) {
         }
         if (zone === 'center') {
           moveTab(item.key, groupId)
-          activateTab(item.key)
+          /*
+           * 必须走 `activateAndSync`（= 切过去 + 同步「当前会话」）而不是裸 `activateTab`：
+           * 否则拖完这颗标签是激活了，「当前会话」还留在拖之前的那个 —— 顶栏的文件 /
+           * 终端按钮与它们的快捷键会继续改旧标签的面板（与 Ctrl+Tab 那条同一个坑）。
+           */
+          activateRef.current(item.key)
           return
         }
         splitTab(item.key, groupId, zone)

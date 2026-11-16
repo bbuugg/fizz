@@ -10,6 +10,7 @@
  */
 import { probeAcpCapabilities, type AcpAgentConfig } from "@fizz/acp";
 import { domain } from "@/lib/server/state";
+import { acpProbeCwd } from "@/lib/server/acp-probe";
 import { describeError, jsonError } from "@/app/api/_lib/auth";
 
 export async function GET(
@@ -25,8 +26,8 @@ export async function GET(
     return jsonError(status, message);
   }
   try {
-    // 探测只需要一个能起的 cwd：优先用第一个项目（agent 的启动参数里可能读项目配置）
-    const workspacePath = domain.listWorkspaces()[0]?.path;
+    // 探测只需要一个能起的 cwd：优先用第一个**目录还在**的项目（agent 的启动参数里可能读项目配置）
+    const workspacePath = acpProbeCwd();
     return Response.json(
       await probeAcpCapabilities({
         agent,

@@ -49,7 +49,7 @@ import {
   useState,
   type TransitionEvent
 } from 'react'
-import { ChevronLeft, Database, FileDown, FileUp, LogOut, X } from 'lucide-react'
+import { ChevronLeft, Database, FileDown, FileUp, LogOut, Settings, X } from 'lucide-react'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import type { AgentShortcutConfig } from '@fizz/agent-kit/shared/lib/shortcuts'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
@@ -336,7 +336,7 @@ export function SettingsPage({
       */}
       <header className="flex h-12 shrink-0 items-center gap-2 px-3">
         <div className="flex min-w-0 items-center gap-1">
-          {mobileDetail && (
+          {mobileDetail ? (
             <button
               type="button"
               aria-label={tr('返回设置')}
@@ -346,7 +346,14 @@ export function SettingsPage({
             >
               <ChevronLeft className="size-5" />
             </button>
-          )}
+          ) :  <button
+              type="button"
+              aria-label={tr('返回设置')}
+              title={tr('返回设置')}
+              className="-ml-1 slide-swap rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
+            >
+              <Settings className="size-5" />
+            </button>}
           <h1 key={mobileDetail?.title ?? tr('设置')} className="slide-swap truncate text-base font-medium">
             {mobileDetail?.title ?? tr('设置')}
           </h1>
@@ -368,7 +375,7 @@ export function SettingsPage({
         这里只把剩余高度交给它；横向留白与标题栏对齐。数据 / 退出
         经 `extraGroups` 注入 —— 与内置分组同一套两级导航，不再是旁边的自绘区块。
       */}
-      <div className="flex min-h-0 flex-1 flex-col px-2 pb-2 pt-3">
+      <div className="flex min-h-0 flex-1 flex-col p-2 pt-0">
         <SettingsShell
           platform="mobile"
           // 手机壳恒两级；宽屏（平板横屏 / 桌面调试）不播转场，退回并排两栏
