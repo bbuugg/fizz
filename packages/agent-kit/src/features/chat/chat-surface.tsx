@@ -611,7 +611,7 @@ export function MessageList({
                         最前面那颗图标（见 `renderActions` / `MessageActionRow`）。
 
                         ⚠️ **本轮没结束时一律不渲染**：`write` 一返回 `presentedDocsOf`
-                        就能认出文档，但流式期间把 chip 挂出来会让「交付物」在模型还没说完时
+                        就能认出文档，但流式期间把卡片挂出来会让「交付物」在模型还没说完时
                         提前出现（还会把下面的内容高度顶一下）。等这一轮真正落定（`isStreamingLast`
                         为假）再显示 —— 与操作行 / 用量的出现时机一致。 */}
                     {!isStreamingLast && renderArtifacts?.(message)}
