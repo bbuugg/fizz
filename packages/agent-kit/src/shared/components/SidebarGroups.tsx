@@ -90,6 +90,7 @@ import {
   useState,
   type ComponentType,
   type CSSProperties,
+  type HTMLAttributes,
   type ReactNode
 } from 'react'
 import { Skeleton } from '@fizz/ui/skeleton'
@@ -212,6 +213,14 @@ export interface SidebarGroupProps {
    */
   resizing?: boolean
   className?: string
+  /**
+   * 透传到**内容容器**（`data-sidebar-group-content` 那个 div）的属性。
+   *
+   * 给「往组里拖东西」这类落点用：AI Agent 侧栏把目录拖进「工作区」组就登记成项目
+   * （见 `AgentSidebar` 的 `handleDrop`）。`className` 会与内部那套合并；
+   * `inert` / 高度内联样式 / `data-sidebar-group-content` 由本组件持有，传进来不生效。
+   */
+  contentProps?: HTMLAttributes<HTMLDivElement>
   children?: ReactNode
 }
 
@@ -239,8 +248,11 @@ export function SidebarGroup({
   onResizeDraggingChange,
   resizing,
   className,
+  contentProps,
   children
 }: SidebarGroupProps) {
+  /** `className` 与内部那套合并（见 `contentProps` 的注释），其余属性直接铺到容器上 */
+  const { className: contentClassName, ...contentRest } = contentProps ?? {}
   /** 不受控时的展开态：刷新即回默认展开（不落盘 —— 落盘的折叠态会把内容永久藏起来） */
   const [internalOpen, setInternalOpen] = useState(true)
   const expanded = open ?? internalOpen
@@ -368,6 +380,7 @@ export function SidebarGroup({
         data-sidebar-group-content=""
         // 收起后内容仍挂载（动画需要），用 inert 把它从 Tab / 读屏里摘出去
         inert={!expanded}
+        {...contentRest}
         className={cn(
           'flex min-h-0 flex-col',
           // `max` 档：恒封顶、超出在组内滚（见文件头）。高度走内联样式：`max` / `half`
@@ -377,7 +390,8 @@ export function SidebarGroup({
           expanded ? scroll && 'overflow-auto no-scrollbar' : 'overflow-hidden',
           !busy &&
             'transition-[flex-grow,flex-basis,min-height,max-height,opacity] duration-200 ease-out motion-reduce:transition-none',
-          className
+          className,
+          contentClassName
         )}
         style={sizeStyle}
       >

@@ -89,8 +89,15 @@ export const CHAT: Record<string, string> = {
   '移除（还没生效：不再发给 agent，也不再发出去）': 'Remove (not yet applied: it will not reach the agent or be sent)',
   '移除这条插话': 'Remove this note',
   '权限答复：{label}': 'Permission reply: {label}',
+  '权限答复': 'Permission replies',
+  '外部 Agent 每次请求权限时怎么答复；按会话记住，换会话要重选。':
+    'How to reply when the external agent requests permission; remembered per conversation, so pick it again in a new one.',
   '确认（逐次询问）': 'Confirm (ask every time)',
+  '每次请求权限都弹确认卡，由你决定是否允许。':
+    'Every permission request shows a confirmation card for you to decide.',
   '完全放行（不再询问）': 'Allow all (never ask)',
+  '服务端直接替你答复「允许」，确认卡不再出现。':
+    'The server answers “allow” on your behalf, so no confirmation card appears.',
   '正在读取这个外部 Agent 的模式…': 'Reading modes from the external agent…',
   '切换权限档失败：{error}': 'Failed to switch permission mode: {error}',
   '未知错误': 'Unknown error',
@@ -234,6 +241,7 @@ export const CHAT: Record<string, string> = {
   '{minutes} 分': '{minutes}m',
   '完整内容': 'Full content',
   '这次调用的完整内容（列表里被截断了），可选中复制；点击内容会显示复制按钮。': 'The full content of this call (truncated in the list). Select to copy, or tap the content to show the copy button.',
+  '在文件面板中打开 {path}': 'Open {path} in the file panel',
   '复制消息': 'Copy message',
   '从此签出：以这条消息为终点创建分支会话（历史到这里为止，两边各自独立）': 'Fork from here: create a branch conversation ending at this message (history up to here; the two are independent)',
   '从此签出': 'Fork from here',
@@ -305,6 +313,8 @@ export const CHAT: Record<string, string> = {
   '跟随 agent 默认': 'Follow agent default',
   '还没有模型配置': 'No model configs yet',
   '还没有外部 Agent': 'No external agents yet',
+  '远端工作区不能用外部 Agent（ACP）：它要在服务端本机起一个进程，够不到 SSH 主机上的目录。请用内置模型。':
+    'External agents (ACP) are not available in a remote workspace: they run as a process on the server machine and cannot reach directories on the SSH host. Use a built-in model.',
   '发送（本轮结束后自动执行）': 'Send (runs automatically after this turn)',
   '松开以添加附件': 'Release to attach',
   '停止录音': 'Stop recording',

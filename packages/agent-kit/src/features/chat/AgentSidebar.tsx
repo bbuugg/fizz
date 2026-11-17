@@ -41,6 +41,11 @@
  * （`ChatPanel` 的 `WorkspaceSelect` → `WorkspacePicker` 的 `actions`），侧栏不再有那颗「+」。
  * 侧栏是「看现有项目」的地方，加项目要选目录 / 填仓库地址 / 起容器，那是新建会话页面的活。
  *
+ * **唯一的例外是「把目录拖进来」**（只在桌面端出现，见 `handleDrop`）：那是被动接收 ——
+ * 不占标签行的图标位、不需要弹窗，用户手边现成的目录拖过来就该是项目。判据是宿主有没有
+ * `getPathForFile`，web / mobile 拿不到本机路径，那边自然没有这条路。别因为「加号删了」
+ * 把拖拽一起删掉，也别借这个口子把「+」搬回来。
+ *
  * 整条侧栏的骨架（外壳 + 分区容器）**由宿主挑**（`shell`：不传时是
  * `shared/components/SidebarScaffold`，与「主机 / 接口请求 / 插件面」共用同一份）
  * —— 本文件只填内容。手机壳在 `apps/mobile` 的 `Sidebar.tsx` 里挑另一个外壳
@@ -67,6 +72,7 @@ import {
   useState,
   type ComponentType,
   type Dispatch,
+  type DragEvent,
   type ReactNode,
   type SetStateAction,
 } from "react";
@@ -81,6 +87,7 @@ import {
   Container,
   Download,
   Folder,
+  FolderInput,
   GitBranch,
   Loader2,
   MoreHorizontal,
@@ -99,6 +106,7 @@ import {
   Users,
 } from "lucide-react";
 import { toast } from "sonner";
+import { getAgentHostOrNull } from "@fizz/agent-client/host";
 import { Button } from "@fizz/ui/button";
 import {
   DropdownMenu,
@@ -118,6 +126,7 @@ import {
 } from "@fizz/agent-kit/features/projects/OpenWorkspaceItems";
 import { ContainerSettingsDialog } from "@fizz/agent-kit/features/projects/ContainerSettingsDialog";
 import { DeleteConversationDialog } from "@fizz/agent-kit/features/chat/DeleteConversationDialog";
+import { selectNewWorkspace } from "@fizz/agent-kit/features/chat/select-new-workspace";
 import { ConvertAcpDialog } from "@fizz/agent-kit/features/chat/ConvertAcpDialog";
 import { TypingBubble } from "@fizz/agent-kit/features/chat/TypingBubble";
 import { ConversationRowIcon } from "@fizz/agent-kit/features/chat/ConversationRowIcon";
@@ -145,6 +154,7 @@ import { SidebarScaffold } from "@fizz/agent-kit/shared/components/SidebarScaffo
 import { cn } from "@fizz/agent-kit/shared/lib/utils";
 import { useT } from "@fizz/agent-kit/shared/lib/language";
 import { conversationTitle } from "@fizz/agent-kit/shared/lib/conversation-title";
+import { firstDroppedDirectoryPath } from "@fizz/agent-kit/shared/lib/dropped-directory";
 import { ROW_ACTION_CLASS } from "@fizz/agent-kit/shared/components/RowAction";
 import type { AgentWorkspace } from "@fizz/contracts/agent-api";
 import type { GitStatus } from "@fizz/git";
@@ -404,9 +414,9 @@ export function AgentSidebar({
   /**
    * 待确认移除的工作区（null = 没有弹窗）。
    *
-   * ⚠️ 这里不能像会话删除那样「点两次就地确认」：删工作区在服务端是**级联删除**
-   * （`domain.deleteWorkspace` 会连它下面的全部会话一起清掉），误点代价比删一个会话大得多，
-   * 必须用弹窗把「连带删什么、什么不会动」讲清楚。
+   * ⚠️ 这里不能像会话删除那样「点两次就地确认」：移除工作区会带走**整棵 worktree 子树**
+   * 和它们的定时任务（`domain.deleteWorkspace`），误点代价比删一个会话大得多，必须用弹窗
+   * 把「连带动什么、什么不会动」讲清楚。会话本身不会跟着消失 —— 项目加回来就还在。
    */
   const [pendingRemove, setPendingRemove] = useState<AgentWorkspace | null>(
     null,
@@ -664,6 +674,83 @@ export function AgentSidebar({
       list.sort((a, b) => a.name.localeCompare(b.name));
     return { projects: top, worktreesByParent: byParent };
   }, [app.workspaces]);
+
+  /**
+   * 「把目录拖进侧栏 → 直接登记成项目」。
+   *
+   * ## 为什么只有桌面端有这条路
+   *
+   * 工作区登记的是**跑 Agent 那台机器**上的真实路径。浏览器把 `File` 交进来时路径已经被
+   * 涂掉了（`webkitRelativePath` 只是相对路径，而且指向**用户那台**机器），拿不到、也不该
+   * 拿到。所以判据是「宿主有没有 `getPathForFile`」，与「选本机目录」那条同一个口径
+   * —— 不是拿 `platform` 比字符串。
+   *
+   * ## 为什么这是侧栏唯一的「添加项目」入口
+   *
+   * 上面那段注释说「加项目归到开始新对话页」，删掉的是那颗**加号按钮**：它要选目录 / 填仓库
+   * 地址 / 起容器，得有个页面承载。而拖拽是**被动接收**，不占标签行的图标位、也不需要
+   * 任何弹窗 —— 用户手边现成的目录直接拖过来就该是项目，不必先开会话页再拐回来。
+   * 别因为「加号删了」把这段一起删掉。
+   */
+  const getPathForFile = getAgentHostOrNull()?.getPathForFile;
+  /**
+   * enter / leave 在行与行之间移动时会**成对**触发（每跨一个子元素算一次），只看一个布尔值
+   * 会让高亮在拖动过程中疯狂闪。计数归零才算真的离开。
+   */
+  const dropDepth = useRef(0);
+  const [dropReady, setDropReady] = useState(false);
+
+  const handleDragOver = (e: DragEvent<HTMLDivElement>): void => {
+    // 只接文件：拖一段选中的文字进来也能触发 dragover，不该点亮落区
+    if (!getPathForFile || !e.dataTransfer.types.includes("Files")) return;
+    // 不 preventDefault 浏览器就不放行 drop（默认行为是拿文件去导航）
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleDragEnter = (e: DragEvent<HTMLDivElement>): void => {
+    if (!getPathForFile || !e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    dropDepth.current += 1;
+    if (dropDepth.current === 1) setDropReady(true);
+  };
+
+  const handleDragLeave = (): void => {
+    if (!getPathForFile) return;
+    dropDepth.current = Math.max(0, dropDepth.current - 1);
+    if (dropDepth.current === 0) setDropReady(false);
+  };
+
+  const handleDrop = (e: DragEvent<HTMLDivElement>): void => {
+    if (!getPathForFile) return;
+    e.preventDefault();
+    dropDepth.current = 0;
+    setDropReady(false);
+
+    // 路径必须在这次回调里**同步**取完：`dataTransfer` 出了事件处理就失效了
+    const path = firstDroppedDirectoryPath(e.dataTransfer, getPathForFile);
+    if (!path) {
+      toast.error(t("只能拖入文件夹"));
+      return;
+    }
+
+    /*
+     * 「已经加过」用返回的 id 判：服务端按 `(host, path)` 幂等（大小写不敏感的平台还会折叠
+     * 大小写，见 `sameWorkspacePath`），命中既有行时回的是**同一个 id**、不会新增一行 ——
+     * 所以不需要（也不该）在前端自己比一遍路径，那个口径永远会和后端差一点。
+     */
+    const before = new Set(projects.map((p) => p.id));
+    void app.addWorkspace({ path }).then((ws) => {
+      if (!ws) return;
+      if (before.has(ws.id)) {
+        toast.info(t("这个目录已经在项目里了"));
+        app.selectWorkspace(ws.id);
+        return;
+      }
+      toast.success(t("已添加项目：{name}", { name: ws.name }));
+      selectNewWorkspace(app, ws);
+    });
+  };
 
   /** 一个「id 列表」型展开态的开关 —— 项目树里四份展开态共用这同一段逻辑 */
   const toggler =
@@ -1763,6 +1850,8 @@ export function AgentSidebar({
    *   起始页（那页的模型下拉会重新加载配置与外部 Agent 清单），并且它就在用户
    *   手边。侧栏再摆一颗同功能的图标，只是让几颗图标挤在 260px 宽的标签行里
    *   （用户反馈「看不懂右边这三颗」）。
+   *
+   * 唯一接得住「加项目」的是**拖拽**（见上面 `handleDrop`）：不占图标位、不要弹窗。
    */
   const workspaceGroup = (
     <SidebarGroup
@@ -1781,7 +1870,26 @@ export function AgentSidebar({
       empty={
         app.conversationsLoaded || app.error ? t("还没有项目。") : undefined
       }
+      /*
+        拖拽落点挂在**内容容器**上，不挂标题行：标题行是「上下拖改两组高度」的抓手
+        （`resizeAbove`），两种拖拽挤在同一块会互相抢指针。子元素上的 dragover 会冒泡到
+        这里，所以整个列表区（含空白）都能接住。
+      */
+      contentProps={{
+        onDragEnter: handleDragEnter,
+        onDragOver: handleDragOver,
+        onDragLeave: handleDragLeave,
+        onDrop: handleDrop,
+        className: dropReady ? "bg-primary-soft ring-1 ring-inset ring-primary" : undefined,
+      }}
     >
+      {/* 落点提示贴着列表上沿，位置固定：插进列表中间会让它在拖动时跳动、hover 也跟着错位 */}
+      {dropReady && (
+        <div className="pointer-events-none mx-2 mb-1 flex items-center gap-1.5 rounded-md border border-dashed border-primary px-2 py-1.5 text-xs text-primary">
+          <FolderInput className="size-3.5 shrink-0" />
+          {t("松开鼠标，把这个目录添加为项目")}
+        </div>
+      )}
       {/* 刷新后的加载窗口：列表请求还没落地 —— 上骨架屏，别闪「还没有项目」。
           加载失败（app.error）时回退真实空态，错误信息另有横幅展示 */}
       {!app.conversationsLoaded && !app.error ? (

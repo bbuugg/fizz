@@ -7,7 +7,7 @@
  * ⚠️ 只依赖 `./channels`（零依赖），不要把 `./transport-ipc` 或 `./manager` 拖进来
  * —— 那会把 `electron.app` 与 `@fizz/server` 打进 preload。
  */
-import { ipcRenderer } from 'electron'
+import { ipcRenderer, webUtils } from 'electron'
 import {
   AGENT_IPC,
   type AgentHttpResponse,
@@ -55,6 +55,23 @@ export function createAgentTransportBridge(): AgentTransportBridge {
     },
 
     pickDirectory: () => ipcRenderer.invoke(AGENT_IPC.pickDirectory) as Promise<string | null>,
+
+    /*
+     * 拖拽落点取路径：**不经 IPC**，`webUtils` 在 preload 里直接可用（沙箱 preload 的
+     * 白名单模块之一），而 `File` 对象只有渲染端有 —— 绕去主进程反而拿不到它。
+     *
+     * `webUtils.getPathForFile` 在 Electron 的类型声明里收 DOM 的 `File`，本包（主进程
+     * 也编）没有 DOM lib，所以按结构化类型调；传进来的不是 File 时它会抛，吃成空串
+     * 交给调用方当「没拖到东西」。
+     */
+    getPathForFile: (file) => {
+      const api = webUtils as unknown as { getPathForFile(target: object): string }
+      try {
+        return api.getPathForFile(file) ?? ''
+      } catch {
+        return ''
+      }
+    },
 
     pickLocalMarkdownFile: () =>
       ipcRenderer.invoke(AGENT_IPC.pickLocalMarkdownFile) as Promise<string | null>,

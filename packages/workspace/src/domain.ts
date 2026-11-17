@@ -430,6 +430,21 @@ export function pickRemote(
   return input ?? prev ?? byPath
 }
 
+/**
+ * 两条工作区路径是否指向**同一个目录**（`addWorkspace` 的去重口径）。
+ *
+ * 只在「文件系统本身不区分大小写」的平台上折叠大小写：Windows 与 macOS 的默认卷都是
+ * 这样，`D:\Foo` 与 `d:\foo` 是同一个目录。拖拽进来的是系统给的真实大小写，而历史登记
+ * 可能来自手输 / 另一次拖拽 —— 严格字符串比较会让同一个目录在侧栏长成两行。
+ *
+ * Linux 上正相反：`/srv/App` 与 `/srv/app` 是两个真实存在的目录，**不能**折叠。
+ */
+export function sameWorkspacePath(a: string, b: string): boolean {
+  if (a === b) return true
+  const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin'
+  return caseInsensitive && a.toLowerCase() === b.toLowerCase()
+}
+
 export class AgentDomain {
   /** 插件注册的模型配置（内存态，随插件刷新整体替换） */
   private externalModels: PluginModelEntry[] = []
@@ -577,10 +592,23 @@ export class AgentDomain {
 
   // ---------- 工作区（= 服务端的路径白名单） ----------
 
+  /**
+   * 可见的工作区（已移除的不算）。
+   *
+   * 这条清单同时是**服务端的路径白名单**（工具只准在工作区内读写），所以「移除」在这里
+   * 就等同于收回权限；但记录本身留在数据文件里，会话与目录都还在 —— 重新登记同一目录
+   * 时 `addWorkspace` 会命中它并清掉 `removedAt`（见 `AgentWorkspace.removedAt`）。
+   */
   listWorkspaces(): AgentWorkspace[] {
-    return this.store.snapshot().workspaces
+    return this.store.snapshot().workspaces.filter((w) => !w.removedAt)
   }
 
+  /**
+   * 按 id 取工作区，**包括已移除的**。
+   *
+   * 刻意不过滤：`listWorkspaces` 是给界面看的，这里给内部用 —— 恢复软删项目、按 id
+   * 读写它名下的会话（用户从「历史会话」点开旧会话）都得拿得到这条记录。
+   */
   getWorkspace(id: string): AgentWorkspace | undefined {
     return this.store.snapshot().workspaces.find((w) => w.id === id)
   }
@@ -639,10 +667,11 @@ export class AgentDomain {
       path = resolve(raw)
     }
 
-    // 去重键是 `(hostId, path)`：同名目录可能同时存在于本机与远端，不能撞成一条
+    // 去重键是 `(hostId, path)`：同名目录可能同时存在于本机与远端，不能撞成一条。
+    // 路径比较走 `sameWorkspacePath`：Windows / macOS 上大小写不同仍是同一个目录
     const key = requestedRemote?.hostId ?? 'local'
     const byPath = data.workspaces.find(
-      (w) => w.path === path && (w.remote?.hostId ?? 'local') === key
+      (w) => sameWorkspacePath(w.path, path) && (w.remote?.hostId ?? 'local') === key
     )
     const remote = pickRemote(input.remote, prev?.remote, byPath?.remote)
 
@@ -678,10 +707,27 @@ export class AgentDomain {
       input.parentWorkspaceId ?? byPath?.parentWorkspaceId ?? prev?.parentWorkspaceId
     // 容器型项目配置：重命名 / 换目录都走这里，必须**原样带过去**，否则静默降级成普通项目
     const carried = pickContainer(input.container, prev?.container, byPath?.container)
+    /*
+     * 落盘用哪一串路径写法。
+     *
+     * 纯新增 / 重复登记（没有 `prev`）且命中同一目录时，沿用**既有**那串：Windows / macOS
+     * 大小写不敏感，拖拽拿到的是文件系统的真实大小写，把它盖回记录里会让侧栏的项目名与
+     * 路径「自己变了个样」（`MyProject` 变成 `myproject`），看起来像被改坏了。
+     * 走重命名 / 换目录（有 `prev`）时听调用方的，那条路径才是用户刚选的。
+     */
+    const effectivePath = prev ? path : (byPath?.path ?? path)
     const workspace: AgentWorkspace = {
       id: byPath?.id ?? prev?.id ?? newId(),
-      name: input.name?.trim() || (path.split(/[\\/]/).filter(Boolean).pop() ?? path),
-      path,
+      /*
+       * 命中既有记录（重复登记 / 恢复一个已移除的项目）时**保留用户改过的名字**：
+       * 拿目录名重新算会把「我的项目」悄悄改回 `my-project`。当前端显式传了 `name`
+       * （重命名）或走的是按 id 更新（有 `prev`）时另论，后者本来就该听调用方的。
+       */
+      name:
+        input.name?.trim() ||
+        (prev ? undefined : byPath?.name) ||
+        (effectivePath.split(/[\\/]/).filter(Boolean).pop() ?? effectivePath),
+      path: effectivePath,
       // isWorktree 是布尔标记：只在 true 时写入（既有项目不受影响）；
       // 已有 worktree 项目走更新（重命名）时保留原值
       ...(input.isWorktree ?? prev?.isWorktree ? { isWorktree: true } : {}),
@@ -692,6 +738,12 @@ export class AgentDomain {
       // 否则它会突然出现在侧栏的项目列表里
       ...((input.scratch ?? prev?.scratch ?? byPath?.scratch) ? { scratch: true } : {}),
       createdAt: byPath?.createdAt ?? prev?.createdAt ?? now,
+      /*
+       * 按 id 更新（重命名 / 换目录）时**保留**「已移除」标记：否则一次 PATCH 就把项目
+       * 悄悄放回列表了，而用户以为自己只是改了个名字。恢复只走「按 path 重新登记」
+       * —— 那条路没有 `prev`，标记自然不带过去。
+       */
+      ...(prev?.removedAt ? { removedAt: prev.removedAt } : {}),
       updatedAt: now
     }
     this.store.mutate((d) => {
@@ -745,16 +797,57 @@ export class AgentDomain {
   }
 
   /**
-   * 删工作区 —— **级联**删掉整棵子树，以及挂在它们下面的会话 / 定时任务。
+   * 移除工作区 —— **只是移出列表**，它下面的会话原样留着。
    *
-   * 为什么必须级联：worktree 项目是按 `parentWorkspaceId` 挂在父项目下的，只删一条就会在
-   * `.worktree/` 里留一堆「已登记但父没了」的条目（侧栏的父推断会让它们浮到顶层）。
-   * 会话 / 定时任务只存 `workspaceId`，工作区没了它们就成永远看不到的孤儿数据。
+   * ## 为什么不再级联删会话
    *
-   * 注意这里只动**数据**；磁盘目录、git worktree、容器留给调用方（流程删除要跑
-   * git / docker，领域层不碰），调用方必须在删记录**之前**把那些做完。
+   * 会话文件写在工作区目录里（`<项目>/.fizz/conversation/<会话 id>/`），工作区记录是启动
+   * 扫盘的**入口**。以前这里连会话记录带目录一起删，于是「移除项目 → 加回来」等于把会话
+   * 全丢了；用户只是不想在侧栏看到它，代价不该是数据消失。
+   *
+   * 现在改成打 `removedAt` 标记（`listWorkspaces` 滤掉），重新登记同一目录时
+   * `addWorkspace` 命中既有记录、清掉标记 —— 会话、容器配置、worktree 关系全部原样回来。
+   *
+   * **没有会话的项目直接真删**（`purgeWorkspace`）：留着一条永远回不来的空壳记录没有意义，
+   * 数据文件里也不该攒这种东西。
+   *
+   * 定时任务仍然当场清掉：项目都不在列表里了，任务还在后台按时起会话、写文件，那不叫
+   * 「移除」。会话是用户的聊天记录，任务是可以重配的作业，两者代价不对等。
+   *
+   * 注意这里只动**数据**；磁盘目录、git worktree、容器留给调用方（要跑 git / docker，
+   * 领域层不碰），调用方必须在移除记录**之前**把那些做完。
    */
   deleteWorkspace(id: string): void {
+    const ids = new Set(this.workspaceSubtree(id).map((w) => w.id))
+    // 记录已经不在了（调用方刚 `purgeWorkspace` 过，或在别处删了）：没什么可做的
+    if (ids.size === 0) return
+    const hasConversations = this.store
+      .snapshot()
+      .conversations.some((c) => ids.has(c.workspaceId))
+    if (!hasConversations) {
+      this.purgeWorkspace(id)
+      return
+    }
+    const now = Date.now()
+    this.store.mutate((d) => {
+      d.workspaces = d.workspaces.map((w) => (ids.has(w.id) ? { ...w, removedAt: now } : w))
+      // 定时任务只清「绑在这个工作区上」的那些；**没绑工作区的别动** —— 它们本来就不属于
+      // 任何项目（每次触发自建临时工作区），`ids.has(undefined)` 会永远是 false，但这里
+      // 显式判一下，免得将来有人把 `ids` 换成别的形状时把它们一起扫掉
+      d.taskTriggers = d.taskTriggers.filter((t) => !t.workspaceId || !ids.has(t.workspaceId))
+      // 插件偏好按 workspaceId 归集：**留着**，项目加回来时偏好（面板布局 / 上次选的页）
+      // 还在，才算「原样接回来」
+    })
+  }
+
+  /**
+   * 真删工作区 —— 级联删掉整棵子树，以及挂在它们下面的会话 / 定时任务 / 插件偏好。
+   *
+   * 只有两种情况走这里：① 移除的项目**本来就没有会话**（见 `deleteWorkspace`）；
+   * ② 调用方勾了「同时删除磁盘目录」，目录都没了，会话留着也打不开（`apps/server` 的
+   * `removeProject` 对勾选删磁盘的 worktree / 容器项目逐个调）。
+   */
+  purgeWorkspace(id: string): void {
     const ids = new Set(this.workspaceSubtree(id).map((w) => w.id))
     // 会话目录先删（趁工作区记录还在，store 才算出会话在项目里的位置）
     const doomed = this.store.snapshot().conversations.filter((c) => ids.has(c.workspaceId))
@@ -763,12 +856,7 @@ export class AgentDomain {
       d.workspaces = d.workspaces.filter((w) => !ids.has(w.id))
       // 工作区没了，它的会话也一并清掉（避免留下永远看不到的孤儿数据）
       d.conversations = d.conversations.filter((c) => !ids.has(c.workspaceId))
-      // 定时任务只清「绑在这个工作区上」的那些；**没绑工作区的别动** —— 它们本来就不属于
-      // 任何项目（每次触发自建临时工作区），`ids.has(undefined)` 会永远是 false，但这里
-      // 显式判一下，免得将来有人把 `ids` 换成别的形状时把它们一起扫掉
-      d.taskTriggers = d.taskTriggers.filter(
-        (t) => !t.workspaceId || !ids.has(t.workspaceId)
-      )
+      d.taskTriggers = d.taskTriggers.filter((t) => !t.workspaceId || !ids.has(t.workspaceId))
       // 插件偏好按 workspaceId 归集，项目没了它也就没意义了
       d.pluginSettings = Object.fromEntries(
         Object.entries(d.pluginSettings).filter(([wid]) => !ids.has(wid))
@@ -776,12 +864,18 @@ export class AgentDomain {
     })
   }
 
-  /** 目录是否在已登记的工作区之内（服务端所有文件访问的边界） */
+  /**
+   * 目录是否在已登记的工作区之内（服务端所有文件访问的边界）。
+   *
+   * 已移除的项目**不算**：移除就是收回访问权。软删期间从「历史会话」点开旧会话只能看
+   * 历史，工具会在这里被拒 —— 想继续用就先把项目加回来。
+   */
   findWorkspaceContaining(path: string): AgentWorkspace | undefined {
     const target = resolve(path)
     return this.store
       .snapshot()
-      .workspaces.find((w) => target === w.path || target.startsWith(`${w.path}\\`) || target.startsWith(`${w.path}/`))
+      .workspaces.filter((w) => !w.removedAt)
+      .find((w) => target === w.path || target.startsWith(`${w.path}\\`) || target.startsWith(`${w.path}/`))
   }
 
   // ---------- 笔记根目录（= 笔记文件接口的路径白名单） ----------

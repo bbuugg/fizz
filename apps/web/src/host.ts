@@ -137,8 +137,10 @@ export const webHost: AgentHost = {
       return Promise.resolve({ ok: false, error: '链接格式不合法' })
     }
   }
-  // 刻意不实现 pickLocalDirectory：浏览器碰不到本机文件系统，
+  // 刻意不实现 pickLocalDirectory / getPathForFile：浏览器碰不到本机文件系统，
   // 工作区目录只能通过「浏览服务端目录」弹窗（GET /api/fs/dirs）来选。
+  // 拖进来的 `File` 也已经被涂掉路径（`webkitRelativePath` 只是相对路径，而且指向
+  // **用户那台**机器，跟跑 Agent 的机器不是一回事）—— 所以侧栏没有「拖目录进来」这条路。
   //
   // 同样刻意不实现 pickLocalMarkdownFile / readLocalFile / writeLocalFile /
   // takePendingExternalFiles / onExternalFileOpen —— 「用本应用打开本机 .md 并保存回原处」

@@ -1,5 +1,5 @@
 /**
- * 项目管理工具组:列出 / 创建 / 打开 / 删除项目(工作区)与 worktree、给项目建会话、浏览磁盘目录。
+ * 项目管理工具组:列出 / 创建 / 打开 / 删除项目(工作区)与 worktree、浏览磁盘目录。
  *
  * 与 `tools.ts` 的工作区工具是两码事:那组绑定单个工作区根目录;这组操作的是
  * **项目清单本身**(跨工作区),所以不持 root,服务能力全部经 `deps` 注入 ——
@@ -18,10 +18,6 @@
  * - **定时任务的全部变更**（create / update / delete / setEnabled）与 `create_plugin` ——
  *   它们要么产出「以后会自动执行」的东西（到点无人值守跑 agent、插件下一轮起执行代码），
  *   要么能改掉 / 停掉已授权的自动执行，比建个目录危险得多（`list_task_triggers` 是只读，不拦）。
- *
- * `create_conversation` 是唯一的例外档位：**`confirm` 档也不弹**。它产出的是一个空会话
- * （不带消息、不动磁盘），用户看一眼侧栏就能删掉 —— 按「删除数据前要审批」的口径，
- * 它连「数据」都还没产生，够不上审批；但 `readonly` 仍然拒绝（它确实是变更）。
  */
 import { join, resolve } from 'node:path'
 import { tool, type ToolSet } from 'ai'
@@ -78,10 +74,6 @@ export interface ProjectToolsDeps extends MutationGuardDeps {
     isInsideProjectsRoot(path: string, root?: string): boolean
     listDirs(path?: string): Promise<ProjectDirsResult>
   }
-  /** 给项目建会话:只建**内置 Agent(内置)**会话,模型由注入方决定(见调用方注释) */
-  conversations: {
-    createConversation(input: ConversationCreateInput): Promise<ConversationCreateResult>
-  }
   /** 定时任务:创建 / 列出 / 改 / 删 / 启停(服务端实现见 lib/server/task-triggers.ts;模型绑定由注入方补) */
   triggers: {
     create(input: TaskTriggerCreateInput): Promise<TaskTriggerCreateResult>
@@ -101,21 +93,8 @@ export interface ProjectToolsDeps extends MutationGuardDeps {
   }
 }
 
-/** 「给某个项目建会话」的入参 / 出参(服务端实现见 lib/server/conversation-create.ts) */
-export interface ConversationCreateInput {
-  workspaceId: string
-  title?: string
-}
-
-export interface ConversationCreateResult {
-  id: string
-  title: string
-  workspaceId: string
-}
-
-/**
- * 「创建定时任务」入参:模型只决定**什么时候、干什么**,模型绑定由注入方补 ——
- * 触发会话要用的模型配置从当前这一轮继承(与 `create_conversation` 同法),不让模型自己挑。
+/** 「创建定时任务」入参:模型只决定**什么时候、干什么**,模型绑定由注入方补 ——
+ * 触发会话要用的模型配置从当前这一轮继承,不让模型自己挑。
  */
 export interface TaskTriggerCreateInput {
   workspaceId: string
@@ -204,13 +183,12 @@ export interface PluginCreateResult {
   source: string
 }
 
-/** 本组的工具名清单(前端动作解释器据此识别 open_project / create_project / create_conversation) */
+/** 本组的工具名清单(前端动作解释器据此识别 open_project / create_project) */
 export const PROJECT_TOOLS = [
   'list_projects',
   'list_dirs',
   'create_project',
   'open_project',
-  'create_conversation',
   'remove_project',
   'create_worktree',
   'remove_worktree',
@@ -425,51 +403,6 @@ export function buildProjectTools(deps: ProjectToolsDeps): ToolSet {
         const workspace = deps.domainApi.getWorkspace(workspaceId)
         if (!workspace) throw new Error(`项目不存在:${workspaceId}(用 list_projects 先拿清单)`)
         return JSON.stringify({ ok: true, workspace, note: '界面将切换到该项目' })
-      }
-    }),
-
-    create_conversation: tool({
-      description: tr(
-        '在某个项目下新建一个会话(不发送任何消息,界面会打开它等用户输入)。模型默认用当前对话正在用的那个;不要用它建 ACP 会话(那只能在界面的「新建会话」里选)。项目 id 来自 list_projects。',
-        'Create a conversation under a project (sends no message; the UI opens it and waits for the user). The model defaults to the one used by the current conversation; do not use this for ACP conversations (those can only be chosen via “New conversation” in the UI). Project ids come from list_projects.'
-      ),
-      inputSchema: z.object({
-        workspaceId: z.string().describe(tr('项目 id(list_projects 返回的 id)', 'Project id (as returned by list_projects)')),
-        title: z.string().optional().describe(tr('会话标题;缺省「新会话」', 'Conversation title; defaults to “New conversation”')),
-        prompt: z
-          .string()
-          .optional()
-          .describe(tr('要预填到新会话输入框里的提示词(纯 UI 行为:界面会打开那个会话并把这段文字灌进输入框等用户确认)。你打算在这个会话里接着做的事写在这里;缺省就只打开空会话', 'Prompt text to prefill in the new conversation (pure UI behavior: the UI opens it and puts this text in the composer for the user to confirm). Put what you plan to do next in that conversation here; omit it to just open an empty conversation'))
-      }),
-      execute: async ({ workspaceId, title, prompt }, options) => {
-        try {
-          const workspace = deps.domainApi.getWorkspace(workspaceId)
-          if (!workspace) throw new Error(`项目不存在:${workspaceId}(用 list_projects 先拿清单)`)
-          // 建空会话免审批(见文件头);needsConfirm=false 时只可能被 readonly 档拦下
-          const refused = await guardMutation(deps, {
-            needsConfirm: false,
-            denied: '会话未创建',
-            command: `在项目「${workspace.name}」下新建会话`,
-            toolCallId: options.toolCallId,
-            toolName: 'create_conversation'
-          })
-          if (refused) return refused
-          const conversation = await deps.conversations.createConversation({
-            workspaceId,
-            ...(title?.trim() ? { title: title.trim() } : {})
-          })
-          return JSON.stringify({
-            ok: true,
-            workspace: { id: workspace.id, name: workspace.name },
-            conversation,
-            // 提示词原样回传给前端动作解释器(lib/tool-actions.ts),只做输入框预填。
-            // ⚠️ 它**不进** createConversation 的入参 —— 那是纯 UI 行为,不该落进会话存储。
-            ...(prompt?.trim() ? { prompt: prompt.trim() } : {}),
-            note: prompt?.trim() ? '界面将打开这个新会话并把提示词填进输入框' : '界面将打开这个新会话'
-          })
-        } catch (err) {
-          rethrow(err)
-        }
       }
     }),
 

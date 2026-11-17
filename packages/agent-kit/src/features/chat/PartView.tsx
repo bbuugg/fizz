@@ -37,7 +37,10 @@ import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@fizz/agen
 import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { t } from '@fizz/i18n'
-import { FileDiffView, type DiffHunk } from '@fizz/agent-kit/features/git/FileDiffView'
+import { FileDiffView, DiffStat, type DiffHunk } from '@fizz/agent-kit/features/git/FileDiffView'
+import { useWorkspaceFileOpener } from '@fizz/agent-kit/features/files/open-file'
+import { workspaceRelativePath } from '@fizz/agent-kit/shared/lib/workspace-path'
+import { diffStat } from '@fizz/agent-kit/shared/lib/diff'
 import {
   ASK_FOLLOWUP_TOOL,
   isCommandRunning,
@@ -133,6 +136,8 @@ function ToolCallCard({
   type,
   state,
   detail,
+  detailAction,
+  detailExtra,
   status,
   onStop,
   live = true,
@@ -143,6 +148,10 @@ function ToolCallCard({
   state: ToolUIPart['state']
   /** 头部明细（命令 / 主入参）：截断显示在工具名后面，悬停出 Tooltip 看全文 */
   detail?: string
+  /** 明细可点时的动作（文件类工具：点开那个文件）；透传给头部，见 `ToolHeaderProps.detailAction` */
+  detailAction?: { label: string; run: () => void }
+  /** 明细后面的附加节点（`edit` / `write` 的 +N −M）；透传给头部，见 `ToolHeaderProps.detailExtra` */
+  detailExtra?: ReactNode
   /** 工具名右侧的运行态（子任务「运行中 · 正在读文件 · 已调用 N 个工具」） */
   status?: ReactNode
   /** 工具在飞（pending / 执行中）时给的停止回调，透传给头部那颗停止钮 */
@@ -192,6 +201,8 @@ function ToolCallCard({
         type={type}
         state={state}
         detail={detail}
+        detailAction={detailAction}
+        detailExtra={detailExtra}
         status={status}
         onStop={onStop}
         live={live}
@@ -243,6 +254,24 @@ function buildFileDiff(part: AgentMessagePart): {
     }
   }
   return null
+}
+
+/**
+ * 这张卡操作的是**哪个工作区文件**：内置 `read` / `write` / `edit` 的 `file_path`。
+ *
+ * 只认这三个工具：它们的明细位就是「对哪个文件干的」，点开那个文件是扫对话流时最自然的
+ * 下一步。`glob` / `grep` 的明细是**模式**（不是一个文件），`bash` 是命令 —— 都不该有
+ * 这颗入口。ACP 的外部 agent 也不认：它的入参字段名各家不同（`file_path` / `filePath` /
+ * 只有 `title`），猜错就会把「打开 A」做成「打开 B」。
+ *
+ * 返回值是**模型原样给的路径**（可能绝对、可能相对）—— 归一化成工作区相对路径是调用方
+ * （`detailActionFor`）与 `open()` 的事，这里只负责「有没有」。
+ */
+function fileTargetOf(part: AgentMessagePart): string | undefined {
+  if (part.type !== 'tool-call') return undefined
+  if (part.toolName !== 'read' && part.toolName !== 'write' && part.toolName !== 'edit') return undefined
+  const input = part.input as { file_path?: unknown } | undefined
+  return typeof input?.file_path === 'string' && input.file_path.trim() ? input.file_path : undefined
 }
 
 function DelegationRunning({ toolName, toolCount }: { toolName?: string; toolCount?: number }) {
@@ -751,6 +780,38 @@ function PartViewInner({
     toolCardHead(target, detail, showToolIntent)
   /** 「查看过程」的打开通道（由会话宿主 `ChatSurface` 提供；容器侧的片段渲染里是 null） */
   const openSubagent = useOpenSubagent()
+  /**
+   * 「点工具卡里的文件名 → 在右侧文件面板里打开」的宿主通道
+   * （由 `ChatPanel` 提供，见 `features/files/open-file.ts`）。
+   *
+   * 与 `openSubagent` 同一套：拿不到就**不做成可点**（容器工作台的片段渲染、项目管理
+   * 助手都没有文件面板），点了没反应比不能点更糟。
+   */
+  const fileOpener = useWorkspaceFileOpener()
+
+  /**
+   * 文件类工具的头部明细 → 可点动作（见 `ToolHeaderProps.detailAction`）。
+   *
+   * 三道闸：
+   * 1. 宿主通道在（会话视图里）；
+   * 2. 这张卡确实有目标文件（`fileTargetOf`）；
+   * 3. **头部明细以它收尾** —— 开着「工具意图」时明细是 `读取文件 · src/a.ts`，
+   *    只在末尾那截就是路径时才把这一行做成入口（否则连「读取文件」四个字都可点，
+   *    看起来像点工具名会跳文件，那是另一回事）；
+   * 4. 路径能落到工作区里（`workspaceRelativePath`）：ACP 的外部 agent 会读工作区之外的
+   *    配置文件，那种路径文件面板打不开，不如保持普通文字。
+   */
+  const detailActionFor = (
+    target: string | undefined,
+    detail: string | undefined
+  ): { label: string; run: () => void } | undefined => {
+    if (!fileOpener || !target || !detail || !detail.endsWith(target)) return undefined
+    if (!workspaceRelativePath(target, fileOpener.root)) return undefined
+    return {
+      label: t('在文件面板中打开 {path}', { path: target }),
+      run: () => fileOpener.open(target)
+    }
+  }
 
   if (part.type === 'text') {
     /*
@@ -1002,13 +1063,23 @@ function PartViewInner({
   // 展开出一片空白。
   if (acpDirect || fileDiff || builtinDirect) {
     const detail = fileDiff ? fileDiff.path : (acpDirect?.detail ?? builtinDirect?.detail)
+    const head = cardHead(part, detail)
+    // 改动量（`+N −M`）：只在有 diff 时给（`edit` / `write`），与内容区那份 diff 同源同口径
+    const stat = fileDiff ? diffStat(fileDiff.hunks) : null
     const hasBody = Boolean(isError || fileDiff || acpDirect?.content || builtinDirect?.content)
     return (
       <ToolCallCard
         type={`tool-${part.toolName}` as ToolUIPart['type']}
         state={state}
         live={turnLive}
-        {...cardHead(part, detail)}
+        {...head}
+        // 文件类工具（read / write / edit）：头部那截路径点一下就在右侧文件面板里打开它
+        detailAction={detailActionFor(fileTargetOf(part), head.detail)}
+        /*
+         * 改动量紧跟路径：「这一步改了多少」和「改的是哪个文件」是同一行的两个问题，
+         * 而数字要带颜色（绿加红减），所以不能拼进 `detail` 那串纯文本里。
+         */
+        detailExtra={stat ? <DiffStat adds={stat.adds} dels={stat.dels} /> : undefined}
         onStop={onStop}
       >
         {hasBody && (

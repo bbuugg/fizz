@@ -10,22 +10,27 @@
  */
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
-import type { DiffHunk } from '@fizz/agent-kit/shared/lib/diff'
+import { diffStat, type DiffHunk } from '@fizz/agent-kit/shared/lib/diff'
 
 /** `DiffHunk` 的定义搬到了 `lib/diff`（解析器和视图共用）；这里转出，保持老引用可用 */
 export type { DiffHunk }
 
-/** 统计 hunks 的增删行数（对比视图顶部 +N / −M 用） */
-function diffStat(hunks: DiffHunk[]): { adds: number; dels: number } {
-  let adds = 0
-  let dels = 0
-  for (const h of hunks) {
-    for (const l of h.lines) {
-      if (l.type === 'add') adds++
-      else if (l.type === 'del') dels++
-    }
-  }
-  return { adds, dels }
+/**
+ * `+N −M` 的增删计数（**唯一的配色 / 字形口径**）。
+ *
+ * 两处用：对比视图的文件头、工具卡头部（工具卡那截由 `PartView` 传进 `ToolHeader` 的
+ * `detailExtra`）。抽出来是为了两处永远长得一样 —— 同一个改动在两个地方显示不同颜色或
+ * 不同的减号，比不显示更让人犯嘀咕。
+ *
+ * 减号用 U+2212（`−`）而不是 ASCII `-`：等宽字体下它和 `+` 一样宽，数字不会左右跳。
+ */
+export function DiffStat({ adds, dels }: { adds: number; dels: number }) {
+  return (
+    <span className="shrink-0 tabular-nums">
+      <span className="text-emerald-500">+{adds}</span>{' '}
+      <span className="text-red-500">−{dels}</span>
+    </span>
+  )
 }
 
 export function FileDiffView({
@@ -55,9 +60,7 @@ export function FileDiffView({
           <span className="truncate" title={path}>
             {path}
           </span>
-          <span className="shrink-0 tabular-nums">
-            <span className="text-emerald-500">+{adds}</span> <span className="text-red-500">−{dels}</span>
-          </span>
+          <DiffStat adds={adds} dels={dels} />
         </div>
       )}
 

@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { JsonStore } from './store'
-import { AgentDomain } from './domain'
+import { AgentDomain, sameWorkspacePath } from './domain'
 
 let dataDir: string
 let store: JsonStore
@@ -128,6 +128,173 @@ describe('远端工作区登记', () => {
       ).rejects.toThrow('不能直接改成远端')
     } finally {
       await rm(localDir, { recursive: true, force: true })
+    }
+  })
+})
+
+/**
+ * 路径去重口径：防的是「同一个目录被登记成两行」。
+ *
+ * 拖拽进侧栏时系统给的是**真实大小写**，而历史登记可能来自手输；Windows / macOS 的
+ * 文件系统本身不区分大小写，字符串严格比较会在侧栏长出两个一模一样的项目。
+ * Linux 上则必须区分 —— 那两个是真目录。
+ */
+describe('工作区路径去重口径', () => {
+  /** 换平台口径跑：`sameWorkspacePath` 每次现读 `process.platform`，不在加载时固化 */
+  function asPlatform<T>(platform: NodeJS.Platform, run: () => T): T {
+    const original = process.platform
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true })
+    try {
+      return run()
+    } finally {
+      Object.defineProperty(process, 'platform', { value: original, configurable: true })
+    }
+  }
+
+  it('Windows / macOS 上大小写不同的同一路径算一个目录', () => {
+    expect(asPlatform('win32', () => sameWorkspacePath('D:\\Work\\Foo', 'd:\\work\\foo'))).toBe(
+      true
+    )
+    expect(asPlatform('darwin', () => sameWorkspacePath('/Users/Me/App', '/users/me/app'))).toBe(
+      true
+    )
+  })
+
+  it('Linux 上大小写不同就是两个目录，原样相等仍算一个', () => {
+    expect(asPlatform('linux', () => sameWorkspacePath('/srv/App', '/srv/app'))).toBe(false)
+    expect(asPlatform('linux', () => sameWorkspacePath('/srv/app', '/srv/app'))).toBe(true)
+  })
+
+  // 真实目录上的端到端确认（大小写不敏感的文件系统才跑得通，其它平台跳过：
+  // 在 Linux 上 `dir.toUpperCase()` 压根 stat 不到，测的就不是本意了）
+  it.skipIf(process.platform !== 'win32')('同一目录换个大小写登记不新增工作区', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fizz-case-'))
+    try {
+      const first = await domain.addWorkspace({ path: dir })
+      const again = await domain.addWorkspace({ path: dir.toUpperCase() })
+
+      expect(again.id).toBe(first.id)
+      expect(domain.listWorkspaces()).toHaveLength(1)
+    } finally {
+      // 会话目录是 store 异步落盘的，删到一半可能还在写 —— 重试几次再放弃
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+    }
+  })
+
+  // 重复登记不该把既有记录「改写成另一种大小写」：拖拽给的是文件系统真实大小写，
+  // 直接落盘会让侧栏的项目名从 `MyProject` 变成 `myproject`，看着像被改坏了
+  it.skipIf(process.platform !== 'win32')('重复登记同一目录时保留既有的路径写法与项目名', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fizz-name-'))
+    try {
+      const first = await domain.addWorkspace({ path: dir })
+      const again = await domain.addWorkspace({ path: dir.toUpperCase() })
+
+      expect(again.path).toBe(first.path)
+      expect(again.name).toBe(first.name)
+    } finally {
+      // 会话目录是 store 异步落盘的，删到一半可能还在写 —— 重试几次再放弃
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+    }
+  })
+})
+
+/**
+ * 「移除项目」只把它移出列表，不该连会话一起删。
+ *
+ * ## 防的是什么
+ *
+ * 会话文件写在 `<项目>/.fizz/conversation/<会话 id>/`，而工作区记录是启动扫盘的入口。
+ * 以前 `deleteWorkspace` 连记录带目录一起删 —— 用户「移除项目，过两天再加回来」等于把
+ * 聊天记录全丢了。现在移除是打 `removedAt` 标记，重新登记同一目录要能原样接上。
+ */
+describe('移除工作区与恢复', () => {
+  it('移除后会话还在；同一目录重新登记会复用记录、会话原样接上', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fizz-remove-'))
+    try {
+      const ws = await domain.addWorkspace({ path: dir })
+      const conv = domain.saveConversation({ workspaceId: ws.id, title: '旧对话' })
+
+      domain.deleteWorkspace(ws.id)
+
+      // 列表里没了，但记录还在（软删）—— 会话文件仍挂在它名下
+      expect(domain.listWorkspaces().some((w) => w.id === ws.id)).toBe(false)
+      expect(domain.getWorkspace(ws.id)?.removedAt).toBeTypeOf('number')
+      expect(domain.listConversations().some((c) => c.id === conv.id)).toBe(true)
+
+      // 「移除」也收回了访问权：文件工具不该还能在它下面读写
+      expect(domain.findWorkspaceContaining(join(dir, 'a.txt'))).toBeUndefined()
+
+      const again = await domain.addWorkspace({ path: dir })
+      expect(again.id).toBe(ws.id)
+      expect(again.removedAt).toBeUndefined()
+      expect(domain.listWorkspaces().some((w) => w.id === ws.id)).toBe(true)
+      expect(domain.findWorkspaceContaining(join(dir, 'a.txt'))?.id).toBe(ws.id)
+      expect(
+        domain.listConversations().filter((c) => c.workspaceId === again.id)
+      ).toHaveLength(1)
+    } finally {
+      // 会话目录是 store 异步落盘的，删到一半可能还在写 —— 重试几次再放弃
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+    }
+  })
+
+  it('移除时保留用户改过的项目名，不拿目录名覆盖', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fizz-rename-'))
+    try {
+      const ws = await domain.addWorkspace({ path: dir, name: '我的项目' })
+      domain.saveConversation({ workspaceId: ws.id, title: '对话' })
+      domain.deleteWorkspace(ws.id)
+
+      const again = await domain.addWorkspace({ path: dir })
+      expect(again.name).toBe('我的项目')
+    } finally {
+      // 会话目录是 store 异步落盘的，删到一半可能还在写 —— 重试几次再放弃
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+    }
+  })
+
+  it('按 id 重命名一个已移除的项目，不会把它放回列表', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fizz-hidden-'))
+    try {
+      const ws = await domain.addWorkspace({ path: dir })
+      domain.saveConversation({ workspaceId: ws.id, title: '对话' })
+      domain.deleteWorkspace(ws.id)
+
+      const renamed = await domain.addWorkspace({ id: ws.id, path: ws.path, name: '改个名' })
+
+      expect(renamed.name).toBe('改个名')
+      expect(renamed.removedAt).toBeTypeOf('number')
+      expect(domain.listWorkspaces().some((w) => w.id === ws.id)).toBe(false)
+    } finally {
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+    }
+  })
+
+  it('没有任何会话的项目移除时直接真删，不留永远回不来的空壳', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fizz-empty-'))
+    try {
+      const ws = await domain.addWorkspace({ path: dir })
+      domain.deleteWorkspace(ws.id)
+      expect(domain.getWorkspace(ws.id)).toBeUndefined()
+    } finally {
+      // 会话目录是 store 异步落盘的，删到一半可能还在写 —— 重试几次再放弃
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+    }
+  })
+
+  it('purgeWorkspace 仍然连会话一起删（勾了删磁盘走这条路）', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fizz-purge-'))
+    try {
+      const ws = await domain.addWorkspace({ path: dir })
+      const conv = domain.saveConversation({ workspaceId: ws.id, title: '对话' })
+
+      domain.purgeWorkspace(ws.id)
+
+      expect(domain.getWorkspace(ws.id)).toBeUndefined()
+      expect(domain.listConversations().some((c) => c.id === conv.id)).toBe(false)
+    } finally {
+      // 会话目录是 store 异步落盘的，删到一半可能还在写 —— 重试几次再放弃
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
     }
   })
 })

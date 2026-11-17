@@ -285,7 +285,9 @@ export type RemoveProjectInput = { deleteWorktree?: boolean }
 /**
  * 删除项目:**逐字搬自原 DELETE /api/workspaces/[id]** 的主体(三道闸语义不变)——
  * 1. 勾了删磁盘时,每个 worktree 项目过 dropWorktree 三道闸;
- * 2. 容器型项目先把容器停掉再删掉(见 `container-projects/purge.ts`),最后才摘记录。
+ * 2. 容器型项目先把容器停掉再删掉(见 `container-projects/purge.ts`);
+ * 3. 最后摘记录:默认**软删**(会话留着,同一目录加回来就还在),只有勾了删磁盘的
+ *    worktree / 容器项目才 `purgeWorkspace` 真删 —— 见 `domain.deleteWorkspace`。
  */
 export async function removeProject(id: string, input?: RemoveProjectInput): Promise<AgentWorkspace[]> {
   const workspace = domain.getWorkspace(id)
@@ -320,28 +322,44 @@ export async function removeProject(id: string, input?: RemoveProjectInput): Pro
     await purgeProjectContainers(ws.container.slug)
   }
 
-  // 删项目会**级联**删掉它下面的会话。会话没了，它名下那些后台命令就再没有能显示它的
-  // 容器了（面板按会话过滤），所以先发停止信号。与会话删除同一条口径：只发信号、
-  // 不等收场，杀不掉的进程由任务体自己收尾。
+  // 项目从列表里消失了（软删也算），它的会话就再没有入口了，先发停止信号把它们停掉。
+  // 与删会话同一条口径：只发信号、不等收场，杀不掉的进程由任务体自己收尾。
   const doomedWorkspaces = new Set(subtree.map((ws) => ws.id))
   const doomedConversations = domain
     .listConversations()
     .filter((conversation) => doomedWorkspaces.has(conversation.workspaceId))
   for (const conversation of doomedConversations) stopSessionRunning(conversation.id)
-  domain.deleteWorkspace(id)
+
   /*
-   * 这些会话的浏览器 profile 一并删掉（口径同 `api/conversations/[id]/route.ts` 的 DELETE）。
+   * 勾了「同时删除磁盘目录」的项目走**真删**：目录都没了，会话留着也打不开。
+   * 其余走 `deleteWorkspace` 的软删 —— 会话文件就写在项目目录里，磁盘还在就不该丢
+   * 聊天记录（理由见 `domain.deleteWorkspace` 的注释）。
    *
-   * 删项目是**唯一能一次带走很多会话**的入口，漏在这里就一次攒下一整棵子树的孤儿
-   * profile —— 每个都还带着 Cookie / 登录态。`purge` 自己吞异常，这里再 `allSettled`
-   * 一层：单个 profile 删不掉（Windows 文件占用）不该让项目删除失败。
+   * 先真删再软删：`purgeWorkspace` 会连子树一起摘掉，之后 `deleteWorkspace` 只处理
+   * 剩下那部分（根被真删时它算出的子树是空的，直接返回）。
+   */
+  const purgedIds = new Set(
+    options.deleteWorktree
+      ? subtree.filter((ws) => ws.isWorktree || ws.container?.slug).map((ws) => ws.id)
+      : []
+  )
+  for (const workspaceId of purgedIds) domain.purgeWorkspace(workspaceId)
+  domain.deleteWorkspace(id)
+
+  /*
+   * 只有**真删掉**的会话才清浏览器 profile（口径同 `api/conversations/[id]/route.ts` 的
+   * DELETE）。软删的项目会话还在，重新加回来还要接着用那些 Cookie / 登录态。
    *
-   * 并行是安全的：每个会话一份独立目录，互不重叠。
+   * 删项目是唯一能一次带走很多会话的入口，漏在这里就一次攒下一整棵子树的孤儿
+   * profile。`purge` 自己吞异常，这里再 `allSettled` 一层：单个 profile 删不掉
+   * （Windows 文件占用）不该让项目删除失败。并行是安全的：每个会话一份独立目录。
    */
   await Promise.allSettled(
-    doomedConversations.map((conversation) =>
-      browserSessions.purge(agentBrowserSessionId(conversation.id), '会话已删除')
-    )
+    doomedConversations
+      .filter((conversation) => purgedIds.has(conversation.workspaceId))
+      .map((conversation) =>
+        browserSessions.purge(agentBrowserSessionId(conversation.id), '会话已删除')
+      )
   )
   return domain.listWorkspaces()
 }

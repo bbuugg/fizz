@@ -69,11 +69,23 @@ function SelectContent({
   children,
   position = "item-aligned",
   align = "center",
+  /**
+   * 面板顶部的**固定区**（标题 + 一句说明），渲染在 Viewport 之外：
+   * 选项再多也只滚列表，头不跟着滚。
+   *
+   * 用在哪：权限选择那两颗 pill（`PermissionPill` / `AcpPermissionPill`）——
+   * 三档名字自解释不了「点下去到底放宽了什么」，头里那句说明是它们唯一的解释位。
+   * 普通 Select（设置页、表单）不要传，会白占一截高度。
+   */
+  header,
   onPointerDown,
   onPointerDownOutside,
   onCloseAutoFocus,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Content>) {
+}: React.ComponentProps<typeof SelectPrimitive.Content> & {
+  /** 面板顶部的固定区（见上）；不传 = 没有这一块 */
+  header?: React.ReactNode
+}) {
   // 指针关闭不回焦（否则触发器会被 :focus-visible 描成主色边框），见 focus-dismiss.ts
   const dismissFocus = useDismissFocusGuard()
   return (
@@ -108,10 +120,20 @@ function SelectContent({
         align={align}
         {...props}
       >
+        {header ? (
+          <div
+            data-slot="select-header"
+            className="border-b border-border px-4 pt-3.5 pb-3"
+          >
+            {header}
+          </div>
+        ) : null}
         <SelectScrollUpButton />
         <SelectPrimitive.Viewport
           className={cn(
-            "p-1",
+            // 有 header = 「富面板」（权限那两颗），内边距放宽一档：选中项的灰底要离面板
+            // 边缘留出气口，4px 会贴边显得像被裁掉。
+            header ? "p-2" : "p-1",
             position === "popper" &&
               // `min-h-` 而不是 `h-`：锁死成触发器高度的话，多出来的选项会溢出 Viewport
               // 却又不进 Content 的滚动区 —— 视觉上就是「只有第一项，其余看不见」
@@ -139,29 +161,76 @@ function SelectLabel({
   )
 }
 
+/**
+ * 选项。两种形态：
+ *
+ * - **一行**（缺省，shadcn 原样）：图标 / 文本一行放完，选中项右侧一枚勾。设置页、表单用这个。
+ * - **富行**（传了 `description`）：图标 + 标题 + 下方一句说明，整行更高，**选中态只靠
+ *   右侧那枚勾**，勾对齐标题那一行。权限那两颗 pill 用它 —— 三档名字（确认 / 只读 /
+ *   完全访问）自解释不了「点下去到底放宽了什么」，说明文字必须跟选项长在一起。
+ *
+ * 选中态**不铺底色**（两种形态一致）：底色是 hover / 键盘焦点的语言，被选中项再铺一层，
+ * 就分不清「我选的是哪个」和「光标停在哪」了（2026-11 用户明确要求去掉）。
+ * 两种形态共用同一份 Radix `Item`，所以键盘导航 / 选中语义完全一致；差别只在排版。
+ */
 function SelectItem({
   className,
   children,
+  description,
+  icon,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Item>) {
+}: React.ComponentProps<typeof SelectPrimitive.Item> & {
+  /** 第二行说明；传了就是「富行」形态（见上） */
+  description?: React.ReactNode
+  /** 富行左侧的图标（一行形态直接把图标塞进 children 即可） */
+  icon?: React.ReactNode
+}) {
+  const rich = description !== undefined
   return (
     <SelectPrimitive.Item
       data-slot="select-item"
       className={cn(
-        "relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 [&_svg:not([class*='text-'])]:text-muted-foreground *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2",
+        // `cursor-pointer` 而不是 shadcn 原样的 `cursor-default`：这一排 pill / 下拉里的
+        // 每一项都是「点一下就生效」的动作，鼠标移上去该给出可点的反馈（2026-11 用户要求）。
+        // 禁用项不受影响 —— 它们走 `data-[disabled]:pointer-events-none`，根本吃不到指针。
+        "relative flex w-full cursor-pointer text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 [&_svg:not([class*='text-'])]:text-muted-foreground",
+        rich
+          ? // 富行：勾改成绝对定位到右上，所以右侧留 pr-10。**选中不铺底色**（只有勾），
+            // 底色留给 hover / 键盘焦点 —— 两件事共用一个视觉就分不清「我选的」和「光标在哪」
+            "items-start gap-3 rounded-lg py-2.5 pr-10 pl-3 focus:bg-accent"
+          : // 一行：shadcn 原样，同样**不加**选中底色
+            "items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 focus:bg-accent focus:text-accent-foreground *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2",
         className
       )}
       {...props}
     >
       <span
         data-slot="select-item-indicator"
-        className="absolute right-2 flex size-3.5 items-center justify-center"
+        className={cn(
+          "absolute flex items-center justify-center",
+          // 富行的行高随说明文字变，勾钉在标题那一行的垂直中线上（pt-2.5 + 行高 20 的一半）
+          rich ? "top-3 right-3 size-4" : "right-2 size-3.5"
+        )}
       >
         <SelectPrimitive.ItemIndicator>
           <CheckIcon className="size-4" />
         </SelectPrimitive.ItemIndicator>
       </span>
-      <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+      {rich ? (
+        <SelectPrimitive.ItemText asChild>
+          <div className="flex min-w-0 flex-1 items-start gap-3">
+            {icon ? <span className="mt-px flex shrink-0 items-center">{icon}</span> : null}
+            <div className="min-w-0">
+              <div className="leading-5 font-medium">{children}</div>
+              <div className="mt-0.5 text-[13px] leading-5 text-muted-foreground">
+                {description}
+              </div>
+            </div>
+          </div>
+        </SelectPrimitive.ItemText>
+      ) : (
+        <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+      )}
     </SelectPrimitive.Item>
   )
 }

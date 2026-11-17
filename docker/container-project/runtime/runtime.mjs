@@ -3091,8 +3091,12 @@ var CHAT = {
 	"移除（还没生效：不再发给 agent，也不再发出去）": "Remove (not yet applied: it will not reach the agent or be sent)",
 	"移除这条插话": "Remove this note",
 	"权限答复：{label}": "Permission reply: {label}",
+	"权限答复": "Permission replies",
+	"外部 Agent 每次请求权限时怎么答复；按会话记住，换会话要重选。": "How to reply when the external agent requests permission; remembered per conversation, so pick it again in a new one.",
 	"确认（逐次询问）": "Confirm (ask every time)",
+	"每次请求权限都弹确认卡，由你决定是否允许。": "Every permission request shows a confirmation card for you to decide.",
 	"完全放行（不再询问）": "Allow all (never ask)",
+	"服务端直接替你答复「允许」，确认卡不再出现。": "The server answers “allow” on your behalf, so no confirmation card appears.",
 	"正在读取这个外部 Agent 的模式…": "Reading modes from the external agent…",
 	"切换权限档失败：{error}": "Failed to switch permission mode: {error}",
 	"未知错误": "Unknown error",
@@ -3236,6 +3240,7 @@ var CHAT = {
 	"{minutes} 分": "{minutes}m",
 	"完整内容": "Full content",
 	"这次调用的完整内容（列表里被截断了），可选中复制；点击内容会显示复制按钮。": "The full content of this call (truncated in the list). Select to copy, or tap the content to show the copy button.",
+	"在文件面板中打开 {path}": "Open {path} in the file panel",
 	"复制消息": "Copy message",
 	"从此签出：以这条消息为终点创建分支会话（历史到这里为止，两边各自独立）": "Fork from here: create a branch conversation ending at this message (history up to here; the two are independent)",
 	"从此签出": "Fork from here",
@@ -3306,6 +3311,7 @@ var CHAT = {
 	"跟随 agent 默认": "Follow agent default",
 	"还没有模型配置": "No model configs yet",
 	"还没有外部 Agent": "No external agents yet",
+	"远端工作区不能用外部 Agent（ACP）：它要在服务端本机起一个进程，够不到 SSH 主机上的目录。请用内置模型。": "External agents (ACP) are not available in a remote workspace: they run as a process on the server machine and cannot reach directories on the SSH host. Use a built-in model.",
 	"发送（本轮结束后自动执行）": "Send (runs automatically after this turn)",
 	"松开以添加附件": "Release to attach",
 	"停止录音": "Stop recording",
@@ -3565,6 +3571,10 @@ var NOTES = { "笔记": "Notes" };
 * key = 中文原文；未翻译的条目自动回落到中文。
 */
 var WORKSPACE = {
+	"松开鼠标，把这个目录添加为项目": "Release to add this folder as a project",
+	"已添加项目：{name}": "Project added: {name}",
+	"这个目录已经在项目里了": "This folder is already a project",
+	"只能拖入文件夹": "Only folders can be dropped here",
 	"已复制报错": "Build error copied",
 	"复制失败，请手动选择文本": "Copy failed; select the text and copy manually",
 	"构建中": "Building",
@@ -3870,11 +3880,11 @@ var WORKSPACE = {
 	"看内网地址": "View internal address",
 	"还没有连上服务端": "Not connected to the server yet",
 	"移除工作区？": "Remove workspace?",
-	"「{name}」及其全部会话都会被移除，它下面的 worktree 工作区、定时任务也会一起清掉；{files}": "“{name}” and all of its conversations will be removed, along with its worktree workspaces and scheduled tasks; {files}",
+	"「{name}」会从列表里移除，会话都留着 —— 把同一个目录重新加回来就能看到。它下面的 worktree 工作区会一起移出列表，定时任务会一起清掉；{files}": "“{name}” is removed from the list and its conversations are kept — add the same folder back and they reappear. Its worktree workspaces are removed from the list too, and its scheduled tasks are cleared; {files}",
 	"磁盘上的文件默认不会动。": "files on disk are left untouched by default.",
 	"磁盘上的文件不会动。": "files on disk are left untouched.",
 	"同时删除 git worktree": "Also delete the git worktree",
-	"连目录一起删掉（{path}），未提交的改动会丢；分支保留。": "Delete the directory too ({path}); uncommitted changes are lost, the branch is kept.",
+	"连目录一起删掉（{path}），未提交的改动会丢；分支保留。这个 worktree 的会话也会一起删掉 —— 目录没了就再也打不开。": "Delete the directory too ({path}); uncommitted changes are lost, the branch is kept. This worktree’s conversations are deleted as well — without the folder they cannot be opened again.",
 	"导入（{count}）": "Import ({count})",
 	"{name} 的 .worktree/ 目录：勾一个导入成这个项目下的工作区；已导入的可以移除。": "The .worktree/ directory of {name}: tick one to import it as a workspace of this project; imported ones can be removed.",
 	"正在扫描…": "Scanning…",
@@ -7291,11 +7301,18 @@ var BROWSER_PROMPT_SECTION = tr([
 	"- To see what the page looks like, use browser_snapshot (text snapshot); it is better than a screenshot for understanding structure."
 ].join("\n"));
 // packages/plugin/src/logger.ts
-/**
-* 极简 Logger：插件日志统一带 `[plugin:<路径>]` 前缀，路径是 Context 名字链路。
-*
-* 刻意不做日志级别过滤 —— 这一层只需要「谁的日志」可辨认，级别与落盘交给上层。
-*/
+var sink = null;
+/** 交给出口；出口自己坏了只吞掉，绝不让日志把业务带崩 */
+function forward(level, path, args) {
+	if (!sink) return;
+	try {
+		sink({
+			level,
+			path,
+			args
+		});
+	} catch {}
+}
 var Logger = class Logger {
 	label;
 	parent;
@@ -7307,17 +7324,21 @@ var Logger = class Logger {
 	path() {
 		return this.parent ? `${this.parent.path()}:${this.label}` : this.label;
 	}
+	/** 只进 console：排查用的细粒度流水，不该刷进界面日志面板 */
 	debug(...args) {
 		console.debug(`[plugin:${this.path()}]`, ...args);
 	}
 	info(...args) {
 		console.info(`[plugin:${this.path()}]`, ...args);
+		forward("info", this.path(), args);
 	}
 	warn(...args) {
 		console.warn(`[plugin:${this.path()}]`, ...args);
+		forward("warn", this.path(), args);
 	}
 	error(...args) {
 		console.error(`[plugin:${this.path()}]`, ...args);
+		forward("error", this.path(), args);
 	}
 	/** 派生子 logger（名字追加一层），如 `ctx.logger.extend('mcp')` */
 	extend(label) {

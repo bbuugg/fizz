@@ -2,14 +2,18 @@
  * 「移除工作区」二次确认弹窗（侧栏行尾垃圾桶 + 设置 →「工作区」+ 「管理工作区」弹窗共用一份）。
  *
  * 为什么不跟列表里其它删除一样用「点两次就地确认」（模型 / MCP / 会话仍是那套手感）：
- * 删工作区在服务端是**级联删除** —— `domain.deleteWorkspace` 会把它**整棵 worktree 子树**
- * 连同下面所有会话 / 定时任务 / 流程一起清掉（工作区没了，这些就成了永远看不到的
- * 孤儿数据），破坏面比删单个条目大得多。所以这里用独立弹窗把「连带删什么、什么不会动」
- * 写清楚，而不是只让按钮变个色。
+ * 删工作区会带走**整棵 worktree 子树**和它们的定时任务，破坏面比删单个条目大得多。所以
+ * 这里用独立弹窗把「连带动什么、什么不会动」写清楚，而不是只让按钮变个色。
  *
- * 对 worktree 项目多一个「同时删除 git worktree」复选：默认不勾（只摘记录，磁盘不动），
+ * **会话不再删**（`domain.deleteWorkspace` 只是打 `removedAt` 把它移出列表）：会话文件
+ * 就写在项目目录里，以前连文件一起删，用户「移除再重新加回来」等于把聊天记录全丢了。
+ * 现在重新登记同一个目录，`addWorkspace` 会命中既有记录、清掉标记，会话原样回来 ——
+ * 文案必须如实这么说，否则用户不敢点。
+ *
+ * 对 worktree 项目多一个「同时删除 git worktree」复选：默认不勾（只移出列表，磁盘不动），
  * 勾上则服务端跑 `git worktree remove --force` 把 `<项目>/.worktree/<标识>` 目录删掉。
- * 分支不删 —— 改动提交还找得回来，用户后悔了能重新挂上。
+ * 分支不删 —— 改动提交还找得回来，用户后悔了能重新挂上。这种**目录真的没了**的情况走
+ * `purgeWorkspace` 真删，会话也随之消失（留着也打不开）。
  */
 import { useState } from 'react'
 import { Button } from '@fizz/ui/button'
@@ -60,7 +64,7 @@ export function WorkspaceDeleteDialog({
         <DialogHeader>
           <DialogTitle>{tr('移除工作区？')}</DialogTitle>
           <DialogDescription>
-            {tr('「{name}」及其全部会话都会被移除，它下面的 worktree 工作区、定时任务也会一起清掉；{files}', {
+            {tr('「{name}」会从列表里移除，会话都留着 —— 把同一个目录重新加回来就能看到。它下面的 worktree 工作区会一起移出列表，定时任务会一起清掉；{files}', {
               name: workspace?.name ?? '',
               files: canDeleteWorktree ? tr('磁盘上的文件默认不会动。') : tr('磁盘上的文件不会动。')
             })}
@@ -77,7 +81,9 @@ export function WorkspaceDeleteDialog({
             <span>
               <span className="block font-medium">{tr('同时删除 git worktree')}</span>
               <span className="block text-muted-foreground">
-                {tr('连目录一起删掉（{path}），未提交的改动会丢；分支保留。', { path: workspace?.path ?? '' })}
+                {tr('连目录一起删掉（{path}），未提交的改动会丢；分支保留。这个 worktree 的会话也会一起删掉 —— 目录没了就再也打不开。', {
+                  path: workspace?.path ?? ''
+                })}
               </span>
             </span>
           </label>

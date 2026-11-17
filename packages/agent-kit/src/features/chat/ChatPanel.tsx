@@ -29,14 +29,18 @@
  * （见 `EditMessageBar` 与 `MessageList` 的 `editingMessageId`）。
  */
 import { MessageSquare, Unplug } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ChatSurface, CopyOnlyActions } from "@fizz/agent-kit/features/chat/chat-surface";
 import { ConvertAcpDialog } from "@fizz/agent-kit/features/chat/ConvertAcpDialog";
 import { ForkDialog } from "@fizz/agent-kit/features/chat/ForkDialog";
 import { MessageActionRow } from "@fizz/agent-kit/features/chat/message-parts";
 import { MessageQuoteLayer } from "@fizz/agent-kit/features/chat/quotes";
-import { requestOpenWorkspaceFile } from "@fizz/agent-kit/features/files/open-file";
+import {
+  requestOpenWorkspaceFile,
+  type WorkspaceFileOpener,
+} from "@fizz/agent-kit/features/files/open-file";
+import { workspaceRelativePath } from "@fizz/agent-kit/shared/lib/workspace-path";
 import { ArtifactChips } from "@fizz/agent-kit/shared/ai-elements/artifact-chips";
 import { useConfirm } from "@fizz/agent-kit/shared/components/ConfirmProvider";
 import {
@@ -175,6 +179,52 @@ function ChatPanelInner({
    * 却什么都没发生）。
    */
   const { showSideTabOf } = useAppContext();
+
+  /**
+   * 工具卡里「点文件名 → 在右侧文件面板里打开」的宿主通道（见 `features/files/open-file.ts`）。
+   *
+   * 工具卡在消息流深处（`PartView`），既不知道自己在哪个面板、也不知道会话属于哪个工作区，
+   * 所以由这里现算好递下去。**工作区按会话自己的 `workspaceId` 取**，不是全局的
+   * `activeWorkspaceId` —— 分屏下两个标签可能来自不同工作区，用全局那个会把文件开到
+   * 别人的工作区里去。
+   *
+   * ⚠️ 值必须**引用稳定**：它是 context，一变整列 memo 过的 `PartView` 都会白重渲
+   * （流式期间每来一帧一次）。所以工作区那两项走 ref 现读，回调只依赖 `panelKey`。
+   */
+  const fileTargetRef = useRef({ workspaceId: "", root: "" });
+  const conversationWorkspace = app.workspaces.find(
+    (w) =>
+      w.id ===
+      (app.conversations.find((c) => c.id === app.activeConversationId)
+        ?.workspaceId ?? app.activeWorkspaceId)
+  );
+  const fileWorkspaceId = conversationWorkspace?.id ?? "";
+  const fileWorkspaceRoot = conversationWorkspace?.path ?? "";
+  // 渲染期写 ref 不触发重渲染，也不影响本次渲染（与 `ConversationTab` 里那几处守卫同一做法）
+  fileTargetRef.current = { workspaceId: fileWorkspaceId, root: fileWorkspaceRoot };
+
+  const openWorkspaceFile = useCallback(
+    (path: string) => {
+      const { workspaceId, root } = fileTargetRef.current;
+      const rel = workspaceRelativePath(path, root);
+      if (!workspaceId || !rel) return;
+      showSideTabOf(panelKey, "files");
+      requestOpenWorkspaceFile(workspaceId, rel);
+    },
+    [panelKey, showSideTabOf]
+  );
+
+  /**
+   * 没有工作区目录（「任务」这类虚拟工作区）时给 `null`：文件面板压根挂不出来，
+   * 让工具卡把路径做成可点等于「点了没反应」，不如保持普通文字。
+   */
+  const workspaceFileOpener = useMemo<WorkspaceFileOpener | null>(
+    () =>
+      fileWorkspaceId && fileWorkspaceRoot
+        ? { root: fileWorkspaceRoot, open: openWorkspaceFile }
+        : null,
+    [fileWorkspaceId, fileWorkspaceRoot, openWorkspaceFile]
+  );
 
   /**
    * 待发送附件 + 上传源：整套状态与上传逻辑由 `useAttachmentDraft` 持有 —— 初始页
@@ -681,6 +731,8 @@ function ChatPanelInner({
             ? { ...composer, mentionCandidates }
             : composer
         }
+        /* 工具卡里的文件名点开 → 右侧「文件」面板（见上面 workspaceFileOpener） */
+        fileOpener={workspaceFileOpener}
       />
       {/* 消息区划选 → 浮出「引用」按钮。浮层自挂 body（fixed），放在渲染树哪一层都行 */}
       <MessageQuoteLayer onQuote={(q) => setQuotes((prev) => [...prev, q])} />

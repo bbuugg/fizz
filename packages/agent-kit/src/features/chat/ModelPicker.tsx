@@ -25,6 +25,9 @@
  * - acp 会话：只显示绑定的那个 agent 的模型（AI 模型组、其它 agent 一概不出）；
  * - 内置会话 / 定时任务：ACP 组由 `showAcp` 决定；
  * - 没有会话（空态）：两组全量可选。
+ *
+ * 唯一的例外是**远端工作区**：ACP 组留着标题与一行说明，但整组不可选
+ * （`acpDisabledReason`）—— 外部 agent 是服务端本机 spawn 的进程，够不到 SSH 主机上的目录。
  */
 import { Check, Settings, Sparkles } from 'lucide-react'
 import type { ReactNode } from 'react'
@@ -104,6 +107,17 @@ export interface ModelPickerProps {
   lockedAgent?: AcpAgentView
   /** 是否显示「外部 Agent（ACP）」分组：已有 内置会话时为 false（换类型 = 新建会话） */
   showAcp?: boolean
+  /**
+   * 非空 = **外部 Agent（ACP）这一组整组不可选**，组内只留这一行说明（远端工作区）。
+   *
+   * 为什么不直接 `showAcp={false}`：整组凭空消失，用户只会以为是自己没配好；而
+   * 分组标题行上还挂着设置齿轮（配置入口），留着它 + 一句「为什么不能选」才解释得通。
+   *
+   * 判据在调用方（`ModelSelect` 看当前工作区是不是远端）：ACP 要 `spawn` 一个**本机**
+   * 进程、cwd 就是工作区目录，远端目录在 SSH 主机上够不着 —— 服务端建会话时也按同一条
+   * 判据拒掉（见 `apps/server/src/api/conversations/route.ts`）。
+   */
+  acpDisabledReason?: string
   /** 触发器上是否带「配置名 · 」前缀（默认不带，只有模型名 —— 位置窄） */
   showProvider?: boolean
   /** 还没选 / 目标失效时触发器上的文案 */
@@ -126,6 +140,7 @@ export function ModelPicker({
   onChange,
   lockedAgent,
   showAcp = true,
+  acpDisabledReason,
   showProvider = false,
   emptyLabel,
   emptyTitle,
@@ -308,7 +323,14 @@ export function ModelPicker({
             {showAcp && (
               <>
                 {renderSectionLabel(t('外部 Agent（ACP）'), 'acp')}
-                {acpAgents.length === 0 ? (
+                {acpDisabledReason ? (
+                  /* 整组不可选（远端工作区）：只留说明。用 div 而不是 disabled 的
+                     DropdownMenuItem —— 那句话比「还没有外部 Agent」长得多，菜单项是
+                     不换行的一行 flex，会被 `overflow-x-hidden` 直接裁掉 */
+                  <div className="px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
+                    {acpDisabledReason}
+                  </div>
+                ) : acpAgents.length === 0 ? (
                   <DropdownMenuItem disabled className="text-xs text-muted-foreground">
                     {t('还没有外部 Agent')}
                   </DropdownMenuItem>

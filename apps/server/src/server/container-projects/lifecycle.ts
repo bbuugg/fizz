@@ -650,7 +650,10 @@ async function doStart(ws: AgentWorkspace): Promise<StartResult> {
      * 就是一个**没有记录、界面上看不见**的孤儿容器（只能靠下次启动的清扫）。所以建完立刻
      * 核对记录还在不在；不在就把刚起来的收掉，别留一份占端口的垃圾。
      */
-    if (!domain.getWorkspace(ws.id)?.container) {
+    // 软删（用户移除了这个项目）同样算「记录不该再拉起容器」：记录还留在数据文件里
+    // 是为了保住会话，不是为了让它在后台继续跑
+    const live = domain.getWorkspace(ws.id)
+    if (!live?.container || live.removedAt) {
       await stopContainer(name).catch(() => undefined)
       await removeContainer(name)
       clearLive(slug)

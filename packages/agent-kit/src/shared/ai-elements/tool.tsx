@@ -81,6 +81,30 @@ export type ToolHeaderProps = {
    */
   detail?: string;
   /**
+   * 明细**可点**时给的动作用（现在只有一种：文件类工具点开那个文件）。
+   *
+   * 为什么值得做：`read` / `write` / `edit` 的明细就是被操作的那个文件，而「看一眼它现在
+   * 长什么样」是扫对话流时最常见的下一步 —— 让用户自己去右侧文件树里一层层找，等于把
+   * 这条信息白给了。
+   *
+   * 只有**明细整段就是那个目标**（或以目标收尾，见 `PartView` 的 `endsWith` 判据）时才传：
+   * 明细是「命令 / 搜索词 / prompt」时不该有这颗入口。
+   *
+   * ⚠️ 点它必须 `stopPropagation` —— 外层是 `CollapsibleTrigger`，不拦就把卡片开合了一次
+   * （同一个坑见 `onStop` 的说明）。
+   */
+  detailAction?: { label: string; run: () => void };
+  /**
+   * 明细**后面**再挂一小段内容（现在只有一种：`edit` / `write` 的 `+N −M` 增删行数）。
+   *
+   * 为什么不让调用方把它拼进 `detail` 字符串：那几个数字要**带颜色**（绿 + / 红 −），
+   * 而 `detail` 是一整段纯文本（还要进 Tooltip / 全文弹窗）。挂成独立节点，颜色与
+   * `tabular-nums` 都归它自己，明细的截断 / 让位规则一点不受影响。
+   *
+   * 宽度：渲染方自己带 `shrink-0` —— 这几个字符比被截断的路径值钱得多，窄屏上先压路径。
+   */
+  detailExtra?: ReactNode;
+  /**
    * 工具名右侧的**运行态**（子任务的「运行中 · 正在读文件 · 已调用 N 个工具」等）。
    *
    * 运行态要一眼可见，不该被挤到卡片内容区里当正文。
@@ -299,14 +323,62 @@ function DetailDialog({
  *
  * 抽成组件是因为触屏与桌面两条分支渲染的是同一对文本，只是外层交互不同
  * （点开弹窗 / 悬停 Tooltip）。
+ *
+ * 明细还可以**可点**（`detailAction`）：文件类工具的明细就是它读 / 写 / 改的那个文件，
+ * 点一下在右侧「文件」面板里打开它。只换外层元素（`span[role=button]`），截断与让位
+ * 规则一字不改 —— 所以可点与不可点的明细在同一行里长得一样宽。
  */
-function ToolHeadLabel({ titleText, detail }: { titleText: string; detail?: string }) {
+function ToolHeadLabel({
+  titleText,
+  detail,
+  detailAction,
+  extra,
+}: {
+  titleText: string;
+  detail?: string;
+  /** 明细可点时的动作（见 `ToolHeaderProps.detailAction`）；不传就是普通文字 */
+  detailAction?: { label: string; run: () => void };
+  /** 明细后面的附加节点（增删行数，见 `ToolHeaderProps.detailExtra`） */
+  extra?: ReactNode;
+}) {
   return (
     <>
       <span className="min-w-0 truncate text-sm">{titleText}</span>
       {detail ? (
-        <span className="min-w-0 shrink-[99] truncate font-mono text-xs">{detail}</span>
+        detailAction ? (
+          /*
+           * 可点的明细：语义上是颗按钮，但**不能**用 `<button>` —— 它坐在
+           * `CollapsibleTrigger`（本身就是 `<button>`）里面，嵌套按钮是非法 HTML，
+           * 浏览器会把内层悄悄提出去（同一个坑见 `ToolHeadLabel` 的触屏分支）。
+           *
+           * 拦冒泡：不拦的话点这一下会先把卡片开合一次（外层触发器把点击当成了自己）。
+           */
+          <span
+            role="button"
+            tabIndex={0}
+            aria-label={detailAction.label}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              detailAction.run();
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              event.stopPropagation();
+              detailAction.run();
+            }}
+            // 悬停才出下划线：路径满屏都是，常态带下划线会把这一行读成一排链接
+            className="min-w-0 shrink-[99] cursor-pointer truncate font-mono text-xs transition-colors hover:text-foreground hover:underline focus-visible:text-foreground focus-visible:underline focus-visible:outline-none"
+          >
+            {detail}
+          </span>
+        ) : (
+          <span className="min-w-0 shrink-[99] truncate font-mono text-xs">{detail}</span>
+        )
       ) : null}
+      {/* 增删行数这类「小结论」跟在明细后面：它不带截断、也不参与让位（`shrink-0` 由渲染方给） */}
+      {extra ?? null}
     </>
   );
 }
@@ -369,6 +441,8 @@ export const ToolHeader = ({
   type,
   state,
   detail,
+  detailAction,
+  detailExtra,
   status,
   onStop,
   stopLabel,
@@ -442,6 +516,8 @@ export const ToolHeader = ({
         {titleOpenable ? (
           // 触屏：没有 hover，点名字（或明细）开全文弹窗 —— 弹窗里标题与明细都在。
           // 阻止冒泡，否则会同时触发卡片展开 / 收起。
+          // 明细自己可点（`detailAction`）时它先拦下这一下，于是点路径是「打开那个文件」，
+          // 点标题仍是全文弹窗 —— 两者不冲突。
           <span
             role="button"
             tabIndex={0}
@@ -459,14 +535,24 @@ export const ToolHeader = ({
             }}
             className="flex min-w-0 max-w-full cursor-pointer items-center gap-2 transition-colors hover:text-foreground"
           >
-            <ToolHeadLabel titleText={titleText} detail={detail} />
+            <ToolHeadLabel
+              titleText={titleText}
+              detail={detail}
+              detailAction={detailAction}
+              extra={detailExtra}
+            />
           </span>
         ) : (
           <Tooltip delayDuration={100}>
             <TooltipTrigger asChild>
               {/* 名字与明细一起做触发区：被截断的往往是明细，悬停它同样该出全文 */}
               <span className="flex min-w-0 max-w-full items-center gap-2">
-                <ToolHeadLabel titleText={titleText} detail={detail} />
+                <ToolHeadLabel
+                  titleText={titleText}
+                  detail={detail}
+                  detailAction={detailAction}
+                  extra={detailExtra}
+                />
               </span>
             </TooltipTrigger>
             {/* 明细与标题同一个 Tooltip：悬停就能同时看到「这一步干什么 + 具体命令 / 路径」 */}

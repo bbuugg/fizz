@@ -1,5 +1,14 @@
 /**
- * 「在文件面板里打开某个文件」的跨组件请求。
+ * 「在文件面板里打开某个文件」的两条通路。
+ *
+ * - **请求**（`requestOpenWorkspaceFile` / `useOpenFileRequest`）：先存后取，给「发起方
+ *   知道是哪个工作区、但面板可能还没挂出来」的场景用（消息下方的文档入口）；
+ * - **宿主通道**（`WorkspaceFileOpenerProvider` / `useWorkspaceFileOpener`）：由会话宿主
+ *   递下去一个「怎么打开」的回调，给「发起方在消息流深处、不知道自己在哪个面板」的场景用
+ *   （工具卡里那颗文件名，见 `PartView`）。
+ *
+ * 两者不合并：前者的调用方本来就知道 `workspaceId`，后者得由宿主现算（会话 → 工作区 →
+ * 面板 key），硬塞进同一个 API 只会让调用方各自重复算一遍。
  *
  * ## 为什么需要它（两个方案都不行的理由）
  *
@@ -18,7 +27,7 @@
  * 各会话各挂一套面板（面板常驻、工作区不中途变），同时活着的可能不止一套。带上归属，
  * 每套面板只认自己那一个工作区的请求 —— 否则点会话 A 的文档，会话 B 的面板也会去开。
  */
-import { useSyncExternalStore } from 'react'
+import { createContext, useContext, useSyncExternalStore } from 'react'
 
 export interface OpenFileRequest {
   /** 目标文件所属工作区（`FilesPanel` 只认自己那一个） */
@@ -69,4 +78,44 @@ export function useOpenFileRequest(): OpenFileRequest | null {
     () => current,
     () => null
   )
+}
+
+// ---------- 宿主通道：工具卡里「点文件名 → 打开」 ----------
+
+/**
+ * 「把这个文件打开到右侧文件面板」的宿主能力。
+ *
+ * 由会话宿主（`ChatPanel`）经 context 递下去：只有它同时知道**这个标签的面板 key**与
+ * **会话所属的工作区**，而发起方（`PartView` 的工具卡）在消息流深处，两者都拿不到。
+ */
+export interface WorkspaceFileOpener {
+  /**
+   * 工作区根目录的**绝对路径**（`''` = 不知道根）。
+   *
+   * 给调用方判「这个路径能不能落到工作区里」用：工具入参里的 `file_path` 可能是绝对路径，
+   * 只有先削掉这个前缀才是文件面板要的相对路径（见 `shared/lib/workspace-path.ts`）。
+   */
+  root: string
+  /**
+   * 在右侧「文件」面板里打开这个文件。
+   *
+   * 入参可以是绝对路径，也可以是工作区相对路径 —— 归一化在这里面做（调用方不必先算一遍）。
+   * 工作区外 / 没有工作区目录时是空操作。
+   */
+  open: (path: string) => void
+}
+
+const WorkspaceFileOpenerContext = createContext<WorkspaceFileOpener | null>(null)
+
+export const WorkspaceFileOpenerProvider = WorkspaceFileOpenerContext.Provider
+
+/**
+ * 取「打开文件」的宿主能力；不在会话宿主里（容器工作台的片段渲染、项目管理助手）时是
+ * `null` —— 调用方据此**不做成可点**，而不是点了没反应。
+ *
+ * ⚠️ 宿主必须保证这个值是**引用稳定**的：它是 context，一变整列 memo 过的 `PartView`
+ * 都会白重渲（流式期间每来一帧一次）。
+ */
+export function useWorkspaceFileOpener(): WorkspaceFileOpener | null {
+  return useContext(WorkspaceFileOpenerContext)
 }

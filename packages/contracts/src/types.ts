@@ -843,6 +843,17 @@ export interface AgentWorkspace {
    * 漏了会把远端工作区静默降级成本地工作区（症状：工具开始操作本机同名路径）。
    */
   remote?: RemoteWorkspaceRef
+  /**
+   * 有值 = 用户**移除**了这个项目（纪录还在，只是不再出现在列表里）。
+   *
+   * 为什么要留这一层：会话文件就写在 `<项目>/.fizz/conversation/` 里，项目记录一删，
+   * 启动时扫盘就再也找不到它们 —— 用户「移除项目再加回来」就等于把会话全删了。
+   * 现在移除只是打这个标记，`listWorkspaces` 把它滤掉；重新登记同一目录时
+   * `addWorkspace` 命中既有记录、清掉标记，会话原样回来。
+   *
+   * 没有会话的项目走 `purgeWorkspace` 真删 —— 不留永远回不来的空壳记录。
+   */
+  removedAt?: number
   createdAt: number
   updatedAt: number
 }

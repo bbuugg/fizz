@@ -67,6 +67,25 @@ export function parseUnifiedDiff(text: string): DiffHunk[] {
  */
 const MIN_LCS_COST = 2_000_000
 
+/**
+ * 统计一组 hunk 的增删行数（`+N / −M`）。
+ *
+ * 两处用：对比视图顶部的计数（`FileDiffView`）与工具卡头部的计数（`PartView` 传给
+ * `ToolHeader` 的 `detailExtra`）——**必须是同一个口径**，否则同一处改动在两个地方显示
+ * 不同的数字。只数 `add` / `del`，`context` 行两边都不算。
+ */
+export function diffStat(hunks: DiffHunk[]): { adds: number; dels: number } {
+  let adds = 0
+  let dels = 0
+  for (const h of hunks) {
+    for (const l of h.lines) {
+      if (l.type === 'add') adds++
+      else if (l.type === 'del') dels++
+    }
+  }
+  return { adds, dels }
+}
+
 export function diffLines(before: string, after: string): DiffLine[] {
   const a = before.split('\n')
   const b = after.split('\n')

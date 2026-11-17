@@ -930,9 +930,12 @@ export function createApi(
         },
       ),
     /**
-     * 移除工作区（连它的全部会话一起清掉）。
-     * `options.deleteWorktree` 勾上时，服务端会连磁盘上的 git worktree 目录一起删
-     * （分支保留）；默认只摘记录、不碰磁盘。
+     * 移除工作区（**会话保留**）。
+     *
+     * 服务端只是给它打上 `removedAt` 移出列表，会话文件仍在项目目录里；重新登记同一个
+     * 目录时会复用这条记录，会话原样回来。`options.deleteWorktree` 勾上时服务端会连磁盘
+     * 上的 git worktree 目录一起删（分支保留）—— 那种情况才连会话一起清掉，因为目录没了
+     * 也打不开。
      */
     deleteWorkspace: (id: string, options?: WorkspaceDeleteInput) =>
       request<AgentWorkspace[]>(`${API_ROUTES.workspaces}/${id}`, {

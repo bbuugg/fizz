@@ -4,6 +4,10 @@
  * key = 中文原文；未翻译的条目自动回落到中文。
  */
 export const WORKSPACE: Record<string, string> = {
+  '松开鼠标，把这个目录添加为项目': 'Release to add this folder as a project',
+  '已添加项目：{name}': 'Project added: {name}',
+  '这个目录已经在项目里了': 'This folder is already a project',
+  '只能拖入文件夹': 'Only folders can be dropped here',
   '已复制报错': 'Build error copied',
   '复制失败，请手动选择文本': 'Copy failed; select the text and copy manually',
   '构建中': 'Building',
@@ -314,11 +318,11 @@ export const WORKSPACE: Record<string, string> = {
   '看内网地址': 'View internal address',
   '还没有连上服务端': 'Not connected to the server yet',
   '移除工作区？': 'Remove workspace?',
-  '「{name}」及其全部会话都会被移除，它下面的 worktree 工作区、定时任务也会一起清掉；{files}': '“{name}” and all of its conversations will be removed, along with its worktree workspaces and scheduled tasks; {files}',
+  '「{name}」会从列表里移除，会话都留着 —— 把同一个目录重新加回来就能看到。它下面的 worktree 工作区会一起移出列表，定时任务会一起清掉；{files}': '“{name}” is removed from the list and its conversations are kept — add the same folder back and they reappear. Its worktree workspaces are removed from the list too, and its scheduled tasks are cleared; {files}',
   '磁盘上的文件默认不会动。': 'files on disk are left untouched by default.',
   '磁盘上的文件不会动。': 'files on disk are left untouched.',
   '同时删除 git worktree': 'Also delete the git worktree',
-  '连目录一起删掉（{path}），未提交的改动会丢；分支保留。': 'Delete the directory too ({path}); uncommitted changes are lost, the branch is kept.',
+  '连目录一起删掉（{path}），未提交的改动会丢；分支保留。这个 worktree 的会话也会一起删掉 —— 目录没了就再也打不开。': 'Delete the directory too ({path}); uncommitted changes are lost, the branch is kept. This worktree’s conversations are deleted as well — without the folder they cannot be opened again.',
   '导入（{count}）': 'Import ({count})',
   '{name} 的 .worktree/ 目录：勾一个导入成这个项目下的工作区；已导入的可以移除。': 'The .worktree/ directory of {name}: tick one to import it as a workspace of this project; imported ones can be removed.',
   '正在扫描…': 'Scanning…',

@@ -853,6 +853,14 @@ export const desktopHost: AgentHost = {
    */
   pickLocalDirectory: () => window.fizzHost.pickDirectory(),
   /**
+   * 拖拽落点取本机路径：Electron 32+ 起 `File.path` 已被移除，只能在 preload 里问
+   * `webUtils.getPathForFile`（沙箱 preload 白名单模块，不经主进程）。
+   *
+   * 侧栏据此把「拖进来的目录」直接登记成项目；判据是「这个方法在不在」，
+   * 所以 web / mobile 不实现它就自动没有这条路。
+   */
+  getPathForFile: (file) => window.fizzHost.getPathForFile(file),
+  /**
    * 外部 Markdown 文件（双击系统里的 `.md` 用本应用打开）。
    *
    * 读 / 写走主进程，且**只认被授权过的路径**（对话框选中的、或系统交来的）——

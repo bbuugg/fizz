@@ -198,6 +198,18 @@ export interface WsClosedEvent {
   reason?: string
 }
 
+// ---------- 拖拽进窗口的文件 ----------
+
+/**
+ * 渲染端 drop 进来的一个文件 / 目录。
+ *
+ * 刻意只声明 `name`：`File` 是 DOM 类型，而本文件给**主进程**也编（`lib` 里没有 DOM）。
+ * 运行时必须是 `dataTransfer.files` 里的真实 `File` 实例 —— `webUtils.getPathForFile` 只认它。
+ */
+export interface DroppedFile {
+  readonly name: string
+}
+
 /** 渲染端能用的桌面桥（由 preload 经 contextBridge 暴露） */
 export interface AgentTransportBridge {
   /** 一次性请求 */
@@ -217,6 +229,15 @@ export interface AgentTransportBridge {
    * 所以放在同一个对象上暴露（工作区目录必须是跑 Agent 那台机器上的真实路径）。
    */
   pickDirectory(): Promise<string | null>
+  /**
+   * 把 drop 进来的 `File` 换成本机绝对路径（Electron 32+ 起 `File.path` 已被移除，
+   * 唯一入口是 preload 里的 `webUtils.getPathForFile`）。
+   *
+   * 只取值，**不校验也不落盘**：是不是目录、路径存不存在都由调用方（`addWorkspace`）判
+   * —— 这条通道刻意不构成「渲染端能探测任意路径」的口子。
+   * 同步返回：drop 事件里要立刻用；拿不到路径（传进来的不是 File）返回空串。
+   */
+  getPathForFile(file: DroppedFile): string
   /**
    * 弹系统文件选择框选一个本机 **Markdown** 文件，返回绝对路径（用户取消返回 null）。
    *

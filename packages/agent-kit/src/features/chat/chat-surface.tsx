@@ -38,6 +38,10 @@ import {
 } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
 import { SubagentViewProvider, type OpenSubagent } from '@fizz/agent-kit/features/chat/subagent-view'
+import {
+  WorkspaceFileOpenerProvider,
+  type WorkspaceFileOpener
+} from '@fizz/agent-kit/features/files/open-file'
 import { SUBAGENT_META, type SubagentDelegation } from '@fizz/contracts/types'
 import { workDurationLabel } from '@fizz/agent-kit/shared/lib/turn-step'
 import {
@@ -1026,6 +1030,16 @@ export interface ChatSurfaceProps {
   composer: ChatComposerProps
   /** 消息列表与输入框之间的内容（错误条之类） */
   between?: ReactNode
+  /**
+   * 工具卡里「点文件名 → 在右侧文件面板里打开」的能力（见 `features/files/open-file.ts`）。
+   *
+   * 由**会话面板**（`ChatPanel`）给：它才知道这个标签的面板 key 与会话所属工作区。
+   * 不传 / `null` = 没有文件面板可开（容器工作台的片段渲染、项目管理助手），
+   * 工具卡上的路径保持普通文字。
+   *
+   * ⚠️ 引用必须稳定：它是 context 的值，一变整列 memo 过的 `PartView` 都会白重渲。
+   */
+  fileOpener?: WorkspaceFileOpener | null
 }
 
 /**
@@ -1050,7 +1064,7 @@ export interface ChatSurfaceProps {
  * （见下面的 `findDelegation`），流式期就能跟着往下走。找不到（消息被删 / 切了会话）
  * 就退回打开时的快照，不会白屏。
  */
-export function ChatSurface({ list, composer, between }: ChatSurfaceProps) {
+export function ChatSurface({ list, composer, between, fileOpener }: ChatSurfaceProps) {
   /** 正在看的子任务：工具调用 id + 兜底快照 */
   const [viewing, setViewing] = useState<{
     toolCallId: string
@@ -1099,9 +1113,16 @@ export function ChatSurface({ list, composer, between }: ChatSurfaceProps) {
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <SubagentViewProvider value={openSubagent}>
-        <MessageList {...list} />
-      </SubagentViewProvider>
+      {/*
+        工具卡里那截文件路径的「点开」能力由宿主递下去（见 `features/files/open-file.ts`）：
+        只有宿主知道这个视图的面板 key 与会话所属的工作区，消息流深处拿不到。
+        `null` = 没有文件面板可开（容器工作台 / 项目管理助手），文件名保持普通文字。
+      */}
+      <WorkspaceFileOpenerProvider value={fileOpener ?? null}>
+        <SubagentViewProvider value={openSubagent}>
+          <MessageList {...list} />
+        </SubagentViewProvider>
+      </WorkspaceFileOpenerProvider>
       {between}
       <ChatComposer
         {...composer}

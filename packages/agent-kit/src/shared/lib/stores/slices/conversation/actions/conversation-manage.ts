@@ -2,6 +2,7 @@
  * action 层：conversation-manage。叶子层 —— action 之间只通过 `get().xxx()` 互相调用，
  * 内部助手一律从 ctx 拿，internals 不会反过来依赖它。
  */
+import { isRemoteWorkspace } from "@fizz/contracts/types";
 import { defaultCollabSettings } from "@fizz/agent-kit/shared/lib/collab-defaults";
 import { errorMessage } from "@fizz/agent-kit/shared/lib/stores/shared";
 import { saveActiveWorkspaceId, saveActiveConversationId, saveQueue } from "../storage";
@@ -22,6 +23,29 @@ export function createConversationManageActions(
       // 下次启动回到「没选」而不是被拽回第一个项目
       set({ activeWorkspaceId: workspaceId });
       saveActiveWorkspaceId(workspaceId);
+      /**
+       * 切到**远端工作区**时，把草稿页上挂着的 ACP 目标清掉。
+       *
+       * 远端工作区不能跑外部 Agent（ACP，它要在服务端本机 spawn 一个进程、cwd 就是工作区
+       * 目录，远端目录够不着）：模型下拉里那一组已经整组不可选了，可**已经选好的那个目标
+       * 还挂在 `draftSettings` 上** —— pill 继续显示那个 agent，一发就被服务端拒成「远端
+       * 工作区首期不支持外部 Agent（ACP）」，用户看到的是「我明明没选它」。
+       *
+       * 只清 ACP 那一份：内置模型的目标在远端工作区照样能用，别顺手把用户的选择抹掉。
+       * 所有入口（输入框下方那颗、侧栏项目行、深链恢复）最终都走这里，所以只写这一处。
+       */
+      const next = workspaceId
+        ? get().workspaces.find((w) => w.id === workspaceId)
+        : undefined;
+      if (
+        isRemoteWorkspace(next) &&
+        get().draftSettings.chatTarget?.backend === "acp"
+      ) {
+        set((state) => ({
+          draftSettings: { ...state.draftSettings, chatTarget: null },
+          draftAcp: null,
+        }));
+      }
       if (!openNewest) return;
       const newest = get().conversations.find(
         (c) => c.workspaceId === workspaceId,

@@ -18,8 +18,8 @@
  * 所以新增字段的规矩：**加在这里**，别在路由里就地挑；`conversation-create-fields.test.ts`
  * 把这两项钉住了。
  *
- * 与同目录 `conversation-create.ts` 的区别：那个是给 `create_conversation` 工具用的
- * 「建一个空会话」，这里是 HTTP 创建入口的字段映射，两者互不相干。
+ * 这里是**唯一**的建会话入口：助手侧那条「在项目下建一个空会话」的路已随
+ * `create_conversation` 工具一起移除（2026-11），别再把工具侧的建会话逻辑加回来。
  */
 import type {
   AgentChatMessage,

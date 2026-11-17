@@ -12,6 +12,17 @@ const ACP_PERMISSION_LABELS = {
 } as const;
 
 /**
+ * 每档的第二行说明（富面板用，与内置权限 pill 同一套排版）。
+ *
+ * 为什么要它：两档名字只说「问不问」，不说「问了之后会怎样」——「完全放行」到底是
+ * 替你答 allow_once 还是 allow_always，只有这行字讲得清（见下面的长注释）。
+ */
+const ACP_PERMISSION_HINTS = {
+  confirm: "每次请求权限都弹确认卡，由你决定是否允许。",
+  allow: "服务端直接替你答复「允许」，确认卡不再出现。",
+} as const;
+
+/**
  * ACP 会话的「权限答复」pill（复用内置权限 pill 的位置与外观；**两档**）。
  *
  * - **确认**（缺省）：agent 每次发 `session/request_permission` 都弹确认卡，由你挑；
@@ -56,18 +67,36 @@ export function AcpPermissionPill({ app }: { app: AgentApp }) {
           )}
         </span>
       </SelectTrigger>
-      <SelectContent position="popper" side="top" align="start" sideOffset={6}>
-        <SelectItem value="confirm">
-          <span className="flex items-center gap-1.5">
-            <ShieldCheck className="size-3.5 text-muted-foreground" />
-            <span>{t("确认（逐次询问）")}</span>
-          </span>
+      {/* 与内置权限 pill 同一个**富面板**形状（header + 两行选项，见 packages/ui 的
+          `SelectItem`）：两颗 pill 表达的是同一件事（放得多宽），长得不一样会让人以为是两套机制 */}
+      <SelectContent
+        position="popper"
+        side="top"
+        align="start"
+        sideOffset={6}
+        className="w-80"
+        header={
+          <div className="space-y-1">
+            <div className="text-[15px] leading-5 font-semibold">{t("权限答复")}</div>
+            <p className="text-[13px] leading-5 text-muted-foreground">
+              {t("外部 Agent 每次请求权限时怎么答复；按会话记住，换会话要重选。")}
+            </p>
+          </div>
+        }
+      >
+        <SelectItem
+          value="confirm"
+          description={t(ACP_PERMISSION_HINTS.confirm)}
+          icon={<ShieldCheck className="size-3.5 text-muted-foreground" />}
+        >
+          {t(ACP_PERMISSION_LABELS.confirm)}
         </SelectItem>
-        <SelectItem value="allow">
-          <span className="flex items-center gap-1.5">
-            <ShieldAlert className="size-3.5 text-amber-600 dark:text-amber-500" />
-            <span>{t("完全放行（不再询问）")}</span>
-          </span>
+        <SelectItem
+          value="allow"
+          description={t(ACP_PERMISSION_HINTS.allow)}
+          icon={<ShieldAlert className="size-3.5 text-amber-600 dark:text-amber-500" />}
+        >
+          {t(ACP_PERMISSION_LABELS.allow)}
         </SelectItem>
       </SelectContent>
     </Select>

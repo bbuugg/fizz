@@ -810,14 +810,34 @@ export function PermissionPill({
       </SelectTrigger>
       {/* 几个 pill 的下拉表现必须一致：都是 popper + side="top" + sideOffset={6}。
           shadcn 的 Select 默认 position="item-aligned"（把选中项铺在触发器上、往下摊），
-          而这些触发器都贴在窗口底部 —— 不改成 popper 就会跟模型那个浮层长得不一样 */}
-      <SelectContent position="popper" side="top" align="start" sideOffset={6}>
+          而这些触发器都贴在窗口底部 —— 不改成 popper 就会跟模型那个浮层长得不一样。
+
+          权限这颗用**富面板**（`header` + 每项带 `description`，见 packages/ui 的
+          `SelectItem`）：三档名字自解释不了「点下去到底放宽了什么」，说明必须跟选项长在一起；
+          头部那句是全局前提（查看 / 搜索永远放行、下一轮才生效），写一遍就够。 */}
+      <SelectContent
+        position="popper"
+        side="top"
+        align="start"
+        sideOffset={6}
+        className="w-80"
+        header={
+          <div className="space-y-1">
+            <div className="text-[15px] leading-5 font-semibold">{tr('工具权限')}</div>
+            <p className="text-[13px] leading-5 text-muted-foreground">
+              {tr('控制 Agent 能修改或执行哪些操作；查看与搜索始终允许。下一轮对话生效。')}
+            </p>
+          </div>
+        }
+      >
         {permissionOptions().map((option) => (
-          <SelectItem key={option.value} value={option.value}>
-            <span className="flex items-center gap-1.5">
-              <PermissionIcon mode={option.value} />
-              <span>{option.label}</span>
-            </span>
+          <SelectItem
+            key={option.value}
+            value={option.value}
+            description={option.hint}
+            icon={<PermissionIcon mode={option.value} />}
+          >
+            {option.label}
           </SelectItem>
         ))}
       </SelectContent>

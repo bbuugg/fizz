@@ -336,6 +336,17 @@ export interface AgentHost {
    */
   pickLocalDirectory?(): Promise<string | null>
   /**
+   * 把用户**拖进窗口**的 `File` / 目录对象换成本机绝对路径（Electron 的 `webUtils`）。
+   *
+   * 与 `pickLocalDirectory` 同一判定：实现了 = 这个宿主跑在有本机文件系统的地方（desktop）。
+   * **web / mobile / extension 刻意不实现** —— 浏览器把 `File` 交进来时已经把路径涂掉了
+   * （`webkitRelativePath` 只是相对路径，且指向的还是**用户那台**机器，与跑 Agent 的机器
+   * 无关），所以侧栏的「拖目录进来」在那边根本不出现。
+   *
+   * 同步返回：drop 事件处理完 `dataTransfer` 就失效了，等不了异步。拿不到路径回空串。
+   */
+  getPathForFile?(file: File): string
+  /**
    * 弹系统文件选择框选一个本机 **Markdown** 文件（返回绝对路径；用户取消返回 null）。
    *
    * 与 `pickLocalDirectory` 同一判定：实现了 = 这个宿主有本机文件系统（desktop）。
