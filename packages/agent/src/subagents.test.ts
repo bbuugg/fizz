@@ -35,10 +35,11 @@ vi.mock('ai', async (importOriginal) => ({
 
 // 子 agent 的工具集在这里不参与断言：只要 `execute` 里那条流的行为，工具全替成空对象
 vi.mock('@fizz/tools', () => ({
-  buildAgentTools: () => ({}),
-  buildWebFetchTool: () => ({}),
-  buildGitReadTool: () => ({}),
-  filterToolSet: (all: Record<string, unknown>) => all
+  buildAgentTools: () => ({ read: {}, glob: {}, grep: {}, write: {}, bash: {} }),
+  buildWebFetchTool: () => ({ web_fetch: {} }),
+  buildGitReadTool: () => ({ git_read: {} }),
+  filterToolSet: (all: Record<string, unknown>, names: readonly string[]) =>
+    Object.fromEntries(names.filter((name) => name in all).map((name) => [name, all[name]]))
 }))
 
 vi.mock('./resolve-model', () => ({ resolveModel: () => ({}) }))
@@ -49,6 +50,11 @@ type DelegationTool = {
 }
 
 type WaitTool = {
+  description: string
+  execute: (input: { taskId: string }) => Promise<string>
+}
+
+type CancelTool = {
   description: string
   execute: (input: { taskId: string }) => Promise<string>
 }
@@ -80,6 +86,18 @@ function hangingStream(signal: AbortSignal | undefined) {
         else signal.addEventListener('abort', () => resolve(), { once: true })
       })
       throw new Error('AbortError')
+    })(),
+    text: Promise.resolve(''),
+    totalUsage: Promise.resolve({})
+  }
+}
+
+/** 永远不结束、也不响应 abort 的流（用来验证 task_wait 的超时文案） */
+function neverStream() {
+  return {
+    fullStream: (async function* () {
+      yield { type: 'start-step' }
+      await new Promise<void>(() => undefined)
     })(),
     text: Promise.resolve(''),
     totalUsage: Promise.resolve({})
@@ -132,6 +150,11 @@ function delegate(built: Built, task = '看看 auth 的入口在哪', toolCallId
 /** 领结论 */
 function wait(built: Built, taskId = 'parent-1') {
   return (built.tools.task_wait as WaitTool).execute({ taskId })
+}
+
+/** 主模型主动结束一个后台子任务 */
+function cancel(built: Built, taskId = 'parent-1') {
+  return (built.tools.task_cancel as CancelTool).execute({ taskId })
 }
 
 /** 派活 + 立刻领结论：绝大多数用例关心的是结论，不关心中间那段 */
@@ -200,6 +223,11 @@ describe('派活不阻塞父轮', () => {
     expect(tool.description).toContain('立即返回')
     expect(tool.description).toContain('task_wait')
     expect(tool.description).toContain('收尾前必须把派出去的活都领回来')
+    // 子任务的工具**不在父的请求里**：不列出来，父只能从「只读侦察」猜它能做什么
+    expect(tool.description).toContain('它可用的工具')
+    expect(tool.description).toContain('read')
+    expect(tool.description).toContain('web_fetch')
+    expect(tool.description).not.toContain('bash')
   })
 
   it('task_wait 能领到结论（结论没丢）', async () => {
@@ -351,6 +379,95 @@ describe('子任务单条停止', () => {
   })
 })
 
+/**
+ * 主模型自己结束子任务 + 「还在跑」要说清总时长。
+ *
+ * 用户报的两个问题：
+ * 1. 领结论超时只显示「已等 60 秒」，看不出子任务其实已经跑了十分钟 —— 模型与用户
+ *    都判断不了「该继续等还是该放弃」；
+ * 2. 主 Agent 没有任何工具能结束一个子任务，只能干等超时或停掉整轮。
+ */
+describe('子任务总时长与主动取消', () => {
+  it('task_wait 超时同时报「已运行」与「本次等待」', async () => {
+    vi.useFakeTimers()
+    try {
+      const built = build()
+      vi.mocked(streamText).mockClear()
+      vi.mocked(streamText).mockReturnValue(neverStream() as never)
+      await delegate(built)
+
+      const pending = wait(built)
+      await vi.advanceTimersByTimeAsync(60_000)
+      const out = await pending
+
+      expect(out).toContain('还在跑')
+      // 子任务从派出去那一刻开始算，不是本次等待的 60 秒
+      expect(out).toContain('已运行 1 分')
+      expect(out).toContain('本次等待 1 分')
+      // 要给模型一条「别干等」的出路
+      expect(out).toContain('task_cancel')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('task_cancel 结束还在跑的子任务：收成 aborted，并带上总运行时长', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const built = build()
+    vi.mocked(streamText).mockClear()
+    vi.mocked(streamText).mockImplementation(
+      ((args: { abortSignal?: AbortSignal }) => hangingStream(args.abortSignal)) as never
+    )
+    await delegate(built)
+
+    const out = await cancel(built)
+
+    expect(out).toContain('已结束')
+    expect(out).toContain('侦察')
+    const end = built.events.find((e) => e.type === 'subagent-end')
+    expect(end && end.type === 'subagent-end' ? end.status : null).toBe('aborted')
+    // 停止表随终态一起注销（与用户点停止钮同一条路）
+    expect(built.commandStops.has('parent-1')).toBe(false)
+  })
+
+  it('已经跑完的子任务不会被 task_cancel 丢掉结论', async () => {
+    const built = build()
+    vi.mocked(streamText).mockReturnValue(fakeStream('结论在 src/auth.ts') as never)
+    await delegate(built)
+    expect(await wait(built)).toContain('结论在 src/auth.ts')
+
+    const out = await cancel(built)
+    expect(out).toContain('已经跑完了')
+    expect(out).toContain('task_wait')
+  })
+
+  it('被 task_cancel 的子任务不算「结论白跑」：settle 不留告警', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const built = build()
+    vi.mocked(streamText).mockImplementation(
+      ((args: { abortSignal?: AbortSignal }) => hangingStream(args.abortSignal)) as never
+    )
+    await delegate(built)
+    await cancel(built)
+    await built.settle()
+
+    const warnings = vi.mocked(console.warn).mock.calls.map((call) => String(call[0]))
+    expect(warnings.some((line) => line.includes('结论没被领走'))).toBe(false)
+  })
+})
+
+describe('没有启用任何子智能体', () => {
+  it('一个 agent-<id> 都没建出来时，连 task_wait / task_cancel 也不挂', async () => {
+    // 设置里一个都没开
+    expect(build({ ids: [] }).tools).toEqual({})
+    // 开着但全都不是有效定义（被删 / 手改坏）：同样整组缺席，而不是只剩两个领取工具
+    expect(build({ ids: ['ghost'] }).tools).toEqual({})
+    // settle 仍可调（调用方无脑 await，不该炸）
+    await expect(build({ ids: [] }).settle()).resolves.toBeUndefined()
+  })
+})
+
 describe('自定义子智能体', () => {
   const def = {
     id: 'custom-ab12cd34',
@@ -362,7 +479,12 @@ describe('自定义子智能体', () => {
 
   it('按定义生成 agent-<id>；未定义的 id 被跳过而不是抛错', () => {
     const built = build({ ids: ['explorer', def.id, 'ghost'], definitions: [def] })
-    expect(Object.keys(built.tools)).toEqual(['agent-explorer', `agent-${def.id}`, 'task_wait'])
+    expect(Object.keys(built.tools)).toEqual([
+      'agent-explorer',
+      `agent-${def.id}`,
+      'task_wait',
+      'task_cancel'
+    ])
   })
 
   it('派活事件带上显示名（删掉定义后历史仍能显示）', async () => {

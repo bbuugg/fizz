@@ -680,6 +680,10 @@ function renderBuiltinDirect(
       // 明细就是 taskId：一眼能对上上面那张派活卡
       subject = str(input.taskId)
       break
+    case 'task_cancel':
+      // 同上：取消的是哪一条，看 taskId 就知道
+      subject = str(input.taskId)
+      break
     default:
       return null
   }

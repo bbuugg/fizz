@@ -38,12 +38,22 @@ describe('子任务白名单 · 远端工作区', () => {
   it('远端不建 git_read，白名单过滤不抛错', () => {
     const tools = build(remoteBackend)
 
-    expect(Object.keys(tools).sort()).toEqual(['agent-explorer', 'agent-reviewer', 'task_wait'])
+    expect(Object.keys(tools).sort()).toEqual([
+      'agent-explorer',
+      'agent-reviewer',
+      'task_cancel',
+      'task_wait'
+    ])
   })
 
   it('本地仍建 git_read（白名单保持完整）', () => {
     const tools = build()
 
-    expect(Object.keys(tools).sort()).toEqual(['agent-explorer', 'agent-reviewer', 'task_wait'])
+    expect(Object.keys(tools).sort()).toEqual([
+      'agent-explorer',
+      'agent-reviewer',
+      'task_cancel',
+      'task_wait'
+    ])
   })
 })

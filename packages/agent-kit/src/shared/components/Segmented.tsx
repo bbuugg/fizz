@@ -21,11 +21,12 @@
  * `bg-background` + `shadow-sm`）：设置页里它们就是同一类「选一个」的控件，长得一样才
  * 不会让人以为是两种东西。
  *
- * ⚠️ **暗色下选中项不能用 `bg-input/30`**（shadcn 上游写法，本项目 `tabs.tsx` 已同步
- * 改成 `bg-input`）：`--input` 本身就是 `oklch(1 0 0 / 15%)`，再乘 30% ≈ 4.5% 白叠在
- * `--muted` 上，实测只差一个灰阶（#2e2e2e → #373737），满屏扫一眼分不出哪项被选中。
- * 这里用 `--input` 本色（≈ `#4d4d4d`），并让 hover 保持同一底色 —— 否则 hover 已选中项
- * 会被亮色那条规则拉回 `bg-background`，反而更暗。
+ * ⚠️ **暗色下选中项不能用 `bg-input`**（`--input` 是**描边色**）：普通暗色下它 ≈15% 白，
+ * 与 `--muted` 只差一个灰阶；高对比暗主题下它更是**纯白**（`--input: #ffffff`）—— 配上
+ * `text-foreground`（白字）就是「白底白字」，选中的段直接看不见。
+ * 改用 `foreground/15`：普通暗色下与原来的 15% 白逐像素一致；高对比暗里是压在 `--muted`
+ * 上的一层深灰，白字仍然分得开。hover 保持同一底色，否则已选中项会被亮色那条规则拉回
+ * 更暗的 `background`。
  *
  * ⚠️ **选项多到装不下时换行，不横向溢出**（`flex-wrap` + `max-w-full`）。
  * 段内文字是 `whitespace-nowrap`（见 `toggle.tsx`），整条控件的最小宽度 = 各段文字宽之和；
@@ -101,8 +102,8 @@ export function Segmented<T extends string>({
             // 选中态：白/浮起，与 `Tabs` 的 default 变体一致
             'data-[state=on]:bg-background data-[state=on]:text-foreground data-[state=on]:shadow-sm',
             'data-[state=on]:hover:bg-background',
-            // 暗色下换 input 本色（≈15% 白）拉开一档；hover 同色，避免已选中项被亮色规则拉回更暗的 background
-            'dark:data-[state=on]:bg-input dark:data-[state=on]:hover:bg-input',
+            // 暗色下用 `foreground/15` 拉开一档：不能再用 `--input`（描边色，高对比暗里是纯白）
+            'dark:data-[state=on]:bg-foreground/15 dark:data-[state=on]:hover:bg-foreground/15',
             fullWidth && 'flex-1 basis-0'
           )}
         >

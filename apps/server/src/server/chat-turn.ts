@@ -995,7 +995,7 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
         buildCodingAssembly(deps, {
           plugins,
           browser: browserToolNames.length > 0,
-          ...(backend === 'builtin' && !isCollab
+          ...(backend === 'builtin' && !isCollab && subagentSettings.enabled.length > 0
             ? {
                 subagents: {
                   ids: subagentSettings.enabled,

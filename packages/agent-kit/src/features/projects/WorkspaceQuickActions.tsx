@@ -15,14 +15,13 @@
  * 菜单结构固定成两段：上面是能直接点的动作（0 条时整段不渲染），下面一条分隔线 +
  * 「管理快捷功能…」。管理项**永远在最底部**，不会随条目多少上下漂。
  *
- * ⚠️ 触发器统一用 `LiquidGlassButton` + `DropdownMenuTrigger asChild`：与同排的
- * 「终端 / 浏览器 / 文件」共用同一套液态玻璃材质与 `rounded-md` 圆角，
- * 也保留 focus 环与 disabled 态。别再换回普通 `Button variant="outline"`。
+ * ⚠️ 触发器用 `Button variant="outline"` + `DropdownMenuTrigger asChild`：与同排的
+ * 「终端 / 浏览器 / 文件」同一套描边按钮。
  */
 import { useEffect, useRef, useState } from 'react'
 import { Loader2, Settings2, Zap } from 'lucide-react'
 import { toast } from 'sonner'
-import { LiquidGlassButton } from '@fizz/ui/liquid-glass'
+import { Button } from '@fizz/ui/button'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -99,12 +98,13 @@ export function WorkspaceQuickActions({
       <Tooltip>
         <TooltipTrigger asChild>
           <DropdownMenuTrigger asChild>
-            <LiquidGlassButton tone="contrast"
-              className="inline-flex h-7 w-8 items-center justify-center rounded-md p-0 focus-visible:ring-2 focus-visible:ring-ring/50"
+            <Button
+              variant="outline"
+              className="h-7! w-8! p-0!"
               aria-label={tr('工作区快捷功能')}
             >
               {running ? <Loader2 className="size-4 animate-spin text-primary" /> : <Zap className="size-4" />}
-            </LiquidGlassButton>
+            </Button>
           </DropdownMenuTrigger>
         </TooltipTrigger>
         <TooltipContent side="bottom">{tr('工作区快捷功能')}</TooltipContent>

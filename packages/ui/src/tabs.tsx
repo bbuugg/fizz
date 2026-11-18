@@ -64,10 +64,11 @@ function TabsTrigger({
       className={cn(
         "relative inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-1.5 py-0.5 text-sm font-medium whitespace-nowrap text-foreground/60 transition-all group-data-vertical/tabs:w-full group-data-vertical/tabs:justify-start hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50 has-data-[icon=inline-end]:pr-1 has-data-[icon=inline-start]:pl-1 dark:text-muted-foreground dark:hover:text-foreground group-data-[variant=default]/tabs-list:data-active:shadow-sm group-data-[variant=line]/tabs-list:data-active:shadow-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         "group-data-[variant=line]/tabs-list:bg-transparent group-data-[variant=line]/tabs-list:data-active:bg-transparent dark:group-data-[variant=line]/tabs-list:data-active:border-transparent dark:group-data-[variant=line]/tabs-list:data-active:bg-transparent",
-        // 暗色选中底不能用 `bg-input/30`：`--input` 本身已是 `oklch(1 0 0 / 15%)`，再乘 30%
-        // 只剩 ≈4.5% 白，叠在 `--muted` 上只差一个灰阶，分不出哪页签被选中（与
-        // `Segmented` 同一口径，那边已改成 `bg-input` 本色）。
-        "data-active:bg-background data-active:text-foreground dark:data-active:border-input dark:data-active:bg-input dark:data-active:text-foreground",
+        // 暗色选中底不能用 `bg-input`：`--input` 是**描边色**，高对比暗主题下它是纯白
+        // （`.dark[data-theme='contrast']` 的 `--input: #ffffff`），拿来当底色就成了
+        // 「白底白字」，选中的页签整块消失。改用 `foreground/15`：普通暗色下与原来的
+        // 15% 白**逐像素一致**，高对比暗里是压在 #1a1a1a 上的一层深灰，白字仍然可读。
+        "data-active:bg-background data-active:text-foreground dark:data-active:border-input dark:data-active:bg-foreground/15 dark:data-active:text-foreground",
         "after:absolute after:bg-foreground after:opacity-0 after:transition-opacity group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-[-5px] group-data-horizontal/tabs:after:h-0.5 group-data-vertical/tabs:after:inset-y-0 group-data-vertical/tabs:after:-right-1 group-data-vertical/tabs:after:w-0.5 group-data-[variant=line]/tabs-list:data-active:after:opacity-100",
         className
       )}

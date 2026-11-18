@@ -86,7 +86,9 @@ function PickerPanel({
         onOpenAutoFocus?.(event)
       }}
       className={cn(
-        'flex max-h-[min(26rem,var(--radix-popper-available-height,calc(100dvh_-_3rem)))] w-72 flex-col gap-0 overflow-hidden rounded-xl p-0',
+        // 边框与 `SelectContent`（权限 / 终端那几颗 pill 的下拉）保持一致：`border-border` 是一条
+        // 实描边，比 Popover 自带的 `ring-foreground/5`（几乎看不见）更能兜住面板边界。
+        'flex max-h-[min(26rem,var(--radix-popper-available-height,calc(100dvh_-_3rem)))] w-72 flex-col gap-0 overflow-hidden rounded-xl border border-border p-0',
         className
       )}
     >

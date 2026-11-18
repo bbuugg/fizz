@@ -220,6 +220,8 @@ export const CHAT: Record<string, string> = {
   '创建插件': 'Create plugin',
   '子任务 · 侦察': 'Sub-agent · Scout',
   '子任务 · 审查': 'Sub-agent · Reviewer',
+  '领取子任务结论': 'Claim sub-agent result',
+  '取消子任务': 'Cancel sub-agent',
   '读取': 'Read',
   '移动文件': 'Move file',
   '切换模式': 'Switch mode',
