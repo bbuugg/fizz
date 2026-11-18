@@ -67,6 +67,21 @@ function catalogOf(config: ModelView): string[] {
 }
 
 /**
+ * 行尾勾选位的**固定占位**。
+ *
+ * 弹层宽度由内容撑开（`min-w-56` 只是下限）；勾按条件渲染的话，切到「名字最长的那个
+ * 模型」时整块弹层会宽出一个勾的宽度、再切走又缩回去 —— 用户看到的就是「换个模型
+ * 弹层宽度会跳」。非选中项留一个同尺寸的空槽，宽度就与选中项无关。
+ */
+function CheckSlot({ active, className }: { active: boolean; className?: string }) {
+  return (
+    <span aria-hidden={!active} className={cn('size-3.5 shrink-0', className)}>
+      {active && <Check className="size-3.5 shrink-0" />}
+    </span>
+  )
+}
+
+/**
  * 把目标解析成给人看的标签；**目标已失效返回 `null`**（配置 / agent / 模型被删）。
  *
  * 失效时**不回退**到清单第一项：让用户自己重选，而不是替他挑一个从没选过的模型
@@ -282,9 +297,14 @@ export function ModelPicker({
                 onSelect={selectTarget({ backend: 'acp', configId: lockedAgent.id })}
               >
                 <span className="truncate">{t('跟随 agent 默认')}</span>
-                {value?.backend === 'acp' && value.configId === lockedAgent.id && !value.modelId && (
-                  <Check className="ml-auto size-3.5" />
-                )}
+                <CheckSlot
+                  active={
+                    value?.backend === 'acp' &&
+                    value.configId === lockedAgent.id &&
+                    !value.modelId
+                  }
+                  className="ml-auto"
+                />
               </DropdownMenuItem>
             )}
             {(lockedAgent.models ?? []).map((model) => {
@@ -303,7 +323,7 @@ export function ModelPicker({
                   })}
                 >
                   <span className="truncate">{model.name}</span>
-                  {active && <Check className="ml-auto size-3.5" />}
+                  <CheckSlot active={active} className="ml-auto" />
                 </DropdownMenuItem>
               )
             })}
@@ -339,7 +359,7 @@ export function ModelPicker({
                           resolveContextWindow(config.models, modelId, defaultContextWindow)
                         )}
                       </span>
-                      {active && <Check className="size-3.5 shrink-0" />}
+                      <CheckSlot active={active} />
                     </DropdownMenuItem>
                   )
                 })
@@ -374,9 +394,14 @@ export function ModelPicker({
                         onSelect={selectTarget({ backend: 'acp', configId: agent.id })}
                       >
                         <span className="truncate">{t('跟随 agent 默认')}</span>
-                        {value?.backend === 'acp' &&
-                          value.configId === agent.id &&
-                          !value.modelId && <Check className="ml-auto size-3.5" />}
+                        <CheckSlot
+                          active={
+                            value?.backend === 'acp' &&
+                            value.configId === agent.id &&
+                            !value.modelId
+                          }
+                          className="ml-auto"
+                        />
                       </DropdownMenuItem>,
                       ...(agent.models ?? []).map((model) => {
                         const active =
@@ -394,7 +419,7 @@ export function ModelPicker({
                             })}
                           >
                             <span className="truncate">{model.name}</span>
-                            {active && <Check className="ml-auto size-3.5" />}
+                            <CheckSlot active={active} className="ml-auto" />
                           </DropdownMenuItem>
                         )
                       })
