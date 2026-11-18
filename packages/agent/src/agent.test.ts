@@ -515,3 +515,31 @@ describe('runAgent 的步数预算', () => {
     expect(result.stopReason).toBeUndefined()
   })
 })
+
+/**
+ * 装配失败（插件挂载 / 审批壳 / filterTools / 提示词渲染抛错）时，这一轮直接起不来：
+ * `runAgent` 的 `finish` 不会执行，本轮 context 只能由 `mountAssembly` 自己兜底卸载。
+ * 漏掉的话，插件在装配阶段启动的定时器 / 连接 / 监听器会跟着进程一直留着。
+ */
+describe('装配失败时的 context 清理', () => {
+  beforeEach(() => {
+    streamText.mockReset()
+  })
+
+  it('mountAssembly 抛错时插件仍被卸载，错误照常冒出去', async () => {
+    let disposed = false
+    await expect(
+      runAgent({
+        ...baseOptions(() => {}),
+        assemble: () => ({
+          instructions: 'SYS',
+          plugins: [{ plugin: () => () => { disposed = true } }],
+          filterTools: () => {
+            throw new Error('装配失败')
+          }
+        })
+      })
+    ).rejects.toThrow('装配失败')
+    expect(disposed).toBe(true)
+  })
+})

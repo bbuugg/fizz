@@ -9050,12 +9050,13 @@ function formatElapsed(ms) {
 /**
 * 派活的一句话说明。
 *
-* 模型没填 `summary` 时退到任务原文的第一行（截到 24 字）：`task_list` 里必须有一个
-* 能区分「这是哪一条」的短标签，否则同时派三四条时只剩 taskId 和子任务类型可看。
+* 模型没填 `summary` 时退到任务原文的第一行（截到 20 字，与 `summary` 的说明一致）：
+* `task_list` 里必须有一个能区分「这是哪一条」的短标签，否则同时派三四条时只剩
+* taskId 和子任务类型可看。
 */
 function shortTaskLabel(task) {
 	const first = task.split("\n").map((line) => line.trim()).find(Boolean) ?? "";
-	return first.length > 24 ? `${first.slice(0, 24)}…` : first;
+	return first.length > 20 ? `${first.slice(0, 20)}…` : first;
 }
 /**
 * 派活工具的公共说明（拼在每个 `agent-<id>` 的 description 后面）。
@@ -9068,6 +9069,14 @@ var DELEGATION_TOOL_SUFFIX = "\n\n调用后**立即返回**一个 taskId（不�
 /** 派活句柄交回父上下文的文案：要让模型自己接得上 `task_wait`，并说清「别干等」 */
 function handleText(name, taskId) {
 	return `${DELEGATION_HANDLE_PREFIX}${name}」（taskId: ${taskId}）。它在后台跑，进度看派活卡。\n你可以继续做自己的事；需要它的结论时调 task_wait（taskId 填 ${taskId}）。不需要了可以调 task_cancel 提前结束；收尾前记得领回结论，否则本轮结束时它会被中止。`;
+}
+/**
+* 「确实被取消」：`cancelled` 只表示**请求过**取消。abort 可能晚于它自己收尾
+* （`isFinished()` 判定之后、`abort()` 生效之前刚好跑完），那种条目的终态不是
+* `aborted`，结论仍然有效 —— 不能把它显示成「已取消」，也不能漏掉「结论未领取」。
+*/
+function cancelledForReal(task) {
+	return task.cancelled && task.outcome === "aborted";
 }
 /**
 * 等子任务落地，最多 `WAIT_SLICE_MS`；超时返回 null（调用方把话轮交回模型）。
@@ -9246,7 +9255,7 @@ function buildDelegationTools(ids, opts) {
 				const toolCallId = options?.toolCallId ?? "";
 				const task = (input?.task ?? "").trim();
 				/** 一句话说明：模型给的优先，没给就取任务原文首行（`task_list` 必须有东西可区分） */
-				const summary = (input?.summary ?? "").trim().slice(0, 40) || shortTaskLabel(task);
+				const summary = (input?.summary ?? "").trim().slice(0, 20) || shortTaskLabel(task);
 				if (!task) return RESULT_TEXT_EMPTY;
 				/**
 				* 连败闸开在**派出去那一刻**：失败是在后台才发生的，等它回来时父模型可能已经又派了
@@ -9551,9 +9560,19 @@ function buildDelegationTools(ids, opts) {
 				})]);
 				if (timer) clearTimeout(timer);
 			}
+			/**
+			* abort 可能输给收尾：判定时还没结束、真正落地时却已经是 done / failed 的条目，
+			* 结论是有效的 —— 从「已取消」里摘出来，归到「已经跑完，结论还在」，
+			* 否则模型会以为结论作废而重新派活。
+			*/
+			for (const entry of cancelled) if (entry.outcome !== void 0 && entry.outcome !== "aborted") {
+				entry.cancelled = false;
+				alreadyDone.push(entry);
+			}
+			const cancelledNow = cancelled.filter((entry) => entry.cancelled);
 			const label = (t) => `「${t.name}」${t.summary ? `（${t.summary}）` : ""}`;
-			if (requested.length === 1 && cancelled.length === 1) {
-				const entry = cancelled[0];
+			if (requested.length === 1 && cancelledNow.length === 1) {
+				const entry = cancelledNow[0];
 				if (!entry) return "没有可结束的子任务。";
 				return entry.isFinished() ? `已结束${label(entry)}（运行 ${formatElapsed((entry.finishedAt ?? Date.now()) - entry.startedAt)}）。` : `已请求结束${label(entry)}，它正在收尾。`;
 			}
@@ -9563,9 +9582,9 @@ function buildDelegationTools(ids, opts) {
 				return `「${entry.name}」已经跑完了，结论还在；用 task_wait（taskId: ${entry.id}）领取。`;
 			}
 			const lines = [];
-			if (cancelled.length > 0) {
-				lines.push(`已结束 ${cancelled.length} 个子任务：`);
-				for (const t of cancelled) lines.push(t.isFinished() ? `- ${label(t)}：运行 ${formatElapsed((t.finishedAt ?? Date.now()) - t.startedAt)}` : `- ${label(t)}：已请求结束，正在收尾`);
+			if (cancelledNow.length > 0) {
+				lines.push(`已结束 ${cancelledNow.length} 个子任务：`);
+				for (const t of cancelledNow) lines.push(t.isFinished() ? `- ${label(t)}：运行 ${formatElapsed((t.finishedAt ?? Date.now()) - t.startedAt)}` : `- ${label(t)}：已请求结束，正在收尾`);
 			}
 			if (alreadyDone.length > 0) lines.push(`已经跑完、结论还在（用 task_wait 领取）：${alreadyDone.map((t) => `${t.id}（${t.name}）`).join("、")}`);
 			if (missing.length > 0) lines.push(`没有这些 taskId：${missing.join("、")}`);
@@ -9588,7 +9607,8 @@ function buildDelegationTools(ids, opts) {
 			return ["本轮后台子任务：", ...[...tasks.values()].map((t) => {
 				const head = `${t.id} · ${t.name} · ${t.summary || "（无说明）"}`;
 				if (!t.isFinished()) return `- ${head} —— 运行中，已运行 ${formatElapsed(now - t.startedAt)}`;
-				return `- ${head} —— ${t.cancelled ? "已取消" : STATUS_TEXT[t.outcome ?? "done"]}，用时 ${formatElapsed((t.finishedAt ?? now) - t.startedAt)}${!t.cancelled && !t.claimed ? "（结论未领取，用 task_wait 领取）" : ""}`;
+				const cancelled = cancelledForReal(t);
+				return `- ${head} —— ${cancelled ? "已取消" : STATUS_TEXT[t.outcome ?? "done"]}，用时 ${formatElapsed((t.finishedAt ?? now) - t.startedAt)}${!cancelled && !t.claimed ? "（结论未领取，用 task_wait 领取）" : ""}`;
 			})].join("\n");
 		}
 	};
@@ -9617,7 +9637,7 @@ function buildDelegationTools(ids, opts) {
 		* 跑完了却没被领走 = 结论白跑一趟（模型派完没 task_wait 就收尾了）。
 		* 静默丢掉会变成「花了钱什么都没有」，而且没人查得出来 —— 至少留一行日志。
 		*/
-		const lost = [...tasks.values()].filter((t) => t.isFinished() && !t.claimed && !t.cancelled);
+		const lost = [...tasks.values()].filter((t) => t.isFinished() && !t.claimed && !cancelledForReal(t));
 		if (lost.length > 0) console.warn(`[subagent] 本轮结束时这些派活的结论没被领走（模型没 task_wait）：${lost.map((t) => `${t.name}(${t.id})`).join("、")}`);
 	};
 	return {
@@ -10304,37 +10324,51 @@ function assembleStandard(deps) {
 * 标准会话与自造 profile 都经由这里，差异只在 `assembly` 的内容 —— 不会再出现
 * 「传了 setup 就绕开钩子与审批壳」的旁路。
 */
-function mountAssembly(assembly, deps) {
+async function mountAssembly(assembly, deps) {
 	const ctx = createAppContext("agent-assembly");
-	ctx.set("tools", new ToolsService(ctx));
-	ctx.set("models", new ModelsService(ctx));
-	ctx.set("prompt", new PromptService(ctx));
-	const hooks = new HooksService(ctx);
-	ctx.set("hooks", hooks);
-	if (deps.workspace.path) ctx.set("workspace", new WorkspaceService(ctx, {
-		path: deps.workspace.path,
-		name: deps.workspace.name
-	}));
-	for (const mounted of assembly.plugins ?? []) try {
-		ctx.plugin(mounted.plugin, mounted.config);
+	try {
+		ctx.set("tools", new ToolsService(ctx));
+		ctx.set("models", new ModelsService(ctx));
+		ctx.set("prompt", new PromptService(ctx));
+		const hooks = new HooksService(ctx);
+		ctx.set("hooks", hooks);
+		if (deps.workspace.path) ctx.set("workspace", new WorkspaceService(ctx, {
+			path: deps.workspace.path,
+			name: deps.workspace.name
+		}));
+		for (const mounted of assembly.plugins ?? []) try {
+			ctx.plugin(mounted.plugin, mounted.config);
+		} catch (err) {
+			const name = mounted.plugin?.name ?? "匿名插件";
+			console.warn(`[agent] 插件挂载失败，本轮跳过：${name}`, err);
+		}
+		let tools = wrapToolsWithApproval(ctx.tools.entries(), {
+			permissionMode: deps.permissionMode ?? "full",
+			...deps.getPermissionMode ? { getPermissionMode: deps.getPermissionMode } : {},
+			...deps.requestConfirm ? { requestConfirm: deps.requestConfirm } : {}
+		});
+		tools = wrapToolsWithHooks(tools, hooks);
+		if (assembly.filterTools) tools = assembly.filterTools(tools);
+		ctx.prompt.section("builtin", assembly.instructions, { priority: 0 });
+		return {
+			instructions: hooks.waterfall(HOOKS.promptRender, [ctx.prompt.render()], hookValue),
+			tools,
+			hooks,
+			ctx
+		};
 	} catch (err) {
-		const name = mounted.plugin?.name ?? "匿名插件";
-		console.warn(`[agent] 插件挂载失败，本轮跳过：${name}`, err);
+		/**
+		* 挂载失败 = 这一轮起不来：context 里已经挂上的插件（定时器 / 连接 / 监听器）
+		* 必须跟着卸载。`runAgent` 的 `finish` 在这条路径上不会执行（ctx 是这里建的，
+		* 也由这里兜底），否则插件清理会被静默漏掉。
+		*/
+		try {
+			await ctx.dispose();
+		} catch (disposeErr) {
+			console.error("[agent] 装配失败后卸载 context 出错：", disposeErr);
+		}
+		throw err;
 	}
-	let tools = wrapToolsWithApproval(ctx.tools.entries(), {
-		permissionMode: deps.permissionMode ?? "full",
-		...deps.getPermissionMode ? { getPermissionMode: deps.getPermissionMode } : {},
-		...deps.requestConfirm ? { requestConfirm: deps.requestConfirm } : {}
-	});
-	tools = wrapToolsWithHooks(tools, hooks);
-	if (assembly.filterTools) tools = assembly.filterTools(tools);
-	ctx.prompt.section("builtin", assembly.instructions, { priority: 0 });
-	return {
-		instructions: hooks.waterfall(HOOKS.promptRender, [ctx.prompt.render()], hookValue),
-		tools,
-		hooks,
-		ctx
-	};
 }
 /** 这一轮的序号（与时间戳拼成 turnId）：轮次之间可能重叠，得有个能区分的东西 */
 var turnSeq = 0;
@@ -10625,7 +10659,7 @@ async function runAgent(opts) {
 	};
 	const assembly = opts.assemble ? await opts.assemble(assemblyDeps) : assembleStandard(assemblyDeps);
 	/** 挂载后的静态部分：`hooks` / `ctx` 恒存在（由本轮自建，收尾统一卸载） */
-	const agentSetup = mountAssembly(assembly, assemblyDeps);
+	const agentSetup = await mountAssembly(assembly, assemblyDeps);
 	/** 这一轮声明的子任务能力（没有 = 一个派活工具都不挂） */
 	const subagentCaps = assembly.capabilities?.subagents;
 	/**

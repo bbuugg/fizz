@@ -183,12 +183,13 @@ function formatElapsed(ms: number): string {
 /**
  * 派活的一句话说明。
  *
- * 模型没填 `summary` 时退到任务原文的第一行（截到 24 字）：`task_list` 里必须有一个
- * 能区分「这是哪一条」的短标签，否则同时派三四条时只剩 taskId 和子任务类型可看。
+ * 模型没填 `summary` 时退到任务原文的第一行（截到 20 字，与 `summary` 的说明一致）：
+ * `task_list` 里必须有一个能区分「这是哪一条」的短标签，否则同时派三四条时只剩
+ * taskId 和子任务类型可看。
  */
 function shortTaskLabel(task: string): string {
   const first = task.split('\n').map((line) => line.trim()).find(Boolean) ?? ''
-  return first.length > 24 ? `${first.slice(0, 24)}…` : first
+  return first.length > 20 ? `${first.slice(0, 20)}…` : first
 }
 
 /**
@@ -251,6 +252,15 @@ interface DelegationTask {
   claimed: boolean
   /** 是否被 `task_cancel` 主动结束：这种「没领走」是模型的决定，不该报成白跑 */
   cancelled: boolean
+}
+
+/**
+ * 「确实被取消」：`cancelled` 只表示**请求过**取消。abort 可能晚于它自己收尾
+ * （`isFinished()` 判定之后、`abort()` 生效之前刚好跑完），那种条目的终态不是
+ * `aborted`，结论仍然有效 —— 不能把它显示成「已取消」，也不能漏掉「结论未领取」。
+ */
+function cancelledForReal(task: DelegationTask): boolean {
+  return task.cancelled && task.outcome === 'aborted'
 }
 
 /**
@@ -551,7 +561,7 @@ export function buildDelegationTools(
         const toolCallId = options?.toolCallId ?? ''
         const task = (input?.task ?? '').trim()
         /** 一句话说明：模型给的优先，没给就取任务原文首行（`task_list` 必须有东西可区分） */
-        const summary = (input?.summary ?? '').trim().slice(0, 40) || shortTaskLabel(task)
+        const summary = (input?.summary ?? '').trim().slice(0, 20) || shortTaskLabel(task)
         if (!task) return RESULT_TEXT_EMPTY
         /**
          * 连败闸开在**派出去那一刻**：失败是在后台才发生的，等它回来时父模型可能已经又派了
@@ -909,13 +919,25 @@ export function buildDelegationTools(
         ])
         if (timer) clearTimeout(timer)
       }
+      /**
+       * abort 可能输给收尾：判定时还没结束、真正落地时却已经是 done / failed 的条目，
+       * 结论是有效的 —— 从「已取消」里摘出来，归到「已经跑完，结论还在」，
+       * 否则模型会以为结论作废而重新派活。
+       */
+      for (const entry of cancelled) {
+        if (entry.outcome !== undefined && entry.outcome !== 'aborted') {
+          entry.cancelled = false
+          alreadyDone.push(entry)
+        }
+      }
+      const cancelledNow = cancelled.filter((entry) => entry.cancelled)
 
       const label = (t: DelegationTask): string =>
         `「${t.name}」${t.summary ? `（${t.summary}）` : ''}`
 
       // 单个的照旧给一句干净的回话（最常见的用法，不必套一层列表）
-      if (requested.length === 1 && cancelled.length === 1) {
-        const entry = cancelled[0]
+      if (requested.length === 1 && cancelledNow.length === 1) {
+        const entry = cancelledNow[0]
         if (!entry) return '没有可结束的子任务。'
         return entry.isFinished()
           ? `已结束${label(entry)}（运行 ${formatElapsed((entry.finishedAt ?? Date.now()) - entry.startedAt)}）。`
@@ -928,9 +950,9 @@ export function buildDelegationTools(
       }
 
       const lines: string[] = []
-      if (cancelled.length > 0) {
-        lines.push(`已结束 ${cancelled.length} 个子任务：`)
-        for (const t of cancelled) {
+      if (cancelledNow.length > 0) {
+        lines.push(`已结束 ${cancelledNow.length} 个子任务：`)
+        for (const t of cancelledNow) {
           lines.push(
             t.isFinished()
               ? `- ${label(t)}：运行 ${formatElapsed((t.finishedAt ?? Date.now()) - t.startedAt)}`
@@ -971,10 +993,12 @@ export function buildDelegationTools(
         if (!t.isFinished()) {
           return `- ${head} —— 运行中，已运行 ${formatElapsed(now - t.startedAt)}`
         }
-        const status = t.cancelled ? '已取消' : STATUS_TEXT[t.outcome ?? 'done']
+        // 只有终态真的是 aborted 才算「已取消」：abort 输给收尾的条目结论仍然有效
+        const cancelled = cancelledForReal(t)
+        const status = cancelled ? '已取消' : STATUS_TEXT[t.outcome ?? 'done']
         const elapsed = formatElapsed((t.finishedAt ?? now) - t.startedAt)
         // 取消掉的没有结论可领，别提示一句会落空的 task_wait
-        const claim = !t.cancelled && !t.claimed ? '（结论未领取，用 task_wait 领取）' : ''
+        const claim = !cancelled && !t.claimed ? '（结论未领取，用 task_wait 领取）' : ''
         return `- ${head} —— ${status}，用时 ${elapsed}${claim}`
       })
       return ['本轮后台子任务：', ...rows].join('\n')
@@ -1011,7 +1035,7 @@ export function buildDelegationTools(
      * 静默丢掉会变成「花了钱什么都没有」，而且没人查得出来 —— 至少留一行日志。
      */
     const lost = [...tasks.values()].filter(
-      (t) => t.isFinished() && !t.claimed && !t.cancelled
+      (t) => t.isFinished() && !t.claimed && !cancelledForReal(t)
     )
     if (lost.length > 0) {
       console.warn(

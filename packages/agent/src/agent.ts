@@ -761,57 +761,71 @@ export function assembleStandard(deps: AgentAssemblyDeps): AgentAssembly {
  * 标准会话与自造 profile 都经由这里，差异只在 `assembly` 的内容 —— 不会再出现
  * 「传了 setup 就绕开钩子与审批壳」的旁路。
  */
-function mountAssembly(
+async function mountAssembly(
   assembly: AgentAssembly,
   deps: AgentAssemblyDeps
-): { instructions: string; tools: Record<string, unknown>; hooks: HooksService; ctx: Context } {
+): Promise<{ instructions: string; tools: Record<string, unknown>; hooks: HooksService; ctx: Context }> {
   const ctx = createAppContext('agent-assembly')
-  ctx.set('tools', new ToolsService(ctx))
-  // 工作区级插件可能声明 `inject: ['models']`：给一份空注册表只为不推迟挂载。
-  // 这里注册的模型**不会**进全局模型列表（模型是全局的，见 server/plugin-models.ts）。
-  ctx.set('models', new ModelsService(ctx))
-  ctx.set('prompt', new PromptService(ctx))
-  // 钩子总线挂在**这一轮的 context**（不是插件 fiber）上：监听器落在这一层，
-  // 插件卸载时 disposer 随 fiber 回收。见 @fizz/plugin 的 hooks.ts 注释。
-  const hooks = new HooksService(ctx)
-  ctx.set('hooks', hooks)
-  // 工作区根目录：插件的工具要按「相对工作区根」的路径约定解析。未绑定目录的会话
-  // （path 为空）不提供 —— 声明 `inject: ['workspace']` 的插件会被推迟挂载。
-  if (deps.workspace.path) {
-    ctx.set(
-      'workspace',
-      new WorkspaceService(ctx, { path: deps.workspace.path, name: deps.workspace.name })
-    )
-  }
-
-  // **逐个 try/catch**：一个插件挂载失败不该拖垮整轮对话（与 loadPlugins 的取舍一致）。
-  // 典型失败：注册的工具形状不对（缺 execute）、与内置工具同名并列最高 priority。
-  for (const mounted of assembly.plugins ?? []) {
-    try {
-      ctx.plugin(mounted.plugin, mounted.config)
-    } catch (err) {
-      const name = (mounted.plugin as { name?: string } | null)?.name ?? '匿名插件'
-      console.warn(`[agent] 插件挂载失败，本轮跳过：${name}`, err)
+  try {
+    ctx.set('tools', new ToolsService(ctx))
+    // 工作区级插件可能声明 `inject: ['models']`：给一份空注册表只为不推迟挂载。
+    // 这里注册的模型**不会**进全局模型列表（模型是全局的，见 server/plugin-models.ts）。
+    ctx.set('models', new ModelsService(ctx))
+    ctx.set('prompt', new PromptService(ctx))
+    // 钩子总线挂在**这一轮的 context**（不是插件 fiber）上：监听器落在这一层，
+    // 插件卸载时 disposer 随 fiber 回收。见 @fizz/plugin 的 hooks.ts 注释。
+    const hooks = new HooksService(ctx)
+    ctx.set('hooks', hooks)
+    // 工作区根目录：插件的工具要按「相对工作区根」的路径约定解析。未绑定目录的会话
+    // （path 为空）不提供 —— 声明 `inject: ['workspace']` 的插件会被推迟挂载。
+    if (deps.workspace.path) {
+      ctx.set(
+        'workspace',
+        new WorkspaceService(ctx, { path: deps.workspace.path, name: deps.workspace.name })
+      )
     }
+
+    // **逐个 try/catch**：一个插件挂载失败不该拖垮整轮对话（与 loadPlugins 的取舍一致）。
+    // 典型失败：注册的工具形状不对（缺 execute）、与内置工具同名并列最高 priority。
+    for (const mounted of assembly.plugins ?? []) {
+      try {
+        ctx.plugin(mounted.plugin, mounted.config)
+      } catch (err) {
+        const name = (mounted.plugin as { name?: string } | null)?.name ?? '匿名插件'
+        console.warn(`[agent] 插件挂载失败，本轮跳过：${name}`, err)
+      }
+    }
+
+    // 审批闸门：`mutating: true` 的工具按权限模式走（readonly 拒绝 / confirm 询问 / full 放行）。
+    // 内置文件工具**不经这里**（它们自己管自己的 guardWrite），所以行为与从前一致。
+    let tools = wrapToolsWithApproval(ctx.tools.entries(), {
+      permissionMode: deps.permissionMode ?? 'full',
+      ...(deps.getPermissionMode ? { getPermissionMode: deps.getPermissionMode } : {}),
+      // exactOptionalPropertyTypes 下不能传 undefined，条件展开
+      ...(deps.requestConfirm ? { requestConfirm: deps.requestConfirm } : {})
+    })
+    // 钩子壳：`tool:call` 可改写入参、`tool:result` 可改写返回（没插件时原样透传）
+    tools = wrapToolsWithHooks(tools, hooks)
+    if (assembly.filterTools) tools = assembly.filterTools(tools)
+
+    // 提示词也走注册表：装配产出的正文是唯一一段内置内容，插件可再追加（priority 更大的排在后面）
+    ctx.prompt.section('builtin', assembly.instructions, { priority: 0 })
+    // 渲染完再过一遍钩子：插件可以整段改写最终正文（没插件时 hookValue 原样返回）
+    const instructions = hooks.waterfall(HOOKS.promptRender, [ctx.prompt.render()], hookValue) as string
+    return { instructions, tools, hooks, ctx }
+  } catch (err) {
+    /**
+     * 挂载失败 = 这一轮起不来：context 里已经挂上的插件（定时器 / 连接 / 监听器）
+     * 必须跟着卸载。`runAgent` 的 `finish` 在这条路径上不会执行（ctx 是这里建的，
+     * 也由这里兜底），否则插件清理会被静默漏掉。
+     */
+    try {
+      await ctx.dispose()
+    } catch (disposeErr) {
+      console.error('[agent] 装配失败后卸载 context 出错：', disposeErr)
+    }
+    throw err
   }
-
-  // 审批闸门：`mutating: true` 的工具按权限模式走（readonly 拒绝 / confirm 询问 / full 放行）。
-  // 内置文件工具**不经这里**（它们自己管自己的 guardWrite），所以行为与从前一致。
-  let tools = wrapToolsWithApproval(ctx.tools.entries(), {
-    permissionMode: deps.permissionMode ?? 'full',
-    ...(deps.getPermissionMode ? { getPermissionMode: deps.getPermissionMode } : {}),
-    // exactOptionalPropertyTypes 下不能传 undefined，条件展开
-    ...(deps.requestConfirm ? { requestConfirm: deps.requestConfirm } : {})
-  })
-  // 钩子壳：`tool:call` 可改写入参、`tool:result` 可改写返回（没插件时原样透传）
-  tools = wrapToolsWithHooks(tools, hooks)
-  if (assembly.filterTools) tools = assembly.filterTools(tools)
-
-  // 提示词也走注册表：装配产出的正文是唯一一段内置内容，插件可再追加（priority 更大的排在后面）
-  ctx.prompt.section('builtin', assembly.instructions, { priority: 0 })
-  // 渲染完再过一遍钩子：插件可以整段改写最终正文（没插件时 hookValue 原样返回）
-  const instructions = hooks.waterfall(HOOKS.promptRender, [ctx.prompt.render()], hookValue) as string
-  return { instructions, tools, hooks, ctx }
 }
 
 /** 这一轮的序号（与时间戳拼成 turnId）：轮次之间可能重叠，得有个能区分的东西 */
@@ -1157,7 +1171,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
   }
   const assembly = opts.assemble ? await opts.assemble(assemblyDeps) : assembleStandard(assemblyDeps)
   /** 挂载后的静态部分：`hooks` / `ctx` 恒存在（由本轮自建，收尾统一卸载） */
-  const agentSetup = mountAssembly(assembly, assemblyDeps)
+  const agentSetup = await mountAssembly(assembly, assemblyDeps)
   /** 这一轮声明的子任务能力（没有 = 一个派活工具都不挂） */
   const subagentCaps = assembly.capabilities?.subagents
   /**

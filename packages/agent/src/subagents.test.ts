@@ -100,6 +100,31 @@ function hangingStream(signal: AbortSignal | undefined) {
   }
 }
 
+/**
+ * 吐一帧正文后挂住，直到测试放行；**不响应 abort**。
+ *
+ * 用来制造「取消请求发出时还没结束、但实际收尾已经赢了」那一瞬：真实链路里
+ * `isFinished()` 判定与 `abort()` 生效之间没有原子性，先到的可能是子任务自己的完成。
+ */
+function gatedStream(text: string) {
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  return {
+    release: () => release(),
+    stream: {
+      fullStream: (async function* () {
+        yield { type: 'start-step' }
+        yield { type: 'text-delta', text }
+        await gate
+      })(),
+      text: Promise.resolve(text),
+      totalUsage: Promise.resolve({ inputTokens: 10, outputTokens: 5, totalTokens: 15 })
+    }
+  }
+}
+
 /** 永远不结束、也不响应 abort 的流（用来验证 task_wait 的超时文案） */
 function neverStream() {
   return {
@@ -510,6 +535,27 @@ describe('子任务总时长与主动取消', () => {
     expect(out).toContain('task_wait')
   })
 
+  it('取消请求输给收尾时：结论仍然有效，不标「已取消」', async () => {
+    const built = build()
+    const gated = gatedStream('结论在 src/auth.ts')
+    vi.mocked(streamText).mockReturnValue(gated.stream as never)
+    await delegate(built)
+
+    // 取消发出时它还在跑；abort 生效前它自己收尾了（假流不响应 abort，正是这个竞态）
+    const cancelling = cancel(built)
+    gated.release()
+    const out = await cancelling
+
+    // 归到「已经跑完，结论还在」：模型不会把有效结论当成作废而重新派活
+    expect(out).toContain('已经跑完了')
+    expect(out).toContain('task_wait')
+    const list = await listTasks(built)
+    expect(list).toContain('已完成')
+    expect(list).not.toContain('已取消')
+    expect(list).toContain('结论未领取')
+    await built.settle()
+  })
+
   it('被 task_cancel 的子任务不算「结论白跑」：settle 不留告警', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
@@ -571,6 +617,24 @@ describe('列出后台子任务', () => {
 
     expect(await listTasks(built)).toContain('先看 src/auth.ts')
     await wait(built, 'p1')
+    await built.settle()
+  })
+
+  it('派发说明超过 20 字时按 20 字截断（与工具描述的口径一致）', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const built = build()
+    vi.mocked(streamText).mockImplementation(
+      ((args: { abortSignal?: AbortSignal }) => hangingStream(args.abortSignal)) as never
+    )
+    await (built.tools['agent-explorer'] as DelegationTool).execute(
+      { task: '查入口', summary: '一二三四五六七八九十一二三四五六七八九十末尾不要' },
+      { toolCallId: 'p1' }
+    )
+
+    const out = await listTasks(built)
+    expect(out).toContain('一二三四五六七八九十一二三四五六七八九十')
+    expect(out).not.toContain('末尾不要')
+    await cancel(built, { taskIds: ['p1'] })
     await built.settle()
   })
 
