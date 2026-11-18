@@ -329,11 +329,8 @@ export function ConversationTab({
    */
   const listsLoading = !app.conversationsLoaded && !app.error
 
-  /** ACP 会话：名字右侧要跟一个「外部 Agent 名称」徽标 */
+  /** ACP 会话：浏览器面板等能力要按后端隐藏（名字徽标已去掉，见 `afterTitle`） */
   const isAcpConversation = conversation?.backend === 'acp'
-  const acpAgent = isAcpConversation
-    ? app.acpAgents.find((a) => a.id === conversation.configId)
-    : undefined
 
   /**
    * 「选择终端」菜单里打勾的那一项：**上次用过并被记住的 shell**（`terminalShellId`）；
@@ -523,14 +520,6 @@ export function ConversationTab({
             >
               <Bot className="size-3 shrink-0" />
               {tr('多智能体协作')}
-            </span>
-          ) : acpAgent ? (
-            <span
-              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-foreground/5 px-2 py-0.5 text-xs text-muted-foreground"
-              title={tr('外部 Agent：{name}', { name: acpAgent.name })}
-            >
-              <Bot className="size-3 shrink-0" />
-              {acpAgent.name}
             </span>
           ) : undefined
         }

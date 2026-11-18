@@ -848,6 +848,7 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
         getPermissionMode: () => run.permissionMode,
         requestConfirm,
         commandStops: run.commandStops,
+        ...(toolIntent !== undefined ? { toolIntent } : {}),
         signal: run.controller.signal,
         emit: (event) => emit(run, { type: 'event', requestId, event }),
         onState: (state) => domain.saveCollabState(conversation.id, state)

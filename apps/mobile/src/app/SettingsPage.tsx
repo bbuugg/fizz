@@ -342,7 +342,9 @@ export function SettingsPage({
               aria-label={tr('返回设置')}
               title={tr('返回设置')}
               onClick={mobileDetail.back}
-              className="-ml-1 slide-swap rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
+              /* `-ml-2 mr-1`：箭头可见笔画左移到与内容同一条 16px 竖线；补 4px 右外边距
+                 把标题的起始位置还回去，切二级页时标题不横向跳 */
+              className="-ml-2 mr-1 slide-swap rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
             >
               <ChevronLeft className="size-5" />
             </button>

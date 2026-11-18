@@ -114,6 +114,14 @@ const RESULT_TEXT_ABORTED =
   '用户中止了这个子任务。不要重试同一个派活，除非用户明确要求；需要的话你自己完成。'
 const RESULT_TEXT_BAIL = '子任务连续失败，已停止本轮。'
 
+/** 子任务终态的人话（`task_list` 用；`running` 在调用处单独拼时长） */
+const STATUS_TEXT: Record<Exclude<SubagentRunStatus, 'running'>, string> = {
+  done: '已完成',
+  empty: '没有产出可用结论',
+  failed: '失败',
+  aborted: '已中止'
+}
+
 /**
  * 「用满步数上限、没来得及收尾」时交回父上下文的前缀。
  *
@@ -173,6 +181,17 @@ function formatElapsed(ms: number): string {
 }
 
 /**
+ * 派活的一句话说明。
+ *
+ * 模型没填 `summary` 时退到任务原文的第一行（截到 24 字）：`task_list` 里必须有一个
+ * 能区分「这是哪一条」的短标签，否则同时派三四条时只剩 taskId 和子任务类型可看。
+ */
+function shortTaskLabel(task: string): string {
+  const first = task.split('\n').map((line) => line.trim()).find(Boolean) ?? ''
+  return first.length > 24 ? `${first.slice(0, 24)}…` : first
+}
+
+/**
  * 派活工具的公共说明（拼在每个 `agent-<id>` 的 description 后面）。
  *
  * ⚠️ 这两句就是本能力的**行为契约**，少一句都会退化成坏行为：
@@ -182,7 +201,8 @@ function formatElapsed(ms: number): string {
 const DELEGATION_TOOL_SUFFIX =
   '\n\n调用后**立即返回**一个 taskId（不会等它跑完）：派完你可以继续做自己的事，' +
   '需要结论时调 `task_wait`（同一个 taskId）领取。**收尾前必须把派出去的活都领回来**，' +
-  '否则本轮结束时会把它中止。同一批 tool-call 里派多个子任务是真的并行。'
+  '否则本轮结束时会把它中止。同一批 tool-call 里派多个子任务是真的并行；' +
+  '派了多条时用 `task_list` 看各自的状态与进度。'
 
 /** 派活句柄交回父上下文的文案：要让模型自己接得上 `task_wait`，并说清「别干等」 */
 function handleText(name: string, taskId: string): string {
@@ -192,22 +212,6 @@ function handleText(name: string, taskId: string): string {
     `你可以继续做自己的事；需要它的结论时调 task_wait（taskId 填 ${taskId}）。` +
     '不需要了可以调 task_cancel 提前结束；收尾前记得领回结论，否则本轮结束时它会被中止。'
   )
-}
-
-/**
- * 告诉父模型「这个子任务能用什么」。
- *
- * ⚠️ 必须写：子任务的工具集**不在父的请求里**（父只拿到 `agent-<id>` 这一个 schema），
- * 不列出来父模型只能从「只读侦察」四个字猜，容易派一个「顺便跑一下测试」这种它根本
- * 做不到的活 —— 子任务会拿步数去试一个不存在的工具。
- *
- * 与主提示词「不重复列工具」的取舍不冲突：那是同一个模型的 schema 已经发过去了；
- * 这里是**另一个上下文**（子 run）的能力，父上下文看不见。
- */
-function availableToolsLine(tools: Record<string, unknown>): string {
-  const names = Object.keys(tools).sort()
-  if (names.length === 0) return ''
-  return `\n\n它可用的工具：${names.join('、')}（只读，不能改文件 / 执行命令）。`
 }
 
 /** 一次派活交回父上下文的东西 */
@@ -229,8 +233,14 @@ interface DelegationTask {
   subagentId: SubagentId
   /** 显示名（领取文案与收尾日志） */
   name: string
+  /** 派发时的一句话说明（`task_list` 里区分多个子任务；模型没给就是任务原文首行） */
+  summary: string
   /** 派出去的时刻：`task_wait` 超时文案里报「总共跑了多久」 */
   startedAt: number
+  /** 终态（跑完才有）：`task_list` 报「已完成 / 失败 / 已中止」 */
+  readonly outcome?: Exclude<SubagentRunStatus, 'running'>
+  /** 落地时刻（跑完才有）：`task_list` 算总用时 */
+  readonly finishedAt?: number
   /** 子 run 的最终结论；**不会 reject**（失败也是结果文案），所以可以放心 race */
   settled: Promise<DelegationResult>
   /** 只掐这一条（派活卡停止钮 / 主模型 task_cancel / 父轮收尾） */
@@ -438,7 +448,7 @@ export interface BuildDelegationToolsOptions {
 
 /** `buildDelegationTools` 的产出：工具集 + 本轮收尾 */
 export interface DelegationToolSet {
-  /** `agent-<id>` × N + `task_wait` + `task_cancel` */
+  /** `agent-<id>` × N + `task_list` + `task_wait` + `task_cancel` */
   tools: Record<string, unknown>
   /**
    * 父轮收尾：把还在跑的子任务全部中止（已经没人领它们的结论了）。
@@ -451,8 +461,8 @@ export interface DelegationToolSet {
 }
 
 /**
- * 建一组派活工具：`agent-<id>` × N + `task_wait`（领取）+ `task_cancel`（提前结束）。
- * 不启用子任务时调用方不传 ids。
+ * 建一组派活工具：`agent-<id>` × N + `task_list`（看状态）+ `task_wait`（领取）
+ * + `task_cancel`（提前结束）。不启用子任务时调用方不传 ids。
  *
  * 每次 `runAgent` 现建（与父同一节奏，代价只是几个对象）；`failures` / `tasks` 也是
  * **每轮一份**，跨轮不共享 —— 上一轮连续失败不该影响这一轮的判断。
@@ -520,19 +530,27 @@ export function buildDelegationTools(
     )
 
     out[`agent-${id}`] = {
-      // 规格自带的能力说明 + 这个子任务具体有哪些工具 + 派活的公共契约
-      description: spec.description + availableToolsLine(tools) + DELEGATION_TOOL_SUFFIX,
+      // 规格自带的能力说明 + 派活的公共契约（立即返回 / 结论靠 task_wait 领）
+      description: spec.description + DELEGATION_TOOL_SUFFIX,
       inputSchema: z.object({
         task: z
           .string()
-          .describe('要交给这个子任务的具体问题 / 目标。写清楚要找什么、要看哪里。')
+          .describe('要交给这个子任务的具体问题 / 目标。写清楚要找什么、要看哪里。'),
+        summary: z
+          .string()
+          .describe(
+            '一句话说明这条派活是干什么的（不超过 20 字，例如「查 auth 入口」）。' +
+              '同时派多个子任务时，task_list 靠它区分谁是谁。'
+          )
       }),
       execute: async (
-        input: { task?: string },
+        input: { task?: string; summary?: string },
         options: { toolCallId?: string; abortSignal?: AbortSignal }
       ): Promise<string> => {
         const toolCallId = options?.toolCallId ?? ''
         const task = (input?.task ?? '').trim()
+        /** 一句话说明：模型给的优先，没给就取任务原文首行（`task_list` 必须有东西可区分） */
+        const summary = (input?.summary ?? '').trim().slice(0, 40) || shortTaskLabel(task)
         if (!task) return RESULT_TEXT_EMPTY
         /**
          * 连败闸开在**派出去那一刻**：失败是在后台才发生的，等它回来时父模型可能已经又派了
@@ -734,10 +752,16 @@ export function buildDelegationTools(
          * 同步语境里判断「还跑着吗」，没有别的可靠办法。
          */
         let finished = false
+        /** 终态与落地时刻：`task_list` 用，和 `settled` 一起在跑完时写 */
+        let outcome: Exclude<SubagentRunStatus, 'running'> | undefined
+        let finishedAt: number | undefined
         const settled: Promise<DelegationResult> = runSubagent()
           .catch((): DelegationResult => done('failed', RESULT_TEXT_FAILED))
           .then((result) => {
             finished = true
+            finishedAt = Date.now()
+            // `DelegationResult.status` 的类型含 running，但 `done()` 只会产出终态
+            if (result.status !== 'running') outcome = result.status
             return result
           })
         const taskId = toolCallId || `task-${++taskSeq}`
@@ -745,7 +769,15 @@ export function buildDelegationTools(
           id: taskId,
           subagentId: id,
           name: spec.name,
+          summary,
           startedAt,
+          // getter 而不是快照：这两项是跑完才有的，快照永远是 undefined
+          get outcome() {
+            return outcome
+          },
+          get finishedAt() {
+            return finishedAt
+          },
           settled,
           abort: () => own.abort(),
           isFinished: () => finished,
@@ -759,7 +791,7 @@ export function buildDelegationTools(
 
   /**
    * 一个 `agent-<id>` 都没建出来（设置里没开任何子智能体、或开着的 id 全被删 / 未定义）：
-   * **连 task_wait / task_cancel 也不挂**。
+   * **连 task_list / task_wait / task_cancel 也不挂**。
    *
    * 没有可领的派活时留着这两个工具是有害的：模型会凭空多出「好像有后台任务在跑」的
    * 错觉，调过去只会拿到「没有这个 taskId」。能力在装配层整组缺席，别靠运行时空转兜底。
@@ -791,7 +823,7 @@ export function buildDelegationTools(
       if (!entry) {
         const alive = [...tasks.values()].filter((t) => !t.isFinished())
         return alive.length
-          ? `没有这个 taskId。当前在跑的派活：${alive.map((t) => `${t.id}（${t.name}）`).join('、')}。`
+          ? `没有这个 taskId。当前在跑的派活：${alive.map((t) => `${t.id}（${t.name}：${t.summary}）`).join('、')}。`
           : '没有这个 taskId。当前没有在跑的派活 —— 派活工具会返回它的 taskId，照抄过来。'
       }
       const { result, waitedMs } = await waitSettled(entry)
@@ -801,7 +833,8 @@ export function buildDelegationTools(
          * 实际它可能已经跑了十分钟 —— 那正是应该取消而不是继续等的时候。
          */
         return (
-          `「${entry.name}」还在跑（已运行 ${formatElapsed(Date.now() - entry.startedAt)}，` +
+          `「${entry.name}」${entry.summary ? `（${entry.summary}）` : ''}还在跑` +
+          `（已运行 ${formatElapsed(Date.now() - entry.startedAt)}，` +
           `本次等待 ${formatElapsed(waitedMs)}）。` +
           `先做别的，过一会儿再 task_wait（taskId: ${entry.id}）；` +
           '也可以自己把这件事做完，或者用 task_cancel 直接结束它。'
@@ -813,44 +846,137 @@ export function buildDelegationTools(
   }
 
   /**
-   * 主动结束一个后台子任务。
+   * 主动结束后台子任务（一个 / 一组 / 全部在跑的）。
    *
    * 与派活卡上的停止钮是**同一个动作**（都走 `own.abort()`），区别只是发起者：那边是
    * 用户点，这里是主模型自己判断「这活不要了」。没有这个工具时，模型只剩「一直等到
    * 60 秒超时」或「把整轮停掉」两条烂路 —— 用户看到的就是「主 Agent 结束不了子任务」。
+   *
+   * 支持批量：同时派了三四条、发现方向全错时，一条调用就能收干净，不必逐个发。
+   * `taskIds` 是**唯一**入参 —— 单条也传数组，避免「taskId 还是 taskIds」的二选一。
    */
   out.task_cancel = {
     description:
-      '结束一个还在跑的后台子任务，释放它的模型调用与工具执行。派活已经没意义、用户改了主意、' +
+      '结束后台子任务，释放它们的模型调用与工具执行。传要结束的 taskIds 数组（一条就传单元素数组；' +
+      '全部都要停就先 task_list 拿 id 再一起传）。派活已经没意义、用户改了主意、' +
       '或你自己已经把这件事做完时用它。取消后结论作废，不必再 task_wait。',
     inputSchema: z.object({
-      taskId: z.string().describe('派活时返回的 taskId（照抄，不要改）')
+      taskIds: z.array(z.string()).describe('要结束的子任务 id 列表（task_list 里能查到）')
     }),
-    execute: async (input: { taskId?: string }): Promise<string> => {
-      const taskId = (input?.taskId ?? '').trim()
-      const entry = tasks.get(taskId)
-      if (!entry) {
+    execute: async (input: { taskIds?: string[] }): Promise<string> => {
+      /** 去重 + 去空白：模型偶尔会把同一个 id 写两遍 / 带空格 */
+      const requested = [
+        ...new Set((input?.taskIds ?? []).map((id) => id.trim()).filter(Boolean))
+      ]
+
+      if (requested.length === 0) {
         const alive = [...tasks.values()].filter((t) => !t.isFinished())
+        if (!tasks.size) return '本轮还没有派过子任务。'
         return alive.length
-          ? `没有这个 taskId。当前在跑的派活：${alive.map((t) => `${t.id}（${t.name}）`).join('、')}。`
-          : '没有这个 taskId。当前没有在跑的派活。'
+          ? `没有传 taskIds。当前在跑：${alive
+              .map((t) => `${t.id}（${t.name}：${t.summary}）`)
+              .join('、')}。`
+          : '当前没有在跑的子任务。'
       }
-      if (entry.isFinished()) {
+
+      const missing: string[] = []
+      const alreadyDone: DelegationTask[] = []
+      const cancelled: DelegationTask[] = []
+      for (const id of requested) {
+        const entry = tasks.get(id)
+        if (!entry) {
+          missing.push(id)
+          continue
+        }
+        if (entry.isFinished()) {
+          alreadyDone.push(entry)
+          continue
+        }
+        entry.cancelled = true
+        entry.abort()
+        cancelled.push(entry)
+      }
+
+      /** 等一小会儿让它们落地，好把「运行了多久」说准；卡住时不拖住父轮 */
+      if (cancelled.length > 0) {
+        let timer: ReturnType<typeof setTimeout> | undefined
+        await Promise.race([
+          Promise.all(cancelled.map((t) => t.settled)).catch(() => undefined),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, SETTLE_WAIT_MS)
+          })
+        ])
+        if (timer) clearTimeout(timer)
+      }
+
+      const label = (t: DelegationTask): string =>
+        `「${t.name}」${t.summary ? `（${t.summary}）` : ''}`
+
+      // 单个的照旧给一句干净的回话（最常见的用法，不必套一层列表）
+      if (requested.length === 1 && cancelled.length === 1) {
+        const entry = cancelled[0]
+        if (!entry) return '没有可结束的子任务。'
+        return entry.isFinished()
+          ? `已结束${label(entry)}（运行 ${formatElapsed((entry.finishedAt ?? Date.now()) - entry.startedAt)}）。`
+          : `已请求结束${label(entry)}，它正在收尾。`
+      }
+      if (requested.length === 1 && alreadyDone.length === 1) {
+        const entry = alreadyDone[0]
+        if (!entry) return '没有可结束的子任务。'
         return `「${entry.name}」已经跑完了，结论还在；用 task_wait（taskId: ${entry.id}）领取。`
       }
-      entry.cancelled = true
-      entry.abort()
-      /** 等一小会儿让它落地，好把「运行了多久」说准；卡住时不拖住父轮 */
-      let timer: ReturnType<typeof setTimeout> | undefined
-      const result = await Promise.race([
-        entry.settled,
-        new Promise<null>((resolve) => {
-          timer = setTimeout(() => resolve(null), SETTLE_WAIT_MS)
-        })
-      ])
-      if (timer) clearTimeout(timer)
-      if (result) return `已结束「${entry.name}」（运行 ${formatElapsed(result.durationMs)}）。`
-      return `已请求结束「${entry.name}」，它正在收尾。`
+
+      const lines: string[] = []
+      if (cancelled.length > 0) {
+        lines.push(`已结束 ${cancelled.length} 个子任务：`)
+        for (const t of cancelled) {
+          lines.push(
+            t.isFinished()
+              ? `- ${label(t)}：运行 ${formatElapsed((t.finishedAt ?? Date.now()) - t.startedAt)}`
+              : `- ${label(t)}：已请求结束，正在收尾`
+          )
+        }
+      }
+      if (alreadyDone.length > 0) {
+        lines.push(
+          `已经跑完、结论还在（用 task_wait 领取）：${alreadyDone
+            .map((t) => `${t.id}（${t.name}）`)
+            .join('、')}`
+        )
+      }
+      if (missing.length > 0) lines.push(`没有这些 taskId：${missing.join('、')}`)
+      if (lines.length === 0) return '当前没有在跑的子任务。'
+      return lines.join('\n')
+    }
+  }
+
+  /**
+   * 列出本轮所有后台子任务：同时派了多条时，模型回来分不清谁是谁就靠它。
+   *
+   * 每行必须带**派发时的一句话说明**（`summary`）与状态 / 时长：只有 taskId 和子任务
+   * 类型的话，三条「侦察」摆在一起还是认不出哪条是查 auth、哪条是查构建脚本。
+   */
+  out.task_list = {
+    description:
+      '列出本轮所有后台子任务：taskId、子任务类型、派发时的简短说明、状态' +
+      '（运行中 / 已完成 / 失败 / 已中止 / 已取消）与已运行时长。' +
+      '同时派了多个子任务、过一会儿回来分不清谁是谁时，先调它。',
+    inputSchema: z.object({}),
+    execute: async (): Promise<string> => {
+      if (tasks.size === 0) return '本轮还没有派过子任务。'
+      const now = Date.now()
+      const rows = [...tasks.values()].map((t) => {
+        const head = `${t.id} · ${t.name} · ${t.summary || '（无说明）'}`
+        if (!t.isFinished()) {
+          return `- ${head} —— 运行中，已运行 ${formatElapsed(now - t.startedAt)}`
+        }
+        const status = t.cancelled ? '已取消' : STATUS_TEXT[t.outcome ?? 'done']
+        const elapsed = formatElapsed((t.finishedAt ?? now) - t.startedAt)
+        // 取消掉的没有结论可领，别提示一句会落空的 task_wait
+        const claim = !t.cancelled && !t.claimed ? '（结论未领取，用 task_wait 领取）' : ''
+        return `- ${head} —— ${status}，用时 ${elapsed}${claim}`
+      })
+      return ['本轮后台子任务：', ...rows].join('\n')
     }
   }
 

@@ -319,6 +319,12 @@ export async function startAssistantTurn(input: AssistantSendInput): Promise<Sta
     ),
     // 客户端偏好（设置页的「模型请求重试」）；不传 = 缺省 2 次
     ...(maxRetries !== undefined ? { maxRetries } : {}),
+    /**
+     * 设置里的「工具意图」是**全局**偏好（设置 → AI → 偏好）。不传这个字段
+     * `runAgent` 会按缺省开启处理 —— 助手这条链原来就是漏传，于是设置里关掉后
+     * `intent` 仍然被注入进每个工具的 schema。与 `chat-turn` 同一口径。
+     */
+    ...(prefs.toolIntent !== undefined ? { toolIntent: prefs.toolIntent } : {}),
     signal: run.controller.signal,
     onEvent
   })

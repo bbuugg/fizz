@@ -189,7 +189,14 @@ export function MobileSettingsPanel({
       */}
       <nav
         className={cn(
-          'absolute inset-y-0 left-0 flex w-full flex-col p-2',
+          /*
+           * 横向**不留** padding（只有 `py-2`）：菜单项自己带 `px-2`，横向留白统一由
+           * 宿主那层 `p-2` 出。原来这里是 `p-2`，等于「宿主 8 + 菜单 8 + 行内 8 = 24」，
+           * 而二级页内容只吃到「宿主 8 + 面板 8 = 16」—— 两级页面的图标列差 8px。
+           * 现在两边都是 16：与顶部标题栏的图标（`px-3` + 按钮内边距后约 14~16）也对得上。
+           * 行底色会从 8px 处开始（比内容宽 8），这是列表行的正常出血，不是错位。
+           */
+          'absolute inset-y-0 left-0 flex w-full flex-col py-2',
           animate ? 'translate-x-0' : 'static w-44 shrink-0',
           // 进场 / 退场都播；常驻 `transition-transform`（见文件头：`translate` 属性靠它才有过渡）
           'transition-transform duration-250 ease-[cubic-bezier(0.32,0.72,0,1)]',
@@ -273,7 +280,13 @@ export function MobileSettingsPanel({
               aria-label={tr('返回设置')}
               title={tr('返回设置')}
               onClick={back}
-              className="-ml-1 rounded-md p-1 text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
+              /*
+               * `-ml-2`（不是 `-ml-1`）：`ChevronLeft` 的可见笔画在 24 viewBox 里只占
+               * 中间一段（x≈8~16），16px 渲染时笔画左缘比图标盒子再缩 ~5.3px。盒子放到
+               * 12px，笔画才落在 ~17px，和二级内容的 16px 只差 1px —— 用盒子对齐会看着
+               * 箭头整体偏右。按钮的可点区域仍然在内容左缘之外，不影响点击。
+               */
+              className="-ml-2 mr-1 rounded-md p-1 text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
             >
               <ChevronLeft className="size-4" />
             </button>
@@ -284,8 +297,12 @@ export function MobileSettingsPanel({
         {/*
           `key={tab}`：**每个分组用自己那份滚动容器**（容器共用的话，在「通用」滚到底
           再切到「模型」，新分组会停在底部而不是顶部）。孩子本来就会随 tab 重挂。
+
+          ⚠️ 这里**不再加 `py-2`**：外层内容页已经有 `p-2`，再叠一层会让二级页顶部
+          距离标题栏 16px，而一级菜单的 `nav` 只有 `py-2`（8px）—— 两级页切换时内容
+          会往下跳一格。上下留白统一由内容页的 `p-2` 出。
         */}
-        <div key={tab} className="min-h-0 flex-1 overflow-auto no-scrollbar py-2">
+        <div key={tab} className="min-h-0 flex-1 overflow-auto no-scrollbar">
           <SettingsContent tab={tab} extraGroups={extraGroups} {...common} />
         </div>
       </div>

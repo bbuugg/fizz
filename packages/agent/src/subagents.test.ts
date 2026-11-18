@@ -35,18 +35,20 @@ vi.mock('ai', async (importOriginal) => ({
 
 // 子 agent 的工具集在这里不参与断言：只要 `execute` 里那条流的行为，工具全替成空对象
 vi.mock('@fizz/tools', () => ({
-  buildAgentTools: () => ({ read: {}, glob: {}, grep: {}, write: {}, bash: {} }),
-  buildWebFetchTool: () => ({ web_fetch: {} }),
-  buildGitReadTool: () => ({ git_read: {} }),
-  filterToolSet: (all: Record<string, unknown>, names: readonly string[]) =>
-    Object.fromEntries(names.filter((name) => name in all).map((name) => [name, all[name]]))
+  buildAgentTools: () => ({}),
+  buildWebFetchTool: () => ({}),
+  buildGitReadTool: () => ({}),
+  filterToolSet: (all: Record<string, unknown>) => all
 }))
 
 vi.mock('./resolve-model', () => ({ resolveModel: () => ({}) }))
 
 type DelegationTool = {
   description: string
-  execute: (input: { task: string }, options: { toolCallId: string }) => Promise<string>
+  execute: (
+    input: { task: string; summary?: string },
+    options: { toolCallId: string }
+  ) => Promise<string>
 }
 
 type WaitTool = {
@@ -56,7 +58,12 @@ type WaitTool = {
 
 type CancelTool = {
   description: string
-  execute: (input: { taskId: string }) => Promise<string>
+  execute: (input: { taskIds?: string[] }) => Promise<string>
+}
+
+type ListTool = {
+  description: string
+  execute: (input: Record<string, never>) => Promise<string>
 }
 
 /** 造一条子 run 的流：正文可有可无，最后一步固定是一次工具调用（步数耗尽时的典型形状） */
@@ -152,9 +159,14 @@ function wait(built: Built, taskId = 'parent-1') {
   return (built.tools.task_wait as WaitTool).execute({ taskId })
 }
 
-/** 主模型主动结束一个后台子任务 */
-function cancel(built: Built, taskId = 'parent-1') {
-  return (built.tools.task_cancel as CancelTool).execute({ taskId })
+/** 主模型主动结束后台子任务（单条也传数组） */
+function cancel(built: Built, input: { taskIds?: string[] } = { taskIds: ['parent-1'] }) {
+  return (built.tools.task_cancel as CancelTool).execute(input)
+}
+
+/** 查看本轮所有后台子任务 */
+function listTasks(built: Built) {
+  return (built.tools.task_list as ListTool).execute({})
 }
 
 /** 派活 + 立刻领结论：绝大多数用例关心的是结论，不关心中间那段 */
@@ -223,11 +235,6 @@ describe('派活不阻塞父轮', () => {
     expect(tool.description).toContain('立即返回')
     expect(tool.description).toContain('task_wait')
     expect(tool.description).toContain('收尾前必须把派出去的活都领回来')
-    // 子任务的工具**不在父的请求里**：不列出来，父只能从「只读侦察」猜它能做什么
-    expect(tool.description).toContain('它可用的工具')
-    expect(tool.description).toContain('read')
-    expect(tool.description).toContain('web_fetch')
-    expect(tool.description).not.toContain('bash')
   })
 
   it('task_wait 能领到结论（结论没丢）', async () => {
@@ -430,6 +437,67 @@ describe('子任务总时长与主动取消', () => {
     expect(built.commandStops.has('parent-1')).toBe(false)
   })
 
+  it('一次可以结束多个：taskIds 批量取消', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const built = build({ ids: ['explorer', 'reviewer'] })
+    vi.mocked(streamText).mockImplementation(
+      ((args: { abortSignal?: AbortSignal }) => hangingStream(args.abortSignal)) as never
+    )
+    await (built.tools['agent-explorer'] as DelegationTool).execute(
+      { task: '查 auth', summary: '查 auth 入口' },
+      { toolCallId: 'p1' }
+    )
+    await (built.tools['agent-reviewer'] as DelegationTool).execute(
+      { task: '复核登录', summary: '复核登录改动' },
+      { toolCallId: 'p2' }
+    )
+
+    const out = await cancel(built, { taskIds: ['p1', 'p2'] })
+
+    expect(out).toContain('已结束 2 个子任务')
+    expect(out).toContain('查 auth 入口')
+    expect(out).toContain('复核登录改动')
+    const ends = built.events.filter((e) => e.type === 'subagent-end')
+    expect(ends).toHaveLength(2)
+    expect(ends.every((e) => e.type === 'subagent-end' && e.status === 'aborted')).toBe(true)
+  })
+
+  it('没传 taskIds 时列出在跑的任务，而不是误伤全部', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const built = build()
+    vi.mocked(streamText).mockImplementation(
+      ((args: { abortSignal?: AbortSignal }) => hangingStream(args.abortSignal)) as never
+    )
+    await (built.tools['agent-explorer'] as DelegationTool).execute(
+      { task: 'a', summary: '甲' },
+      { toolCallId: 'p1' }
+    )
+
+    const out = await cancel(built, {})
+
+    expect(out).toContain('没有传 taskIds')
+    expect(out).toContain('p1')
+    expect(await listTasks(built)).toContain('运行中')
+    await built.settle()
+  })
+
+  it('批量里混入不存在的 id：能结束的照常结束，失配的单独说明', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const built = build()
+    vi.mocked(streamText).mockImplementation(
+      ((args: { abortSignal?: AbortSignal }) => hangingStream(args.abortSignal)) as never
+    )
+    await (built.tools['agent-explorer'] as DelegationTool).execute(
+      { task: 'a', summary: '甲' },
+      { toolCallId: 'p1' }
+    )
+
+    const out = await cancel(built, { taskIds: ['p1', 'nope'] })
+
+    expect(out).toContain('已结束 1 个子任务')
+    expect(out).toContain('没有这些 taskId：nope')
+  })
+
   it('已经跑完的子任务不会被 task_cancel 丢掉结论', async () => {
     const built = build()
     vi.mocked(streamText).mockReturnValue(fakeStream('结论在 src/auth.ts') as never)
@@ -454,6 +522,71 @@ describe('子任务总时长与主动取消', () => {
 
     const warnings = vi.mocked(console.warn).mock.calls.map((call) => String(call[0]))
     expect(warnings.some((line) => line.includes('结论没被领走'))).toBe(false)
+  })
+})
+
+/**
+ * 同时派多个后台子任务时，模型回来要能分清「哪条是哪条」。
+ *
+ * 只有 taskId + 子任务类型时，三条「侦察」摆在一起还是认不出谁在查 auth、谁在查构建；
+ * 所以每条派活在派发时都要带一句很短的说明，`task_list` 把它与状态 / 时长一起列出来。
+ */
+describe('列出后台子任务', () => {
+  it('用派发时的简短说明区分多个子任务，并给出状态与时长', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const built = build({ ids: ['explorer', 'reviewer'] })
+    vi.mocked(streamText).mockImplementation(
+      ((args: { abortSignal?: AbortSignal }) => hangingStream(args.abortSignal)) as never
+    )
+    await (built.tools['agent-explorer'] as DelegationTool).execute(
+      { task: '读 auth 相关文件并汇总入口', summary: '查 auth 入口' },
+      { toolCallId: 'p1' }
+    )
+    await (built.tools['agent-reviewer'] as DelegationTool).execute(
+      { task: '复核这次登录改动', summary: '复核登录改动' },
+      { toolCallId: 'p2' }
+    )
+
+    const out = await listTasks(built)
+    expect(out).toContain('p1')
+    expect(out).toContain('查 auth 入口')
+    expect(out).toContain('p2')
+    expect(out).toContain('复核登录改动')
+    expect(out).toContain('运行中')
+    await built.settle()
+  })
+
+  it('模型没给说明时退到任务原文首行（不会出现一条认不出的任务）', async () => {
+    const built = build()
+    vi.mocked(streamText).mockReturnValue(fakeStream('ok') as never)
+    await (built.tools['agent-explorer'] as DelegationTool).execute(
+      { task: '先看 src/auth.ts\n再看 index.ts' },
+      { toolCallId: 'p1' }
+    )
+
+    expect(await listTasks(built)).toContain('先看 src/auth.ts')
+    await built.settle()
+  })
+
+  it('跑完的标「已完成」并提示结论还没领', async () => {
+    const built = build()
+    vi.mocked(streamText).mockReturnValue(fakeStream('结论在 src/auth.ts') as never)
+    await (built.tools['agent-explorer'] as DelegationTool).execute(
+      { task: '查入口', summary: '查入口' },
+      { toolCallId: 'p1' }
+    )
+
+    // 等子 run 落地（刻意不走 task_wait：要验证「未领取」那一句）
+    await vi.waitFor(async () => {
+      expect(await listTasks(built)).toContain('已完成')
+    })
+    const out = await listTasks(built)
+    expect(out).toContain('结论未领取')
+    expect(out).toContain('task_wait')
+  })
+
+  it('还没派过活时说清楚，而不是返回一张空表', async () => {
+    expect(await listTasks(build())).toContain('还没有派过子任务')
   })
 })
 
@@ -483,7 +616,8 @@ describe('自定义子智能体', () => {
       'agent-explorer',
       `agent-${def.id}`,
       'task_wait',
-      'task_cancel'
+      'task_cancel',
+      'task_list'
     ])
   })
 

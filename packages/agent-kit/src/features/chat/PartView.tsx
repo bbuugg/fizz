@@ -681,8 +681,8 @@ function renderBuiltinDirect(
       subject = str(input.taskId)
       break
     case 'task_cancel':
-      // 同上：取消的是哪一条，看 taskId 就知道
-      subject = str(input.taskId)
+      // 批量时是数组：一行列出来，能对上 task_list / 派活卡
+      subject = Array.isArray(input.taskIds) ? input.taskIds.join('、') : undefined
       break
     default:
       return null

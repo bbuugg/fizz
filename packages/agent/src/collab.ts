@@ -57,6 +57,8 @@ export interface CollabRuntimeOptions {
   getPermissionMode?: () => AiPermissionMode
   requestConfirm?: (req: AgentConfirmInput) => Promise<boolean>
   commandStops?: Map<string, () => void>
+  /** 设置里的「工具意图」开关；缺省 = 开启（与 runAgent 同一口径） */
+  toolIntent?: boolean
   /** 主 run 的中止信号：触发后所有 Agent 一起停 */
   signal?: AbortSignal
   /** 流事件出口（服务端 SSE） */
@@ -606,6 +608,7 @@ export class CollabRuntime {
         permissionMode: agent.permissionMode,
         ...(requestConfirm ? { requestConfirm } : {}),
         ...(this.opts.commandStops ? { commandStops: this.opts.commandStops } : {}),
+        ...(this.opts.toolIntent !== undefined ? { toolIntent: this.opts.toolIntent } : {}),
         /**
          * 标准装配（文件 / 联网工具 + 工作区提示词）之上叠两样东西：
          * - 协作身份提示词（每个 Agent 的职责 / 投递规则）；

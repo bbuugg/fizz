@@ -42,6 +42,7 @@ describe('子任务白名单 · 远端工作区', () => {
       'agent-explorer',
       'agent-reviewer',
       'task_cancel',
+      'task_list',
       'task_wait'
     ])
   })
@@ -53,6 +54,7 @@ describe('子任务白名单 · 远端工作区', () => {
       'agent-explorer',
       'agent-reviewer',
       'task_cancel',
+      'task_list',
       'task_wait'
     ])
   })

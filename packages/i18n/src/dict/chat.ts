@@ -221,6 +221,7 @@ export const CHAT: Record<string, string> = {
   '子任务 · 侦察': 'Sub-agent · Scout',
   '子任务 · 审查': 'Sub-agent · Reviewer',
   '领取子任务结论': 'Claim sub-agent result',
+  '列出子任务': 'List sub-agents',
   '取消子任务': 'Cancel sub-agent',
   '读取': 'Read',
   '移动文件': 'Move file',

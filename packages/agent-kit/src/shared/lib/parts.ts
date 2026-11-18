@@ -562,6 +562,7 @@ export const TOOL_LABELS: Record<string, string> = {
   'agent-explorer': '子任务 · 侦察',
   'agent-reviewer': '子任务 · 审查',
   // 领结论：派活卡只负责「派出 + 过程」，子任务的结论落在这张卡里
+  task_list: '列出子任务',
   task_wait: '领取子任务结论',
   // 提前结束一个后台子任务（模型自己判断这活不要了；用户点卡片上的停止钮走同一条 abort）
   task_cancel: '取消子任务'
