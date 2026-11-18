@@ -1,0 +1,140 @@
+/*
+ * 思考强度滑块的轨道 / 拇指样式。参考 LeiBox `reasoning-effort-slider` 的观感：
+ * 轨道里是一块流动星空，已填充部分按档位比例裁切；拇指是一颗白色果冻块。
+ *
+ * 所有随拖动实时变化的值都由 `ReasoningEffortPanel` 写成 CSS 变量（rAF 里逐帧写）：
+ * - `--effort-ratio`：0–1，决定填充裁切、拇指位置与色相；
+ * - `--effort-press` / `--effort-jelly-*`：按压缩放与拖速形变。
+ * 这里只负责把变量落成几何与颜色，**不要在 CSS 里加 transition 去动画 ratio**：
+ * 拖动时每一帧都要跟手，动画交给 JS 的吸附缓动。
+ */
+
+.reasoning-effort {
+  --effort-ratio: 0;
+  --effort-hue: calc(210 + var(--effort-ratio) * var(--effort-ratio) * 63);
+  min-width: 0;
+}
+
+/* 轨道底：主题前景色的一层淡洗，亮色主题是浅灰、暗色主题是深灰 */
+.reasoning-effort-track {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--foreground) 10%, var(--background));
+}
+
+/* 已填充部分：裁到拇指右缘（左右各留 16px = 拇指宽度的一半） */
+.reasoning-effort-fill {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  clip-path: inset(0 calc((100% - 32px) * (1 - var(--effort-ratio))) 0 0 round 999px);
+}
+
+.reasoning-effort-fill canvas {
+  width: 100%;
+  height: 100%;
+}
+
+/* 档位点：两端不放（轨道两头就是端点），只标中间 6 个 */
+.reasoning-effort-dots {
+  position: absolute;
+  inset: 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  pointer-events: none;
+  transition: opacity 300ms;
+}
+
+.reasoning-effort-dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--foreground) 30%, transparent);
+}
+
+/* 到最高档时填充已经铺满，点会被星云吃掉，索性整排淡出 */
+.reasoning-effort[data-maximum] .reasoning-effort-dots {
+  opacity: 0;
+}
+
+.reasoning-effort-input {
+  cursor: grab;
+}
+
+.reasoning-effort[data-dragging] .reasoning-effort-input {
+  cursor: grabbing;
+}
+
+/* 装饰拇指：真正接事件的 Radix thumb 是透明的，视觉位置由 ratio 算出 */
+.reasoning-effort-thumb {
+  position: absolute;
+  left: calc((100% - 32px) * var(--effort-ratio) + 3px);
+  top: 2px;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--effort-jelly-left, 50%) var(--effort-jelly-right, 50%)
+    var(--effort-jelly-right, 50%) var(--effort-jelly-left, 50%) / 50%;
+  border: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent);
+  background: #fafafa;
+  box-shadow: 0 1px 3px #0002;
+  pointer-events: none;
+  scale: var(--effort-press, 1);
+  transform: translateX(var(--effort-jelly-offset, 0px)) skewX(var(--effort-jelly-skew, 0deg))
+    scale(var(--effort-jelly-x, 1), var(--effort-jelly-y, 1));
+  transform-origin: center;
+  transition:
+    border-color 180ms,
+    box-shadow 180ms;
+}
+
+.reasoning-effort-input:hover .reasoning-effort-thumb {
+  border-color: color-mix(in srgb, var(--foreground) 20%, transparent);
+}
+
+.reasoning-effort[data-dragging] .reasoning-effort-thumb {
+  transition-duration: 0ms;
+  box-shadow: 0 2px 5px #0003;
+}
+
+/* Radix thumb 只留 32×30 的透明命中区；默认的 border / ring / 阴影全部压掉 */
+.reasoning-effort .reasoning-effort-input-thumb {
+  display: block;
+  width: 32px !important;
+  height: 30px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+/* 键盘聚焦：光圈画在整条轨道上，和胶囊输入框的 focus-visible 语汇一致 */
+.reasoning-effort-input:has(:focus-visible) {
+  border-radius: 999px;
+  outline: 2px solid color-mix(in srgb, var(--foreground) 60%, transparent);
+  outline-offset: 2px;
+}
+
+/* 当前档位：色相跟着档位走（默认偏蓝，最高偏红） */
+.reasoning-effort-current,
+.reasoning-effort-stops button[aria-pressed='true'] {
+  color: hsl(var(--effort-hue) 75% 43%);
+}
+
+.dark .reasoning-effort-current,
+.dark .reasoning-effort-stops button[aria-pressed='true'] {
+  color: hsl(var(--effort-hue) 75% 70%);
+}
+
+.reasoning-effort-stops button[aria-pressed='true'] {
+  font-weight: 600;
+}
+
+.reasoning-effort-stops button:focus-visible {
+  outline: 2px solid var(--foreground);
+  outline-offset: 2px;
+}
