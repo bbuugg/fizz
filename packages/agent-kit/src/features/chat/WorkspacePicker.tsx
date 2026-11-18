@@ -14,21 +14,36 @@
  * - `ModelPicker`：`ModelPicker.tsx`（会话详情与定时任务共用一份）；
  * - `McpPicker`：`McpPicker.tsx`（同上）；
  * - `BrowserPicker`：`BrowserPicker.tsx`（同上）。
+ *
+ * ## 长相来自 `@fizz/ui/picker-panel`（不要在这里改行高 / 底色）
+ *
+ * 面板是「顶部固定搜索 → 中间滚动列表 → 底部固定动作」三段，搜索框带底色、行首一枚图标、
+ * 底部一整组动作只切一条上边线。这些**全部在 `PickerPanel` 那套原语里定型**：以后凡是
+ * 「点开能搜、能滚、底部带几条动作」的选择器都该用它，长相自然一致。本文件只负责：
+ * 把 `app` 里的数据灌进去、按搜索词筛好、把动作项翻成 `PickerAction`。
+ *
+ * 「未指定工作区」与添加类动作**同属底部那一组**，中间不再切一刀：它也是一次「选择」
+ * （选「不用现成目录」），和「加一个新目录」是同一层动作（2026-11 用户要求）。
  */
 import type { AgentWorkspace } from '@fizz/contracts/agent-api'
-import { Select, SelectContent, SelectItem, SelectTrigger } from '@fizz/ui/select'
-import { ChevronDown, FolderOpen } from 'lucide-react'
+import { Popover, PopoverTrigger } from '@fizz/ui/popover'
+import {
+  PickerAction,
+  PickerEmpty,
+  PickerFooter,
+  PickerItem,
+  PickerList,
+  PickerPanel,
+  PickerSearch
+} from '@fizz/ui/picker-panel'
+import { ChevronDown, Folder, FolderMinus, FolderOpen } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { useState } from 'react'
 import { CHAT_PILL } from '@fizz/agent-kit/features/chat/composer'
+import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
+import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { t } from '@fizz/i18n'
-
-/**
- * 「未指定工作区」在 Select 里的替身值 —— **只在渲染层存在**，不落库、不进请求。
- *
- * Radix Select 不接受空字符串值，而「没选工作区」在状态里就是 `null`；这一层把它映射成
- * 一个哨兵字符串，`onChange` 时再换回 `null`。别把它传出去。
- */
-const NO_WORKSPACE_VALUE = '__no_workspace__'
 
 export interface WorkspacePickerProps {
   /** 选中的工作区 id；`null` = 不用现成工作区（真正落地时自动建一个临时目录） */
@@ -40,8 +55,11 @@ export interface WorkspacePickerProps {
   emptyLabel?: string
   /** 触发器悬停说明（讲清「不选」到底会发生什么） */
   title?: string
-  /** 列表尾部的动作项（选择文件夹 / 从 Git 导入），点中走 `onAction`、不改变 value */
-  actions?: { value: string; label: string }[]
+  /**
+   * 底部固定的动作项（选择文件夹 / 从 Git 导入…），点中走 `onAction`、不改变 value。
+   * `icon` 由调用方给（动作的语义只有调用方知道），不传就是纯文字行。
+   */
+  actions?: { value: string; label: string; icon?: ReactNode }[]
   onAction?: (value: string) => void
   /**
    * 远端工作区所在主机的展示名（从 SSH 主机清单里查）。返回空 = 主机已删除
@@ -74,64 +92,134 @@ export function WorkspacePicker({
 }: WorkspacePickerProps) {
   // 订阅语言（默认值里的 t() 只在本组件重渲染时才会重算）
   useT()
+  const isMobile = useIsMobile()
+  const [open, setOpen] = useState(false)
+  /** 搜索词：只活在一次打开里（关面板就清空，下次打开是完整历史） */
+  const [query, setQuery] = useState('')
+
   const current = value ? workspaces.find((workspace) => workspace.id === value) : undefined
-  // 选中的那个已经不在清单里（被删 / 临时工作区没传进来）→ 退回「不选」，别显示成一个 id
-  const selectValue = current ? current.id : NO_WORKSPACE_VALUE
   const label = current?.name ?? emptyLabel
 
+  /** 名字 / 目录路径 / 远端主机名，任一处命中即保留（不区分大小写） */
+  const keyword = query.trim().toLowerCase()
+  const filtered = keyword
+    ? workspaces.filter((workspace) =>
+        [workspace.name, workspace.path, remoteHostName?.(workspace) ?? '']
+          .filter(Boolean)
+          .some((field) => field.toLowerCase().includes(keyword))
+      )
+    : workspaces
+
+  const close = (): void => setOpen(false)
+
   return (
-    <Select
-      value={selectValue}
-      disabled={disabled}
-      onValueChange={(next) => {
-        if (next === selectValue) return
-        if (actions?.some((action) => action.value === next)) {
-          onAction?.(next)
-          return
-        }
-        onChange(next === NO_WORKSPACE_VALUE ? null : next)
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next)
+        if (!next) setQuery('')
       }}
     >
-      <SelectTrigger
-        className={CHAT_PILL}
-        // 贴输入卡片外面：与卡片内的权限 pill 同一层视觉，仍不露默认箭头（自己画一枚小的）
-        icon={false}
-        aria-label={t('工作区')}
-        title={title}
-      >
-        <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="truncate">{label}</span>
-        <ChevronDown className="size-3 shrink-0 text-muted-foreground/70" />
-      </SelectTrigger>
+      <PopoverTrigger asChild>
+        {/* 手写 button（不是 Select 了）：样式仍走 CHAT_PILL —— 前置图标、箭头大小 / 颜色
+            必须和权限 / 模型那两颗 pill 对齐。触发器自己不渲染默认箭头，这里自己画一枚小的。 */}
+        <button
+          type="button"
+          className={cn(CHAT_PILL, 'disabled:cursor-not-allowed disabled:opacity-50')}
+          disabled={disabled}
+          aria-label={t('工作区')}
+          title={title}
+        >
+          <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="truncate">{label}</span>
+          <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+        </button>
+      </PopoverTrigger>
       {/* 一般贴在输入框下方，所以向下弹（Radix 会在贴底时自动翻转） */}
-      <SelectContent position="popper" side="bottom" align="start" sideOffset={6}>
-        <SelectItem value={NO_WORKSPACE_VALUE}>{emptyLabel}</SelectItem>
-        {workspaces.map((workspace) => (
-          <SelectItem key={workspace.id} value={workspace.id}>
-            {workspace.name}
-            {workspace.remote ? (
-              <span className="text-muted-foreground">
-                {' '}
-                · {remoteHostName?.(workspace) ?? t('主机已删除')}
-              </span>
-            ) : null}
-            {/* 目录被删 / 被移走（服务端巡检标的 `dirMissing`）：照旧可选 —— 选它是合法的
-                （比如目录马上就回来了），但要让人先看见，别等保存 / 发送时才被服务端打回 */}
-            {workspace.dirMissing ? (
-              <span className="text-muted-foreground">
-                {workspace.remote ? t('（远端目录不可用）') : t('（目录不存在）')}
-              </span>
-            ) : null}
-          </SelectItem>
-        ))}
-        {(actions ?? []).map((action) => (
-          <SelectItem key={action.value} value={action.value} className="text-primary">
-            {action.label}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+      <PickerPanel
+        side="bottom"
+        align="start"
+        sideOffset={6}
+        collisionPadding={8}
+        footer={
+          <PickerFooter>
+            {/* 「不选」与下面几条添加动作**同属一组**，中间不切分隔线（见文件头注释） */}
+            <PickerAction
+              icon={<FolderMinus />}
+              active={value === null}
+              onClick={() => {
+                close()
+                // 判据是 `value === null`（真的没选），不是 `current` —— 后者在「选中的那个
+                // 已不在清单里」时也是 undefined，那样点一下不会把那个死 id 清掉
+                if (value !== null) onChange(null)
+              }}
+            >
+              {emptyLabel}
+            </PickerAction>
+            {(actions ?? []).map((action) => (
+              <PickerAction
+                key={action.value}
+                icon={action.icon}
+                // 先关面板：这些动作会开自己的弹窗 / 系统目录框，面板留着只会压在上面
+                onClick={() => {
+                  close()
+                  onAction?.(action.value)
+                }}
+              >
+                {action.label}
+              </PickerAction>
+            ))}
+          </PickerFooter>
+        }
+      >
+        <PickerSearch
+          // 打开面板即可打字（桌面上搜索框就是唯一的入口）。
+          // 手机上**不**自动聚焦：软键盘会在面板定位之后才弹出，Radix 算出的可用高度
+          // 里没有它 —— 面板会被顶到键盘底下。那边点一下输入框再搜。
+          autoFocus={!isMobile}
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder={t('搜索工作区')}
+          aria-label={t('搜索工作区')}
+        />
+        <PickerList>
+          {filtered.map((workspace) => {
+            const selected = workspace.id === value
+            // 远端主机 / 目录不可用两条提示合成一段，挤在名字右边（面板只有 18rem 宽）
+            const hint = [
+              workspace.remote ? `· ${remoteHostName?.(workspace) ?? t('主机已删除')}` : '',
+              workspace.dirMissing
+                ? workspace.remote
+                  ? t('（远端目录不可用）')
+                  : t('（目录不存在）')
+                : ''
+            ]
+              .filter(Boolean)
+              .join(' ')
+            return (
+              <PickerItem
+                key={workspace.id}
+                value={workspace.id}
+                icon={<Folder />}
+                hint={hint || undefined}
+                active={selected}
+                // 选中即生效：先关面板再改归属（父级会顺手回空会话 / 建临时工作区）。
+                // 点中的就是当前那个 → 只关面板：`selectWorkspace` 会再落一次盘，
+                // 而这一行只在空会话出现，重复选同一个本来就没有意义。
+                onSelect={() => {
+                  close()
+                  if (!selected) onChange(workspace.id)
+                }}
+              >
+                {workspace.name}
+              </PickerItem>
+            )
+          })}
+          {filtered.length ? null : (
+            <PickerEmpty>{keyword ? t('没有匹配的工作区') : t('还没有工作区')}</PickerEmpty>
+          )}
+        </PickerList>
+      </PickerPanel>
+    </Popover>
   )
 }
-
-

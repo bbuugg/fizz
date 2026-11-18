@@ -64,6 +64,7 @@ import { permissionOption } from '@fizz/agent-kit/shared/lib/permission'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { conversationTitle } from '@fizz/agent-kit/shared/lib/conversation-title'
 import { TriggerEditDialog } from '@fizz/agent-kit/features/tasks/TriggerEditDialog'
+import { reasoningEffortLabel } from '@fizz/agent-kit/features/chat/ReasoningEffortPanel'
 
 /** 「刚触发过」的判定窗口：窗口内的行亮绿点（与侧栏看板同一口径） */
 const RECENT_MS = 60_000
@@ -608,6 +609,14 @@ export function TriggersPanel() {
                 <dd className="min-w-0 truncate">
                   {modelTextOf(selected.template, app.models, app.acpAgents)}
                 </dd>
+                {/* 思考强度只对内置模型有意义（ACP 的思考档归 agent 自己）：外部 Agent
+                    那一行下面统一显示「不适用」，别让人以为这条任务的档位没生效 */}
+                <dt className="text-muted-foreground">{t('思考强度')}</dt>
+                <dd className="min-w-0">
+                  {selected.template.backend === 'acp'
+                    ? t('不适用（外部 Agent 自带）')
+                    : t(reasoningEffortLabel(selected.template.reasoningEffort))}
+                </dd>
                 {/* 外部 Agent 自带工具、不读这两个字段（表单里那两颗对它就是灰占位，
                     保存时也不写进模板）：这一档合并成一行「不适用」，否则会显示
                     「浏览器：关闭 / MCP：不挂」这种用户从没设过的假事实 */}
@@ -730,6 +739,8 @@ export function TriggersPanel() {
         临时工作区不进下拉（那是自动建的，不该被手动选中）。
       */}
       <TriggerEditDialog
+        // 只为工作区下拉里那四个添加入口（选目录 / Git / 远端 / 容器）要它
+        app={app}
         triggers={triggers}
         workspaces={app.workspaces.filter((workspace) => workspace.path && !workspace.scratch)}
         models={app.models}

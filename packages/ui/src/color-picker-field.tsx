@@ -109,7 +109,7 @@ export function ColorPickerField({
         <Input
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="h-9 w-24 font-mono text-xs"
+          className="h-8 w-24 font-mono text-xs"
           spellCheck={false}
         />
       )}

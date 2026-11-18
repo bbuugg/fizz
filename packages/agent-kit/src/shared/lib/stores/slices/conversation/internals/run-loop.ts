@@ -64,6 +64,18 @@ export function createConversationRunLoop(ctx: ConvCore) {
     // 已经有个循环在接这条会话（自动重接的退避睡眠还没醒 / 正接着）：别重复接 ——
     // 多一条空占位消息是小事，`handleFrame` 是追加式的，回放帧追加两遍会让正文重复
     if (!resume && subscribing.has(conversationId)) return true;
+    /**
+     * `resume` 的语义是「强制重接」，但**本端自己那条 live 流还活着时没有可重接的对象**：
+     * 再挂一条就是两条流往同一条助手消息追加同一批帧（`attachRun` 先清空再从头回放，
+     * `runRound` 的直播同时在写），表现是正文每个字都重复，只有整轮结束重载会话才恢复。
+     *
+     * 只卡 `resume` 这条路：断线续接（`runRound` 的 catch 里转交过来，不带 `requestId`
+     * 以外的强制语义）与刷新页面（切片里根本没有流）都不受影响。
+     */
+    if (resume) {
+      const own = readSlice(conversationId);
+      if (own.streaming && !own.request?.controller?.signal.aborted) return true;
+    }
     subscribing.add(conversationId);
     try {
       let requestId = resume?.requestId ?? "";
@@ -730,7 +742,24 @@ export function createConversationRunLoop(ctx: ConvCore) {
        */
       // 装载标记已在上面按 backend 亮起（含 `peekActiveRun` 这次往返），这里不再重复写
       const activeRun = await peekActiveRun(conversationId);
-      if (activeRun) {
+      /**
+       * 本端自己就在这一轮里跑（`runRound` 的 live 流正在往这条助手消息追加）——
+       * **一条流都不许再接**。
+       *
+       * 撞得最狠的是「新会话第一条」：`newConversation` 建完会话先把
+       * `activeConversationId` 切过去，界面立刻从空态页进会话；而 ACP 还要下发
+       * `setAcpAgentMode` / `setAcpThoughtLevel`（两次进程往返）才 `writeSlice` 落占位。
+       * 这段窗口里 `slices[id]` 还不存在，任何一次 `openConversation(id)`
+       * （PanelView 对齐标签 / 侧栏点会话 / 刷新后恢复）都会走到这里，而那一刻
+       * `runRound` 的 `streamChat` 已经上路 —— `peekActiveRun` 探到的正是**自己这一轮**。
+       *
+       * 再 attach 的后果：`attachRun` 先把 parts 清空再从头回放，`runRound` 那条直播
+       * 同时在写，两条流往同一条助手消息追加同一批帧 —— 正文每个字都出现两遍，
+       * 只有整轮结束手动「重新加载会话」才恢复（用户报的现状）。
+       */
+      if (activeRun && get().runningConversations[conversationId]) {
+        resumedActive = true;
+      } else if (activeRun) {
         try {
           const api = get().getApi();
           // 有 active run 时服务端只读内存快照，不会碰 agent 进程；sessionId / cwd

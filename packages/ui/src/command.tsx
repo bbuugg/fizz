@@ -60,7 +60,13 @@ function CommandDialog({
         showCloseButton={showCloseButton}
         onEscapeKeyDown={onEscapeKeyDown}
       >
-        <Command className="**:data-[slot=command-input-wrapper]:h-12 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group]]:px-2 [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5" {...commandProps}>
+        <Command
+          // 搜索框的高 / 图标尺寸由 `CommandInput` 自己给（与 `PickerSearch` 同一套），
+          // 这里只调列表与分组的内边距。别再往这里加 `[cmdk-input]` / `[cmdk-input-wrapper]`
+          // 的覆盖 —— 两处都写高度，改一处就漏一处。
+          className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group]]:px-2 [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5"
+          {...commandProps}
+        >
           {children}
         </Command>
       </DialogContent>
@@ -68,6 +74,17 @@ function CommandDialog({
   )
 }
 
+/**
+ * 面板顶部的搜索框。
+ *
+ * 长相与 `picker-panel.tsx` 的 `PickerSearch` **同一套**：一颗 `bg-muted` 的圆角底、
+ * 图标在左、两侧留 `p-2`。命令面板 / 模型选择 / 工作区选择这几处的搜索框本来就该
+ * 长一样 —— 之前这里是裸输入框 + 上下边框，和选择器那颗并排看就是两套控件。
+ *
+ * 高度比 `PickerSearch` 高两档（`h-10` = 40px，那边是 `h-8` = 32px，跟菜单行高对齐）：
+ * 命令面板是一整块 480px 宽的大面板，搜索框是它唯一的主入口，压到 32px 会显得憋屈；
+ * 而选择器那颗必须与列表行同高，否则两行叠在一起像两套控件。要改高度就改这一处。
+ */
 function CommandInput({
   className,
   leading,
@@ -80,20 +97,19 @@ function CommandInput({
   icon?: React.ReactNode
 }) {
   return (
-    <div
-      data-slot="command-input-wrapper"
-      className="flex h-9 items-center gap-2 px-3"
-    >
-      {leading}
-      {icon ?? <SearchIcon className="size-4 shrink-0 opacity-50" />}
-      <CommandPrimitive.Input
-        data-slot="command-input"
-        className={cn(
-          "flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-hidden placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50",
-          className
-        )}
-        {...props}
-      />
+    <div data-slot="command-input-wrapper" className="shrink-0 p-2">
+      <div className="flex h-10 items-center gap-2 rounded-lg bg-muted px-3">
+        {leading}
+        {icon ?? <SearchIcon className="size-4 shrink-0 text-muted-foreground" />}
+        <CommandPrimitive.Input
+          data-slot="command-input"
+          className={cn(
+            "h-full w-full min-w-0 bg-transparent text-sm outline-hidden placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50",
+            className
+          )}
+          {...props}
+        />
+      </div>
     </div>
   )
 }

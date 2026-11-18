@@ -20,17 +20,25 @@ function PopoverContent({
   className,
   align = "center",
   sideOffset = 4,
+  ref,
   onPointerDown,
   onPointerDownOutside,
   onCloseAutoFocus,
   ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Content>) {
+}: React.ComponentProps<typeof PopoverPrimitive.Content> & {
+  /**
+   * 面板元素本身。**量高度 / 给高度变化加动画**的调用方要它（如 `PickerPanel`）：
+   * 那种动画只能在 DOM 节点上做（FLIP），拿不到节点就只能整体重挂载。
+   */
+  ref?: React.Ref<HTMLDivElement>
+}) {
   // 指针关闭不回焦（否则触发器会被 :focus-visible 描成主色边框），见 focus-dismiss.ts
   const dismissFocus = useDismissFocusGuard()
   return (
     <PopoverPrimitive.Portal>
       <PopoverPrimitive.Content
         {...props}
+        ref={ref}
         data-slot="popover-content"
         align={align}
         sideOffset={sideOffset}

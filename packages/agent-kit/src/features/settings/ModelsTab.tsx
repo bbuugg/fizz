@@ -548,7 +548,9 @@ export function ModelsTab({ app }: { app: AgentApp }) {
             {/* 模型清单：一行一个模型，窗口**只读展示**在 id 后面；要改窗口去 ✎ 打开模型弹窗。
                 删到 0 个也允许 —— 空配置只是暂时不能用于对话，不会连这份配置一起被删掉。 */}
             {modelList.length > 0 ? (
-              <div className="mt-2 space-y-1">
+              /* 清单靠分隔线切分、每行不再单独套边框：卡片套卡片（配置卡 + 每行一圈）
+                 双层描边挨在一起，看着碎。 */
+              <div className="mt-2 divide-y divide-border/40">
                 {modelList.map((entry) => {
                   const m = entry.id
                   const stored = entry.contextWindow
@@ -556,9 +558,9 @@ export function ModelsTab({ app }: { app: AgentApp }) {
                   return (
                     <div
                       key={m}
-                      className="flex items-center gap-2 rounded border border-border/40 px-2 py-1"
+                      className="flex items-center gap-2 px-1 py-1.5"
                     >
-                      <span className="min-w-0 flex-1 truncate font-mono text-xs" title={m}>
+                      <span className="min-w-0 flex-1 truncate font-mono text-[0.8125rem]" title={m}>
                         {m}
                       </span>
                       {/* 窗口跟在名字后面：没单独配也显示**生效的兜底值**，不写「默认」两个字 */}
@@ -589,22 +591,22 @@ export function ModelsTab({ app }: { app: AgentApp }) {
                           <Button
                             size="sm"
                             variant="ghost"
-                            className="size-6 shrink-0 p-0 text-muted-foreground"
+                            className="size-7 shrink-0 p-0 text-muted-foreground"
                             aria-label={tr('编辑模型 {id}', { id: m })}
                             title={tr('编辑模型 id / 上下文窗口 / 输出上限 / 能力开关 / 接口风格')}
                             onClick={() => openModelDialog(item, m)}
                           >
-                            <Pencil className="size-3" />
+                            <Pencil className="size-3.5" />
                           </Button>
                           <Button
                             size="sm"
                             variant="ghost"
-                            className="size-6 shrink-0 p-0 text-muted-foreground hover:text-destructive"
+                            className="size-7 shrink-0 p-0 text-muted-foreground hover:text-destructive"
                             aria-label={tr('移除模型 {id}', { id: m })}
                             title={tr('移除模型 {id}', { id: m })}
                             onClick={() => setPending({ kind: 'model', item, modelId: m })}
                           >
-                            <X className="size-3" />
+                            <X className="size-3.5" />
                           </Button>
                         </>
                       )}
@@ -623,10 +625,10 @@ export function ModelsTab({ app }: { app: AgentApp }) {
               <Button
                 size="sm"
                 variant="ghost"
-                className="mt-1.5 h-6 px-2 text-xs text-muted-foreground"
+                className="mt-1.5 h-7 px-2 text-xs text-muted-foreground"
                 onClick={() => openModelDialog(item)}
               >
-                <Plus className="size-3" /> {tr('添加模型')}
+                <Plus className="size-3.5" /> {tr('添加模型')}
               </Button>
             )}
           </div>
@@ -718,7 +720,9 @@ export function ModelsTab({ app }: { app: AgentApp }) {
           「导入会话 / 管理工作区」那两个弹窗没封顶、靠内容自然撑高；这个表单字段多，
           不能完全照抄（会顶出屏幕、按钮够不到），所以移动端钉满视口 + 中间区内部滚动。
         */}
-        <DialogContent className="flex max-h-[85dvh] flex-col overflow-hidden max-md:h-[calc(100dvh-1rem)] max-md:max-h-[calc(100dvh-1rem)]">
+        {/* `sm:max-w-lg`：默认 `sm:max-w-sm`（384px）装这些字段太窄，
+            「上下文窗口」那段说明要折五六行，字段区整体发挤 */}
+        <DialogContent className="flex max-h-[85dvh] flex-col overflow-hidden max-md:h-[calc(100dvh-1rem)] max-md:max-h-[calc(100dvh-1rem)] sm:max-w-lg">
           <DialogHeader className="shrink-0">
             <DialogTitle>{modelEditing?.modelId ? tr('编辑模型') : tr('添加模型')}</DialogTitle>
           </DialogHeader>
@@ -730,8 +734,11 @@ export function ModelsTab({ app }: { app: AgentApp }) {
               void saveModelEntry()
             }}
           >
-            {/* 可滚动的内容区：字段多了在这里滚，标题 / 错误 / 按钮都不动 */}
-            <div className="min-h-0 flex-1 space-y-3 overflow-x-hidden overflow-y-auto pr-1">
+            {/* 可滚动的内容区：字段多了在这里滚，标题 / 错误 / 按钮都不动。
+                `-mr-4` 抵消 `DialogContent` 的 `p-4`：滚动容器右缘贴到弹窗内边缘，
+                滚动条才在最右边（否则右边还留着 16px 空白）。内容与条之间靠 `pr-1` 留缝。 */}
+            {/* 字段间距 16px：label + 控件成组，组与组之间留白拉开层级（原来 12px 太挤） */}
+            <div className="min-h-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto pr-1 -mr-4">
               <div className="space-y-1.5">
                 <span className="text-xs text-muted-foreground">{tr('模型 id')}</span>
                 <Input
@@ -746,9 +753,8 @@ export function ModelsTab({ app }: { app: AgentApp }) {
               </div>
 
               <div className="space-y-1.5">
-                <span className="text-xs text-muted-foreground">
-                  {tr('上下文窗口（输入 + 输出共用的总上限，决定圆环分母与自动压缩阈值）')}
-                </span>
+                {/* label 保持单行，括号里的解释挪到下面那段说明 —— 长 label 折成两行很挤 */}
+                <span className="text-xs text-muted-foreground">{tr('上下文窗口')}</span>
                 <NumberField
                   // 只标红不夹边界：token 数被悄悄改掉比报错更难发现（保存前还会再拦一次）
                   min={1}
@@ -779,14 +785,14 @@ export function ModelsTab({ app }: { app: AgentApp }) {
                   </span>
                 ) : (
                   <span className="text-[0.6875rem] text-muted-foreground">
-                    {tr('「默认」= 输入框留空、走 {value} 兜底。token 是按个计数的单位，k = 1000（不是 1024）：20k = 20,000 token。OpenAI 协议没有单独的输入上限：输入可用空间 = 窗口 − 最大输出。', { value: DEFAULT_CONTEXT_WINDOW.toLocaleString() })}
+                    {tr('输入 + 输出共用的总上限，决定圆环分母与自动压缩阈值。「默认」= 输入框留空、走 {value} 兜底。token 是按个计数的单位，k = 1000（不是 1024）：20k = 20,000 token。OpenAI 协议没有单独的输入上限：输入可用空间 = 窗口 − 最大输出。', { value: DEFAULT_CONTEXT_WINDOW.toLocaleString() })}
                   </span>
                 )}
               </div>
 
               {/* 最大输出 token：OpenAI 的 max_output_tokens / max_completion_tokens（含思考 token） */}
               <div className="space-y-1.5">
-                <span className="text-xs text-muted-foreground">{tr('最大输出 token（单次回复上限）')}</span>
+                <span className="text-xs text-muted-foreground">{tr('最大输出 token')}</span>
                 <NumberField
                   min={1}
                   clamp={false}
@@ -812,53 +818,66 @@ export function ModelsTab({ app }: { app: AgentApp }) {
                   <span className="text-[0.6875rem] text-destructive">{tr('要填正整数（留空 = 不限制）')}</span>
                 ) : (
                   <span className="text-[0.6875rem] text-muted-foreground">
-                    {tr('对应 OpenAI 的 max_output_tokens；开启思考的模型里推理 token 也算在这里。自动摘要按窗口的 {percent}% 预留输出，输出上限特别大时建议把窗口一起调小。', { percent: Math.round(((DEFAULT_CONTEXT_WINDOW) - compactionTriggerTokens(DEFAULT_CONTEXT_WINDOW)) / (DEFAULT_CONTEXT_WINDOW) * 100) })}
+                    {tr('单次回复的上限。对应 OpenAI 的 max_output_tokens；开启思考的模型里推理 token 也算在这里。自动摘要按窗口的 {percent}% 预留输出，输出上限特别大时建议把窗口一起调小。', { percent: Math.round(((DEFAULT_CONTEXT_WINDOW) - compactionTriggerTokens(DEFAULT_CONTEXT_WINDOW)) / (DEFAULT_CONTEXT_WINDOW) * 100) })}
                   </span>
                 )}
               </div>
 
-              {/* 能力开关：关掉的项在请求侧真正生效（工具不下发 / 图片被过滤 / 思考不透传） */}
-              <div className="space-y-2 rounded-md border border-border/60 px-3 py-2">
+              {/* 能力开关：关掉的项在请求侧真正生效（工具不下发 / 图片被过滤 / 思考不透传）。
+                  横排一行，细则只在关掉时才出现 —— 原来三项各带一段常显说明 + 一圈边框，
+                  占掉弹窗小半屏，字段区得反复滚。 */}
+              <div className="space-y-2">
                 <span className="text-xs text-muted-foreground">{tr('能力')}</span>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-xs">{tr('工具调用')}</div>
-                    <p className="text-[0.6875rem] leading-4 text-muted-foreground">
-                      {tr('关掉后不向这个模型下发任何工具（含子任务派活），只做纯对话。')}
-                    </p>
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={modelToolCall}
+                      onCheckedChange={setModelToolCall}
+                      aria-label={tr('工具调用')}
+                    />
+                    <span className="text-xs">{tr('工具调用')}</span>
                   </div>
-                  <Switch
-                    checked={modelToolCall}
-                    onCheckedChange={setModelToolCall}
-                    aria-label={tr('工具调用')}
-                  />
-                </div>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-xs">{tr('图片输入')}</div>
-                    <p className="text-[0.6875rem] leading-4 text-muted-foreground">
-                      {tr('关掉后发送图片会被拒绝；历史里的图片在发给模型时按一行说明省略，PDF 不受影响。')}
-                    </p>
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={modelImageInput}
+                      onCheckedChange={setModelImageInput}
+                      aria-label={tr('图片输入')}
+                    />
+                    <span className="text-xs">{tr('图片输入')}</span>
                   </div>
-                  <Switch
-                    checked={modelImageInput}
-                    onCheckedChange={setModelImageInput}
-                    aria-label={tr('图片输入')}
-                  />
-                </div>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-xs">{tr('思考内容')}</div>
-                    <p className="text-[0.6875rem] leading-4 text-muted-foreground">
-                      {tr('关掉后不显示也不落盘模型的思考过程（不影响它内部推理，只影响透传）。')}
-                    </p>
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={modelReasoning}
+                      onCheckedChange={setModelReasoning}
+                      aria-label={tr('思考内容')}
+                    />
+                    <span className="text-xs">{tr('思考内容')}</span>
                   </div>
-                  <Switch
-                    checked={modelReasoning}
-                    onCheckedChange={setModelReasoning}
-                    aria-label={tr('思考内容')}
-                  />
                 </div>
+                {/* 细则按需出现：默认全开时只有一行总说明，不占高度 */}
+                {!modelToolCall || !modelImageInput || !modelReasoning ? (
+                  <ul className="space-y-0.5">
+                    {!modelToolCall && (
+                      <li className="text-[0.6875rem] leading-4 text-muted-foreground">
+                        {tr('工具调用已关：不向这个模型下发任何工具（含子任务派活），只做纯对话。')}
+                      </li>
+                    )}
+                    {!modelImageInput && (
+                      <li className="text-[0.6875rem] leading-4 text-muted-foreground">
+                        {tr('图片输入已关：发送图片会被拒绝；历史里的图片在发给模型时按一行说明省略，PDF 不受影响。')}
+                      </li>
+                    )}
+                    {!modelReasoning && (
+                      <li className="text-[0.6875rem] leading-4 text-muted-foreground">
+                        {tr('思考内容已关：不显示也不落盘模型的思考过程（不影响它内部推理，只影响透传）。')}
+                      </li>
+                    )}
+                  </ul>
+                ) : (
+                  <p className="text-[0.6875rem] leading-4 text-muted-foreground">
+                    {tr('三项都开：工具、图片、思考内容按模型实际能力下发。')}
+                  </p>
+                )}
               </div>
 
               {/* 接口风格：只对 openai / openai-compatible 有意义（其它 kind 的 provider 自己定协议） */}
@@ -938,8 +957,9 @@ export function ModelsTab({ app }: { app: AgentApp }) {
                 </span>
               </div>
 
-              {/* 唯一允许滚动的容器：`min-h-0` 让它能缩到比内容更小，滚动条才会落在列表上 */}
-              <div className="min-h-0 flex-1 space-y-0.5 overflow-x-hidden overflow-y-auto pr-1">
+              {/* 唯一允许滚动的容器：`min-h-0` 让它能缩到比内容更小，滚动条才会落在列表上。
+                  `-mr-4` 抵消 `DialogContent` 的 `p-4`，滚动条贴到弹窗右沿。 */}
+              <div className="min-h-0 flex-1 space-y-0.5 overflow-x-hidden overflow-y-auto pr-1 -mr-4">
                 {visible.map((id) => {
                   const already = (pickingConfig?.models ?? []).some((model) => model.id === id)
                   // 已有项默认勾上，取消勾选只是记进 `unpicked`（保存时才真的移出）

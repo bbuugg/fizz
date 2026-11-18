@@ -447,7 +447,7 @@ const containerWorkspaceIdList = app.workspaces
           gitChanges: status.isRepo
             ? { count: status.changes.length, truncated: status.truncated }
             : null,
-          // 分支与改动数同一次请求带回来（顶栏名字下面那行要用，不额外打接口）。
+          // 分支与改动数同一次请求带回来（状态栏那段「当前分支」要用，不额外打接口）。
           // 分离头指针时没有分支名，标出来 —— 显示成空白会让人以为没查到
           gitBranch: status.isRepo
             ? (status.branch ?? (status.detached ? 'HEAD（分离）' : null))

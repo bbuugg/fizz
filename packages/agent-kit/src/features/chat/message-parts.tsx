@@ -8,7 +8,7 @@
  * 会话列表、模型配置…）一起拖了进来，容器侧其实一个都不用。这里把它们单独成文件：
  * **只依赖 `@fizz/contracts` 的消息类型**，任何有消息流的宿主都能直接用。
  */
-import { memo, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, memo, useMemo, useState, type ReactNode } from 'react'
 import { Check, Copy, ArrowRightLeft, GitBranch, Pencil, RotateCw, Trash2 } from 'lucide-react'
 import { ShimmerLabel } from '@fizz/agent-kit/shared/ai-elements/shimmer-label'
 import { Button } from '@fizz/ui/button'
@@ -184,7 +184,7 @@ function MessagePartsInner({
   onContinue
 }: MessagePartsProps) {
   // 订阅语言：折叠条摘要（思考 ×N / 工具调用 ×N）在渲染期用 `t()` 算，切语言要跟着变
-  useT()
+  const tr = useT()
   /**
    * 抬头是否显示工具的「意图」（设置 → AI → 通用 → 工具意图）。
    *
@@ -388,13 +388,22 @@ function MessagePartsInner({
    * `isStepInFlight` 会翻 false，文案挂在 `active` 上就会来回闪（见 `TurnStepGroup`）。
    */
   const groupHead = (
-    steps: { part: AgentMessagePart; partIndex: number }[]
+    steps: { part: AgentMessagePart; partIndex: number }[],
+    /**
+     * 这一组的**尾巴是压缩卡**时给压缩态（`null` = 尾巴是普通 part）。
+     *
+     * 给了就照「最后一个工具调用」那条口径报 —— 组收起时抬头必须说明**这一步是什么**：
+     * 工具报「执行命令 / 跑一下单测」，压缩就报「压缩上下文」，不能只剩一句
+     * 「正在工作…」（那是「还没落地」的占位，用户看不到卡时无从判断这一步在干什么）。
+     * 一轮结束后照旧让位给耗时 / 计数摘要（与其它组同一个口径）。
+     */
+    tailCompaction: ContextCompactionState | null = null
   ): {
     label: string
     active: boolean
     live: boolean
-    /** 尾 part 的类型 —— 抬头名字左边那颗图标（工具 / 脑）靠它，口径与左格文案一致 */
-    kind: 'tool' | 'reasoning'
+    /** 尾 part 的类型 —— 抬头名字左边那颗图标（工具 / 脑 / 压缩）靠它，口径与左格文案一致 */
+    kind: 'tool' | 'reasoning' | 'compaction'
     /** 尾 part 是工具时给工具名：抬头那颗图标要靠它认出「执行命令 → 终端」 */
     toolName?: string
     preview?: { text: string; lineKey: number }
@@ -404,6 +413,16 @@ function MessagePartsInner({
      */
     stopToolCallId?: string
   } => {
+    if (tailCompaction && !turnDone) {
+      return {
+        label: tr('压缩上下文'),
+        // 摘要还在流 → 抬头挂扫光（与工具卡「在跑」同一档）；写完了就静止
+        active: tailCompaction.status === 'streaming',
+        // 只有「这一段就是本轮最后的内容」才算 live（卡后面还跟着步骤时不该亮图标）
+        live: compactionIndex >= lastVisibleIndex,
+        kind: 'compaction'
+      }
+    }
     const parts = steps.map((step) => step.part)
     const tail = steps[steps.length - 1]
     const live = !turnDone && tail.partIndex === lastVisibleIndex
@@ -466,11 +485,32 @@ function MessagePartsInner({
   // 组只管「这一段过程整体露不露」，细看哪一步由用户自己点。
   const nodes: ReactNode[] = []
   let run: { part: AgentMessagePart; partIndex: number }[] = []
+  /**
+   * 压缩卡在这段过程里的插入位置：`null` = 这段没有卡，数字 = 卡在「前 N 步之后」。
+   *
+   * **卡绝不打断分组**。卡落在两步之间时，卡前卡后的步骤仍是一段连续的过程 ——
+   * 一旦在这里 `flushRun()`，一轮里就会多出「压缩之后」的那个小组，过程被从中间
+   * 截成两截（用户明确要求合起来）。所以只记位置，真正渲染时按「前 N 步之后」塞进组里。
+   *
+   * 一张消息只有一个卡（`ownCompaction` 按 `messageId` 认领），单值就够。
+   */
+  let runInsertAt: number | null = null
   const flushRun = (): void => {
-    if (!run.length) return
+    const insertAt = runInsertAt
+    runInsertAt = null
+    if (!run.length) {
+      // 只有卡、没有步骤（卡前后都不可折叠）：不硬套一个空组（组抬头会是空的），卡自己铺一条
+      if (insertAt !== null && compactionNode) nodes.push(compactionNode)
+      return
+    }
     const current = run
     run = []
-    const { label, active, live, kind, toolName, preview, stopToolCallId } = groupHead(current)
+    /** 卡落在组尾（后面没有步骤了）→ 抬头报「压缩上下文」；卡在中间就照常报最后一步 */
+    const tailIsCompaction = insertAt !== null && insertAt >= current.length
+    const { label, active, live, kind, toolName, preview, stopToolCallId } = groupHead(
+      current,
+      tailIsCompaction && ownCompaction ? ownCompaction : null
+    )
     nodes.push(
       <TurnStepGroup
         key={`${message.id}-steps-${current[0].partIndex}`}
@@ -483,17 +523,20 @@ function MessagePartsInner({
         // 只停这一段里正在跑的那一步（判据在 `groupHead`），整轮继续
         onStop={stopToolCallId ? () => void stopCommand(stopToolCallId) : undefined}
       >
-        {current.map(({ part: stepPart, partIndex: stepIndex }) =>
-          renderPart(stepPart, stepIndex)
-        )}
+        {current.map(({ part: stepPart, partIndex: stepIndex }) => (
+          <Fragment key={stepIndex}>
+            {/* 卡在「前 stepIndex 步之后」→ 渲染在这一步之前，顺序才是「步骤 → 卡 → 步骤」 */}
+            {insertAt === stepIndex ? compactionNode : null}
+            {renderPart(stepPart, stepIndex)}
+          </Fragment>
+        ))}
+        {tailIsCompaction ? compactionNode : null}
       </TurnStepGroup>
     )
   }
   parts.forEach((part, partIndex) => {
-    if (compactionNode && partIndex === compactionIndex) {
-      flushRun()
-      nodes.push(compactionNode)
-    }
+    // 记下位置就走（不 flush）：`run.length` 就是「前面已经攒了几步」，卡落在这一步之前
+    if (compactionNode && partIndex === compactionIndex) runInsertAt = run.length
     if (isBlankText(part)) return
     if (foldable(part, partIndex)) {
       run.push({ part, partIndex })
@@ -502,8 +545,9 @@ function MessagePartsInner({
     flushRun()
     nodes.push(renderPart(part, partIndex))
   })
+  // 卡在整条消息末尾：落在最后一段过程的组尾（抬头这时报「压缩上下文」）
+  if (compactionNode && compactionIndex >= parts.length) runInsertAt = run.length
   flushRun()
-  if (compactionNode && compactionIndex >= parts.length) nodes.push(compactionNode)
   /**
    * 撞步数上限：正文之后补一行「为什么停」+「继续」。
    *

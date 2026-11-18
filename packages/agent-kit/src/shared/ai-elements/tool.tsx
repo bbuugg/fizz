@@ -24,7 +24,6 @@ import {
   SearchIcon,
   Square,
   SquareTerminalIcon,
-  TerminalIcon,
   WrenchIcon,
   XCircleIcon,
   type LucideIcon,
@@ -401,12 +400,13 @@ function ToolHeadLabel({
  * 「文件 + 放大镜」、列目录用文件夹 —— 这三步常挨在一起，各给一颗才不至于一路扳手。
  *
  * 终端助手那四个（`run_in_terminal` / `read_terminal_output` / `send_keys` /
- * `list_terminal_sessions`）用方形终端：它们敲在**用户眼前那条**终端里，与
- * `bash`（服务端起一个子进程）失败面完全不同 —— 理由与 `TOOL_LABELS` 里
- * 那段说明一致，卡片上不该混成同一个图标。
+ * `list_terminal_sessions`）与 `bash` 用**同一颗**方形终端（带框的那个）：它们都是
+ * 「跑命令」，扫对话流时该是同一个符号。跑在哪一台机器、哪条终端上由**标题**区分
+ * （见 `TOOL_LABELS` 那段说明），不要靠换图标 —— 光板 `Terminal` 与带框的 `SquareTerminal`
+ * 在 16px 下几乎分不出来，反而像两套图标混用（2026-11 用户明确要求统一成带框的）。
  */
 const TOOL_HEAD_ICONS: Record<string, LucideIcon> = {
-  bash: TerminalIcon,
+  bash: SquareTerminalIcon,
   read: FileTextIcon,
   write: FilePlusIcon,
   edit: FilePenIcon,

@@ -31,7 +31,8 @@ vi.mock('./retry', async (importOriginal) => ({
   sleepWithSignal: async () => true
 }))
 
-const { runAgent } = await import('./agent')
+const { buildTurnUsage, createTurnGenClock, isOutputDelta, markTurnOutputDelta, runAgent } =
+  await import('./agent')
 
 /** 造一份 AI SDK 的 fullStream：parts 就是上游依次吐出来的东西 */
 function fakeStream(parts: unknown[]) {
@@ -312,7 +313,162 @@ describe('runAgent 的失败提示', () => {
     expect(retries[1]).toMatchObject({ attempt: 1, resume: true })
     expect(result.finishReason).toBe('done')
   })
+})
 
+/**
+ * TPS 的分母（回归测试 · 端到端）：**只累计有输出增量的时间片**。
+   *
+   * 防的回归：老口径是「首字 → 整轮结束」的墙钟。一轮十几次工具调用的轮次里，光工具
+   * 执行就几十秒，分母被撑到几十秒 —— 用户看到 0.7 tok/s，既不反映模型吐字快慢，
+   * 也没法在轮次之间比较（工具越多看着越"慢"）。
+   *
+   * 这里走真实链路（`runAgent` + 假时钟），钉住「工具执行的 30 秒不进分母」。
+   */
+   describe('TurnUsage.tps · 端到端', () => {
+    it('工具执行的 30 秒空窗不计入 TPS 分母，整轮耗时仍按墙钟报', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    try {
+      streamText.mockImplementation(() =>
+        fakeStream([
+          { type: 'text-delta', text: 'a' },
+          { type: 'text-delta', text: 'b' },
+          { type: 'tool-call', toolCallId: 't1', toolName: 'echo', input: {} },
+          // 工具跑了 30 秒：这段时间模型一个 token 都没吐
+          { type: 'tool-result', toolCallId: 't1', toolName: 'echo', output: 'ok' },
+          { type: 'text-delta', text: 'c' },
+          {
+            type: 'finish',
+            finishReason: 'stop',
+            totalUsage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 }
+          }
+        ])
+      )
+
+      /**
+       * 每一帧被消费的时刻。`Date.now()` 在 `emitEvent` **之前**读，所以在 `onEvent`
+       * 里把时钟拨到下一帧 —— 本用例没有 `tool-call-delta`（那会触发 flush，多收一次
+       * 回调），所以回调次数与内容帧一一对应。
+       */
+      const times = [0, 100, 200, 30_200, 30_300]
+      let seen = 0
+      const events: AgentStreamEvent[] = []
+      const result = await runAgent(
+        baseOptions((event) => {
+          events.push(event)
+          seen += 1
+          if (times[seen] !== undefined) vi.setSystemTime(times[seen] as number)
+        })
+      )
+
+      // 生成窗口 = 100 + 100 = 200ms → 20 tokens / 0.2s = 100 tok/s
+      // 墙钟口径会是 20 / 30.3s ≈ 0.7 tok/s
+      expect(result.usage?.tps).toBe(100)
+      // 耗时那一格的口径不变：整轮墙钟
+      expect(result.usage?.durationMs).toBe(30_300)
+      expect(events.filter((e) => e.type === 'text-delta')).toHaveLength(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+/**
+ * 「什么算模型在吐 token」的唯一判据（`isOutputDelta`）。
+ *
+ * 分母只认它放行的帧：工具自己产出的内容（bash 的实时 stdout）、子任务的事件、
+ * 上游的空占位帧都不许进 —— 否则分母又会被「不是模型生成的东西」污染回去。
+ */
+describe('isOutputDelta · 只认模型自己生成的增量', () => {
+  const cases: [string, AgentStreamEvent, boolean][] = [
+    ['正文增量', { type: 'text-delta', delta: 'a' }, true],
+    // 上游常先发一帧空 delta 占位；认了它窗口会被撑大
+    ['空占位帧（正文）', { type: 'text-delta', delta: '' }, false],
+    ['思考增量', { type: 'reasoning-delta', delta: '嗯' }, true],
+    ['工具入参增量', { type: 'tool-call-delta', toolCallId: 't1', inputTextDelta: '{' }, true],
+    // `tool-call-input-streaming-start` 只有 id 没有内容
+    ['工具入参开始帧', { type: 'tool-call-delta', toolCallId: 't1', inputTextDelta: '' }, false],
+    // 有的上游不发入参增量，完整 tool-call 是它吐过字的唯一证据
+    ['完整工具调用', { type: 'tool-call', toolCallId: 't1', toolName: 'echo', input: {} }, true],
+    // bash 实时 stdout：工具在产出，不是模型的生成速度
+    [
+      '工具输出增量',
+      { type: 'tool-output-delta', toolCallId: 't1', stream: 'stdout', delta: 'ok' },
+      false
+    ],
+    ['工具结果', { type: 'tool-result', toolCallId: 't1', toolName: 'echo', output: 'ok' }, false],
+    // 子任务的 token 记在 `TurnUsage.subagents`，分子里没有，分母也不能有
+    [
+      '子任务事件',
+      { type: 'subagent-event', toolCallId: 't1', event: { type: 'text-delta', delta: '子' } },
+      false
+    ],
+    ['收尾帧', { type: 'finish', finishReason: 'stop' }, false]
+  ]
+
+  for (const [name, event, want] of cases) {
+    it(`${name} → ${want}`, () => {
+      expect(isOutputDelta(event)).toBe(want)
+    })
+  }
+})
+
+/** TPS 的算式本身：分子是整轮输出 token，分母是生成窗口（不是墙钟）。 */
+describe('buildTurnUsage · TPS', () => {
+  it('outputTokens ÷ 生成窗口秒数（保留 1 位小数）', () => {
+    const usage = buildTurnUsage({ inputTokens: 100, outputTokens: 20, totalTokens: 120 }, 0, 2_000)
+    expect(usage.tps).toBe(10)
+    // 整轮耗时走墙钟，与生成窗口是两个数
+    expect(usage.durationMs).toBeGreaterThan(0)
+  })
+
+  it('一个间隔都没采到时退回整轮耗时，不除零也不出天文数字', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(5_000)
+    try {
+      // genMs = 0：上游把整段攒成一帧下发（非流式网关）/ 只吐了一个 chunk
+      const usage = buildTurnUsage({ inputTokens: 10, outputTokens: 5, totalTokens: 15 }, 0, 0)
+      expect(usage.tps).toBe(1)
+      expect(Number.isFinite(usage.tps)).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+/** 生成窗口的累计规则（纯函数，不依赖真实时钟）。 */
+describe('markTurnOutputDelta · 生成窗口', () => {
+  it('首帧只记时刻（TTFT 不进分母），之后按相邻间隔累计', () => {
+    const clock = createTurnGenClock()
+    markTurnOutputDelta(clock, 1_000)
+    markTurnOutputDelta(clock, 1_100)
+    markTurnOutputDelta(clock, 1_260)
+    expect(clock.genMs).toBe(260)
+  })
+
+  it('空窗（> 1s）整段丢弃，且不影响前后的累计', () => {
+    const clock = createTurnGenClock()
+    markTurnOutputDelta(clock, 1_000)
+    markTurnOutputDelta(clock, 1_100) // +100
+    markTurnOutputDelta(clock, 31_100) // 工具跑了 30 秒：丢弃
+    markTurnOutputDelta(clock, 31_180) // +80
+    expect(clock.genMs).toBe(180)
+  })
+
+  it('时钟回拨 / 同一毫秒两帧不累加，也不会变成负数', () => {
+    const clock = createTurnGenClock()
+    markTurnOutputDelta(clock, 1_000)
+    markTurnOutputDelta(clock, 1_000)
+    markTurnOutputDelta(clock, 900)
+    expect(clock.genMs).toBe(0)
+  })
+})
+
+/**
+ * 单轮步数预算的收尾语义：撞上限时 `finishReason` 仍是 `done`，但多带一位
+ * `stopReason: 'max-steps'`（界面、通知、落盘都靠它，见 AGENTS.md 的「步数预算三件套」）。
+ */
+describe('runAgent 的步数预算', () => {
   it('用满步数预算且最后一步还在调工具 → 报 stopReason: max-steps（不是静默 done）', async () => {
     // 真实链路：`stopWhen: stepCountIs(2)` 在第 2 步的工具执行完后停下，那一步的
     // finishReason 是 'tool-calls'，模型再没有机会回话。以前这一轮会被报成纯粹的

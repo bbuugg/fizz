@@ -73,7 +73,8 @@ import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { useAgentAppView, useAttachRemoteRun } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import { setTerminalShell } from '@fizz/agent-kit/shared/lib/terminal-shell'
 import { registerTabCloseGuard } from '@fizz/agent-kit/shared/lib/tab-close'
-import { useConfirm } from '@fizz/agent-kit/shared/components/ConfirmProvider'
+import { useChoose, useConfirm } from '@fizz/agent-kit/shared/components/ConfirmProvider'
+import { toast } from 'sonner'
 import { openExternal } from '@fizz/agent-client/web-host'
 import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
 import {
@@ -170,7 +171,8 @@ export function ConversationTab({
   /**
    * 守卫：关闭 / 刷新这个标签之前先问一句。
    *
-   * - `beforeClose`：会话正在跑 → 先确认，确认后**先停这一条会话再放行关闭**。
+   * - `beforeClose`：会话正在跑 → **三选一**（仅关闭标签 / 取消 / 停止并关闭），
+   *   只有选「停止并关闭」才先停这一条会话。
    * - `beforeReload`：**只拦「面板里挂着终端」**。重挂会卸载 `ConversationTab`，连带右侧
    *   面板里的 `TerminalPanel` 一起卸载 —— 它们的 cleanup 会 kill 掉 PTY。会话本身
    *   （消息、正在跑的回合、后台会话）都在 store 里，重挂只是换一份视图，所以**不**因为
@@ -181,6 +183,15 @@ export function ConversationTab({
    * `runningConversations`（**后台会话也算**），不是 `app.streaming`（那只反映当前标签这条）。
    */
   const confirm = useConfirm()
+  /**
+   * 关闭时是**三选一**（`useChoose`）：仅关闭标签 / 取消 / 停止并关闭。
+   *
+   * 「仅关闭标签」不停这一轮 —— run 在服务端，断连不等于取消，标签只是它的一个视图；
+   * 关掉后侧栏那颗转圈还在（`runningConversations`），点开就接回直播
+   * （`loadConversation` + `useAttachRemoteRun`）。硬塞进二选一的话，用户想「关掉标签
+   * 但别停我跑了十分钟的活」时只能放弃关闭。
+   */
+  const choose = useChoose()
   const guardRef = useRef({ running: false, stop: app.stopConversation, terminals: 0 })
   guardRef.current.running = conversationId ? !!app.runningConversations[conversationId] : false
   guardRef.current.stop = app.stopConversation
@@ -189,14 +200,30 @@ export function ConversationTab({
       beforeClose: async () => {
         const id = conversationId
         if (!id || !guardRef.current.running) return 'close'
-        const ok = await confirm({
-          title: tr('停止并关闭这个对话？'),
-          description: tr('这条会话正在生成回复，关闭标签会先停止当前回合（已生成的内容保留）。'),
-          confirmLabel: tr('停止并关闭'),
-          destructive: true
+        const terminals = guardRef.current.terminals
+        const decision = await choose({
+          title: tr('这个对话正在生成回复'),
+          description:
+            terminals > 0
+              ? tr(
+                  '「仅关闭标签」时这一轮会在后台继续，随时点左侧那条会话就能回来；但标签右侧面板里挂着的 {count} 条终端会一起结束。',
+                  { count: terminals }
+                )
+              : tr('「仅关闭标签」时这一轮会在后台继续，随时点左侧那条会话就能回来。'),
+          cancelValue: 'cancel',
+          actions: [
+            { value: 'close', label: tr('仅关闭标签'), variant: 'outline' },
+            { value: 'cancel', label: tr('取消'), variant: 'ghost' },
+            { value: 'stop', label: tr('停止并关闭'), variant: 'destructive' }
+          ]
         })
-        if (!ok) return 'cancel'
-        await guardRef.current.stop(id)
+        if (decision === 'cancel') return 'cancel'
+        if (decision === 'stop') {
+          await guardRef.current.stop(id)
+          return 'close'
+        }
+        // 仅关闭标签：给一句回执，否则用户会以为这一轮被一起停掉了
+        toast(tr('标签已关闭，这一轮仍在后台继续：点左侧那条会话可以回来'))
         return 'close'
       },
       beforeReload: async () => {
@@ -211,7 +238,7 @@ export function ConversationTab({
         return ok ? 'reload' : 'cancel'
       }
     })
-  }, [hostTabKey, conversationId, confirm])
+  }, [hostTabKey, conversationId, confirm, choose, tr])
 
   /** 面板容器的实测宽度（算面板默认宽度与拖拽上限） */
   const [contentRef, contentWidth] = useContainerWidth()
@@ -511,14 +538,12 @@ export function ConversationTab({
             </span>
           ) : undefined
         }
-        subtitle={
-          panel?.gitBranch ? (
-            <span className="flex min-w-0 shrink-0 items-center gap-1">
-              <GitBranch className="size-3 shrink-0" />
-              <span className="truncate font-mono">{panel.gitBranch}</span>
-            </span>
-          ) : undefined
-        }
+        /*
+         * 不再挂 `subtitle`（原来显示当前 git 分支）：
+         * 分支名属于「源代码管理」那颗按钮的事（那边有徽标与面板），摆在名字下面只会
+         * 让顶栏多一栏 —— 没有分支时那条空行还会把名字和正文之间的间距撑大。
+         * 现在名字与右侧按钮同处一行，见 `ViewHeader` 的说明。
+         */
         trailing={
           <>
             {hasDirectory && !isRemote && (

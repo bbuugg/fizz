@@ -80,16 +80,23 @@ export function UsageRow({ usage }: { usage?: TurnUsage }) {
           {/*
            * 速度与耗时是「一眼想看」的两个数，放在最上面一行（大一点）。
            * `formatDuration` 短轮次到 0.1s、超一分钟换 `3m 45s`；精确毫秒值放 title。
+           *
+           * `tps` 直接用服务端算好的值，**前端不重算**：它的分母是「只累计有输出增量的
+           * 时间片」（工具执行 / 等审批的空窗不算），前端手里只有墙钟，重算会得到两个数
+           * （见 `agent/src/agent.ts` 的 `TurnGenClock`）。耗时那一格仍然是整轮墙钟。
            */}
-          <div
-            className="flex items-baseline gap-1.5"
-            title={t("整轮耗时 {time}", { time: formatDurationExact(usage.durationMs) })}
-          >
-            <span className="text-lg font-semibold tabular-nums">
+          <div className="flex items-baseline gap-1.5">
+            <span
+              className="text-lg font-semibold tabular-nums"
+              title={t("仅算模型生成的时间（工具执行与等待不计）")}
+            >
               {usage.tps}
             </span>
             <span className="text-muted-foreground">tok/s</span>
-            <span className="ml-auto tabular-nums text-muted-foreground">
+            <span
+              className="ml-auto tabular-nums text-muted-foreground"
+              title={t("整轮耗时 {time}", { time: formatDurationExact(usage.durationMs) })}
+            >
               {formatDuration(usage.durationMs)}
             </span>
           </div>

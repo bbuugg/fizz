@@ -150,6 +150,11 @@
    *
    * ⚠️ 抽屉与遮罩**必须读同一个 token**：各写一份就会出现「抽屉盖到顶栏、遮罩却从
    * 顶栏下面开始」，顶栏右上那颗按钮点得到却不收起抽屉，等于露出半截可点的边。
+   *
+   * 同一个 token 也是**所有模态遮罩的上沿**（`packages/ui` 的 Dialog / AlertDialog /
+   * Sheet / Drawer 的 `*Overlay` 都写 `top-[var(--sidebar-drawer-top)]`）：遮罩盖住
+   * 常驻顶栏时，桌面端连窗口的最小化 / 关闭都看不见、点不到。手机端它等于安全区，
+   * 那边仍是整屏遮罩 —— 各端的取舍已经写在 token 里，组件一行判断都不用加。
    */
   --sidebar-drawer-top: calc(var(--safe-area-inset-top, 0px) + var(--app-titlebar-height));
 }

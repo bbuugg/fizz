@@ -945,7 +945,8 @@ export function AcpTab({ app }: { app: AgentApp }) {
             卡片中间（用户报过「按钮跑上面去了」）。常驻之后它永远吃掉剩余高度，列表区高度
             固定，下方各行始终贴在底部。
           */}
-          <div className="min-h-0 flex-auto space-y-0.5 overflow-y-auto pr-1">
+          {/* `-mr-4` 抵消 `DialogContent` 的 `p-4`，滚动条贴到弹窗右沿 */}
+          <div className="min-h-0 flex-auto space-y-0.5 overflow-y-auto pr-1 -mr-4">
             {modelRows.map(({ model, added }) => (
                 <div
                   key={model.value}

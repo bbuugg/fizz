@@ -1320,8 +1320,14 @@ export function TerminalPanel({
       fontFamily: '"Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace',
       cursorBlink: true,
       convertEol: false,
-      // xterm 6 的滚动条是自绘的（VS Code ScrollableElement），宽度没有独立选项，
-      // 取的是 overviewRuler.width（默认 14）。收到 10，与 styles.css 里全局细滚动条一致
+      /*
+       * 滚动条：xterm 6 的是自绘的（VS Code ScrollableElement），宽度**没有独立选项**，
+       * 取的就是 `overviewRuler.width`（默认 14）。收到 6：它是一条 overlay，画在视口
+       * 右缘、盖住最后一列几个像素，别按全局滚动条的 10px 给（终端里格宽金贵）。
+       * 别写 `width: 0` 想关掉它 —— `overviewRuler?.width || 14`，0 会回落成 14。
+       * 它确实是可见的（styles.css 里那条藏 `.xterm-scrollable-element > .scrollbar`
+       * 的规则已删掉）：鼠标进终端显、离开淡出，可拖。
+       */
       overviewRuler: { width: 6 },
       /**
        * 背景透明：`buildTheme()` 给的 `background` 是全透明的，终端自己不画底 ——

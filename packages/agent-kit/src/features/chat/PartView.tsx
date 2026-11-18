@@ -64,6 +64,8 @@ import {
 import { collapsedBody, shouldRefreshSnapshot } from '@fizz/agent-kit/shared/lib/collapse-swap'
 import { loadMediaObjectUrl } from '@fizz/agent-kit/shared/lib/media-url'
 import type { AgentMessagePart, SubagentDelegation, TodoItem } from '@fizz/contracts/types'
+// 值导入：派活句柄的前缀是契约常量（引擎造这句话，界面认这句话）
+import { DELEGATION_HANDLE_PREFIX } from '@fizz/contracts/types'
 import type { AskFollowupAnswer } from '@fizz/contracts/types'
 
 /**
@@ -299,16 +301,18 @@ function DelegationRunning({ toolName, toolCount }: { toolName?: string; toolCou
 }
 
 /**
- * 派活的 prompt（`agent-<id>` 的入参结构就是 `{ prompt }`）—— 放到头部明细位，
- * 紧跟工具名截断显示，悬停看全文（ToolHeader 的 detail 本来就是干这个的）。
+ * 派活的任务原文 —— 放到头部明细位，紧跟工具名截断显示，悬停看全文
+ * （ToolHeader 的 detail 本来就是干这个的）。
  *
- * 故意只认 `prompt` 一个字段：派活的入参以后可能加字段（`skills` 之类），
- * 逐个摊开会把明细位变成第二张说明书。
+ * 现役入参是 `{ task }`；`prompt` 是早期字段，历史消息里还是这个形状，两个都认。
+ * 故意只认这一格：派活的入参以后可能加字段（`skills` 之类），逐个摊开会把明细位
+ * 变成第二张说明书。
  */
 function delegationPromptOf(input: unknown): string | undefined {
-  const prompt = (input as { prompt?: unknown } | null | undefined)?.prompt
-  if (typeof prompt !== 'string') return undefined
-  const text = prompt.trim()
+  const bag = input as { task?: unknown; prompt?: unknown } | null | undefined
+  const raw = bag?.task ?? bag?.prompt
+  if (typeof raw !== 'string') return undefined
+  const text = raw.trim()
   return text || undefined
 }
 
@@ -672,6 +676,10 @@ function renderBuiltinDirect(
     case 'screenshot':
       subject = str(input.url)
       break
+    case 'task_wait':
+      // 明细就是 taskId：一眼能对上上面那张派活卡
+      subject = str(input.taskId)
+      break
     default:
       return null
   }
@@ -953,11 +961,26 @@ function PartViewInner({
     : ''
   // 派活卡「还在跑」的判据：**不能只看有没有流式文本**。子 agent 常常先连续翻
   // 十几个文件才吐第一段正文；没有这条时整张卡在工具阶段完全没动静，看起来像卡死。
-  // 用 `streaming`（当前消息仍在流）排除历史里因异常中断残留的未结算 part。
-  const delegationRunning = Boolean(streaming) && !hasOutput && !isError
-  const delegationStreaming = Boolean(subText.trim()) && !hasOutput
-  if (part.toolName.startsWith('agent-')) {
-    const resultText = isError || !hasOutput ? null : toolOutputText(output)
+  //
+  // ⚠️ 也不能再看「有没有 tool-result」：派活是非阻塞的，句柄一派出就到了，
+  // `hasOutput` 立刻为真 —— 拿它判断会让整张卡在子任务真正跑着的时候显示成「已完成」，
+  // 头部那颗转圈与停止钮一起消失。派活的运行态只认 `delegation.status`。
+  const isDelegation = part.toolName.startsWith('agent-')
+  const delegationRunning =
+    isDelegation && part.delegation
+      ? part.delegation.status === 'running'
+      : Boolean(streaming) && !hasOutput && !isError
+  // 流式预览同理：派活的正文增量是子任务自己的，与「工具结果有没有到」无关
+  const delegationStreaming = Boolean(subText.trim()) && (isDelegation ? delegationRunning : !hasOutput)
+  if (isDelegation) {
+    const raw = isError || !hasOutput ? null : toolOutputText(output)
+    /**
+     * 派活是**非阻塞**的：这一格的输出只是「已派出 + taskId」，结论由紧随其后的
+     * `task_wait` 卡交回。把它当结论渲染会在卡里出现「子任务结论：已派出「侦察」（taskId:
+     * call_xxx）…」—— 看着像结论其实是个句柄，所以只留一行状态说明。
+     */
+    const isHandle = raw?.startsWith(DELEGATION_HANDLE_PREFIX) ?? false
+    const resultText = isHandle ? null : raw
     return (
       <ToolCallCard
         type={`tool-${part.toolName}` as ToolUIPart['type']}
@@ -994,6 +1017,9 @@ function PartViewInner({
           <StreamingInputBlock text={subText} label={t('子任务输出中...')} mono={false} />
         ) : null}
         {resultText ? <StreamingInputBlock text={resultText} label={t('子任务结论')} mono={false} /> : null}
+        {isHandle && !delegationRunning ? (
+          <p className="text-xs text-muted-foreground">{t('结论在下面那张「领取子任务结论」里')}</p>
+        ) : null}
       </ToolCallCard>
     )
   }

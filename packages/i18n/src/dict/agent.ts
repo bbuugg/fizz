@@ -469,13 +469,16 @@ export const AGENT: Record<string, string> = {
     'What to run with: a built-in model (config → model), or an external agent (ACP, which may use its own default model)',
   '这个工作区的目录已不存在（{path}），保存会被拒绝：请重新选择工作区，或改用「每次运行自动创建」。':
     'This workspace directory no longer exists ({path}), so saving will be rejected: choose another workspace or use “Auto-created for each run”.',
+  '远端工作区首期不支持定时任务（触发时够不到 SSH 主机上的目录）：请改选本机工作区，或改用「每次运行自动创建」。':
+    'Remote workspaces are not supported by scheduled tasks yet (a run cannot reach directories on the SSH host): pick a local workspace or use “Auto-created for each run”.',
+  '不适用（外部 Agent 自带）': 'Not applicable (the external agent brings its own)',
   '每次触发都在这个工作区里跑一轮会话。': 'Each run happens in this workspace.',
   '不绑工作区：每次触发自动新建一个临时工作区（空目录、不进项目列表），从零干一遍。':
     'No workspace: each run creates a temporary workspace (empty directory, not added to the project list) and starts from scratch.',
-  '权限 / 模型与新建会话时是同一套选项；浏览器 / MCP 只对内置模型生效 —— 外部 Agent 自带工具，不读这两个开关。':
-    'Permission / model use the same options as a new conversation; browser / MCP only apply to built-in models — external agents bring their own tools and ignore these toggles.',
-  '权限 / 模型 / 浏览器 / MCP 与新建会话时是同一套选项；浏览器工具跑在服务端，无人值守也能用。':
-    'Permission / model / browser / MCP use the same options as a new conversation; browser tools run on the server and also work unattended.',
+  '权限 / 模型与新建会话时是同一套选项；思考强度 / 浏览器 / MCP 只对内置模型生效 —— 外部 Agent 自带工具与思考档，不读这几项。':
+    'Permission / model use the same options as a new conversation; reasoning effort / browser / MCP only apply to built-in models — external agents bring their own tools and thinking level.',
+  '权限 / 模型 / 思考强度 / 浏览器 / MCP 与新建会话时是同一套选项；浏览器工具跑在服务端，无人值守也能用。':
+    'Permission / model / reasoning effort / browser / MCP use the same options as a new conversation; browser tools run on the server and also work unattended.',
   '必须选一个目标（内置模型，或外部 Agent）—— 触发时没人值守，不会替你挑一个。外部 Agent 可以「跟随它自己的默认模型」。':
     'You must choose a target (built-in model or external agent) — no one is around when the task runs, so it will not pick one for you. External agents can use their own default model.',
   '按时间表（cron）': 'On a schedule (cron)',

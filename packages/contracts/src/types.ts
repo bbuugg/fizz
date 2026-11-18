@@ -991,7 +991,17 @@ export interface TurnUsage {
   contextTokens?: number
   /** 整轮耗时（毫秒）：从发起到结束 */
   durationMs: number
-  /** 输出速度（tokens/秒）：outputTokens ÷ 生成窗口（首字 → 结束） */
+  /**
+   * 输出速度（tokens/秒）：outputTokens ÷ **生成窗口**。
+   *
+   * 生成窗口不是「首字 → 结束」的墙钟，而是**只累计有输出增量的时间片**：相邻两个
+   * 增量间隔超过 1s 就当作模型没在吐字（工具执行 / 等审批 / 网络空窗），整段丢弃。
+   * 否则一轮十几次工具调用会让分母里塞进几十秒的工具耗时，TPS 被压到个位数 ——
+   * 那个数字既不反映吐字快慢，也无法在轮次之间比较。
+   *
+   * 分子仍是上游上报的整轮 outputTokens（**含思考与工具入参**，拿不到更细的拆分）：
+   * 上游不发 `tool-call-delta` 时那部分入参没有可计的时间片，会让多步轮略偏高。
+   */
   tps: number
   /**
    * 本轮**子任务（subagent）**的用量拆分，按 subagent id 索引。
@@ -2040,6 +2050,16 @@ export interface SubagentDelegation {
 }
 
 /**
+ * 派活工具（`agent-<id>`）交回父模型的**句柄**开头。
+ *
+ * 派活是非阻塞的：工具结果只是「已派出 + taskId + 结论靠 `task_wait` 领」，结论**不在**
+ * 这一格里。界面据此判断「这一格的输出不是结论」，别把一串 taskId 当子任务结论渲染。
+ *
+ * 常量放契约层是因为两端都要认它：`packages/agent` 造这句话，界面判断这句话。
+ */
+export const DELEGATION_HANDLE_PREFIX = '已派出「'
+
+/**
  * 子任务内部的流事件（`subagent-event.event` 的形状）。
  *
  * 刻意只取 `AgentStreamEvent` 里的这四个分支：它们正是「一条助手消息」的全部内容
@@ -2680,6 +2700,17 @@ export interface TaskTriggerTemplate {
    *   **只打一行警告并按 agent 默认跑**，不拒跑（模型是可选绑定，不是用户配置被删）。
    */
   modelId?: string
+  /**
+   * 内置 Agent 这一轮用多强的思考（缺省 = 跟随模型，见 `AiReasoningEffort`）。
+   *
+   * 与 `AgentConversation.reasoningEffort` **同一个字段、同一套语义**：调度器建会话时
+   * 原样落到会话上，之后每轮由 `chat-turn` 读会话上那一档 —— 定时任务与手动会话走的是
+   * 同一条装配路径，不该有第二套「思考强度」。
+   *
+   * 外部 Agent（ACP）**不读**它：那边的思考档是 agent 自己的（`AcpThoughtLevelSelect`），
+   * 所以表单里那颗滑块只在目标是内置模型时出现，切到 ACP 时也不会写这个字段。
+   */
+  reasoningEffort?: AiReasoningEffort
   /**
    * 触发时会话挂上哪些 MCP server（`McpServerConfig.id` 的列表）。
    *

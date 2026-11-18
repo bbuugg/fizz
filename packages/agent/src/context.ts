@@ -850,11 +850,25 @@ function findCutPoint(
   let accumulated = 0
   let cutIndex = startIndex
   for (let i = endIndex - 1; i >= startIndex; i--) {
-    accumulated += tokens[i] ?? 0
-    if (accumulated >= keepRecentTokens) {
-      cutIndex = i
+    const own = tokens[i] ?? 0
+    const next = accumulated + own
+    if (next >= keepRecentTokens) {
+      /**
+       * 跨线的那条**自己就吃满保留预算**时，切点挪到它之后（一起摘要掉）。
+       *
+       * 早先一律 `cutIndex = i`（跨线那条留在保留区）。平时没差别（一条消息几百 token），
+       * 但一条消息本身就有保留区那么大时（读了一个大文件 / 一条长输出），它会被**整条**
+       * 留下 —— 压完几乎没变小 → 下一轮立刻又超阈值 → 连压好几次才落地（用户实测：
+       * 512k 窗口连压三次才回到 20k）。摘要掉它，这一次才算真的变小了。
+       *
+       * 只在 `own >= keepRecentTokens` 时才挪：否则「切在 user 消息上」的干净边界会被
+       * 推到回合中间，白白多一次 turn-prefix 摘要（两个模型调用）。
+       * 兜底 `endIndex - 1`：至少留最后一条，保留区不能是空的。
+       */
+      cutIndex = own >= keepRecentTokens ? Math.min(i + 1, endIndex - 1) : i
       break
     }
+    accumulated = next
   }
 
   const startsTurn = history[cutIndex]?.role === 'user'
@@ -1137,15 +1151,46 @@ export async function compactHistory(
    * 助手消息」，而那条 usage 可能早于检查点（就是 `usageIsStale` 要挡的东西），
    * 一捞回来就等于把陈旧值又算进去了。这里只求和 `tokens`（已经按条算好），不做二次推断。
    */
-  let assembledTokens = baseTokens + (hasCheckpoint ? estimateTokens(cached!.text) : 0)
-  for (let i = checkpointIndex; i < history.length; i += 1) assembledTokens += tokens[i] ?? 0
+  let assembledTokens = baseTokens
+  /** 保留区里**单条**最大的一条（含摘要正文）：判「真值是不是这份数组测出来的」用 */
+  let largestKeptTokens = 0
+  if (hasCheckpoint) {
+    largestKeptTokens = estimateTokens(cached!.text)
+    assembledTokens += largestKeptTokens
+  }
+  for (let i = checkpointIndex; i < history.length; i += 1) {
+    const own = tokens[i] ?? 0
+    assembledTokens += own
+    if (own > largestKeptTokens) largestKeptTokens = own
+  }
   /** 真值之后新增的部分（通常就是本轮那条 user 消息） */
   let trailingTokens = 0
   for (let i = history.length - 1; i >= 0; i -= 1) {
     if (history[i] === lastAssistant) break
     trailingTokens += tokens[i] ?? 0
   }
-  const beforeTokens = contextUsed(realUsage + trailingTokens, assembledTokens)
+  const realWithTail = realUsage + trailingTokens
+  /**
+   * 真值能不能当判据，还要看它**描述的是不是这份数组**。
+   *
+   * 轮中压缩只压当轮的请求、**不落检查点**：它把一条巨型消息（一轮几十个工具调用、
+   * 一次长命令输出）摘要出了请求，落盘历史里那条却原样还在。于是真值 = 「压过的那份」
+   * （很小）、估算 = 「即将发出去的那份」（很大）。只信真值 → 判「没超」→ 下一轮把巨消息
+   * 整份发出去（超窗口 / 全价）→ 又靠轮中压缩救火 …… 每轮复现。用户看到的就是
+   * 「压完占用很低，再发一条消息立刻又超、又开始压」。
+   *
+   * 判据用一条硬事实：**保留区里单独一条消息就比上次请求还大**。那条消息不可能在那次请求里
+   * → 那次测量描述不了这份数组，只能改看估算。只有它会改变结论（估算说超、真值说没超）时
+   * 才采信估算；平时真值照旧优先 —— 估算对 CJK 偏高，拿它当判据会提前压。
+   */
+  const usageMissesKeptMessage =
+    realUsage > 0 &&
+    largestKeptTokens > realWithTail &&
+    !shouldCompact(realWithTail, opts.contextWindow, settings) &&
+    shouldCompact(assembledTokens, opts.contextWindow, settings)
+  const beforeTokens = usageMissesKeptMessage
+    ? assembledTokens
+    : contextUsed(realWithTail, assembledTokens)
   const overBudget = shouldCompact(beforeTokens, opts.contextWindow, settings)
 
   if (!opts.force && !overBudget) {
@@ -1192,7 +1237,11 @@ export async function compactHistory(
     settings.keepRecentTokens,
     tokens
   )
-  const historyEnd = cut.isSplitTurn ? cut.turnStartIndex : cut.firstKeptIndex
+  // 「切回合」只有在回合起点落在检查点**之后**时才有意义：起点就在检查点上时前半段已经在摘要里，
+  // 按切回合算会退化成 `historyEnd <= checkpointIndex`（什么都不压）。检查点压在一条助手消息上、
+  // 它后面又紧跟同回合的助手消息就是这条路 —— 那份巨消息会每轮照发，且每轮判超。
+  const splitTurn = cut.isSplitTurn && cut.turnStartIndex > checkpointIndex
+  const historyEnd = splitTurn ? cut.turnStartIndex : cut.firstKeptIndex
   // 没有可摘要的（切点落在起点上）：不压，有检查点就继续用
   if (historyEnd <= checkpointIndex) {
     return hasCheckpoint
@@ -1208,7 +1257,7 @@ export async function compactHistory(
   }
 
   const summarizeSlice = history.slice(checkpointIndex, historyEnd)
-  const turnPrefixSlice = cut.isSplitTurn
+  const turnPrefixSlice = splitTurn
     ? history.slice(cut.turnStartIndex, cut.firstKeptIndex)
     : []
 
@@ -1234,7 +1283,7 @@ export async function compactHistory(
   //    它每轮都发出去且不参与压缩，膨胀了会把「保留区」挤到没有。
   const budget = summaryBudgetTokens(settings.keepRecentTokens)
   let summary: string
-  if (cut.isSplitTurn && turnPrefixSlice.length > 0) {
+  if (splitTurn && turnPrefixSlice.length > 0) {
     const historyText =
       summarizeSlice.length > 0
         ? await generateSummary(

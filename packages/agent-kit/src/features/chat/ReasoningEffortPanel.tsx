@@ -36,6 +36,17 @@ const LEVELS: readonly { value: AiReasoningEffort | null; label: string }[] = [
 
 const MAX_INDEX = LEVELS.length - 1
 
+/**
+ * 档位文案（`null` / `'provider-default'` / 未设置都算「默认」）。
+ *
+ * 给**只读展示**用（定时任务详情那种一行「思考强度：高」）：`LEVELS` 是这里的私有表，
+ * 别在别处再抄一份 —— 抄一份就会出现「滑块上叫『极高』、详情里叫『最高』」。
+ */
+export function reasoningEffortLabel(value: AiReasoningEffort | null | undefined): string {
+  const current = value === 'provider-default' ? null : (value ?? null)
+  return LEVELS.find((level) => level.value === current)?.label ?? '默认'
+}
+
 function clampIndex(value: number): number {
   return Math.min(MAX_INDEX, Math.max(0, Math.round(value)))
 }

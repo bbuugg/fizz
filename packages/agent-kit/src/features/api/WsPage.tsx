@@ -52,19 +52,11 @@ import {
   Sheet,
   SheetContent,
   SheetDescription,
-  SheetFooter,
   SheetHeader,
   SheetTitle
 } from '@fizz/ui/sheet'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@fizz/ui/dialog'
 import { Segmented } from '@fizz/agent-kit/shared/components/Segmented'
+import { ApiSaveDialog } from '@fizz/agent-kit/features/api/ApiSaveDialog'
 import MonacoEditor from '@fizz/agent-kit/features/files/MonacoEditor'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { openApiClientSocket } from '@fizz/agent-client/web-host'
@@ -177,8 +169,8 @@ export function WsPage({ requestId }: { requestId: string }) {
   const [composerRatio, setComposerRatio] = useState(COMPOSER_RATIO_DEFAULT)
   const [configOpen, setConfigOpen] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [saveNameOpen, setSaveNameOpen] = useState(false)
-  const [saveName, setSaveName] = useState('')
+  /** 保存弹窗（名称 + 分组，与 HTTP 页共用 `ApiSaveDialog`） */
+  const [saveOpen, setSaveOpen] = useState(false)
 
   /** 页面根容器：拖动分隔条时按它的高度换算比例 */
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -373,27 +365,37 @@ export function WsPage({ requestId }: { requestId: string }) {
   }, [log])
 
   /**
-   * 保存当前草稿 —— **唯一落盘入口**（工具栏「保存」按钮与 Ctrl/Cmd+S 都走到这里）。
-   * 已保存的连接整条覆盖写；groupId 必须从 store 里现取带回去，
-   * 否则按一次 Ctrl+S 就会把它从分组里踢出去。
+   * 保存当前连接 —— **唯一落盘入口**（工具栏「保存」按钮与 Ctrl/Cmd+S 都走到这里）。
+   *
+   * 与 HTTP 页同一套：**先弹窗问名称 + 分组**，确认后才落盘（弹窗本体是共用的
+   * `ApiSaveDialog`）。名称在请求页已经输过就直接回填（`defaultName={name}`），
+   * 没输就在弹窗里补 —— WS 的连接名是必填的（列表里靠它认人）。
+   *
+   * 已保存的连接整条覆盖写，`groupId` 用弹窗里选的那个（没选过 = 保持原样，
+   * 见 `defaultGroupId`）。
    */
-  const saveNow = async (): Promise<void> => {
+  const requestSave = (): void => {
+    if (saving) return
+    setSaveOpen(true)
+  }
+
+  /**
+   * 弹窗确认后落盘。
+   * @param nm 弹窗里的名称（非空，按钮那边已经挡过）
+   * @param gid 弹窗里选的分组；`undefined` = 未分组
+   */
+  const saveNow = async (nm: string, gid: string | undefined): Promise<void> => {
+    setSaveOpen(false)
+    setName(nm)
     if (isDraft) {
-      const nm = name.trim()
-      if (!nm) {
-        setSaveName('')
-        setSaveNameOpen(true)
-        return
-      }
-      await persistDraft(nm)
+      await persistDraft(nm, gid)
       return
     }
     setSaving(true)
     try {
-      const current = useAgentStore.getState().apiRequests.find((r) => r.id === requestId)
       const ok = await app.saveApiRequest({
         id: requestId,
-        name: name.trim(),
+        name: nm,
         // WebSocket 没有方法：占位成 GET，列表里显示的是协议标记（WS）而不是它
         method: 'GET',
         url: url.trim() ? `${wsScheme}://${url.trim()}` : '',
@@ -403,7 +405,7 @@ export function WsPage({ requestId }: { requestId: string }) {
         subprotocols: parseProtocols(subprotocols),
         // 不跳过校验时**不写**这个字段：false 的语义恰好是「跳过」
         ...(skipTls ? { rejectUnauthorized: false } : {}),
-        groupId: current?.groupId,
+        groupId: gid,
         createdAt: 0,
         updatedAt: 0
       })
@@ -413,8 +415,8 @@ export function WsPage({ requestId }: { requestId: string }) {
     }
   }
 
-  /** 草稿真正落盘：按给定名称写入列表，并把草稿标签切成真实标签 */
-  const persistDraft = async (nm: string): Promise<void> => {
+  /** 草稿真正落盘：按给定名称 / 分组写入列表，并把草稿标签切成真实标签 */
+  const persistDraft = async (nm: string, gid: string | undefined): Promise<void> => {
     setSaving(true)
     try {
       const before = new Set(useAgentStore.getState().apiRequests.map((r) => r.id))
@@ -428,6 +430,7 @@ export function WsPage({ requestId }: { requestId: string }) {
         protocol: 'ws',
         subprotocols: parseProtocols(subprotocols),
         ...(skipTls ? { rejectUnauthorized: false } : {}),
+        groupId: gid,
         createdAt: 0,
         updatedAt: 0
       })
@@ -440,14 +443,6 @@ export function WsPage({ requestId }: { requestId: string }) {
     } finally {
       setSaving(false)
     }
-  }
-
-  /** 弹窗确认落盘：名称取自弹窗输入框（为空则不提交） */
-  const confirmSaveDraft = async (): Promise<void> => {
-    const nm = saveName.trim()
-    if (!nm) return
-    await persistDraft(nm)
-    setSaveNameOpen(false)
   }
 
   // ---------- 连接 ----------
@@ -614,7 +609,7 @@ export function WsPage({ requestId }: { requestId: string }) {
     if (!mod) return
     if (e.key.toLowerCase() === 's') {
       e.preventDefault()
-      void saveNow()
+      requestSave()
     } else if (e.key === 'Enter') {
       e.preventDefault()
       send()
@@ -670,7 +665,7 @@ export function WsPage({ requestId }: { requestId: string }) {
           className="shrink-0 gap-1.5"
           disabled={saving}
           title="保存（Ctrl+S）"
-          onClick={() => void saveNow()}
+          onClick={() => requestSave()}
         >
           <Save className="size-4" />
           保存
@@ -868,7 +863,10 @@ export function WsPage({ requestId }: { requestId: string }) {
             <SheetTitle>连接配置</SheetTitle>
             <SheetDescription>握手时带上，改完点「保存」或按 Ctrl/Cmd+S 落盘</SheetDescription>
           </SheetHeader>
-          <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-4 pb-2">
+          {/* 底部不再挂「关闭」按钮：抽屉右上角本来就有一枚关闭图标（`SheetContent`
+              默认的 `showCloseButton`），底下再放一颗是同义重复。滚动区因此把整条
+              高度吃完，底部留 `pb-4` 当呼吸间距。 */}
+          <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-4 pb-4">
             <section>
               <div className="mb-2 text-xs font-medium text-muted-foreground">
                 握手请求头
@@ -960,40 +958,28 @@ export function WsPage({ requestId }: { requestId: string }) {
               </p>
             </section>
           </div>
-          <SheetFooter className="flex-row justify-end">
-            <Button size="sm" variant="ghost" onClick={() => setConfigOpen(false)}>
-              关闭
-            </Button>
-          </SheetFooter>
         </SheetContent>
       </Sheet>
 
-      {/* 草稿按 Ctrl/Cmd+S 时名称为空才走到这里：要求补一个名称再落盘 */}
-      <Dialog open={saveNameOpen} onOpenChange={setSaveNameOpen}>
-        <DialogContent className="sm:max-w-[400px]">
-          <DialogHeader>
-            <DialogTitle>保存 WebSocket 连接</DialogTitle>
-            <DialogDescription>保存后该连接才会显示在左侧列表中（消息日志不落盘）。</DialogDescription>
-          </DialogHeader>
-          <Input
-            autoFocus
-            placeholder="连接名称，如：本地推送服务"
-            value={saveName}
-            onChange={(e) => setSaveName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void confirmSaveDraft()
-            }}
-          />
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setSaveNameOpen(false)}>
-              取消
-            </Button>
-            <Button disabled={!saveName.trim() || saving} onClick={() => void confirmSaveDraft()}>
-              保存
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/*
+        保存弹窗：名称 + 分组（可新建）。与 HTTP 页**共用一份** `ApiSaveDialog`。
+        名称回填请求页工具栏里已经输入的那个（没输就当场补 —— WS 的连接名必填，
+        列表里靠它认人）；分组与 HTTP 页同一套 tree 状选择。
+      */}
+      <ApiSaveDialog
+        app={app}
+        open={saveOpen}
+        onOpenChange={setSaveOpen}
+        title="保存 WebSocket 连接"
+        description="保存后该连接才会显示在左侧列表中（消息日志不落盘）。"
+        defaultName={name}
+        defaultGroupId={request?.groupId}
+        showName
+        nameRequired
+        namePlaceholder="连接名称，如：本地推送服务"
+        saving={saving}
+        onConfirm={({ name: nextName, groupId }) => void saveNow(nextName, groupId)}
+      />
     </div>
   )
 }

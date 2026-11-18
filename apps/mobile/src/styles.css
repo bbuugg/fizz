@@ -446,10 +446,13 @@ body {
 /*
  * ③ 隐藏 xterm 6 自绘滚动条本身（`.xterm-scrollable-element > .scrollbar`）。
  *    它是 VS Code ScrollableElement 画在视口右缘的 overlay，**不占布局宽度** —— 真实
- *    滚动层仍是 `.xterm-viewport` 的原生 `overflow-y: scroll`，所以藏掉它不影响滚轮 /
- *    键盘 / 触摸滚动，只是不再画出那条滑块。
+ *    滚动层仍是 `.xterm-viewport` 的原生 `overflow-y: scroll`，藏掉它不影响滚动。
  *    xterm 用 `opacity`（`.visible` / `.invisible` 类）控制它显隐、不碰 `display`，
  *    所以这条 `display: none` 不会被它的 JS 覆盖。
+ *
+ *    ⚠️ **手机版故意与 web / desktop 不同**：那边自己拖得动、看得见那 6px 滑块，所以
+ *    已改回可见；这边纯触屏没有 hover 可离开，Auto 模式的条显隐不可靠（容易在右缘
+ *    常驻一条灰条），翻 scrollback 走的是单指拖动（见 `terminal-touch-scroll.ts`）。
  */
 .xterm .xterm-scrollable-element > .scrollbar {
   display: none;

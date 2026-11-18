@@ -238,6 +238,92 @@ describe('compactHistory（pi 的 compaction）', () => {
     expect(gen).toHaveBeenCalledTimes(2)
   })
 
+  /**
+   * 回归：切点是「至少保留 keepRecentTokens」，跨线的那条消息**整条**留在保留区。
+   * 一条消息本身就有保留区那么大时（读了一个大文件 / 一条长输出），压完几乎没变小，
+   * 于是下一轮立刻又超阈值 → 连压好几次才落地（用户实测：压三次才到 20k）。
+   *
+   * 期望：跨线那条不进保留区（一起摘要掉），保留区是**上限**而不是下限。
+   */
+  it('跨线的单条超大消息不整条留在保留区', async () => {
+    const huge: AgentChatMessage = {
+      id: 'huge',
+      role: 'assistant',
+      // 8000 字符 ≈ 2000 token，比 keepRecentTokens(1024) 还大
+      parts: [{ type: 'text', text: 'y'.repeat(8000) }],
+      createdAt: 50
+    }
+    const history = [...chatHistory(4), huge, ...chatTurn(5)]
+    const r = await compactHistory(history, { ...OPTS, conversationId: 'conv-huge' })
+    expect(r.compressed).not.toBeNull()
+    // 那条巨型消息必须被摘要掉，不能原样留在保留区里
+    expect(r.history.some((m) => m.id === 'huge')).toBe(false)
+    // 压完必须真的落到保留区量级（base 0 + 摘要 + 最后那一轮）
+    expect(r.compressed!.afterTokens).toBeLessThan(1024 + 800)
+  })
+
+  /**
+   * 回归：**轮中压缩不落检查点**，于是最后一次请求的真实 usage 只代表「压过的那份」。
+   *
+   * 用户实测：某一轮跑出巨型工具输出 → 轮中压缩把当轮请求压回 50k（圆环显示很低）→
+   * 落盘历史里那条巨消息原样还在 → 再发一条消息，真值 50k 判「没超」→ 整份巨消息照发
+   * （超窗口、全价）→ 又靠轮中压缩救火 …… 每条新消息都复现一次。
+   *
+   * 判据：保留区里**单独一条消息就比上次请求还大**时，那次测量必然没包含它，
+   * 只能改看估算 —— 否则压完就再也压不动了。
+   */
+  it('保留区里有单条消息比上次请求还大时，真值不作数', async () => {
+    const giant: AgentChatMessage = {
+      id: 'giant',
+      role: 'assistant',
+      // 8000 字符 ≈ 2000 token，比触发线（2976）之外还大；比下面那条 1000 的真值大得多
+      parts: [{ type: 'text', text: 'z'.repeat(8000) }],
+      createdAt: 3
+    }
+    const tail = chatTurn(4)
+    // 上次请求是「压过的那份」：真值只有 1000，远小于保留区里那条巨消息
+    tail[1] = {
+      ...tail[1]!,
+      usage: { inputTokens: 990, outputTokens: 10, totalTokens: 1_000, contextTokens: 1_000, durationMs: 1, tps: 1 }
+    }
+    const history: AgentChatMessage[] = [
+      ...chatTurn(1),
+      ...chatTurn(2),
+      giant,
+      ...tail,
+      { id: 'u9', role: 'user', parts: [{ type: 'text', text: '再发一条' }], createdAt: 9 }
+    ]
+    const r = await compactHistory(history, { ...OPTS, conversationId: 'conv-stale-usage' })
+    expect(r.compressed).not.toBeNull()
+    // 巨型消息必须真的被摘要掉，否则下一轮还是这份数组
+    expect(r.history.some((m) => m.id === 'giant')).toBe(false)
+    expect(gen).toHaveBeenCalled()
+  })
+
+  /**
+   * 回归：检查点正好压在一条助手消息上（历史版本留下的落盘点），切点又落回同一条回合的
+   * 助手消息时，`turnStartIndex === checkpointIndex` —— 按「切回合」算会一路退化成
+   * `historyEnd <= checkpointIndex`（什么都不压），那份内容每轮照发、每轮判超。
+   * 期望：起点就在检查点上时按不切回合处理，一路摘要到切点。
+   */
+  it('切回合的起点正好在检查点上时照常摘要，不返回 below-keep', async () => {
+    const history: AgentChatMessage[] = [
+      ...chatTurn(1),
+      { id: 'u2', role: 'user', parts: [{ type: 'text', text: '2:开始' }], createdAt: 2 },
+      { id: 'a2x', role: 'assistant', parts: [{ type: 'text', text: 'x'.repeat(7200) }], createdAt: 2 },
+      { id: 'a2', role: 'assistant', parts: [{ type: 'text', text: 'x'.repeat(2400) }], createdAt: 2 },
+      { id: 'a2b', role: 'assistant', parts: [{ type: 'text', text: 'x'.repeat(2400) }], createdAt: 2 }
+    ]
+    const r = await compactHistory(history, {
+      ...OPTS,
+      conversationId: undefined,
+      seed: { keepFromMessageId: 'u2', text: '旧摘要' }
+    })
+    expect(r.skipped).not.toBe('below-keep')
+    expect(r.compressed).not.toBeNull()
+    expect(gen).toHaveBeenCalled()
+  })
+
   it('没有 conversationId 时不固化（每轮重算，与加这个能力之前一致）', async () => {
     await compactHistory(chatHistory(8), { ...OPTS, conversationId: undefined })
     await compactHistory(chatHistory(8), { ...OPTS, conversationId: undefined })

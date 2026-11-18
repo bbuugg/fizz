@@ -44,7 +44,8 @@
 import { useState } from 'react'
 import { CalendarClock, Loader2, TriangleAlert } from 'lucide-react'
 import { toast } from 'sonner'
-import type { AiPermissionMode, TaskTrigger } from '@fizz/contracts/types'
+import type { AiPermissionMode, AiReasoningEffort, TaskTrigger } from '@fizz/contracts/types'
+import { isRemoteWorkspace } from '@fizz/contracts/types'
 import { DEFAULT_BROWSER_SETTINGS, type BrowserSettings } from '@fizz/contracts'
 import type { AgentWorkspace, AcpAgentView, ModelView } from '@fizz/contracts/agent-api'
 import type { McpServerConfig } from '@fizz/mcp/types'
@@ -60,13 +61,16 @@ import {
 } from '@fizz/ui/dialog'
 import { Input } from '@fizz/ui/input'
 import { Label } from '@fizz/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@fizz/ui/select'
+import { Tabs, TabsList, TabsTrigger } from '@fizz/ui/tabs'
 import { PermissionPill } from '@fizz/agent-kit/features/chat/composer'
 import {
   ModelPicker,
   type ModelTarget
 } from '@fizz/agent-kit/features/chat/ModelPicker'
+import { ReasoningEffortPanel } from '@fizz/agent-kit/features/chat/ReasoningEffortPanel'
 import { WorkspacePicker } from '@fizz/agent-kit/features/chat/WorkspacePicker'
+import { useWorkspaceAddActions } from '@fizz/agent-kit/features/chat/workspace-add-actions'
+import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import { BrowserPicker } from '@fizz/agent-kit/features/chat/BrowserPicker'
 import { McpPicker } from '@fizz/agent-kit/features/chat/McpPicker'
 import { ComposerToolbarPlaceholder } from '@fizz/agent-kit/features/chat/ComposerToolbar'
@@ -96,6 +100,7 @@ function triggerMode(trigger: TaskTrigger): Mode {
 }
 
 export function TriggerEditDialog({
+  app,
   triggers,
   workspaces,
   models,
@@ -109,6 +114,12 @@ export function TriggerEditDialog({
   open,
   onOpenChange
 }: {
+  /**
+   * 只为「工作区下拉里那四个添加入口」要它（选目录要 `addWorkspace`，目录浏览器也要
+   * 同一个 app）。表单其余数据仍然一条条从 props 进 —— 别顺手改成从 `app` 里现取，
+   * 那样这个弹窗就不再是「传什么显示什么」了。
+   */
+  app: AgentApp
   triggers: TriggersState
   /** 可绑的工作区（临时工作区已由调用方过滤掉：它们不该被手动选中） */
   workspaces: AgentWorkspace[]
@@ -158,9 +169,11 @@ export function TriggerEditDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {/* 唯一的滚动区：表单字段（footer 在它外面，不滚） */}
-        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-1">
+        {/* 唯一的滚动区：表单字段（footer 在它外面，不滚）。
+            `-mr-4` 抵消 `DialogContent` 的 `p-4`，滚动条贴到弹窗右沿。 */}
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-1 -mr-4">
           <TriggerForm
+            app={app}
             triggers={triggers}
             workspaces={workspaces}
             models={models}
@@ -196,6 +209,7 @@ export function TriggerEditDialog({
  * （Radix 关闭即卸载 → 再打开就是干净表单）。`editing = null` 即新建。
  */
 function TriggerForm({
+  app,
   triggers,
   workspaces,
   models,
@@ -208,6 +222,7 @@ function TriggerForm({
   editing,
   onDone
 }: {
+  app: AgentApp
   triggers: TriggersState
   workspaces: AgentWorkspace[]
   models: ModelView[]
@@ -305,12 +320,40 @@ function TriggerForm({
   const [browserSettings, setBrowserSettings] = useState<BrowserSettings>(
     editing?.template.browserSettings ?? DEFAULT_BROWSER_SETTINGS
   )
+  /**
+   * 思考强度：与「新建对话」那颗滑块**同一份实现**（`ReasoningEffortPanel`）、同一套
+   * 语义 —— 挂在模型下拉底部、选完模型不关面板、切到外部 Agent 时整块不出现。
+   *
+   * `null` = 跟随模型（不写进模板）：模板里没这个字段时，调度器建会话也不写，
+   * 与手动会话「没调过」完全一样。
+   */
+  const [reasoningEffort, setReasoningEffort] = useState<AiReasoningEffort | null>(
+    editing?.template.reasoningEffort ?? null
+  )
+  /**
+   * 工作区下拉底部那四个添加入口（选目录 / Git / 远端 / 容器）与各自的弹窗，
+   * 与聊天输入框下方**同一份**（`useWorkspaceAddActions`）。加完就选中它 ——
+   * 用户刚建完的项目，下一步一定是想绑到这条任务上。
+   */
+  const { actions: workspaceActions, onAction: onWorkspaceAction, dialogs: workspaceDialogs } =
+    useWorkspaceAddActions(app, (workspace) => setWorkspaceId(workspace.id))
 
   /**
    * 当前选的是外部 Agent（权限语义与内置模型那套不同，下面要单独提示）。
    * 清单本身由 `ModelPicker` 自己渲染 —— 这里不再另建一份平铺的 options 数组。
    */
   const isAcpTarget = modelTarget?.backend === 'acp'
+
+  /**
+   * 底部「思考强度」的显示条件，与 `ModelSelect` 逐字同源：内置目标且具体模型都定了，
+   * 才有可作用的档位。ACP 的思考档归 agent 自己（`AcpThoughtLevelSelect`），这里不出现
+   * —— 表单里切到外部 Agent 时滑块会当场收起，不会留下一个点了没反应的控件。
+   */
+  const showReasoningEffort =
+    !isAcpTarget && !!modelTarget?.configId && !!modelTarget.modelId
+
+  /** 选中的工作区在远端主机上：定时任务首期不支持（服务端保存时也会拒），提前说清 */
+  const workspaceIsRemote = isRemoteWorkspace(selectedWorkspace)
 
   async function submit(): Promise<void> {
     // 没选 = 不让存：触发时没人值守，存一条没有模型的任务只会变成「到点就报错」
@@ -349,6 +392,9 @@ function TriggerForm({
         configId,
         // 外部 Agent 的「跟随默认」= 不写这个字段（省了就是 agent 自己的默认）
         ...(modelId ? { modelId } : {}),
+        // 思考强度只对内置模型有意义：ACP 不读它，写进去只会让任务详情显示一个
+        // agent 根本不会用的档位。`null`（跟随模型）也不写 —— 省了就是缺省语义。
+        ...(!isAcpTarget && reasoningEffort ? { reasoningEffort } : {}),
         // 开关 + 来源**总是**带上（不能只在开启时写）：全局默认可能是开着的，
         // 用户在表单里明确关掉时得能把「关」这一状态存下来，否则触发时又按全局默认开回来。
         // 但**外部 Agent 那两个字段一律不写**：它自带工具、不读它们，写进去只会让任务详情
@@ -468,6 +514,18 @@ function TriggerForm({
                   )}
                   defaultContextWindow={defaultContextWindow}
                   onOpenSettings={onOpenSettings}
+                  // 与「新建对话」那颗同一条：选完模型不关面板，底部思考强度要能接着调
+                  closeOnSelect={false}
+                  {...(showReasoningEffort
+                    ? {
+                        footer: (
+                          <ReasoningEffortPanel
+                            value={reasoningEffort}
+                            onChange={setReasoningEffort}
+                          />
+                        )
+                      }
+                    : {})}
                 />
               </div>
             </div>
@@ -482,8 +540,12 @@ function TriggerForm({
               title={t(
                 '工作区：Agent 只能读写这个目录里的东西。不选 = 每次触发在数据目录下新建一个临时工作区（不进项目列表）'
               )}
+              // 与聊天输入框下方**同一份**菜单：选择文件夹 / 从 Git 导入 / 连接远端 / 新建容器型项目
+              actions={workspaceActions}
+              onAction={onWorkspaceAction}
             />
           </div>
+          {workspaceDialogs}
         </div>
         {selectedWorkspace?.dirMissing ? (
           <p className="flex items-start gap-1.5 text-xs leading-5 text-destructive">
@@ -493,16 +555,25 @@ function TriggerForm({
             })}
           </p>
         ) : null}
+        {/* 远端工作区能选、能建（下拉菜单与聊天同一份），但定时任务首期跑不了它：
+            调度器与保存接口都会拒（`requireUsableTriggerWorkspace`）。在这儿先说清，
+            别等点了保存才被 toast 打回 —— 表单里那两条警告是同一个口径 */}
+        {workspaceIsRemote ? (
+          <p className="flex items-start gap-1.5 text-xs leading-5 text-destructive">
+            <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+            {t('远端工作区首期不支持定时任务（触发时够不到 SSH 主机上的目录）：请改选本机工作区，或改用「每次运行自动创建」。')}
+          </p>
+        ) : null}
         <p className="text-xs leading-5 text-muted-foreground">
           {workspaceId
             ? t('每次触发都在这个工作区里跑一轮会话。')
             : t('不绑工作区：每次触发自动新建一个临时工作区（空目录、不进项目列表），从零干一遍。')}
           {isAcpTarget
             ? t(
-                '权限 / 模型与新建会话时是同一套选项；浏览器 / MCP 只对内置模型生效 —— 外部 Agent 自带工具，不读这两个开关。'
+                '权限 / 模型与新建会话时是同一套选项；思考强度 / 浏览器 / MCP 只对内置模型生效 —— 外部 Agent 自带工具与思考档，不读这几项。'
               )
             : t(
-                '权限 / 模型 / 浏览器 / MCP 与新建会话时是同一套选项；浏览器工具跑在服务端，无人值守也能用。'
+                '权限 / 模型 / 思考强度 / 浏览器 / MCP 与新建会话时是同一套选项；浏览器工具跑在服务端，无人值守也能用。'
               )}
           {t(
             '必须选一个目标（内置模型，或外部 Agent）—— 触发时没人值守，不会替你挑一个。外部 Agent 可以「跟随它自己的默认模型」。'
@@ -512,15 +583,17 @@ function TriggerForm({
 
       <div className="space-y-1.5">
         <Label>{t('触发方式')}</Label>
-        <Select value={mode} onValueChange={(v) => setMode(v as Mode)}>
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="cron">{t('按时间表（cron）')}</SelectItem>
-            <SelectItem value="at">{t('一次性（指定时刻）')}</SelectItem>
-          </SelectContent>
-        </Select>
+        {/* 触发方式用 shadcn Tabs（与 `QuickActionsDialog` 的「类型」同一套）：只有两项、
+            且内容区（cron 输入 / 时刻选择）就在下面那两块，所以**不挂 `TabsContent`** ——
+            这里只当选择器用。下拉那版要「点开 → 选 → 再往下看」，页签把「选哪种」和
+            「填什么」连成一块。 */}
+        <Tabs value={mode} onValueChange={(value) => setMode(value as Mode)}>
+          {/* `w-full`：与下面那些输入框同宽；每个 trigger 自己 `flex-1`，两半均分 */}
+          <TabsList className="w-full">
+            <TabsTrigger value="cron">{t('按时间表（cron）')}</TabsTrigger>
+            <TabsTrigger value="at">{t('一次性（指定时刻）')}</TabsTrigger>
+          </TabsList>
+        </Tabs>
       </div>
 
       {mode === 'cron' && (

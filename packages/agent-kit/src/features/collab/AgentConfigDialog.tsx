@@ -68,7 +68,8 @@ export function AgentConfigDialog({
             与其他 Agent 共享同一工作区与同一条会话；默认只读，需要改动文件 / 执行命令时再放开权限。
           </DialogDescription>
         </DialogHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+        {/* `-mr-4` 抵消 `DialogContent` 的 `p-4`，滚动条贴到弹窗右沿 */}
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1 -mr-4">
           <div className="grid gap-3">
             <div className="grid gap-1.5">
               <Label htmlFor="collab-name">名字</Label>

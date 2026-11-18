@@ -29,19 +29,21 @@ function build(backend?: WorkspaceBackend): Record<string, unknown> {
     ...(backend ? { backend } : {}),
     emit: () => undefined,
     stats: makeDelegationStats()
-  })
+  }).tools
 }
 
 describe('子任务白名单 · 远端工作区', () => {
+  // `task_wait` 是每个启用子任务的会话都挂的领取工具，与白名单无关（不在子任务的白名单里，
+  // 子 agent 拿不到它，也就不可能自己再派活）
   it('远端不建 git_read，白名单过滤不抛错', () => {
     const tools = build(remoteBackend)
 
-    expect(Object.keys(tools).sort()).toEqual(['agent-explorer', 'agent-reviewer'])
+    expect(Object.keys(tools).sort()).toEqual(['agent-explorer', 'agent-reviewer', 'task_wait'])
   })
 
   it('本地仍建 git_read（白名单保持完整）', () => {
     const tools = build()
 
-    expect(Object.keys(tools).sort()).toEqual(['agent-explorer', 'agent-reviewer'])
+    expect(Object.keys(tools).sort()).toEqual(['agent-explorer', 'agent-reviewer', 'task_wait'])
   })
 })

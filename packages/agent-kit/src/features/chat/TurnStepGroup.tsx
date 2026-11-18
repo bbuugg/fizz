@@ -49,7 +49,7 @@
  */
 import { useState, type ReactNode } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
-import { Brain, ChevronRight, Square, Wrench } from 'lucide-react'
+import { Brain, ChevronRight, Minimize2, Square, Wrench } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@fizz/ui/tooltip'
 import { ShimmerLabel } from '@fizz/agent-kit/shared/ai-elements/shimmer-label'
@@ -81,13 +81,15 @@ export function TurnStepGroup({
   /**
    * 这一段**最后一步是什么类型**，只决定名字左边那颗图标：
    * `tool` → 该工具的图标（`toolHeadIcon`：执行命令是终端，认不出的退回扳手），
-   * `reasoning` → 脑（与思考条 `ReasoningTrigger` 同一颗）。不传就不渲染图标。
+   * `reasoning` → 脑（与思考条 `ReasoningTrigger` 同一颗），
+   * `compaction` → 「向内收拢」（与组内那张压缩卡同一颗 `Minimize2`）。
+   * 不传就不渲染图标。
    *
    * 为什么要有：未结束时左格写的是「最后做的那一件事」（`跑一下单测` / `思考中…`），
    * 那是一行纯文字 —— 单条工具卡有图标、单条思考有脑，唯独折进组里之后就什么都不剩，
    * 一列收起的抬头全长得一样。图标把这层「这一步是工具还是思考」补回来。
    */
-  kind?: 'tool' | 'reasoning'
+  kind?: 'tool' | 'reasoning' | 'compaction'
   /**
    * 尾 part 的工具名（`kind === 'tool'` 时一起给）。抬头那颗图标与组内那张卡的头**同源**
    * （`toolHeadIcon`），展开 / 收起同一步不换字形；不给就退回扳手。
@@ -196,7 +198,13 @@ export function TurnStepGroup({
    * 已经是这么画的（同一颗 `toolHeadIcon`，展开前后不换字形）。
    */
   const KindIcon =
-    kind === 'tool' ? (toolName ? toolHeadIcon(toolName) : Wrench) : kind === 'reasoning' ? Brain : null
+    kind === 'tool'
+      ? (toolName ? toolHeadIcon(toolName) : Wrench)
+      : kind === 'reasoning'
+        ? Brain
+        : kind === 'compaction'
+          ? Minimize2
+          : null
   const kindIcon = KindIcon ? <KindIcon className="size-4 shrink-0" /> : null
 
   /*

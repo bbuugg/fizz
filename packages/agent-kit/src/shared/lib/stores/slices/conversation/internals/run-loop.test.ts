@@ -114,7 +114,12 @@ function makeStore(api: Record<string, unknown>) {
     setError: () => undefined
   })
   const read = (id: string): ConvSlice => (state.slices as Record<string, ConvSlice>)[id]
-  return { state, read, loadConversation: slice.loadConversation as (id: string) => Promise<void> }
+  return {
+    state,
+    read,
+    slice,
+    loadConversation: slice.loadConversation as (id: string) => Promise<void>
+  }
 }
 
 function acpApi(peekGate: { promise: Promise<null> }, calls: { activeRun: number }) {
@@ -242,3 +247,103 @@ describe('loadMessages · 代次变了也要保住历史', () => {
 function sliceCall(state: Record<string, unknown>, name: string): unknown {
   return state[name]
 }
+
+/**
+ * 本端正在跑这一轮时，装载会话**不许**再接第二条流（回归测试）。
+ *
+ * ## 防的是什么
+ *
+ * 用 ACP agent（pi）新建会话发第一条，正文每个字都重复显示两遍，只有整轮结束后
+ * 手动「重新加载会话」才恢复。
+ *
+ * 链路：`newConversation` 建完会话先把 `activeConversationId` 切过去（界面立刻从
+ * 空态页进会话），而 ACP 还要下发 `setAcpAgentMode` / `setAcpThoughtLevel`
+ * （两次进程往返）才 `writeSlice` 落本轮占位。这段窗口里 `slices[id]` 还不存在，
+ * 任何一次 `openConversation(id)`（PanelView 对齐标签 / 侧栏点会话 / 刷新后恢复）
+ * 都会走完整装载 —— 那时 `runRound` 的 `streamChat` 已经上路，`peekActiveRun`
+ * 探到的就是**自己这一轮**。
+ *
+ * 以前这里无条件 `attachRun`（而且 resume 路径还跳过 `subscribing` 去重）：
+ * attach 先把 parts 清空再从头回放，`runRound` 那条直播同时在写，两条流把同一批
+ * 帧各追加一遍 —— `handleFrame` 是追加式的，重复就是正文重复。
+ */
+describe('loadConversation · 本端正在跑时不再接第二条流', () => {
+  it('runningConversations 里有这条会话就不 attach、也不拉快照', async () => {
+    const api = {
+      getConversation: vi.fn(async (id: string) => ({
+        id,
+        backend: 'acp' as const,
+        configId: 'cfg-1',
+        acpSessionId: 'sess-1',
+        workspaceId: 'ws-1',
+        title: 'acp 会话',
+        createdAt: 1,
+        updatedAt: 1,
+        messages: [] as AgentChatMessage[]
+      })),
+      // 服务端确实有一条在跑的 run —— 但那是本端自己发起的这一轮
+      activeRun: vi.fn(async () => ({
+        run: { requestId: 'r-1', assistantMessageId: 'a-live' }
+      })),
+      getAcpTranscript: vi.fn(async () => ({ messages: [replayAssistant] })),
+      attachRun: vi.fn(async () => undefined)
+    }
+    const { state, read, loadConversation } = makeStore(api)
+    state.runningConversations = { [CONVERSATION_ID]: true }
+
+    await loadConversation(CONVERSATION_ID)
+
+    // 一条都不许再接：本端的 live 流就是真源
+    expect(api.attachRun).not.toHaveBeenCalled()
+    expect(api.getAcpTranscript).not.toHaveBeenCalled()
+    // 装载标记仍然要撤（否则消息区一直转圈）
+    expect(read(CONVERSATION_ID).loading).toBe(false)
+  })
+})
+
+/**
+ * `attachRun` 的 `resume` 兜底（回归测试）：本端 live 流没断时，带 `requestId`
+ * 的强制重接也是「重接自己的流」，同样会把正文写两遍。
+ */
+describe('attachRun · 本端 live 流还活着时不重复接', () => {
+  it('resume 传了 requestId 也直接放行给本端那条流', async () => {
+    const api = {
+      getConversation: vi.fn(async (id: string) => ({
+        id,
+        backend: 'acp' as const,
+        configId: 'cfg-1',
+        acpSessionId: 'sess-1',
+        workspaceId: 'ws-1',
+        title: 'acp 会话',
+        createdAt: 1,
+        updatedAt: 1,
+        messages: [] as AgentChatMessage[]
+      })),
+      activeRun: vi.fn(async () => ({ run: null })),
+      getAcpTranscript: vi.fn(async () => ({ messages: [] as AgentChatMessage[] })),
+      attachRun: vi.fn(async () => undefined)
+    }
+    const { state, read, loadConversation } = makeStore(api)
+    await loadConversation(CONVERSATION_ID)
+    // 本端 `runRound` 正在直播这一轮
+    const live = read(CONVERSATION_ID)
+    live.streaming = true
+    live.request = {
+      id: 'r-1',
+      controller: new AbortController(),
+      assistantId: 'a-live'
+    }
+
+    const attachRun = state.attachRun as (
+      id: string,
+      opts: { requestId: string; assistantId: string }
+    ) => Promise<boolean>
+    const attached = await attachRun(CONVERSATION_ID, {
+      requestId: 'r-1',
+      assistantId: 'a-live'
+    })
+
+    expect(attached).toBe(true)
+    expect(api.attachRun).not.toHaveBeenCalled()
+  })
+})

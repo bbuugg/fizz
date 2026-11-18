@@ -54,6 +54,7 @@ import {
   SelectValue
 } from '@fizz/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@fizz/ui/tabs'
+import { ApiSaveDialog } from '@fizz/agent-kit/features/api/ApiSaveDialog'
 import MonacoEditor from '@fizz/agent-kit/features/files/MonacoEditor'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
@@ -93,21 +94,16 @@ import {
   tidyHeaderRows,
   withQuery
 } from '@fizz/agent-kit/features/api/api-client'
-import { buildGroupTree, type GroupNode } from '@fizz/agent-kit/shared/lib/group-tree'
 import { CellInput, KeyValueTable } from '@fizz/agent-kit/features/api/KeyValueTable'
 import { apiDraftSeedVersion, subscribeApiDraftSeed, takeApiDraftSeed } from '@fizz/agent-kit/features/api/api-draft'
 import type {
   ApiBodyType,
   ApiFormField,
-  ApiGroup,
   ApiHeaderPair,
   ApiHistoryEntry,
   ApiHttpResponse,
   ApiRequestEntry
 } from '@fizz/contracts/types'
-
-/** 接口请求分组树节点（`group-tree` 的常用实例化） */
-type ApiGroupNode = GroupNode<ApiGroup, ApiRequestEntry>
 
 /** 响应面板高度占比的默认值与上下限（拖动分隔条时按此范围夹取） */
 const RES_RATIO_DEFAULT = 0.45
@@ -119,13 +115,6 @@ const RES_RATIO_MAX = 0.8
  * 压扁后请求区内容会溢出、透过响应面板显出来，所以还要按像素留底。
  */
 const MIN_REQ_PANE_H = 120
-
-/**
- * 分组选择器的「未分组 / 顶级」哨兵值。
- * Radix Select **不允许**空字符串当 `value`（会当成「无值」而显示占位符），
- * 所以用一个不可能撞车的哨兵字符串代表「不归属任何分组」。
- */
-const NO_GROUP = '__none__'
 
 /** 请求构造区的分段切换项 */
 const REQ_TABS = [
@@ -147,24 +136,6 @@ const BODY_TYPE_OPTIONS = BODY_TYPES.map((b) => ({
   shortLabel: b.shortLabel ?? b.label
 }))
 const METHOD_OPTIONS = METHODS.map((m) => ({ value: m, label: m }))
-
-/** 分组下拉的扁平选项（多级用全角缩进表达层级；Radix Select 不支持嵌套） */
-interface GroupOption {
-  id: string
-  label: string
-}
-
-function flattenGroupOptions(groups: ApiGroup[]): GroupOption[] {
-  const out: GroupOption[] = []
-  const walk = (nodes: ApiGroupNode[], depth: number): void => {
-    for (const node of nodes) {
-      out.push({ id: node.group.id, label: `${'　'.repeat(depth)}${node.group.name}` })
-      walk(node.children, depth + 1)
-    }
-  }
-  walk(buildGroupTree(groups, []), 0)
-  return out
-}
 
 /**
  * form-data 字段的值单元格：只读文件名 + 「选择文件」。
@@ -221,9 +192,6 @@ export function ApiPage({ requestId }: { requestId: string }) {
   const request = app.apiRequests.find((r) => r.id === requestId) ?? null
   /** 本标签是否是「未保存的新请求」草稿（requestId 为哨兵值，不是真实存储条目） */
   const isDraft = requestId === NEW_API_REQUEST_ID
-
-  /** 分组下拉选项：未分组 + 多级分组树（扁平化 + 缩进表达层级） */
-  const groupOptions = useMemo(() => flattenGroupOptions(app.apiGroups), [app.apiGroups])
 
   // ---------- 请求草稿 ----------
   // 不自动保存：改完必须按 Ctrl/Cmd+S 才落盘。标签保持挂载，所以切走再回来草稿还在；
@@ -303,9 +271,9 @@ export function ApiPage({ requestId }: { requestId: string }) {
   }, [requestId])
 
   /**
-   * 工具栏那两个输入框（分组 / 名称）在**已保存请求**上要跟着条目走：侧栏那一行也能改这两项
-   * （那边弹窗直接落盘），改完这里得跟上 —— 不跟的话工具栏还显示旧名字，而「保存」用的正是
-   * 本地这份值，会把侧栏刚改的覆盖回去（`saveNow` 的取值来源就是 `name` / `groupId`）。
+   * 名称与分组在**已保存请求**上要跟着条目走：侧栏那一行也能改这两项（那边弹窗直接落盘），
+   * 改完这里得跟上 —— 不跟的话工具栏还显示旧名字，而「保存」用的正是本地这份值，会把侧栏
+   * 刚改的覆盖回去（`saveNow` 的取值来源就是 `name`，分组的初值来自 `groupId`）。
    *
    * 只认**存储里的值**变化，所以在本页打字不会被这条 effect 打回（打字只改本地 state，
    * 不动 store）。草稿（`isDraft`）不走这里：它还没进列表，这两项就是本页自己说了算。
@@ -330,7 +298,7 @@ export function ApiPage({ requestId }: { requestId: string }) {
   dirtyRef.current =
     isDraft &&
     (method !== 'GET' ||
-      // 名称 / 分组也在工具栏上，只填了这两项也算「有改动」（否则打个名字再关就静默丢了）
+      // 名称也在工具栏上，只填了名字也算「有改动」（否则打个名字再关就静默丢了）
       name.trim() !== '' ||
       groupId !== undefined ||
       url.trim() !== '' ||
@@ -516,13 +484,32 @@ export function ApiPage({ requestId }: { requestId: string }) {
 
   // ---------- 保存（唯一落盘入口；工具栏「保存」按钮与 Ctrl/Cmd+S 都走到这里） ----------
   /**
-   * 草稿真正落盘：把工具栏那两个输入框的当前值（名称 + 分组）一并写入列表，
+   * 保存弹窗：**分组只在这里选**（工具栏不再显示分组）。弹窗本体是
+   * `ApiSaveDialog`（与 WebSocket 页共用一份），这里只管「打开」与「确认后落盘」。
+   *
+   * 为什么改成「保存时问一次」：分组是「归到哪儿」的一次性决定，不是每时每刻都在改的
+   * 东西；摆在工具栏上既占宽度（换分组时还会让名称输入框左右跳），又把一件低频操作
+   * 提到和名称同级。弹窗里顺手能新建分组，省得为了建组再跑一趟侧栏。
+   */
+  const [saveOpen, setSaveOpen] = useState(false)
+
+  /**
+   * 「保存」按钮 / Ctrl+S 的入口：**先问分组，确认后才落盘**。
+   * 弹窗打开时会把当前归属带进去（改已保存的请求时就是它原来的分组）。
+   */
+  const requestSave = (): void => {
+    if (saving) return
+    setSaveOpen(true)
+  }
+
+  /**
+   * 草稿真正落盘：把工具栏的名称与弹窗里选的分组一并写入列表，
    * 并把草稿标签切成真实标签。
    *
    * 名称**允许为空**（工具栏不弹窗要名字了）：空名在侧栏按「方法 + 路径」显示
    * （见 `ApiPanel` 的 `RequestRow`），不该为了一个显示名把「保存」变成点不动的死键。
    */
-  const persistDraft = async (): Promise<void> => {
+  const persistDraft = async (groupIdToSave: string | undefined): Promise<void> => {
     setSaving(true)
     try {
       const before = new Set(useAgentStore.getState().apiRequests.map((r) => r.id))
@@ -536,7 +523,7 @@ export function ApiPage({ requestId }: { requestId: string }) {
         bodyType,
         bodyUrlencoded: urlencoded,
         bodyFormFields: stripFileData(formFields),
-        groupId,
+        groupId: groupIdToSave,
         createdAt: 0,
         updatedAt: 0
       })
@@ -552,15 +539,15 @@ export function ApiPage({ requestId }: { requestId: string }) {
   }
 
   /**
-   * 保存（工具栏那颗「保存」按钮与 Ctrl/Cmd+S 都走到这里）。两种情况同一颗键：
-   * - **未保存草稿 → 新增**：名称 / 分组取工具栏输入框的当前值，没填名字也照存（行上退回
+   * 落盘（弹窗确认后调用）。两种情况同一颗键：
+   * - **未保存草稿 → 新增**：名称取工具栏，分组取弹窗里选的，没填名字也照存（行上退回
    *   「方法 + 路径」）；
-   * - **已保存请求 → 修改**：整条覆盖写，名称 / 分组同样以本地 state 为准
-   *   （它跟着侧栏那一行的改动同步，见上面的同步 effect）。
+   * - **已保存请求 → 修改**：整条覆盖写，名称以本地 state 为准（跟着侧栏那一行的改动同步），
+   *   分组以弹窗里选的为准 —— 这样详情页也能改归属。
    */
-  const saveNow = async (): Promise<void> => {
+  const saveNow = async (groupIdToSave: string | undefined): Promise<void> => {
     if (isDraft) {
-      await persistDraft()
+      await persistDraft(groupIdToSave)
       return
     }
     setSaving(true)
@@ -574,12 +561,19 @@ export function ApiPage({ requestId }: { requestId: string }) {
       bodyType,
       bodyUrlencoded: urlencoded,
       bodyFormFields: stripFileData(formFields),
-      groupId,
+      groupId: groupIdToSave,
       createdAt: 0,
       updatedAt: 0
     })
     setSaving(false)
     if (ok) toast.success('已保存')
+  }
+
+  /** 弹窗确认：把选中的分组写回 state（侧栏 / 下次打开弹窗都用它）并落盘 */
+  const confirmSave = async (groupIdToSave: string | undefined): Promise<void> => {
+    setSaveOpen(false)
+    setGroupId(groupIdToSave)
+    await saveNow(groupIdToSave)
   }
 
   // ---------- 发送 ----------
@@ -699,7 +693,7 @@ export function ApiPage({ requestId }: { requestId: string }) {
     if (!mod) return
     if (e.key.toLowerCase() === 's') {
       e.preventDefault()
-      void saveNow()
+      requestSave()
     } else if (e.key === 'Enter') {
       e.preventDefault()
       if (sending) cancelSend()
@@ -724,45 +718,26 @@ export function ApiPage({ requestId }: { requestId: string }) {
   return (
     <div ref={rootRef} className="flex h-full flex-col bg-background" onKeyDown={onKeyDown}>
       {/*
-        工具栏：**分组 + 名称一行，两项都可编辑** + 右侧「保存」按钮。详情页**不弹任何 dialog**。
+        工具栏：**只有名称**（可编辑）+ 右侧「保存」按钮。
 
-        这两项是这条请求的「身份」（放在哪、叫什么），和下面的请求内容（方法 / 地址 / 请求头 /
-        请求体）分开摆；两边都靠同一颗「保存」落盘 —— 点下去**新的就新增、旧的（已保存的）就修改**，
-        用户不用先分辨自己开的是哪种标签。
+        分组**不在这一行**了：它是一次「归到哪儿」的决定，只在保存时问一次（见下面那个
+        `saveOpen` 弹窗，里面还能顺手新建分组）。摆在工具栏上等于把它当成每时每刻都在
+        改的东西，实际上一份请求的分组几乎不会变。
 
-        名称是输入框、**允许留空**：空名在侧栏按「方法 + 路径」显示（见 `ApiPanel` 的
-        `RequestRow`），不该为了一个显示名把「保存」变成点不动的死键。
-        分组下拉**固定 `w-40`**（长分组名截断、不挤名字）：宽度跟着内容走的话，换个分组
-        就会让右边的名称输入框左右跳一下；「未分组」走 `NO_GROUP` 哨兵。
-        已保存的请求在侧栏那一行也能改这两项（那边弹窗直接落盘），改完靠上面的同步 effect 跟上。
+        名称是**无边框输入框**（`border-0 px-0`），与 WebSocket 那颗逐字一致 —— 两页的
+        第一行是同一个东西，不该一个带框一个不带框。名称允许留空：空名在侧栏按
+        「方法 + 路径」显示（见 `ApiPanel` 的 `RequestRow`），不该为了一个显示名把
+        「保存」变成点不动的死键。
+        已保存的请求在侧栏那一行也能改名称 / 分组（那边弹窗直接落盘），改完靠上面的
+        同步 effect 跟上。
         「保存」必须**有按钮**：Ctrl/Cmd+S 只是加速方式，不能是唯一入口（没有键盘就没法落盘）。
       */}
       <div className="flex shrink-0 items-center gap-2 px-3 py-1.5">
-        <Select
-          value={groupId ?? NO_GROUP}
-          onValueChange={(v) => setGroupId(v === NO_GROUP ? undefined : v)}
-        >
-          <SelectTrigger
-            size="sm"
-            className="w-40 shrink-0"
-            title="请求所属分组（改动后点「保存」或 Ctrl+S 落盘）"
-          >
-            <SelectValue placeholder="未分组" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={NO_GROUP}>未分组</SelectItem>
-            {groupOptions.map((o) => (
-              <SelectItem key={o.id} value={o.id}>
-                {o.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="请求名称（可选，缺省显示「方法 + 路径」）"
-          className="h-8 min-w-0 flex-1 text-[15px] font-semibold"
+          className="min-w-0 flex-1 border-0 px-0 text-[0.9375rem] font-semibold shadow-none focus-visible:ring-0"
         />
         <Button
           size="sm"
@@ -770,7 +745,7 @@ export function ApiPage({ requestId }: { requestId: string }) {
           className="ml-auto shrink-0 gap-1.5"
           disabled={saving}
           title="保存（Ctrl+S）"
-          onClick={() => void saveNow()}
+          onClick={() => requestSave()}
         >
           <Save className="size-4" />
           保存
@@ -1129,6 +1104,21 @@ export function ApiPage({ requestId }: { requestId: string }) {
             </div>
           ))}
       </div>
+
+      {/*
+        保存弹窗：选分组（可新建）。工具栏那颗「保存」与 Ctrl/Cmd+S 都先到这里。
+        本体是 `ApiSaveDialog` —— 与 WebSocket 页**共用一份**，两边的保存流程不该长得不一样。
+      */}
+      <ApiSaveDialog
+        app={app}
+        open={saveOpen}
+        onOpenChange={setSaveOpen}
+        title={isDraft ? '保存请求' : '保存修改'}
+        description="选一个分组（可选）。保存后这条请求会出现在左侧对应分组下。"
+        defaultGroupId={groupId}
+        saving={saving}
+        onConfirm={({ groupId: nextGroupId }) => void confirmSave(nextGroupId)}
+      />
     </div>
   )
 }

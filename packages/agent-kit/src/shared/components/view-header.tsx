@@ -1,14 +1,22 @@
 /**
- * 两个主视图（对话 / 流程）**共用**的那一条顶部工具条。
+ * 主视图的顶部工具条（目前只有对话页在用）。
  *
  * 之前三个视图各手写一份 `h-12`，于是「高度一样、细节全不一样」：流程那条多一条
  * `border-b`、标题是 `text-sm font-semibold px-2`、按钮 `h-8`；任务那条干脆不是一个
  * 工具条（`px-5 py-3` 的标题块 + 工作台自带的第二条 `h-12`）。抽出来之后「顶栏长
- * 什么样」只有这一处定义 —— 改一处，三个视图一起变。
+ * 什么样」只有这一处定义。
  *
- * 结构固定：**左**是两行（名字 + 名字下面那行次要信息）/ **右**是操作区。
- * 两行是跟根应用（dogi `AgentPage`）学的：名字下面挂分支 / 路径这类
- * 「同一个标题下换了个环境」的信息，比挤在名字右边清楚得多（右边的空间要留给按钮）。
+ * 结构：**左**是名字（可选再挂一行次要信息）/ **右**是操作区。
+ *
+ * ## 第二行是**可选**的，没有就不占位
+ *
+ * 早先这里恒定渲染一条 `h-4` 的空行（为了「切视图时顶栏高度不跳」）。但对话页现在
+ * 不显示分支了，那条空行就变成一段白留白 —— 表现为「名字和下面的正文之间隔得有点大」，
+ * 而且只在没有分支名的时候出现（用户反馈）。所以改成：**传了 `subtitle` 才有第二行**，
+ * 没有就整条顶栏只有一栏高，名字与右侧按钮同处一行、垂直居中。
+ *
+ * 代价是「有 / 无第二行」时顶栏高度不同（差 16px）。现在只有一个视图用它，不存在
+ * 切视图跳一下的问题；将来真有第二个视图要共用，请给两个视图传同样有无的 `subtitle`。
  *
  * ## 手机端顶栏不再有「展开侧栏」按钮
  *
@@ -36,8 +44,8 @@ export function ViewHeader({
   /** 紧贴名字右侧的东西（状态徽标 / 连接状态点） */
   afterTitle?: ReactNode
   /**
-   * 名字**下面**那一行（分支 / 基线 / 时间…）。不传就只有一行，块本身仍占两行的高度：
-   * 三个视图的顶栏高度必须一致，否则切视图时整页会跳一下。
+   * 名字**下面**那一行（分支 / 基线 / 时间…）。**不传就没有这一行**，顶栏只有一栏高
+   * —— 留一条空行会让名字与下方正文之间凭空多出一段间距。
    */
   subtitle?: ReactNode
   /** 第二行的 hover 提示（第二行同样会被截断） */
@@ -48,22 +56,32 @@ export function ViewHeader({
   trailing?: ReactNode
   className?: string
 }) {
+  const hasSubtitle = subtitle !== undefined && subtitle !== null && subtitle !== false
   return (
-    <header className={cn('flex shrink-0 items-start gap-1 p-2 sm:px-3', className)}>
+    <header
+      className={cn(
+        'flex shrink-0 gap-1 p-2 sm:px-3',
+        // 只有一栏时按钮与名字垂直居中；两栏时按钮顶对齐，免得被第二行拖着往下沉
+        hasSubtitle ? 'items-start' : 'items-center',
+        className
+      )}
+    >
       {leading}
-      <div className="flex min-w-0 flex-1 flex-col justify-center gap-1">
+      <div className={cn('flex min-w-0 flex-1 flex-col justify-center', hasSubtitle && 'gap-1')}>
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-base font-medium leading-tight" title={titleHint}>
             {title}
           </span>
           {afterTitle}
         </div>
-        <div
-          className="h-4 flex min-w-0 items-center gap-3 overflow-hidden text-xs leading-tight text-muted-foreground"
-          title={subtitleHint}
-        >
-          {subtitle}
-        </div>
+        {hasSubtitle ? (
+          <div
+            className="flex h-4 min-w-0 items-center gap-3 overflow-hidden text-xs leading-tight text-muted-foreground"
+            title={subtitleHint}
+          >
+            {subtitle}
+          </div>
+        ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">{trailing}</div>
     </header>

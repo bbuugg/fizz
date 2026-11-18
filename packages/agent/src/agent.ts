@@ -455,25 +455,111 @@ function normalizeUsage(usage: unknown): RawUsage | null {
 
 
 /**
- * 把原始用量 + 计时折成对外展示的统计（TPS 按「首字 → 结束」的生成窗口算）。
+ * 相邻两个输出增量的间隔超过这么久，就认为模型**没在吐字**（工具执行、等审批、
+ * 上下文压缩、网络空窗），这一段不计入生成窗口。
+ *
+ * 为什么是 1 秒：正常流式下一帧是几十毫秒级（思考 / 工具入参增量同频，见
+ * `INPUT_DELTA_FLUSH_MS`），慢模型单 token 也就几百毫秒；而一次工具执行、一条
+ * bash 命令、一次审批等待都是秒级起步。1s 既留得住慢模型的真实吐字间隔，
+ * 又能把工具空窗整段剔掉。
+ */
+const TPS_IDLE_GAP_MS = 1000
+
+/**
+ * TPS 的**生成窗口**（毫秒）：只累计「有输出增量」的时间片。
+ *
+ * 为什么不能拿「首字 → 结束」的墙钟当分母：那一整段里夹着工具执行、等审批的网络空窗。
+ * 一轮十几次工具调用的轮次光工具就几十秒，全算进分母会把速度压到个位数 ——
+ * 那个数字既不反映模型吐字快慢，也没法在轮次之间横向比较（工具越多越"慢"）。
+ */
+export interface TurnGenClock {
+  /** 已累计的生成毫秒数 */
+  genMs: number
+  /** 上一个输出增量的时刻（null = 本轮还没出过字） */
+  lastAt: number | null
+}
+
+export function createTurnGenClock(): TurnGenClock {
+  return { genMs: 0, lastAt: null }
+}
+
+/**
+ * 记一个输出增量：只有「距上一帧足够近」的那段间隔才计入生成时间。
+ *
+ * - 第一帧只记时刻 —— 首字延迟（TTFT）本来就不该进分母；
+ * - 空窗（间隔 > `idleGapMs`）整段丢弃，下一帧从零重新起算。
+ *
+ * 于是累计值 ≈ 「模型真正在吐 token 的总时长」。跨尝试（重试 / 断点续跑）共用同一个
+ * clock 就是整轮的窗口 —— 分子也是跨尝试累加的，两边口径一致。
+ */
+export function markTurnOutputDelta(
+  clock: TurnGenClock,
+  now: number,
+  idleGapMs: number = TPS_IDLE_GAP_MS
+): void {
+  const prev = clock.lastAt
+  clock.lastAt = now
+  if (prev === null) return
+  const gap = now - prev
+  // `gap <= 0` 是时钟回拨 / 同一毫秒两帧：不计，但不能负着累
+  if (gap > 0 && gap <= idleGapMs) clock.genMs += gap
+}
+
+/**
+ * 这个事件算不算「模型在吐 token」—— 只认模型自己生成的增量。
+ *
+ * 刻意排除的几类：
+ * - `tool-result` / `tool-output-delta`：**工具自己**在产出（bash 的 stdout 能流几十秒），
+ *   它不是模型的生成速度，计进去分母就又被工具时长污染；
+ * - `file-part` / `subagent-*` / `collab-*`：不是本轮主模型吐的字（子任务的 token
+ *   单独记在 `TurnUsage.subagents`，不并进父的 outputTokens），分子没有它们，分母也不能有；
+ * - 空串增量：上游常先发一帧 `delta: ''` 占位（`tool-call-delta` 的「开始流式生成」
+ *   那一帧也只有 id 没有内容），它不是内容，认了会把窗口撑大。
+ *
+ * 完整 `tool-call` 也算一帧：有的上游不发增量，那时它是模型吐过字的唯一证据。
+ */
+export function isOutputDelta(event: AgentStreamEvent): boolean {
+  switch (event.type) {
+    case 'text-delta':
+    case 'reasoning-delta':
+      return event.delta.trim() !== ''
+    case 'tool-call-delta':
+      return event.inputTextDelta !== ''
+    case 'tool-call':
+      return true
+    default:
+      return false
+  }
+}
+
+/**
+ * 把原始用量 + 计时折成对外展示的统计（TPS = 整轮输出 tokens ÷ 生成窗口）。
  *
  * `contextTokens` 是**本轮最后一次请求**的上下文大小（pi 的 `calculateContextTokens` =
  * 最后一步上游上报的 `input + output`），见 `TurnUsage.contextTokens` 的说明
  * （整轮累计的 `inputTokens` 不能当上下文大小用）。
+ *
+ * `genMs` 由 `TurnGenClock` 累加得来（不是墙钟）—— 见那边的注释。
  */
-function buildTurnUsage(
+export function buildTurnUsage(
   raw: RawUsage,
   startedAt: number,
-  firstOutputAt: number | null,
+  /** 本轮累计的生成窗口（毫秒），见 `TurnGenClock` */
+  genMs: number,
   contextTokens?: number,
   /** 本轮的派活用量（subagent）；没有派过活 = undefined，字段整个不出现 */
   subagents?: Record<string, SubagentTurnUsage>
 ): TurnUsage {
   const endedAt = Date.now()
   const durationMs = Math.max(0, endedAt - startedAt)
-  // 生成窗口排除首字延迟（TTFT），否则 TPS 会被网络 / 排队时间拉低
-  const genMs = Math.max(1, endedAt - (firstOutputAt ?? startedAt))
-  const tps = raw.outputTokens > 0 ? Math.round((raw.outputTokens / (genMs / 1000)) * 10) / 10 : 0
+  /**
+   * `genMs` 为 0 = 一次间隔都没采到（上游把整段攒成一帧下发，或只吐了一个 chunk）。
+   * 这时没有「吐字速度」可言：退回整轮耗时当分母，至少不会算出几万 tok/s 的天文数字。
+   * 正常流式轮次 `genMs` 一定 > 0，走不到这条路。
+   */
+  const windowMs = genMs > 0 ? genMs : Math.max(1, durationMs)
+  const tps =
+    raw.outputTokens > 0 ? Math.round((raw.outputTokens / (windowMs / 1000)) * 10) / 10 : 0
   return {
     ...raw,
     ...(contextTokens !== undefined ? { contextTokens } : {}),
@@ -863,10 +949,13 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
    */
   let carriedUsage: RawUsage | null = null
   /**
-   * 整轮**第一个字**的时刻（TPS 的生成窗口起点）。跨尝试保留：续跑会让 token 累加，
-   * 若时间窗口只算最后一段，算出来的 TPS 会虚高几倍。
+   * 整轮的**生成窗口**计时器（TPS 的分母，见 `TurnGenClock`）：只累计「有输出增量」
+   * 的时间片，工具执行 / 等审批的空窗不算。
+   *
+   * 跨尝试共用一个 clock —— 续跑时分子（token）是累加的，窗口也必须是整轮的，
+   * 否则 TPS = 累计 token ÷ 最后一段时长，虚高好几倍。
    */
-  let turnFirstOutputAt: number | null = null
+  const turnGenClock = createTurnGenClock()
 
   /** 攒着的入参增量（null = 没有）。攒够阈值才下发，见 INPUT_DELTA_FLUSH_* */
   let pendingDelta: { toolCallId: string; toolName?: string; text: string } | null = null
@@ -875,6 +964,15 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
    * （队列里排着下一轮 + steer 插话），模块级会把 A 轮的账记到 B 轮头上。
    */
   const stats = makeDelegationStats()
+  /**
+   * 本次尝试建的派活工具集的收尾函数（父轮走到尽头 / 重试换一份之前调用）。
+   *
+   * 派活是非阻塞的（`agent-<id>` 起完子 run 立刻返回 taskId），所以「本轮结束」这件事
+   * 必须主动做：还在后台跑的子任务没人领结论了，不掐会继续烧 token，`subagent-end`
+   * 还会发往一个已经关掉的事件通道，派活卡在界面上永远转圈。每次 attempt 重建工具集时
+   * 覆盖这一格（旧的必然已经在上一 attempt 的出口 settle 过）。
+   */
+  let settleDelegations: (() => Promise<void>) | null = null
   /** 上一次下发入参增量的时刻（节流的时间基准） */
   let lastDeltaFlushAt = 0
 
@@ -1083,7 +1181,10 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
   // 并且 —— 要么有断点（续跑不重跑工具），要么压根没执行过工具（整轮重来才不会重复副作用）。
   for (;;) {
     /**
-     * 首字时刻（TPS 的生成窗口起点）、模型上报的原始用量、本轮上下文估算。
+     * 这次尝试**首个内容事件**的时刻（判「上游回了个空响应」还是「吐了半截才失败」用）、
+     * 模型上报的原始用量、本轮上下文估算。
+     *
+     * TPS 的分母不用它 —— 那个是轮级的 `turnGenClock`（只累计有输出增量的时间片）。
      * **每次尝试各算一份**：放到 try 外面是为了 catch（异常 / 中止）分支里也能把已产出的
      * token 补推出去 —— 路由侧只在 finish 事件带 usage 时才落盘（见 chat/route.ts 的 onEvent）。
      */
@@ -1191,6 +1292,17 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
             size: contextWindow,
             base: baseTokens
           })
+        } else if (compacted.skipped) {
+          /**
+           * 超了阈值但**没压成**（`no-budget` / `below-keep`）。
+           *
+           * 这两种都是静默的：不抛错、不发事件，界面上只能看到「上下文一直涨」。留一行日志，
+           * 否则「为什么没压」在服务端日志里一个字都查不到（排查过一轮才发现）。
+           */
+          console.warn(
+            `[compaction] 越过阈值但未压缩（${compacted.skipped}）：窗口 ${contextWindow}、` +
+              `base ${baseTokens}、历史 ${opts.history.length} 条`
+          )
         }
         messages = await toModelMessages(compacted.history, {
           resolveFileUrl: opts.resolveFileUrl,
@@ -1209,7 +1321,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
        * 子任务：每个 id 一个 `agent-<id>` 工具，`execute` 里跑一条独立的子 run
        * （见 `subagents.ts`）。不启用时是空对象 —— 与没有这个能力时逐字节一致。
        */
-      const delegationTools =
+      const delegation =
         opts.subagents?.length && modelSettings.toolCall
           ? buildDelegationTools(opts.subagents, {
               workspacePath: opts.workspace.path,
@@ -1244,6 +1356,11 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
                 ) {
                   const info = activeDelegations.get(event.toolCallId)
                   if (info) info.lastAt = Date.now()
+                  /**
+                   * 派活的 `tool-result` 来得早（只是一个 taskId），所以「这个子任务结束了吗」
+                   * 只能看 `subagent-end` —— 在这里注销，看门狗才盯得住后台跑着的那一段。
+                   */
+                  if (event.type === 'subagent-end') activeDelegations.delete(event.toolCallId)
                 }
                 emitEvent(event)
               },
@@ -1255,10 +1372,12 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
               ...(opts.commandStops ? { commandStops: opts.commandStops } : {}),
               stats
             })
-          : {}
+          : null
+      // 每次 attempt 覆盖收尾函数：重试 / 收尾时要把这一批后台派活掐掉（见上面的注释）
+      settleDelegations = delegation?.settle ?? null
 
       type EngineInput = Parameters<typeof runEngine>[0]
-      const engineTools = { ...toolsForModel, ...delegationTools } as EngineInput['tools']
+      const engineTools = { ...toolsForModel, ...(delegation?.tools ?? {}) } as EngineInput['tools']
       /** 上一次边界时 messages 的长度：只用来估「这一步新增的那部分」 */
       let boundaryCount = messages.length
       /** 进入本次尝试时整轮已完成的步数（续跑时非 0）：checkpoint 的基数，见那里 */
@@ -1609,7 +1728,16 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
             })
           }
         }
-        if (event.type === 'tool-result' && activeDelegations.has(event.toolCallId)) {
+        /**
+         * 派活工具的 tool-result 现在只是「已派出」的句柄（子任务还在后台跑），**不能**
+         * 在这里摘掉 —— 摘了就没人盯它了，卡住的子任务会一直挂着。真正的收工信号是
+         * `subagent-end`（在 emit 包装里注销）。
+         */
+        if (
+          event.type === 'tool-result' &&
+          activeDelegations.has(event.toolCallId) &&
+          !activeDelegations.get(event.toolCallId)?.toolName?.startsWith('agent-')
+        ) {
           activeDelegations.delete(event.toolCallId)
         }
         // 子任务的任何动静都算「它还活着」（看门狗判的是「完全没动静」）
@@ -1621,13 +1749,15 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
           const info = activeDelegations.get(event.toolCallId)
           if (info) info.lastAt = Date.now()
         }
-        // 首字（正文 / 思考 / 工具参数都算）到达即开始计生成窗口
-        if (firstOutputAt === null && event.type !== 'error') {
-          firstOutputAt = Date.now()
-          // 整轮的第一个字（跨尝试保留）：续跑时 token 是累加的，生成窗口也得从整轮起点算，
-          // 否则 TPS = 累计 token / 最后一段时长，会虚高好几倍
-          turnFirstOutputAt ??= firstOutputAt
-        }
+        const now = Date.now()
+        // 首字（正文 / 思考 / 工具参数都算）：这次尝试「产出过内容」的判据
+        // （收尾时用它区分「上游回了个空响应」和「吐了半截失败」）
+        if (firstOutputAt === null && event.type !== 'error') firstOutputAt = now
+        /**
+         * 生成窗口：**只累计有输出增量的时间片**（见 `TurnGenClock`）。
+         * 工具执行 / 等审批的空窗会被 `TPS_IDLE_GAP_MS` 整段丢弃，不再把 TPS 拽低。
+         */
+        if (isOutputDelta(event)) markTurnOutputDelta(turnGenClock, now)
         emitEvent(event)
       }
       /**
@@ -1638,6 +1768,12 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
       await Promise.resolve(streamIterator.return?.()).catch(() => undefined)
       // 收尾：流跑完 / 被中止都会 resolve（引擎在 finally 里收尾，不会悬挂）
       const finished = await engine.done
+      /**
+       * 流结束 = 不会再有下一步，后台还跑着的派活已经没人领结论了：先收尾（它会发
+       * `subagent-end`，派活卡才落得下来）。已经领过的是空操作；这一步放在拼收尾
+       * 原因之前，是为了让中止的那批在 `turn:finish` 之前就把卡片收干净。
+       */
+      await settleDelegations?.()
       /**
        * 这次尝试的收尾失败。两种形状走同一条路：
        *
@@ -1692,7 +1828,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
       // 看门狗中止：不是用户主动停止，必须明确告诉用户原因，不能走 aborted 静默收场。
       if (watchdogFired) {
         const usage = rawUsage
-          ? buildTurnUsage(rawUsage, startedAt, turnFirstOutputAt, contextTokens, stats.subagents)
+          ? buildTurnUsage(rawUsage, startedAt, turnGenClock.genMs, contextTokens, stats.subagents)
           : undefined
         emitEvent({ type: 'error', message: watchdogFired })
         emitEvent({ type: 'finish', finishReason: 'error', ...finishTiming(usage) })
@@ -1702,13 +1838,13 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
       // 没 abort 就说明 fullStream 是自然流尽的，走下面的正常返回。
       if (runSignal.aborted) {
         const usage = rawUsage
-          ? buildTurnUsage(rawUsage, startedAt, turnFirstOutputAt, contextTokens, stats.subagents)
+          ? buildTurnUsage(rawUsage, startedAt, turnGenClock.genMs, contextTokens, stats.subagents)
           : undefined
         emitEvent({ type: 'finish', finishReason: 'aborted', ...finishTiming(usage) })
         return finish('aborted', usage)
       }
       const usage = rawUsage
-        ? buildTurnUsage(rawUsage, startedAt, turnFirstOutputAt, contextTokens, stats.subagents)
+        ? buildTurnUsage(rawUsage, startedAt, turnGenClock.genMs, contextTokens, stats.subagents)
         : undefined
       /**
        * 撞没撞步数上限 —— **只看步数不够，也不能只看 `finishReason`**：
@@ -1736,12 +1872,19 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
       })
       return finish('done', usage, undefined, stop)
     } catch (err) {
+      /**
+       * 出错 / 被中止也要收派活：这条路的出口（重试或收场）不会再有下一步请求，
+       * 后台子任务留着就是白烧 token、派活卡永远转圈。`settle` 内部吞掉一切，
+       * 不影响下面的错误判定与重试决策。
+       */
+      await settleDelegations?.()
+      settleDelegations = null
       // 失败尝试的用量先并进来：下面算 usage、以及「续跑时累加白烧的 token」都以它为准
       rawUsage = mergeRawUsage(carriedUsage, rawUsage)
       const message = describeError(err)
       // 异常 / 中止时也要把已经产出的 token 补推出去（见上面 rawUsage 的注释）
       const usage = rawUsage
-        ? buildTurnUsage(rawUsage, startedAt, turnFirstOutputAt, contextTokens, stats.subagents)
+        ? buildTurnUsage(rawUsage, startedAt, turnGenClock.genMs, contextTokens, stats.subagents)
         : undefined
       if (watchdogFired) {
         emitEvent({ type: 'error', message: watchdogFired })

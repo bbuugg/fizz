@@ -75,6 +75,8 @@ export const WORKSPACE: Record<string, string> = {
   '从 Git 导入…': 'Import from Git…',
   '新建容器型项目…': 'New container project…',
   '连接远端服务器…': 'Connect to a remote server…',
+  '搜索工作区': 'Search workspaces',
+  '没有匹配的工作区': 'No matching workspaces',
   '添加远端工作区': 'Add remote workspace',
   'Agent 的文件读写与命令都在这台 SSH 主机上的目录里执行。会话历史仍保存在本机。':
     'The agent reads, writes, and runs commands in a directory on this SSH host. Conversation history stays on this machine.',

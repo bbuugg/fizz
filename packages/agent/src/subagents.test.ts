@@ -1,7 +1,7 @@
 /**
- * 子任务「跑着跑着自己停了」的回归。
+ * 子任务派活的两份契约。
  *
- * ## 防的是什么
+ * ## 一、结论不能被「最后一步是工具调用」吃掉
  *
  * `result.text` 只含**最后一步**的文本（AI SDK 的原文注释：「The text that was generated
  * in the final step」）。子 agent 用满步数上限的那一刻，最后一步往往还是一次工具调用，
@@ -13,6 +13,14 @@
  *
  * 现在：逐步累积的正文兜底交回父上下文，并在前面标清楚「跑到步数上限才停」，父模型
  * 据此知道这是半成品（可以拆小重派），而不是当结论用。
+ *
+ * ## 二、派活**不阻塞**父轮
+ *
+ * `agent-<id>` 从前是「跑完整条子 run 才 return」，于是模型那句「同时我自己看看这个文件」
+ * 只能排在子任务后面：一步之内模型发完 tool-call 就把话轮交出去了，必须等这一步的工具
+ * **全部** resolve 才能发下一次请求。现在拆成「立即返回 taskId」+「`task_wait` 领结论」，
+ * 等的时机归模型自己定。下面的用例盯这个拆分的四个面：立刻返回 / 领得到 / 领不到要说清 /
+ * 收尾要掐干净。
  */
 import { describe, expect, it, vi } from 'vitest'
 import { streamText } from 'ai'
@@ -36,7 +44,13 @@ vi.mock('@fizz/tools', () => ({
 vi.mock('./resolve-model', () => ({ resolveModel: () => ({}) }))
 
 type DelegationTool = {
+  description: string
   execute: (input: { task: string }, options: { toolCallId: string }) => Promise<string>
+}
+
+type WaitTool = {
+  description: string
+  execute: (input: { taskId: string }) => Promise<string>
 }
 
 /** 造一条子 run 的流：正文可有可无，最后一步固定是一次工具调用（步数耗尽时的典型形状） */
@@ -55,26 +69,82 @@ function fakeStream(text: string) {
   }
 }
 
+/** 子 run 一直挂着，直到 signal 被 abort（真实 SDK 中止时抛 AbortError） */
+function hangingStream(signal: AbortSignal | undefined) {
+  return {
+    fullStream: (async function* () {
+      // 先吐一帧 start-step，确保子 run 已经进入迭代（与真实流同形）
+      yield { type: 'start-step' }
+      await new Promise<void>((resolve) => {
+        if (!signal || signal.aborted) resolve()
+        else signal.addEventListener('abort', () => resolve(), { once: true })
+      })
+      throw new Error('AbortError')
+    })(),
+    text: Promise.resolve(''),
+    totalUsage: Promise.resolve({})
+  }
+}
+
+interface Built {
+  tools: Record<string, unknown>
+  events: AgentStreamEvent[]
+  /** 父轮收尾（真实调用点在 `agent.ts`：流结束 / 出错 / 重试换一份之前） */
+  settle: () => Promise<void>
+  commandStops: Map<string, () => void>
+}
+
+function build(
+  extra: {
+    ids?: string[]
+    maxSteps?: Partial<Record<SubagentId, number>>
+    definitions?: Array<{
+      id: string
+      name: string
+      description: string
+      tools: string[]
+      maxSteps: number
+    }>
+    parent?: AbortController
+  } = {}
+): Built {
+  const events: AgentStreamEvent[] = []
+  const commandStops = new Map<string, () => void>()
+  const set = buildDelegationTools((extra.ids ?? ['explorer']) as SubagentId[], {
+    workspacePath: 'D:/fake-workspace',
+    workspaceName: 'fake',
+    model: {} as AiModelConfig,
+    ...(extra.maxSteps ? { maxSteps: extra.maxSteps } : {}),
+    ...(extra.definitions ? { definitions: extra.definitions } : {}),
+    emit: (event) => events.push(event),
+    ...(extra.parent ? { signal: extra.parent.signal } : {}),
+    commandStops,
+    stats: makeDelegationStats()
+  })
+  return { tools: set.tools, events, settle: set.settle, commandStops }
+}
+
+/** 派活：立即返回句柄（子任务还在后台跑） */
+function delegate(built: Built, task = '看看 auth 的入口在哪', toolCallId = 'parent-1') {
+  return (built.tools['agent-explorer'] as DelegationTool).execute({ task }, { toolCallId })
+}
+
+/** 领结论 */
+function wait(built: Built, taskId = 'parent-1') {
+  return (built.tools.task_wait as WaitTool).execute({ taskId })
+}
+
+/** 派活 + 立刻领结论：绝大多数用例关心的是结论，不关心中间那段 */
 async function runDelegation(
   text: string,
   maxSteps?: Partial<Record<SubagentId, number>>
 ): Promise<{ out: string; events: AgentStreamEvent[] }> {
-  const events: AgentStreamEvent[] = []
-  const tools = buildDelegationTools(['explorer'], {
-    workspacePath: 'D:/fake-workspace',
-    workspaceName: 'fake',
-    model: {} as AiModelConfig,
-    ...(maxSteps ? { maxSteps } : {}),
-    emit: (event) => events.push(event),
-    stats: makeDelegationStats()
-  })
+  const built = build({ ...(maxSteps ? { maxSteps } : {}) })
   vi.mocked(streamText).mockClear()
   vi.mocked(streamText).mockReturnValue(fakeStream(text) as never)
-  const out = await (tools['agent-explorer'] as DelegationTool).execute(
-    { task: '看看 auth 的入口在哪' },
-    { toolCallId: 'parent-1' }
-  )
-  return { out, events }
+  await delegate(built)
+  const out = await wait(built)
+  return { out, events: built.events }
 }
 
 describe('子任务收尾 · 结论不能被「最后一步是工具调用」吃掉', () => {
@@ -95,6 +165,99 @@ describe('子任务收尾 · 结论不能被「最后一步是工具调用」吃
     expect(out).toContain('没有产出可用结论')
     const end = events.find((e) => e.type === 'subagent-end')
     expect(end && end.type === 'subagent-end' ? end.status : null).toBe('empty')
+  })
+})
+
+/**
+ * 派活不再阻塞父轮。
+ *
+ * 防的是回退：`execute` 一旦又开始 `await` 子 run，父模型就得等它跑完才能发下一步请求，
+ * 「同时我自己看看这个文件」重新变成排队 —— 并行能力白给。
+ */
+describe('派活不阻塞父轮', () => {
+  it('子任务还在跑时 execute 就已经返回句柄，句柄里带 taskId 与领取方式', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const built = build()
+    vi.mocked(streamText).mockImplementation(
+      ((args: { abortSignal?: AbortSignal }) => hangingStream(args.abortSignal)) as never
+    )
+
+    const handle = await delegate(built)
+
+    // 流还挂着，句柄已经回来了 —— 这一步不等子任务
+    expect(handle).toContain('parent-1')
+    expect(handle).toContain('task_wait')
+    // 没有 `subagent-end`：它确实还在跑，不是「跑完了被藏起来」
+    expect(built.events.some((e) => e.type === 'subagent-end')).toBe(false)
+    await built.settle()
+  })
+
+  it('派活工具的说明里写清了「立即返回 + 结论靠 task_wait 领」', () => {
+    const built = build()
+    const tool = built.tools['agent-explorer'] as DelegationTool
+
+    // 这两句是行为契约：少了模型会「派完就当自己有结论了」，或者干等在那儿
+    expect(tool.description).toContain('立即返回')
+    expect(tool.description).toContain('task_wait')
+    expect(tool.description).toContain('收尾前必须把派出去的活都领回来')
+  })
+
+  it('task_wait 能领到结论（结论没丢）', async () => {
+    const built = build()
+    vi.mocked(streamText).mockReturnValue(fakeStream('结论在 src/auth.ts') as never)
+    await delegate(built)
+
+    expect(await wait(built)).toContain('结论在 src/auth.ts')
+  })
+
+  it('task_wait 认不出的 taskId 要说清当前有哪些在跑，而不是一句「没有」', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const built = build()
+    vi.mocked(streamText).mockImplementation(
+      ((args: { abortSignal?: AbortSignal }) => hangingStream(args.abortSignal)) as never
+    )
+    await delegate(built)
+
+    const out = await wait(built, 'task-typo')
+    expect(out).toContain('没有这个 taskId')
+    expect(out).toContain('parent-1')
+    await built.settle()
+  })
+})
+
+/**
+ * 父轮收尾要把没领的派活掐掉。
+ *
+ * 不掐的话子 run 继续烧 token、`subagent-end` 发往一个已经关掉的事件通道 ——
+ * 派活卡在界面上永远转圈，用户以为还在跑。
+ */
+describe('父轮收尾 · 没被领走的派活', () => {
+  it('掐掉未领的派活，收成 aborted，并留一行日志（不许静默丢掉）', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const built = build()
+    vi.mocked(streamText).mockImplementation(
+      ((args: { abortSignal?: AbortSignal }) => hangingStream(args.abortSignal)) as never
+    )
+    await delegate(built)
+
+    await built.settle()
+
+    const end = built.events.find((e) => e.type === 'subagent-end')
+    expect(end && end.type === 'subagent-end' ? end.status : null).toBe('aborted')
+    // 「派了但结论没人领」= 白跑一趟，必须留得下痕迹
+    expect(warn.mock.calls.some((args) => String(args[0]).includes('没被领走'))).toBe(true)
+  })
+
+  it('领过的派活不再算「白跑」，settle 是空操作（不给用户刷日志）', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const built = build()
+    vi.mocked(streamText).mockReturnValue(fakeStream('结论') as never)
+    await delegate(built)
+    await wait(built)
+
+    await built.settle()
+
+    expect(warn.mock.calls.some((args) => String(args[0]).includes('没被领走'))).toBe(false)
   })
 })
 
@@ -143,79 +306,47 @@ describe('子任务步数上限 · 设置 → 引擎', () => {
  * 派活卡上的停止钮：只停这一个子任务，父轮继续。
  *
  * 防的是三件事，任一漏掉都表现为「点了没反应 / 停错了东西」：
- * 1. execute 期间没把 stop 登记进 run 的 `commandStops` —— 前端点了后端查不到，
+ * 1. 派活后没把 stop 登记进 run 的 `commandStops` —— 前端点了后端查不到，
  *    `POST /api/chat/command/stop` 返回 `{ stopped: false }`；
  * 2. 登记了但没注销 —— 跑完之后那颗 stop 还挂在表里，成了点了不响的按钮；
  * 3. 把「用户主动停」当成失败 —— 父模型会换个姿势再派一次，正是用户刚掐掉的活。
  */
 describe('子任务单条停止', () => {
-  /** 子 run 一直挂着，直到 signal 被 abort（真实 SDK 中止时抛 AbortError） */
-  function hangingStream(signal: AbortSignal | undefined) {
-    return {
-      fullStream: (async function* () {
-        // 先吐一帧 start-step，确保 execute 已经进入迭代（与真实流同形）
-        yield { type: 'start-step' }
-        await new Promise<void>((resolve) => {
-          if (!signal || signal.aborted) resolve()
-          else signal.addEventListener('abort', () => resolve(), { once: true })
-        })
-        throw new Error('AbortError')
-      })(),
-      text: Promise.resolve(''),
-      totalUsage: Promise.resolve({})
-    }
-  }
-
-  function setup(parent?: AbortController) {
-    const events: AgentStreamEvent[] = []
-    const commandStops = new Map<string, () => void>()
-    const tools = buildDelegationTools(['explorer'], {
-      workspacePath: 'D:/fake-workspace',
-      workspaceName: 'fake',
-      model: {} as AiModelConfig,
-      emit: (event) => events.push(event),
-      ...(parent ? { signal: parent.signal } : {}),
-      commandStops,
-      stats: makeDelegationStats()
-    })
+  it('停止钮命中：abort 这一个子 run，收成 aborted 并注销停止表', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const built = build()
     vi.mocked(streamText).mockImplementation(
       ((args: { abortSignal?: AbortSignal }) => hangingStream(args.abortSignal)) as never
     )
-    const running = (tools['agent-explorer'] as DelegationTool).execute(
-      { task: '梳理 auth 的入口' },
-      { toolCallId: 'parent-1' }
-    )
-    return { events, commandStops, running }
-  }
-
-  it('停止钮命中：abort 这一个子 run，收成 aborted 并注销停止表', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-    const { events, commandStops, running } = setup()
+    await delegate(built)
 
     // 登记发生在 execute 的同步段里，不必等异步
-    const stop = commandStops.get('parent-1')
+    const stop = built.commandStops.get('parent-1')
     expect(typeof stop).toBe('function')
     stop?.()
-    const out = await running
-
     // 交给父上下文的是「用户中止」，不是「执行失败」
+    const out = await wait(built)
+
     expect(out).toContain('用户中止')
     expect(out).not.toContain('执行失败')
-    const end = events.find((e) => e.type === 'subagent-end')
+    const end = built.events.find((e) => e.type === 'subagent-end')
     expect(end && end.type === 'subagent-end' ? end.status : null).toBe('aborted')
-    expect(commandStops.has('parent-1')).toBe(false)
+    expect(built.commandStops.has('parent-1')).toBe(false)
   })
 
   it('父轮中止仍然带走子 run（signal 取或没丢）', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const parent = new AbortController()
-    const { events, running } = setup(parent)
+    const built = build({ parent })
+    vi.mocked(streamText).mockImplementation(
+      ((args: { abortSignal?: AbortSignal }) => hangingStream(args.abortSignal)) as never
+    )
+    await delegate(built)
 
     parent.abort()
-    const out = await running
 
-    expect(out).toContain('用户中止')
-    const end = events.find((e) => e.type === 'subagent-end')
+    expect(await wait(built)).toContain('用户中止')
+    const end = built.events.find((e) => e.type === 'subagent-end')
     expect(end && end.type === 'subagent-end' ? end.status : null).toBe('aborted')
   })
 })
@@ -229,36 +360,21 @@ describe('自定义子智能体', () => {
     maxSteps: 12
   }
 
-  function build(
-    ids: string[],
-    definitions = [def],
-    emit: (event: AgentStreamEvent) => void = () => {}
-  ) {
-    return buildDelegationTools(ids, {
-      workspacePath: 'D:/fake-workspace',
-      workspaceName: 'fake',
-      model: {} as AiModelConfig,
-      definitions,
-      emit,
-      stats: makeDelegationStats()
-    })
-  }
-
   it('按定义生成 agent-<id>；未定义的 id 被跳过而不是抛错', () => {
-    const tools = build(['explorer', def.id, 'ghost'])
-    expect(Object.keys(tools)).toEqual(['agent-explorer', 'agent-custom-ab12cd34'])
+    const built = build({ ids: ['explorer', def.id, 'ghost'], definitions: [def] })
+    expect(Object.keys(built.tools)).toEqual(['agent-explorer', `agent-${def.id}`, 'task_wait'])
   })
 
   it('派活事件带上显示名（删掉定义后历史仍能显示）', async () => {
-    const events: AgentStreamEvent[] = []
-    const tools = build([def.id], [def], (event) => events.push(event))
+    const built = build({ ids: [def.id], definitions: [def] })
     vi.mocked(streamText).mockClear()
     vi.mocked(streamText).mockReturnValue(fakeStream('结论') as never)
-    await (tools[`agent-${def.id}`] as DelegationTool).execute(
+    await (built.tools[`agent-${def.id}`] as DelegationTool).execute(
       { task: '核对一下' },
       { toolCallId: 'parent-2' }
     )
-    const start = events.find((e) => e.type === 'subagent-start')
+
+    const start = built.events.find((e) => e.type === 'subagent-start')
     expect(start && start.type === 'subagent-start' ? start.name : undefined).toBe('文档核对')
   })
 

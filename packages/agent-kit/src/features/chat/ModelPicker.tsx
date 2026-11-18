@@ -3,9 +3,9 @@
  *
  * 从 `ModelSelect`（会话详情那颗 pill）里抽出来的，动机与工作区 / MCP / 浏览器那几颗
  * 完全一样（它们原来都挤在一个 `pickers.tsx` 里，现在各占一个文件）：**同一个控件只留
- * 一份实现**。定时任务表单要的就是会话详情这一颗 ——
- * 分组（模型配置 / 外部 Agent）、行尾设置齿轮、ACP 白名单、「跟随 agent 默认」这些
- * 行为一个都不能少；此前那边用的是一层平铺的 `ModelPill`，两边看着就是两个功能。
+ * 一份实现**。定时任务表单要的就是会话详情这一颗 —— 分组、行尾设置齿轮、ACP 白名单、
+ * 「跟随 agent 默认」这些行为一个都不能少；此前那边用的是一层平铺的 `ModelPill`，
+ * 两边看着就是两个功能。
  *
  * 分工：
  * - 本文件：渲染 + 交互，`value` / `onChange` / 清单全从 props 进；
@@ -13,43 +13,48 @@
  *   （写 `chatTarget`、按活动会话锁定后端）；
  * - `TriggerEditDialog`（定时任务）：把表单自己的局部状态灌进来。
  *
- * ## 一个下拉装下「这一轮用什么」
+ * ## 一个下拉装下「这一轮用什么」，但**没有二级菜单**（2026-11 用户要求）
  *
- * 标签行尾各有设置齿轮（配置入口永远可达）：
- * - AI 模型：每个模型配置一项，展开是它带的那几个模型；齿轮打开 设置 → AI 模型；
- * - 外部 Agent（ACP）：每个 agent 一项，展开是**设置里挑过的那几个**模型
- *   （一个 agent 常有十几二十个模型，全列出来太吵，白名单见设置 → 外部 Agent）；
- *   齿轮打开 设置 → 外部 Agent。没有任何模型 / agent 时分组也显示（给配置入口）。
+ * 原来是「AI 模型 → 某个配置 → 它的模型」两级 `DropdownMenuSub`，手机上再拍平一次，
+ * 桌面 / 手机两套形状。现在只有一套：**一个能搜、能滚的平铺列表**（`@fizz/ui/picker-panel`），
+ * 配置 / Agent 只当分组小标题（`PickerLabel`），模型行直接铺在它下面。
  *
- * 会话类型在创建时就锁定，**被锁的整组不显示**（不是置灰）：
- * - acp 会话：只显示绑定的那个 agent 的模型（AI 模型组、其它 agent 一概不出）；
- * - 内置会话 / 定时任务：ACP 组由 `showAcp` 决定；
- * - 没有会话（空态）：两组全量可选。
+ * 分段的理由不是「还原二级菜单」：同一个模型名在多个配置里会重名（`gpt-5` 可能同时挂在
+ * 两个 key 下），没有小标题就分不清选的是哪一个；而小标题**不可点、不进方向键遍历**，
+ * 敲字时它跟着筛，选中 / 回车永远只落在模型行上。
+ *
+ * 搜索命中「配置名 / Agent 名 / 模型名」任一处即可（`search` 把三样拼在一起）。
+ *
+ * ## 设置齿轮永远可达
+ *
+ * 「AI 模型」「外部 Agent（ACP）」两个分段标题行尾各挂一枚齿轮，打开设置里对应的分组
+ * ——没有任何配置时那行也照样显示，否则用户连「去哪儿加」都找不到。
  *
  * 唯一的例外是**远端工作区**：ACP 组留着标题与一行说明，但整组不可选
  * （`acpDisabledReason`）—— 外部 agent 是服务端本机 spawn 的进程，够不到 SSH 主机上的目录。
  */
-import { Check, Settings, Sparkles } from 'lucide-react'
+import { Settings, Sparkles } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { useState } from 'react'
+import { Popover, PopoverTrigger } from '@fizz/ui/popover'
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger
-} from '@fizz/ui/dropdown-menu'
+  PickerEmpty,
+  PickerFooter,
+  PickerItem,
+  PickerLabel,
+  PickerList,
+  PickerNote,
+  PickerPanel,
+  PickerSearch
+} from '@fizz/ui/picker-panel'
 import type { AgentBackend } from '@fizz/contracts/types'
 import { DEFAULT_CONTEXT_WINDOW, resolveContextWindow } from '@fizz/contracts/types'
 import type { AcpAgentView, ModelView } from '@fizz/contracts/agent-api'
 import { CHAT_PILL } from '@fizz/agent-kit/features/chat/composer'
 import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
+import { formatContextWindow } from '@fizz/agent-kit/shared/lib/utils'
 import { t } from '@fizz/i18n'
-import { cn, formatContextWindow } from '@fizz/agent-kit/shared/lib/utils'
 
 /**
  * 「用哪个后端 / 哪份配置 / 哪个模型」。与 `AgentApp['chatTarget']` 同一形状（刻意）：
@@ -64,21 +69,6 @@ export interface ModelTarget {
 /** 一份配置下能选的模型 id 清单 */
 function catalogOf(config: ModelView): string[] {
   return (config.models ?? []).map((model) => model.id)
-}
-
-/**
- * 行尾勾选位的**固定占位**。
- *
- * 弹层宽度由内容撑开（`min-w-56` 只是下限）；勾按条件渲染的话，切到「名字最长的那个
- * 模型」时整块弹层会宽出一个勾的宽度、再切走又缩回去 —— 用户看到的就是「换个模型
- * 弹层宽度会跳」。非选中项留一个同尺寸的空槽，宽度就与选中项无关。
- */
-function CheckSlot({ active, className }: { active: boolean; className?: string }) {
-  return (
-    <span aria-hidden={!active} className={cn('size-3.5 shrink-0', className)}>
-      {active && <Check className="size-3.5 shrink-0" />}
-    </span>
-  )
 }
 
 /**
@@ -105,6 +95,27 @@ export function modelTargetLabel(
   if (!config) return null
   if (!target.modelId || !catalogOf(config).includes(target.modelId)) return null
   return withProvider ? `${config.name} · ${target.modelId}` : target.modelId
+}
+
+/** 平铺后的一行（小标题不进这里：它们不是可选项） */
+interface PickerRow {
+  /** cmdk 的 value，全局唯一：配置 id 与 agent id 不同域，带前缀防撞 */
+  key: string
+  label: string
+  /** 行尾次要信息（内置模型显示上下文窗口：圆环的分母就是它） */
+  hint?: string
+  title?: string
+  active: boolean
+  /** 搜索文本：把小标题也拼进来，敲配置名 / Agent 名也能搜到它下面的模型 */
+  search: string
+  onSelect: () => void
+}
+
+/** 一个分段：小标题 + 它下面的行 */
+interface PickerSection {
+  key: string
+  name: string
+  rows: PickerRow[]
 }
 
 export interface ModelPickerProps {
@@ -147,14 +158,14 @@ export interface ModelPickerProps {
   /** 打开设置里某个分组的入口；不传则整颗齿轮不渲染 */
   onOpenSettings?: (tab: 'models' | 'acp') => void
   /**
-   * 固定在菜单底部的附加区块：**不随模型列表滚动**（列表在它上方单独滚）。
+   * 固定在面板底部的附加区块：**不随模型列表滚动**（列表在它上方单独滚）。
    *
    * 目前只有会话输入框的 `ModelSelect` 用它放「思考强度」（切模型时立刻跟着变），
    * 定时任务表单 / 项目助手面板不传 —— 那些地方没有这个设置。
    */
   footer?: ReactNode
   /**
-   * 选中一项后是否自动关闭下拉。默认 `true`（Radix 的默认行为）。
+   * 选中一项后是否自动关闭面板。默认 `true`。
    *
    * 输入框里的选择器传 `false`：底部挂着思考强度，选完模型还要接着调档位，
    * 一选就关会让用户每次都重新打开。
@@ -181,77 +192,179 @@ export function ModelPicker({
   // 订阅语言：下面所有 t() 都是渲染期求值的
   useT()
   const isMobile = useIsMobile()
-  // 手机上把「配置 / 外部 Agent → 各自的模型」这层二级菜单拍平：Radix 的 DropdownMenuSub
-  // 会往侧边展开，窄屏放不下就溢出视口；手机上改成在主面板内直接铺开（组名当标题、模型项
-  // 紧随其后），主面板给高度上限 + 滚动。桌面端维持原有的侧向二级弹层。
-  const renderGroup = (key: string, label: string, items: ReactNode) =>
-    isMobile ? (
-      <DropdownMenuGroup key={key}>
-        {/* 拍平后组名和模型项是紧挨着的两行，**必须**在字面上就分得开。
-                    原来这里写 `px-2 font-normal`：font-normal 把 DropdownMenuLabel 默认的
-                    font-medium 抹掉了，剩下的 px-2 py-1.5 text-sm 与 DropdownMenuItem 逐项相同 ——
-                    同字号、同字重、同内边距、同颜色，看上去就是一堆平铺的模型名。
-                    改成小号灰字（与上面 renderSectionLabel 的「AI 模型」同一套标题样式）+ 组前一条
-                    细线：线把每个配置的块框住，小字说明这行是标题而不是可选项。
-                    ⚠️ 不要再加 pt-* / pb-* 试图改内边距：tailwind-merge 会把 DropdownMenuLabel 自带的
-                    py-1.5 一起留着，最终哪条生效取决于 Tailwind 生成 CSS 的先后顺序（这里靠 mt-1.5
-                    拉开组间距就够了）。模型项本身不动：它是 text-sm + 行尾窗口数字 / 勾，差距已够大。 */}
-        <DropdownMenuLabel className="mt-1.5 px-2 text-xs font-medium text-muted-foreground">
-          {label}
-        </DropdownMenuLabel>
-        {items}
-      </DropdownMenuGroup>
-    ) : (
-      <DropdownMenuSub key={key}>
-        <DropdownMenuSubTrigger>
-          <span className="truncate">{label}</span>
-        </DropdownMenuSubTrigger>
-        <DropdownMenuSubContent className="max-h-80 overflow-y-auto">
-          {items}
-        </DropdownMenuSubContent>
-      </DropdownMenuSub>
-    )
-
-  /** 分组标签行：组名 + 行尾设置齿轮（打开设置里对应的分组；配置入口永远可达） */
-  const renderSectionLabel = (label: string, tab: 'models' | 'acp') => (
-    <DropdownMenuLabel className="flex items-center justify-between px-2 py-1.5 text-xs font-normal text-muted-foreground">
-      <span>{label}</span>
-      {onOpenSettings && (
-        <button
-          type="button"
-          title={t('打开设置 → {tab}', { tab: tab === 'models' ? t('AI 模型') : t('外部 Agent（ACP）') })}
-          aria-label={t('打开设置 → {tab}', { tab: tab === 'models' ? t('AI 模型') : t('外部 Agent（ACP）') })}
-          onClick={(e) => {
-            e.stopPropagation()
-            onOpenSettings(tab)
-          }}
-          className="rounded p-0.5 transition-colors hover:bg-foreground/10 hover:text-foreground"
-        >
-          <Settings className="size-3.5" />
-        </button>
-      )}
-    </DropdownMenuLabel>
-  )
+  const [open, setOpen] = useState(false)
+  /** 搜索词：只活在一次打开里（关面板就清空，下次打开是完整清单） */
+  const [query, setQuery] = useState('')
+  const keyword = query.trim().toLowerCase()
 
   /** 触发器上显示的短标签（`null` = 没选或目标失效 → 用 `emptyLabel`） */
   const shortLabel = modelTargetLabel(models, acpAgents, value, showProvider)
   const fullLabel = modelTargetLabel(models, acpAgents, value, true)
   const triggerLabel = shortLabel ?? emptyLabel ?? t('选择模型')
 
-  /**
-   * 选中目标。`closeOnSelect === false` 时拦掉 Radix 的默认关闭 ——
-   * 输入框里的下拉底部挂着思考强度，选完模型要能接着调档位。
-   */
-  const selectTarget = (next: ModelTarget) => (event: Event) => {
-    if (!closeOnSelect) event.preventDefault()
+  /** 选中即写回；`closeOnSelect === false` 时留着面板（底部思考强度要能接着调） */
+  const pick = (next: ModelTarget): void => {
     onChange(next)
+    if (closeOnSelect) setOpen(false)
   }
 
+  /** 分段小标题行尾的设置齿轮（配置入口永远可达） */
+  const gear = (tab: 'models' | 'acp'): ReactNode => {
+    if (!onOpenSettings) return null
+    const label = t('打开设置 → {tab}', {
+      tab: tab === 'models' ? t('AI 模型') : t('外部 Agent（ACP）')
+    })
+    return (
+      <button
+        type="button"
+        title={label}
+        aria-label={label}
+        onClick={(event) => {
+          event.stopPropagation()
+          // 面板先关：设置是弹窗，留着它只会压在新弹窗下面
+          setOpen(false)
+          onOpenSettings(tab)
+        }}
+        className="rounded p-0.5 transition-colors hover:bg-foreground/10 hover:text-foreground"
+      >
+        <Settings className="size-3.5" />
+      </button>
+    )
+  }
+
+  /** ---- 内置模型：按配置分段 ---- */
+  const builtinSections: PickerSection[] = []
+  if (!lockedAgent) {
+    for (const config of models) {
+      const catalog = catalogOf(config)
+      // 没有任何模型的配置不可选（服务端会拒绝），列表里干脆不出现
+      if (!catalog.length) continue
+      const rows: PickerRow[] = catalog.map((modelId) => ({
+        key: `builtin:${config.id}:${modelId}`,
+        label: modelId,
+        // 窗口一并显示：圆环的分母就是它，选之前就能对上预期
+        hint: formatContextWindow(
+          resolveContextWindow(config.models, modelId, defaultContextWindow)
+        ),
+        title: modelId,
+        active:
+          value?.backend === 'builtin' &&
+          value.configId === config.id &&
+          value.modelId === modelId,
+        search: `${config.name} ${modelId}`.toLowerCase(),
+        onSelect: () => pick({ backend: 'builtin', configId: config.id, modelId })
+      }))
+      builtinSections.push({ key: config.id, name: config.name, rows })
+    }
+  }
+
+  /**
+   * 某个 agent 下面能选什么：
+   * - 没锁（`lockedAgent` 为空）= 先「跟随 agent 默认」，再接它的白名单模型；
+   * - 锁了且**挑过白名单** = 只有那些模型（必须具体选一个，「跟随默认」不出现）；
+   * - 锁了但没挑白名单 = 只有一个状态：「跟随 agent 默认」。
+   */
+  const acpRowsOf = (agent: AcpAgentView): PickerRow[] => {
+    const agentModels = agent.models ?? []
+    const rows: PickerRow[] = []
+    if (!lockedAgent || !agentModels.length) {
+      const label = t('跟随 agent 默认')
+      rows.push({
+        key: `acp:${agent.id}:__default`,
+        label,
+        active:
+          value?.backend === 'acp' && value.configId === agent.id && !value.modelId,
+        search: `${agent.name} ${label} 默认`.toLowerCase(),
+        onSelect: () => pick({ backend: 'acp', configId: agent.id })
+      })
+    }
+    for (const model of agentModels) {
+      rows.push({
+        key: `acp:${agent.id}:${model.value}`,
+        label: model.name,
+        title: model.description ?? model.name,
+        active:
+          value?.backend === 'acp' &&
+          value.configId === agent.id &&
+          value.modelId === model.value,
+        search: `${agent.name} ${model.name} ${model.value}`.toLowerCase(),
+        onSelect: () => pick({ backend: 'acp', configId: agent.id, modelId: model.value })
+      })
+    }
+    return rows
+  }
+
+  const acpSections: PickerSection[] =
+    lockedAgent
+      ? [
+          {
+            key: `acp:${lockedAgent.id}`,
+            name: `${lockedAgent.name}（ACP）`,
+            rows: acpRowsOf(lockedAgent)
+          }
+        ]
+      : showAcp && !acpDisabledReason
+        ? acpAgents.map((agent) => ({
+            key: `acp:${agent.id}`,
+            name: agent.name,
+            rows: acpRowsOf(agent)
+          }))
+        : []
+
+  /** 敲了字就只留有命中的分段；小标题跟着筛（没命中的段连标题一起消失） */
+  const filterSections = (sections: PickerSection[]): PickerSection[] =>
+    keyword
+      ? sections
+          .map((section) => ({
+            ...section,
+            rows: section.rows.filter((row) => row.search.includes(keyword))
+          }))
+          .filter((section) => section.rows.length > 0)
+      : sections
+
+  const visibleBuiltin = filterSections(builtinSections)
+  const visibleAcp = filterSections(acpSections)
+  const visibleCount =
+    visibleBuiltin.reduce((total, section) => total + section.rows.length, 0) +
+    visibleAcp.reduce((total, section) => total + section.rows.length, 0)
+
+  /**
+   * 敲字时**整段都没命中就连小标题一起收掉**：否则会剩下「AI 模型」「外部 Agent（ACP）」
+   * 两个空标题挂在一句「没有匹配的模型」上面，看着像加载失败。
+   */
+  const showBuiltinSection = !keyword || visibleBuiltin.length > 0
+  const showAcpSection = showAcp && (!keyword || visibleAcp.length > 0)
+
+  const renderSection = (section: PickerSection): ReactNode => (
+    <div key={section.key}>
+      {/* 二级标题（配置名 / agent 名）比「AI 模型」那一行更轻：小一号、不加粗、贴紧下面的行 */}
+      <PickerLabel className="pt-1.5 pb-0.5 font-normal">{section.name}</PickerLabel>
+      {section.rows.map((row) => (
+        <PickerItem
+          key={row.key}
+          value={row.key}
+          title={row.title}
+          hint={row.hint}
+          active={row.active}
+          onSelect={row.onSelect}
+        >
+          {row.label}
+        </PickerItem>
+      ))}
+    </div>
+  )
+
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        {/* 手写 button + DropdownMenu（不是 Select，因为要二级菜单）：样式与结构都走
-            CHAT_PILL —— 前置图标、箭头大小 / 颜色必须和另外两个 pill 对齐 */}
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next)
+        if (!next) setQuery('')
+      }}
+    >
+      <PopoverTrigger asChild>
+        {/* 手写 button（不是 Select）：样式与结构都走 CHAT_PILL —— 前置图标、箭头大小 / 颜色
+            必须和另外两个 pill 对齐 */}
         <button
           type="button"
           aria-label={t('选择后端')}
@@ -264,179 +377,81 @@ export function ModelPicker({
             {triggerLabel}
           </span>
         </button>
-      </DropdownMenuTrigger>
-      {/* 与两个 Select 同款：向上弹 + 6px 间距。
-          ⚠️ 手机上二级菜单会被拍平，项很多；高度上限**不能写死** `80dvh` —— 那样会盖掉
-          Radix 算出的可用高度，列表比触发器上方的空间还高时会被顶出视口上沿。
-          取 `min(80dvh, 可用高度)`：80dvh 兜住移动端动态视口（地址栏 / 键盘），可用
-          高度兜住触发器以上的真实空间。collisionPadding 让面板与视口边缘留 8px，
-          它也会算进那个可用高度里。没有 footer 时滚动由 DropdownMenuContent 自带；
-          有 footer 时改由内部列表滚，底部那块固定在下面（见 `footer`）。 */}
-      <DropdownMenuContent
+      </PopoverTrigger>
+      {/* 与另外两颗 pill 同款：向上弹 + 6px 间距（贴边时 Radix 自动翻转） */}
+      <PickerPanel
         side="top"
         align="end"
         sideOffset={6}
         collisionPadding={8}
-        className={cn(
-          'min-w-56',
-          // 有 footer 时把滚动交给内部列表：外层只负责高度上限与裁切，
-          // 底部那一块始终留在可视区里，不会被一长串模型名顶出去。
-          footer && 'flex flex-col overflow-hidden p-0',
-          isMobile && 'max-h-[min(80dvh,var(--radix-dropdown-menu-content-available-height))]'
-        )}
+        footer={
+          footer ? <PickerFooter className="px-3">{footer}</PickerFooter> : undefined
+        }
       >
-        <div className={cn(footer && 'min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1')}>
-        {lockedAgent ? (
-          <>
-            {/* ---- acp 会话：只显示绑定的这个 agent 的模型（其它一切不出现） ---- */}
-            {renderSectionLabel(`${lockedAgent.name}（ACP）`, 'acp')}
-            {/* agent 没挑白名单时它只有一个状态：用 agent 自己的默认（agent 侧的
-                缺省，不是 Fizz 的设置）；挑了白名单就必须具体选一个 */}
-            {!(lockedAgent.models ?? []).length && (
-              <DropdownMenuItem
-                onSelect={selectTarget({ backend: 'acp', configId: lockedAgent.id })}
-              >
-                <span className="truncate">{t('跟随 agent 默认')}</span>
-                <CheckSlot
-                  active={
-                    value?.backend === 'acp' &&
-                    value.configId === lockedAgent.id &&
-                    !value.modelId
-                  }
-                  className="ml-auto"
-                />
-              </DropdownMenuItem>
-            )}
-            {(lockedAgent.models ?? []).map((model) => {
-              const active =
-                value?.backend === 'acp' &&
-                value.configId === lockedAgent.id &&
-                value.modelId === model.value
-              return (
-                <DropdownMenuItem
-                  key={model.value}
-                  title={model.description ?? model.name}
-                  onSelect={selectTarget({
-                    backend: 'acp',
-                    configId: lockedAgent.id,
-                    modelId: model.value
-                  })}
-                >
-                  <span className="truncate">{model.name}</span>
-                  <CheckSlot active={active} className="ml-auto" />
-                </DropdownMenuItem>
-              )
-            })}
-          </>
-        ) : (
-          <>
-            {/* ---- AI 模型：全量可选 ---- */}
-            {renderSectionLabel(t('AI 模型'), 'models')}
-            {models.length === 0 ? (
-              <DropdownMenuItem disabled className="text-xs text-muted-foreground">
-                {t('还没有模型配置')}
-              </DropdownMenuItem>
-            ) : (
-              models.map((config) => {
-                const catalog = catalogOf(config)
-                // 没有任何模型的配置不可选（服务端会拒绝），下拉里干脆不出现
-                if (!catalog.length) return null
-                const items = catalog.map((modelId) => {
-                  const active =
-                    value?.backend === 'builtin' &&
-                    value.configId === config.id &&
-                    value.modelId === modelId
-                  return (
-                    <DropdownMenuItem
-                      key={modelId}
-                      title={modelId}
-                      onSelect={selectTarget({ backend: 'builtin', configId: config.id, modelId })}
-                    >
-                      <span className="truncate">{modelId}</span>
-                      {/* 窗口一并显示：圆环的分母就是它，选之前就能对上预期 */}
-                      <span className="ml-auto shrink-0 pl-2 text-xs text-muted-foreground tabular-nums">
-                        {formatContextWindow(
-                          resolveContextWindow(config.models, modelId, defaultContextWindow)
-                        )}
-                      </span>
-                      <CheckSlot active={active} />
-                    </DropdownMenuItem>
-                  )
-                })
-                return renderGroup(config.id, config.name, items)
-              })
-            )}
-            {/*
-                          ---- 外部 Agent（ACP）：由 `showAcp` 决定出不出 ----
-                          有会话时换不了类型（换类型 = 新建会话），所以 内置会话里这组不出。
-                          选中即改目标，会话详情那边 `setChatTarget` 会顺手探一次这个 agent 的档位
-                          （`probeDraftAcp`）—— 模式 / 思考档 pill 没有会话可读，只能先问 agent。
-                        */}
-            {showAcp && (
-              <>
-                {renderSectionLabel(t('外部 Agent（ACP）'), 'acp')}
-                {acpDisabledReason ? (
-                  /* 整组不可选（远端工作区）：只留说明。用 div 而不是 disabled 的
-                     DropdownMenuItem —— 那句话比「还没有外部 Agent」长得多，菜单项是
-                     不换行的一行 flex，会被 `overflow-x-hidden` 直接裁掉 */
-                  <div className="px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
-                    {acpDisabledReason}
-                  </div>
-                ) : acpAgents.length === 0 ? (
-                  <DropdownMenuItem disabled className="text-xs text-muted-foreground">
-                    {t('还没有外部 Agent')}
-                  </DropdownMenuItem>
-                ) : (
-                  acpAgents.map((agent) => {
-                    const items = [
-                      <DropdownMenuItem
-                        key="__default"
-                        onSelect={selectTarget({ backend: 'acp', configId: agent.id })}
-                      >
-                        <span className="truncate">{t('跟随 agent 默认')}</span>
-                        <CheckSlot
-                          active={
-                            value?.backend === 'acp' &&
-                            value.configId === agent.id &&
-                            !value.modelId
-                          }
-                          className="ml-auto"
-                        />
-                      </DropdownMenuItem>,
-                      ...(agent.models ?? []).map((model) => {
-                        const active =
-                          value?.backend === 'acp' &&
-                          value.configId === agent.id &&
-                          value.modelId === model.value
-                        return (
-                          <DropdownMenuItem
-                            key={model.value}
-                            title={model.description ?? model.name}
-                            onSelect={selectTarget({
-                              backend: 'acp',
-                              configId: agent.id,
-                              modelId: model.value
-                            })}
-                          >
-                            <span className="truncate">{model.name}</span>
-                            <CheckSlot active={active} className="ml-auto" />
-                          </DropdownMenuItem>
-                        )
-                      })
-                    ]
-                    // key 加前缀：agent id 与模型配置 id 不同域，可能撞名
-                    return renderGroup(`acp:${agent.id}`, agent.name, items)
-                  })
-                )}
-              </>
-            )}
-          </>
-        )}
-        </div>
-        {footer && (
-          <div className="shrink-0 border-t border-border px-3 pt-2 pb-2">{footer}</div>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+        <PickerSearch
+          // 桌面端打开即可打字；手机上不聚焦（软键盘会把面板顶到键盘底下）
+          autoFocus={!isMobile}
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder={t('搜索模型 / Agent')}
+          aria-label={t('搜索模型 / Agent')}
+        />
+        <PickerList>
+          {lockedAgent ? (
+            <>
+              {/* ---- acp 会话：只显示绑定的这个 agent（其它一切不出现） ---- */}
+              {!keyword || visibleCount > 0 ? (
+                <PickerLabel action={gear('acp')}>{`${lockedAgent.name}（ACP）`}</PickerLabel>
+              ) : null}
+              {visibleAcp.flatMap((section) =>
+                section.rows.map((row) => (
+                  <PickerItem
+                    key={row.key}
+                    value={row.key}
+                    title={row.title}
+                    active={row.active}
+                    onSelect={row.onSelect}
+                  >
+                    {row.label}
+                  </PickerItem>
+                ))
+              )}
+            </>
+          ) : (
+            <>
+              {/* ---- AI 模型 ---- */}
+              {showBuiltinSection ? (
+                <>
+                  <PickerLabel action={gear('models')}>{t('AI 模型')}</PickerLabel>
+                  {visibleBuiltin.length ? (
+                    visibleBuiltin.map((section) => renderSection(section))
+                  ) : (
+                    <PickerNote>{t('还没有模型配置')}</PickerNote>
+                  )}
+                </>
+              ) : null}
+              {/* ---- 外部 Agent（ACP）：由 `showAcp` 决定出不出 ----
+                  有会话时换不了类型（换类型 = 新建会话），所以内置会话里这组不出。 */}
+              {showAcpSection ? (
+                <>
+                  <PickerLabel action={gear('acp')}>{t('外部 Agent（ACP）')}</PickerLabel>
+                  {acpDisabledReason ? (
+                    // 整组不可选（远端工作区）：只留说明
+                    <PickerNote>{acpDisabledReason}</PickerNote>
+                  ) : visibleAcp.length ? (
+                    visibleAcp.map((section) => renderSection(section))
+                  ) : (
+                    <PickerNote>{t('还没有外部 Agent')}</PickerNote>
+                  )}
+                </>
+              ) : null}
+            </>
+          )}
+          {keyword && visibleCount === 0 ? (
+            <PickerEmpty>{t('没有匹配的模型')}</PickerEmpty>
+          ) : null}
+        </PickerList>
+      </PickerPanel>
+    </Popover>
   )
 }

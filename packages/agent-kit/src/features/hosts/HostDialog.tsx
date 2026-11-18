@@ -24,7 +24,9 @@
  * 类型 Tab 与表单字段同处一个带边框的面板里（`border` + 顶部 `border-b`），
  * 两者是一块「编辑面板」的两部分，而不是「弹窗标题下的第二个标题栏」。
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent } from 'react'
+import { FileKey } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@fizz/ui/button'
 import { Input } from '@fizz/ui/input'
 import { Label } from '@fizz/ui/label'
@@ -123,6 +125,13 @@ export function HostDialog({
   const [password, setPassword] = useState('')
   const [privateKey, setPrivateKey] = useState('')
   const [passphrase, setPassphrase] = useState('')
+  /**
+   * 刚从本机文件读进来的私钥文件名（只用于给一句「已读取 xxx」的回执）。
+   * 手动改文本框不会清它 —— 那只是「这段内容从哪来」的提示，不是校验依据。
+   */
+  const [keyFileName, setKeyFileName] = useState('')
+  /** 隐藏的 `<input type="file">`：点「选择文件…」时代它弹出系统文件框 */
+  const keyFileRef = useRef<HTMLInputElement | null>(null)
   const [jumpHostId, setJumpHostId] = useState('')
   const [charset, setCharset] = useState<SshCharset>('utf-8')
   const [keepalive, setKeepalive] = useState('')
@@ -150,6 +159,7 @@ export function HostDialog({
     setPassword('')
     setPrivateKey('')
     setPassphrase('')
+    setKeyFileName('')
     setJumpHostId(editing?.kind === 'local' ? '' : (editing?.jumpHostId ?? ''))
     setCharset(editing?.kind === 'local' ? 'utf-8' : (editing?.charset ?? 'utf-8'))
     setKeepalive(
@@ -228,6 +238,26 @@ export function HostDialog({
 
   const save = (): Promise<void> => (kind === 'local' ? saveLocal() : saveSsh())
 
+  /**
+   * 从本机文件读私钥：用 `File` API 读**内容**，不需要宿主提供文件对话框 ——
+   * web / desktop / 手机走同一条路，桌面端也不必再加一条 IPC。
+   *
+   * 为什么不是「记住路径」：落盘的是私钥原文（服务端加密存），路径在服务端那台机器上
+   * 没有意义（工作区还可能是远端的）。
+   */
+  const pickKeyFile = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = event.target.files?.[0]
+    // 清掉 value：同一个文件改完再选一次，也要能再触发一次 change
+    event.target.value = ''
+    if (!file) return
+    try {
+      setPrivateKey(await file.text())
+      setKeyFileName(file.name)
+    } catch {
+      toast.error(t('读不到这个文件：{name}', { name: file.name }))
+    }
+  }
+
   /** 可选的跳板机：除自己以外的所有 **SSH** 主机（本机终端不能当跳板） */
   const jumpOptions = app.sshHosts.filter(
     (h): h is SshHostConfig => h.kind !== 'local' && h.id !== editing?.id
@@ -280,7 +310,7 @@ export function HostDialog({
               而 Textarea 带 `field-sizing-content`（按内容定尺寸）—— 私钥里的一行长文本
               会把这一列顶得比弹窗还宽，输入框直接溢出去 */}
           <form
-            className="min-w-0 flex-1 space-y-3 overflow-y-auto py-3 no-scrollbar"
+            className="min-w-0 flex-1 space-y-3 overflow-y-auto py-3 pr-1 -mr-4"
             onSubmit={(e) => {
               e.preventDefault()
               void save()
@@ -426,6 +456,36 @@ export function HostDialog({
                       value={privateKey}
                       onChange={(e) => setPrivateKey(e.target.value)}
                     />
+                    {/*
+                      私钥也可以**直接从本机文件读**：粘贴一整个 PEM 既容易漏首尾行，
+                      在桌面端还得先找到文件再打开复制。读进来后给一句回执（文件名），
+                      让人确认选中的是不是那把。
+                    */}
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 shrink-0 gap-1.5 px-2 text-xs"
+                        onClick={() => keyFileRef.current?.click()}
+                      >
+                        <FileKey className="size-3.5" />
+                        {t('选择文件…')}
+                      </Button>
+                      {keyFileName ? (
+                        <span className="min-w-0 truncate text-xs text-muted-foreground">
+                          {t('已读取 {name}', { name: keyFileName })}
+                        </span>
+                      ) : null}
+                      <input
+                        ref={keyFileRef}
+                        type="file"
+                        className="hidden"
+                        // 不设 accept：私钥文件名五花八门（id_rsa / *.pem / *.key / 无后缀），
+                        // 限死类型只会把真正的那把挡在文件框外面
+                        onChange={(e) => void pickKeyFile(e)}
+                      />
+                    </div>
                     <Input
                       type="password"
                       autoComplete="new-password"

@@ -5,6 +5,12 @@
  * `streamText`**（自己的提示词、自己的工具白名单、自己的步数上限），只把最终结论交回
  * 父上下文。
  *
+ * ⚠️ `execute` **不阻塞**：起完子 run 立刻返回一个句柄（taskId），结论要父模型调
+ * `task_wait` 来领。原因见 `task_wait` 那段注释 —— 一步之内模型发完 tool-call 就交出了
+ * 话轮，必须等这一步的工具全部 resolve 才能发下一次请求；派活挂在那里，模型那句
+ * 「同时我自己看看这个文件」就只能排在子任务后面。代价是父轮收尾时必须主动
+ * `settle()`（见 `DelegationToolSet.settle`）。
+ *
  * 过程（思考 / 工具调用 / 正文）**原样转发**成 `subagent-event` 到父流：前端把它折叠进
  * 派活卡的 `delegation.parts`（与主消息同一套形状，`SubagentPanel` 直接复用 `MessageParts`
  * 渲染），服务端同样折叠后随消息落盘。从前只转正文与工具名，理由是「怕变成二级卡片树」，
@@ -19,6 +25,7 @@ import { stepCountIs, streamText, type ToolSet } from 'ai'
 import { z } from 'zod'
 import { buildAgentTools, buildWebFetchTool, buildGitReadTool, filterToolSet } from '@fizz/tools'
 import {
+  DELEGATION_HANDLE_PREFIX,
   SUBAGENT_MAX_STEPS,
   SUBAGENT_META,
   SUBAGENT_MIN_STEPS,
@@ -126,6 +133,91 @@ const MAX_FALLBACK_ANSWER_CHARS = 4_000
 
 /** 同一个 subagentId 连续失败这么多次就不再派（否则父模型会无限换姿势重试） */
 const MAX_CONSECUTIVE_FAILURES = 3
+
+/**
+ * `task_wait` 单次最多等多久。
+ *
+ * 这不是「子任务最长能跑多久」（那是步数上限管的），而是「一次等待最多占住父轮多久」：
+ * 超时就把话轮交回父模型 —— 它可以先去做别的、过一会儿再领，或者自己把那件事做完。
+ *
+ * 不设上限的话，一个卡在 provider 上的子任务会让主对话彻底没动静：派活卡在转，
+ * 用户不知道它是在等还是卡死了。
+ */
+const WAIT_SLICE_MS = 60_000
+
+/**
+ * 父轮收尾时等子任务响应 abort 的上限。
+ *
+ * abort 之后子 run 要回到自己的 `catch` 里发 `subagent-end`（派活卡从「运行中」落地
+ * 就靠这一帧）。正常几十毫秒就完；provider 卡住时不能为了这一帧把整轮收尾拖住 ——
+ * 兜底是落盘那一步把 `running` 收敛成 `aborted`（见 `assistant-message.ts` 的
+ * `settleDelegations`）。
+ */
+const SETTLE_WAIT_MS = 1_500
+
+/**
+ * 派活工具的公共说明（拼在每个 `agent-<id>` 的 description 后面）。
+ *
+ * ⚠️ 这两句就是本能力的**行为契约**，少一句都会退化成坏行为：
+ * - 「立即返回」：模型照老习惯以为工具返回的就是结论，不等就开写 → 幻觉；
+ * - 「结论靠 task_wait 领 + 收尾前必须领回」：不写的话它派完就去收尾，结论白跑一趟。
+ */
+const DELEGATION_TOOL_SUFFIX =
+  '\n\n调用后**立即返回**一个 taskId（不会等它跑完）：派完你可以继续做自己的事，' +
+  '需要结论时调 `task_wait`（同一个 taskId）领取。**收尾前必须把派出去的活都领回来**，' +
+  '否则本轮结束时会把它中止。同一批 tool-call 里派多个子任务是真的并行。'
+
+/** 派活句柄交回父上下文的文案：要让模型自己接得上 `task_wait`，并说清「别干等」 */
+function handleText(name: string, taskId: string): string {
+  return (
+    // 前缀是契约常量：界面凭它认出「这一格不是结论」（见 `DELEGATION_HANDLE_PREFIX`）
+    `${DELEGATION_HANDLE_PREFIX}${name}」（taskId: ${taskId}）。它在后台跑，进度看派活卡。\n` +
+    `你可以继续做自己的事；需要它的结论时调 task_wait（taskId 填 ${taskId}）。` +
+    '收尾前记得领回结论，否则本轮结束时它会被中止。'
+  )
+}
+
+/** 一次派活交回父上下文的东西 */
+interface DelegationResult {
+  /** 交给模型看的文案（含 `RESULT_TEXT_*` 兜底） */
+  text: string
+  status: SubagentRunStatus
+  durationMs: number
+}
+
+/**
+ * 一条后台派活的句柄：父模型凭 `taskId` 领结论。
+ *
+ * `execute` 立刻返回，所以这里必须自己扛住「跑完了没人来领」的收尾（见 `settle`）。
+ */
+interface DelegationTask {
+  /** = 那次 `agent-<id>` 调用的 toolCallId（模型照抄它来领结论） */
+  id: string
+  subagentId: SubagentId
+  /** 显示名（领取文案与收尾日志） */
+  name: string
+  /** 子 run 的最终结论；**不会 reject**（失败也是结果文案），所以可以放心 race */
+  settled: Promise<DelegationResult>
+  /** 只掐这一条（派活卡停止钮 / 父轮收尾） */
+  abort: () => void
+  /** 跑完了没有（`settled` 已 resolve） */
+  isFinished: () => boolean
+  /** 结论是否已经被 `task_wait` 领走 —— 收尾时据此告警「白跑了一趟」 */
+  claimed: boolean
+}
+
+/** 等子任务落地，最多 `WAIT_SLICE_MS`；超时返回 null（调用方把话轮交回模型） */
+async function waitSettled(task: DelegationTask): Promise<DelegationResult | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), WAIT_SLICE_MS)
+  })
+  try {
+    return await Promise.race([task.settled, timeout])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
 
 export const SUBAGENT_SPECS: Record<string, SubagentSpec> = {
   explorer: {
@@ -298,18 +390,40 @@ export interface BuildDelegationToolsOptions {
   stats: DelegationStats
 }
 
+/** `buildDelegationTools` 的产出：工具集 + 本轮收尾 */
+export interface DelegationToolSet {
+  /** `agent-<id>` × N + `task_wait` */
+  tools: Record<string, unknown>
+  /**
+   * 父轮收尾：把还在跑的子任务全部中止（已经没人领它们的结论了）。
+   *
+   * 幂等，可以重复调。返回时**尽力**保证那些子任务已经把 `subagent-end` 发出去
+   * （最多等 `SETTLE_WAIT_MS`）；等不到也不阻塞收尾，落盘那一步会把 `running` 收敛成
+   * `aborted`。
+   */
+  settle: () => Promise<void>
+}
+
 /**
- * 建一组派活工具：`agent-<id>`。不启用子任务时调用方不传 ids，这里不会被调用。
+ * 建一组派活工具：`agent-<id>` × N + `task_wait`。不启用子任务时调用方不传 ids。
  *
- * 每次 `runAgent` 现建（与父同一节奏，代价只是几个对象）；`failures` 也是**每轮一份**，
- * 跨轮不共享 —— 上一轮连续失败不该影响这一轮的判断。
+ * 每次 `runAgent` 现建（与父同一节奏，代价只是几个对象）；`failures` / `tasks` 也是
+ * **每轮一份**，跨轮不共享 —— 上一轮连续失败不该影响这一轮的判断。
+ *
+ * ⚠️ 派活是**非阻塞**的：`agent-<id>` 起完子 run 立刻返回一个 taskId，结论由 `task_wait`
+ * 领取。阻塞版的代价见 `task_wait` 那段注释（一步之内模型交出话轮，等这一步所有工具
+ * resolve 才发下一次请求 —— 派活挂在那里会让「同时自己也看看」变成排队）。
  */
 export function buildDelegationTools(
   ids: SubagentId[],
   opts: BuildDelegationToolsOptions
-): Record<string, unknown> {
+): DelegationToolSet {
   const failures = new Map<string, number>()
   const out: Record<string, unknown> = {}
+  /** 本轮的后台派活：taskId → 句柄。父轮收尾时由 `settle` 统一清理 */
+  const tasks = new Map<string, DelegationTask>()
+  /** toolCallId 缺失时的兜底 id（测试 / 非标准调用方） */
+  let taskSeq = 0
 
   // 子 agent 的工具集单独取一份，再按白名单过滤（父那份带写操作与 extraTools）
   const remote = opts.backend?.kind === 'remote'
@@ -359,7 +473,8 @@ export function buildDelegationTools(
     )
 
     out[`agent-${id}`] = {
-      description: spec.description,
+      // 规格自带的能力说明 + 派活的公共契约（立即返回 / 结论靠 task_wait 领）
+      description: spec.description + DELEGATION_TOOL_SUFFIX,
       inputSchema: z.object({
         task: z
           .string()
@@ -373,7 +488,15 @@ export function buildDelegationTools(
         const task = (input?.task ?? '').trim()
         if (!task) return RESULT_TEXT_EMPTY
         /**
-         * 这一条子 run 自己的中止开关（派活卡上的停止钮命中它）。
+         * 连败闸开在**派出去那一刻**：失败是在后台才发生的，等它回来时父模型可能已经又派了
+         * 一单。不闸的话它会一直换姿势重试同一个坏掉的子任务。
+         */
+        if ((failures.get(id) ?? 0) >= MAX_CONSECUTIVE_FAILURES) {
+          failures.delete(id)
+          return RESULT_TEXT_BAIL
+        }
+        /**
+         * 这一条子 run 自己的中止开关（派活卡上的停止钮 / 父轮收尾命中它）。
          *
          * 与父轮取或而不是覆盖：整轮停止仍然要带走子任务，单条停止只掐这一个 ——
          * `AbortSignal.any` 任一触发即中止，正是要的语义。
@@ -384,6 +507,8 @@ export function buildDelegationTools(
         )
         const signal = parents.length ? AbortSignal.any([...parents, own.signal]) : own.signal
         const startedAt = Date.now()
+        /** 终态只能报一次（`finish` 被 `done` 与兜底 catch 同时碰到时不能发两帧） */
+        let ended = false
         /**
          * 终态一定要报：`subagent-end` 是派活卡从「运行中」落到结论的唯一信号，漏掉一条
          * 提前返回的路，卡片就会永远停在三根竖条上。
@@ -392,6 +517,8 @@ export function buildDelegationTools(
          * 更糟的是它可能作用到下一次复用了同一 toolCallId 的调用上。
          */
         const finish = (status: Exclude<SubagentRunStatus, 'running'>): void => {
+          if (ended) return
+          ended = true
           if (toolCallId) opts.commandStops?.delete(toolCallId)
           opts.emit({
             type: 'subagent-end',
@@ -399,6 +526,14 @@ export function buildDelegationTools(
             status,
             durationMs: Date.now() - startedAt
           })
+        }
+        /** 收尾并交出一份结论：`settled` 由它 resolve，`task_wait` 在那里等 */
+        const done = (
+          status: Exclude<SubagentRunStatus, 'running'>,
+          text: string
+        ): DelegationResult => {
+          finish(status)
+          return { text, status, durationMs: Date.now() - startedAt }
         }
         opts.emit({ type: 'subagent-start', toolCallId, subagentId: id, name: spec.name, task })
         // 登记在 start 之后：前端要到这一帧之后才画得出派活卡与停止钮
@@ -415,132 +550,239 @@ export function buildDelegationTools(
          * 大半是这一条。
          */
         const prose: string[] = []
-        try {
-          const result = streamText({
-            model: model as never,
-            /**
-             * 预算也要告诉子 agent：子 run 是**独立的 streamText**，没有主对话那套步骤边界
-             * 提醒（它连 `prepareStep` 都没挂），模型不知道有闸就会一直读文件，直到被
-             * `stepCountIs` 硬停 —— 那时 `result.text` 往往是空串（最后一步还是工具调用），
-             * 父上下文只收到一句「没有产出可用结论」。提示词里先讲清预算，至少能让它把
-             * 结论排进前 N 步。
-             */
-            system: spec.instructions + DELEGATION_PROMPT_SUFFIX + stepBudgetHint(maxSteps),
-            // 只给子 agent 这一条任务：父的完整历史既费 token，也容易把敏感内容带出去
-            messages: [{ role: 'user', content: task }],
-            tools: tools as ToolSet,
-            stopWhen: stepCountIs(maxSteps),
-            abortSignal: signal
-          })
-          for await (const part of result.fullStream) {
-            const p = part as Record<string, unknown>
-            /**
-             * 正文 / 思考增量的字段名跨 AI SDK 版本不同（`text` vs `textDelta`）：
-             * 取到一个就走，两个都没有就不发 —— 少一帧增量只是少一段过程，不影响结论。
-             */
-            const chunk =
-              typeof p.text === 'string' ? p.text : typeof p.textDelta === 'string' ? p.textDelta : ''
-            if (p.type === 'text-delta') {
-              if (chunk) {
-                prose.push(chunk)
-                opts.emit({ type: 'subagent-event', toolCallId, event: { type: 'text-delta', delta: chunk } })
-              }
-            } else if (p.type === 'start-step') {
-              // 步与步之间的正文要断开：上一步的最后一句和下一步的第一句会粘成一行
-              if (prose.length) prose.push('\n\n')
-            } else if (p.type === 'reasoning-delta') {
-              if (chunk) {
+
+        /**
+         * 真正的子 run。**调用方不 await**：`execute` 要立刻把 taskId 交回去，结论由
+         * `task_wait` 在模型真正需要的时候领。这里只保证「一定 resolve 成一份结论」，
+         * 绝不 reject —— `settle` / `waitSettled` 的 race 都建立在这一点上。
+         */
+        const runSubagent = async (): Promise<DelegationResult> => {
+          try {
+            const result = streamText({
+              model: model as never,
+              /**
+               * 预算也要告诉子 agent：子 run 是**独立的 streamText**，没有主对话那套步骤边界
+               * 提醒（它连 `prepareStep` 都没挂），模型不知道有闸就会一直读文件，直到被
+               * `stepCountIs` 硬停 —— 那时 `result.text` 往往是空串（最后一步还是工具调用），
+               * 父上下文只收到一句「没有产出可用结论」。提示词里先讲清预算，至少能让它把
+               * 结论排进前 N 步。
+               */
+              system: spec.instructions + DELEGATION_PROMPT_SUFFIX + stepBudgetHint(maxSteps),
+              // 只给子 agent 这一条任务：父的完整历史既费 token，也容易把敏感内容带出去
+              messages: [{ role: 'user', content: task }],
+              tools: tools as ToolSet,
+              stopWhen: stepCountIs(maxSteps),
+              abortSignal: signal
+            })
+            for await (const part of result.fullStream) {
+              const p = part as Record<string, unknown>
+              /**
+               * 正文 / 思考增量的字段名跨 AI SDK 版本不同（`text` vs `textDelta`）：
+               * 取到一个就走，两个都没有就不发 —— 少一帧增量只是少一段过程，不影响结论。
+               */
+              const chunk =
+                typeof p.text === 'string' ? p.text : typeof p.textDelta === 'string' ? p.textDelta : ''
+              if (p.type === 'text-delta') {
+                if (chunk) {
+                  prose.push(chunk)
+                  opts.emit({ type: 'subagent-event', toolCallId, event: { type: 'text-delta', delta: chunk } })
+                }
+              } else if (p.type === 'start-step') {
+                // 步与步之间的正文要断开：上一步的最后一句和下一步的第一句会粘成一行
+                if (prose.length) prose.push('\n\n')
+              } else if (p.type === 'reasoning-delta') {
+                if (chunk) {
+                  opts.emit({
+                    type: 'subagent-event',
+                    toolCallId,
+                    event: { type: 'reasoning-delta', delta: chunk }
+                  })
+                }
+              } else if (
+                p.type === 'tool-call' &&
+                typeof p.toolName === 'string' &&
+                typeof p.toolCallId === 'string'
+              ) {
+                /**
+                 * 子 agent 的每一次工具调用都原样转给前端 + 落盘（从前只报工具名，刻意不铺开）。
+                 * 现在这条过程是「attach 进子任务后看到的完整消息流」的一部分，入参必须带上，
+                 * 否则卡片点开是空的。
+                 */
+                const callInput = p.input !== undefined ? p.input : p.args
                 opts.emit({
                   type: 'subagent-event',
                   toolCallId,
-                  event: { type: 'reasoning-delta', delta: chunk }
+                  event: {
+                    type: 'tool-call',
+                    toolCallId: p.toolCallId,
+                    toolName: p.toolName,
+                    // 字段必填（契约与主流同形），拿不到就是空入参 —— 卡片照样能画
+                    input: callInput
+                  }
+                })
+              } else if (
+                p.type === 'tool-result' &&
+                typeof p.toolName === 'string' &&
+                typeof p.toolCallId === 'string'
+              ) {
+                opts.emit({
+                  type: 'subagent-event',
+                  toolCallId,
+                  event: {
+                    type: 'tool-result',
+                    toolCallId: p.toolCallId,
+                    toolName: p.toolName,
+                    output: p.output !== undefined ? p.output : p.result,
+                    ...(p.isError ? { isError: true } : {})
+                  }
                 })
               }
-            } else if (
-              p.type === 'tool-call' &&
-              typeof p.toolName === 'string' &&
-              typeof p.toolCallId === 'string'
-            ) {
-              /**
-               * 子 agent 的每一次工具调用都原样转给前端 + 落盘（从前只报工具名，刻意不铺开）。
-               * 现在这条过程是「attach 进子任务后看到的完整消息流」的一部分，入参必须带上，
-               * 否则卡片点开是空的。
-               */
-              const callInput = p.input !== undefined ? p.input : p.args
-              opts.emit({
-                type: 'subagent-event',
-                toolCallId,
-                event: {
-                  type: 'tool-call',
-                  toolCallId: p.toolCallId,
-                  toolName: p.toolName,
-                  // 字段必填（契约与主流同形），拿不到就是空入参 —— 卡片照样能画
-                  input: callInput
-                }
-              })
-            } else if (
-              p.type === 'tool-result' &&
-              typeof p.toolName === 'string' &&
-              typeof p.toolCallId === 'string'
-            ) {
-              opts.emit({
-                type: 'subagent-event',
-                toolCallId,
-                event: {
-                  type: 'tool-result',
-                  toolCallId: p.toolCallId,
-                  toolName: p.toolName,
-                  output: p.output !== undefined ? p.output : p.result,
-                  ...(p.isError ? { isError: true } : {})
-                }
-              })
             }
-          }
-          const usage = await Promise.resolve(result.totalUsage).catch(() => undefined)
-          recordSubagentUsage(opts.stats, id, usage)
-          const finalText = (await Promise.resolve(result.text).catch(() => '')).trim()
-          /** 最后一步的正文（正常收尾时就是它）；为空才退到整段累积（见 `prose` 的注释） */
-          const collected = prose.join('').trim()
-          const answer = finalText || collected
-          if (!answer) {
-            // 一个字都没吐就收场：被停的报 aborted，真的空转的报 empty
-            const aborted = signal.aborted
-            finish(aborted ? 'aborted' : 'empty')
-            return aborted ? RESULT_TEXT_ABORTED : RESULT_TEXT_EMPTY
-          }
-          failures.delete(id)
-          finish('done')
-          if (finalText) return finalText
-          // 走到这里是「有内容但没来得及收尾」：交回已产出的部分，并说清它是半成品
-          console.error(
-            `[subagent] ${id} 用满 ${maxSteps} 步仍未收尾，回退交回已产出的 ${collected.length} 字符`
-          )
-          const body =
-            collected.length > MAX_FALLBACK_ANSWER_CHARS
-              ? `${collected.slice(0, MAX_FALLBACK_ANSWER_CHARS)}\n\n…（此处截断，完整过程在派活卡里）`
-              : collected
-          return `${RESULT_TEXT_TRUNCATED}${body}`
-        } catch (err) {
-          const aborted = signal.aborted
-          // 错误详情只进日志：provider 报错可能带 key / 网关地址，绝不能进父上下文
-          if (aborted) console.warn(`[subagent] ${id} 被用户中止`)
-          else console.error(`[subagent] ${id} 执行失败：`, err)
-          finish(aborted ? 'aborted' : 'failed')
-          /**
-           * 被停的不计入「连续失败」：用户掐掉一次不该让这个子任务在剩下的回合里被判死刑
-           * （`MAX_CONSECUTIVE_FAILURES` 一到，父模型再派就是 `RESULT_TEXT_BAIL`）。
-           */
-          if (aborted) return RESULT_TEXT_ABORTED
-          const n = (failures.get(id) ?? 0) + 1
-          failures.set(id, n)
-          if (n >= MAX_CONSECUTIVE_FAILURES) {
+            const usage = await Promise.resolve(result.totalUsage).catch(() => undefined)
+            recordSubagentUsage(opts.stats, id, usage)
+            const finalText = (await Promise.resolve(result.text).catch(() => '')).trim()
+            /** 最后一步的正文（正常收尾时就是它）；为空才退到整段累积（见 `prose` 的注释） */
+            const collected = prose.join('').trim()
+            const answer = finalText || collected
+            if (!answer) {
+              // 一个字都没吐就收场：被停的报 aborted，真的空转的报 empty
+              const aborted = signal.aborted
+              return aborted ? done('aborted', RESULT_TEXT_ABORTED) : done('empty', RESULT_TEXT_EMPTY)
+            }
             failures.delete(id)
-            return RESULT_TEXT_BAIL
+            if (finalText) return done('done', finalText)
+            // 走到这里是「有内容但没来得及收尾」：交回已产出的部分，并说清它是半成品
+            console.error(
+              `[subagent] ${id} 用满 ${maxSteps} 步仍未收尾，回退交回已产出的 ${collected.length} 字符`
+            )
+            const body =
+              collected.length > MAX_FALLBACK_ANSWER_CHARS
+                ? `${collected.slice(0, MAX_FALLBACK_ANSWER_CHARS)}\n\n…（此处截断，完整过程在派活卡里）`
+                : collected
+            return done('done', `${RESULT_TEXT_TRUNCATED}${body}`)
+          } catch (err) {
+            const aborted = signal.aborted
+            // 错误详情只进日志：provider 报错可能带 key / 网关地址，绝不能进父上下文
+            if (aborted) console.warn(`[subagent] ${id} 被用户中止`)
+            else console.error(`[subagent] ${id} 执行失败：`, err)
+            /**
+             * 被停的不计入「连续失败」：用户掐掉一次不该让这个子任务在剩下的回合里被判死刑
+             * （`MAX_CONSECUTIVE_FAILURES` 一到，父模型再派就是 `RESULT_TEXT_BAIL`）。
+             */
+            if (aborted) return done('aborted', RESULT_TEXT_ABORTED)
+            const n = (failures.get(id) ?? 0) + 1
+            failures.set(id, n)
+            if (n >= MAX_CONSECUTIVE_FAILURES) {
+              failures.delete(id)
+              return done('failed', RESULT_TEXT_BAIL)
+            }
+            return done('failed', RESULT_TEXT_FAILED)
           }
-          return RESULT_TEXT_FAILED
         }
+
+        /**
+         * 起跑，**不等**。
+         *
+         * `finished` 用闭包变量而不是读 promise 状态：`settle` 与 `task_wait` 都要在
+         * 同步语境里判断「还跑着吗」，没有别的可靠办法。
+         */
+        let finished = false
+        const settled: Promise<DelegationResult> = runSubagent()
+          .catch((): DelegationResult => done('failed', RESULT_TEXT_FAILED))
+          .then((result) => {
+            finished = true
+            return result
+          })
+        const taskId = toolCallId || `task-${++taskSeq}`
+        tasks.set(taskId, {
+          id: taskId,
+          subagentId: id,
+          name: spec.name,
+          settled,
+          abort: () => own.abort(),
+          isFinished: () => finished,
+          claimed: false
+        })
+        return handleText(spec.name, taskId)
       }
     }
   }
-  return out
+
+  /**
+   * 领取后台子任务的结论。
+   *
+   * 为什么是独立工具、而不是让 `agent-<id>` 阻塞着等：一步之内模型发完 tool-call 就把话轮
+   * 交出去了，必须等这一步的工具**全部** resolve 才能发下一次请求。派活挂在那里，模型那句
+   * 「同时我自己看这个文件」就只能排队在子任务后面 —— 明明能并行的事被串成了一条线。
+   * 拆成「立即返回句柄 + 需要时再领」，等的时机就交回模型自己定了。
+   */
+  out.task_wait = {
+    description:
+      '领取后台子任务的结论。派活工具（agent-*）会立即返回一个 taskId；子任务跑完后，结论由这个工具交回。' +
+      '**收尾前必须把派出去的活都领回来**。\n' +
+      '子任务还在跑时最多等 1 分钟：超时会返回「还在跑」，你可以先做别的、过一会儿再领，或者自己把这件事做完。',
+    inputSchema: z.object({
+      taskId: z.string().describe('派活时返回的 taskId（照抄，不要改）')
+    }),
+    execute: async (input: { taskId?: string }): Promise<string> => {
+      const taskId = (input?.taskId ?? '').trim()
+      const entry = tasks.get(taskId)
+      if (!entry) {
+        const alive = [...tasks.values()].filter((t) => !t.isFinished())
+        return alive.length
+          ? `没有这个 taskId。当前在跑的派活：${alive.map((t) => `${t.id}（${t.name}）`).join('、')}。`
+          : '没有这个 taskId。当前没有在跑的派活 —— 派活工具会返回它的 taskId，照抄过来。'
+      }
+      const result = await waitSettled(entry)
+      if (!result) {
+        return (
+          `「${entry.name}」还在跑（已等 ${Math.round(WAIT_SLICE_MS / 1000)} 秒）。` +
+          `先做别的，过一会儿再 task_wait（taskId: ${entry.id}）；也可以自己把这件事做完。`
+        )
+      }
+      entry.claimed = true
+      return result.text
+    }
+  }
+
+  /**
+   * 父轮收尾：还在跑的子任务没人领了，掐掉。
+   *
+   * 不掐的话，子 run 会继续烧 token、`subagent-end` 发往一个已经关掉的事件通道，
+   * 派活卡在界面上永远转圈。掐掉是诚实的：让它落地成 `aborted`，用户看得见。
+   * abort 之后**短暂等**它们把 `subagent-end` 发出来（见 `SETTLE_WAIT_MS`），
+   * 但不为这一帧拖住整轮收尾。
+   */
+  let settledOnce = false
+  const settle = async (): Promise<void> => {
+    // 幂等：`agent.ts` 的收尾路径不止一条（正常结束 / 出错 / 重试），重复调只做一次
+    if (settledOnce) return
+    settledOnce = true
+    const pending = [...tasks.values()].filter((t) => !t.isFinished())
+    for (const t of pending) t.abort()
+    if (pending.length > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([
+        Promise.all(pending.map((t) => t.settled)).catch(() => undefined),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, SETTLE_WAIT_MS)
+        })
+      ])
+      if (timer) clearTimeout(timer)
+    }
+    /**
+     * 跑完了却没被领走 = 结论白跑一趟（模型派完没 task_wait 就收尾了）。
+     * 静默丢掉会变成「花了钱什么都没有」，而且没人查得出来 —— 至少留一行日志。
+     */
+    const lost = [...tasks.values()].filter((t) => t.isFinished() && !t.claimed)
+    if (lost.length > 0) {
+      console.warn(
+        `[subagent] 本轮结束时这些派活的结论没被领走（模型没 task_wait）：${lost
+          .map((t) => `${t.name}(${t.id})`)
+          .join('、')}`
+      )
+    }
+  }
+
+  return { tools: out, settle }
 }

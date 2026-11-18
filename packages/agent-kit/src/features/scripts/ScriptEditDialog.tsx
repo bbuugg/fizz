@@ -176,8 +176,9 @@ export function ScriptEditDialog({
         </DialogHeader>
 
         {/* 中段自己滚：窗口矮的时候（手机上横屏尤其明显）至少能滚到编辑器底部，
-            而不是被 `overflow-hidden` 把脚注一起裁掉 */}
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+            而不是被 `overflow-hidden` 把脚注一起裁掉。
+            `-mr-4` 抵消 `DialogContent` 的 `p-4`，滚动条贴到弹窗右沿。 */}
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1 -mr-4">
           <div>
             <div className="mb-1 text-xs text-muted-foreground">名称</div>
             <Input

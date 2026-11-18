@@ -286,6 +286,15 @@ async function processFire(
     configId: target.configId,
     ...(target.modelId ? { modelId: target.modelId } : {}),
     /**
+     * 思考强度跟着模板走：与手动会话同一个字段、同一套语义（`chat-turn` 每轮读会话上
+     * 这一档）。模板没写 = 跟随模型。外部 Agent 不读它（它自己的思考档归 agent），
+     * 表单那边也不会给 ACP 写这个字段 —— 这里再按后端挡一次，免得脏数据把内置那档
+     * 带到 ACP 会话上。
+     */
+    ...(target.backend === 'builtin' && trigger.template.reasoningEffort
+      ? { reasoningEffort: trigger.template.reasoningEffort }
+      : {}),
+    /**
      * ACP 会话的权限答复策略：只有「完全访问」才自动放行 agent 发来的权限请求 ——
      * 无人值守时没人能点那张卡，`confirm` 会一路等到 10 分钟超时再拒绝（见上面的警告）。
      * 内置模型（内置）没有这个字段，它的等价物是本轮传下去的 `permissionMode`。

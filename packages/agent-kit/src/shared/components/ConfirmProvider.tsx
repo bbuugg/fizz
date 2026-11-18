@@ -1,7 +1,8 @@
 "use client";
 
 /**
- * 命令式确认弹窗：`useConfirm()` 拿到一个「弹一个 AlertDialog 并等答复」的函数。
+ * 命令式确认弹窗：`useConfirm()` 拿到一个「弹一个 AlertDialog 并等答复」的函数，
+ * `useChoose()` 是它的**多选一**版本（可以给三颗以上的按钮）。
  *
  * ## 为什么要有它（而不是继续写声明式弹窗）
  *
@@ -10,17 +11,25 @@
  * 这用不了声明式的 `open/onCancel/onConfirm`（那个要求调用方把自己的渲染挂进 JSX）。
  * 设置页那份状态驱动的 `ConfirmDeleteDialog` 继续保留，不动。
  *
+ * ## 为什么还需要多选一
+ *
+ * 关一个**正在生成**的对话标签，答案不止「是 / 否」：
+ * 「仅关闭标签（这一轮在后台继续）」「取消」「停止并关闭」是三件不同的事。
+ * 硬塞进 boolean 只能二选一，用户要么被迫停掉一轮，要么根本关不掉。
+ *
+ * 两者共用同一套队列与同一份渲染：`confirm()` 只是把二元问题包成 `choose()` 的两颗按钮
+ * （取消 = `ghost`，确认 = `default` / `destructive`），所以外观与既有调用点**逐像素一致**。
+ *
  * ## 一个在显示 + 队列
  *
  * 批量关闭是**逐个顺序确认**（见 `tab-close.ts` 纪律 2）：第二、第三个请求要排在后面，
- * 不能顶掉正在显示的那个。所以 confirm() 只入队，队首渲染。
+ * 不能顶掉正在显示的那个。所以 confirm() / choose() 只入队，队首渲染。
  *
- * ## 为什么 Action 要 preventDefault
+ * ## 为什么按钮不走 Action / Cancel
  *
- * Radix 的 `AlertDialogAction` 点完会**自动关闭**弹窗，于是走 `onOpenChange(false)`；
- * 如果不拦，这个「关闭」会被我们当成用户点了取消 —— 此时如果队里还有下一个请求，
- * 就会**把下一个误判成取消**。所以 Action 上 `e.preventDefault()` 阻止自动关闭，
- * 关不关由我们自己的受控 `open` 说（`setCurrent` 决定）。
+ * 多选一可能有三颗，`AlertDialogAction` / `Cancel` 只覆盖「确认 / 取消」两种语义
+ * （且 Action 点完会自动关闭）。这里统一用 `Button` + 自己的收口（`close()`），
+ * 关不关由受控的 `open` 说 —— 顺带避开了「Action 自动关闭被误判成取消」那个老坑。
  */
 import {
   createContext,
@@ -32,14 +41,13 @@ import {
 } from 'react'
 import {
   AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle
 } from '@fizz/ui/alert-dialog'
+import { Button } from '@fizz/ui/button'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 
 export interface ConfirmOptions {
@@ -57,14 +65,51 @@ export interface ConfirmOptions {
 
 export type ConfirmFn = (options: ConfirmOptions) => Promise<boolean>
 
-interface PendingConfirm {
-  options: ConfirmOptions
-  resolve: (ok: boolean) => void
+/** 多选一里的一颗按钮 */
+export interface ChooseAction<T extends string> {
+  value: T
+  label: string
+  /**
+   * 与 `Button` 的变体同名：`destructive` = 危险操作（停止 / 删除），
+   * `outline` = 次要动作（另选一条路），`ghost` = 取消。
+   */
+  variant?: 'default' | 'destructive' | 'outline' | 'ghost'
+}
+
+export interface ChooseOptions<T extends string> {
+  title: string
+  description?: ReactNode
+  /**
+   * 按**从左到右**的顺序给（与 `AlertDialogFooter` 的排布一致：数组最后一颗靠右，
+   * 也就是主操作的位置）。
+   */
+  actions: ChooseAction<T>[]
+  /** Esc / 点遮罩 / 关掉弹窗时的答复（应当落在 `actions` 的某个 `value` 上） */
+  cancelValue: T
+}
+
+export type ChooseFn = <T extends string>(options: ChooseOptions<T>) => Promise<T>
+
+interface PendingChoice {
+  options: ChooseOptions<string>
+  resolve: (value: string) => void
   /** 已答复（防同一次弹窗被 Esc + 按钮两条路径重复收口） */
   settled: boolean
 }
 
-const ConfirmContext = createContext<ConfirmFn | null>(null)
+const ChooseContext = createContext<ChooseFn | null>(null)
+
+/**
+ * 取命令式多选一函数：`const choose = useChoose()`，调用
+ * `await choose({ title, actions, cancelValue })` 拿到被点那颗的 `value`。
+ *
+ * 必须在 `<ConfirmProvider>` 内使用（`app/app-shell.tsx` 已挂载）。
+ */
+export function useChoose(): ChooseFn {
+  const fn = useContext(ChooseContext)
+  if (!fn) throw new Error('useChoose 必须在 <ConfirmProvider> 内使用')
+  return fn
+}
 
 /**
  * 取命令式确认函数：`const confirm = useConfirm()`，调用 `await confirm({...})`
@@ -73,32 +118,57 @@ const ConfirmContext = createContext<ConfirmFn | null>(null)
  * 必须在 `<ConfirmProvider>` 内使用（`app/app-shell.tsx` 已挂载）。
  */
 export function useConfirm(): ConfirmFn {
-  const fn = useContext(ConfirmContext)
-  if (!fn) throw new Error('useConfirm 必须在 <ConfirmProvider> 内使用')
-  return fn
+  const choose = useChoose()
+  const t = useT()
+  return useCallback<ConfirmFn>(
+    (options) =>
+      choose({
+        title: options.title,
+        ...(options.description !== undefined ? { description: options.description } : {}),
+        cancelValue: 'cancel',
+        actions: [
+          // 取消走 ghost、确认走 default / destructive —— 与 `AlertDialogCancel` /
+          // `AlertDialogAction` 的默认变体逐字对齐，老调用点外观不变
+          { value: 'cancel', label: options.cancelLabel ?? t('取消'), variant: 'ghost' },
+          {
+            value: 'ok',
+            label: options.confirmLabel ?? t('确定'),
+            variant: options.destructive ? 'destructive' : 'default'
+          }
+        ]
+      }).then((value) => value === 'ok'),
+    [choose, t]
+  )
 }
 
 export function ConfirmProvider({ children }: { children: ReactNode }) {
-  const t = useT()
-  const [current, setCurrent] = useState<PendingConfirm | null>(null)
+  const [current, setCurrent] = useState<PendingChoice | null>(null)
   /** 待显示队列（`current` 恒等于队首） */
-  const queueRef = useRef<PendingConfirm[]>([])
+  const queueRef = useRef<PendingChoice[]>([])
   /** 退场动画期间仍要渲染内容 —— 保留最后一份 options */
-  const lastOptionsRef = useRef<ConfirmOptions | null>(null)
+  const lastOptionsRef = useRef<ChooseOptions<string> | null>(null)
 
-  const confirm = useCallback<ConfirmFn>((options) => {
-    return new Promise<boolean>((resolve) => {
-      const item: PendingConfirm = { options, resolve, settled: false }
+  /**
+   * 队列内部一律按 `string` 收口（同一个弹窗可能来自不同的泛型实例），
+   * 泛型只在这一层把返回值类型还回去 —— 调用方拿到的仍是自己的字面量联合。
+   */
+  const choose = useCallback(<T extends string,>(options: ChooseOptions<T>): Promise<T> => {
+    return new Promise<T>((resolve) => {
+      const item: PendingChoice = {
+        options: options as ChooseOptions<string>,
+        resolve: (value) => resolve(value as T),
+        settled: false
+      }
       queueRef.current.push(item)
       setCurrent((cur) => cur ?? item)
     })
   }, [])
 
   /** 收口队首：答复、出队、显示下一个（没有就收起来） */
-  const close = useCallback((item: PendingConfirm, ok: boolean) => {
+  const close = useCallback((item: PendingChoice, value: string) => {
     if (item.settled) return
     item.settled = true
-    item.resolve(ok)
+    item.resolve(value)
     const idx = queueRef.current.indexOf(item)
     if (idx >= 0) queueRef.current.splice(idx, 1)
     setCurrent(queueRef.current[0] ?? null)
@@ -108,13 +178,13 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
   const options = current?.options ?? lastOptionsRef.current
 
   return (
-    <ConfirmContext.Provider value={confirm}>
+    <ChooseContext.Provider value={choose}>
       {children}
       <AlertDialog
         open={current !== null}
         onOpenChange={(next) => {
-          // 只有「关掉」（Esc / 点遮罩 / Cancel）才收口；Action 已 preventDefault，不会走到这
-          if (!next && current) close(current, false)
+          // 只有「关掉」（Esc / 点遮罩）才收口；按钮是普通 Button，不会触发这一支
+          if (!next && current) close(current, current.options.cancelValue)
         }}
       >
         <AlertDialogContent>
@@ -125,20 +195,20 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
             )}
           </AlertDialogHeader>
           <AlertDialogFooter>
-            {/* 默认文案也要走翻译：英文界面下这里以前回落成硬编码中文（用户反馈） */}
-            <AlertDialogCancel>{options?.cancelLabel ?? t('取消')}</AlertDialogCancel>
-            <AlertDialogAction
-              variant={options?.destructive ? 'destructive' : 'default'}
-              onClick={(e) => {
-                e.preventDefault()
-                if (current) close(current, true)
-              }}
-            >
-              {options?.confirmLabel ?? t('确定')}
-            </AlertDialogAction>
+            {(options?.actions ?? []).map((action) => (
+              <Button
+                key={action.value}
+                variant={action.variant ?? 'outline'}
+                onClick={() => {
+                  if (current) close(current, action.value)
+                }}
+              >
+                {action.label}
+              </Button>
+            ))}
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </ConfirmContext.Provider>
+    </ChooseContext.Provider>
   )
 }

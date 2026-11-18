@@ -290,8 +290,9 @@ export function QuickActionsDialog({
         >
           <DialogTitle>{tr('快捷功能')}</DialogTitle>
 
-          {/* 列表区：`min-h-0 flex-1` + 内部滚动（见文件头「排版」） */}
-          <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pt-1">
+          {/* 列表区：`min-h-0 flex-1` + 内部滚动（见文件头「排版」）。
+              `-mr-4` 抵消 `DialogContent` 的 `p-4`，滚动条贴到弹窗右沿。 */}
+          <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pt-1 pr-1 -mr-4">
             {rows.length === 0 ? (
               <Empty className="border border-border/70 py-8">
                 <EmptyHeader>
@@ -384,7 +385,10 @@ export function QuickActionsDialog({
 
           {draft && (
             <>
-              <div className="dialog-scroll-area no-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pt-1">
+              {/* `-mr-4` 抵消 `DialogContent` 的 `p-4`，滚动条贴到弹窗右沿。
+                  原来挂 `no-scrollbar` 把条整个藏了（那时条在 p-4 内侧、像多一条轨道）——
+                  贴边之后没必要藏了。 */}
+              <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pt-1 pr-1 -mr-4">
                 <div>
                   <div className="mb-1 text-xs text-muted-foreground">{tr('类型')}</div>
                   {/* 类型用 shadcn 默认变体（灰底胶囊）。Tabs 不挂 TabsContent ——

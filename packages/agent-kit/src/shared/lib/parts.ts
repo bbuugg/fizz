@@ -475,6 +475,14 @@ export function isStoppableToolName(toolName: string): boolean {
  */
 export function isStoppableToolRunning(part: AgentMessagePart): boolean {
   if (part.type !== 'tool-call' || !isStoppableToolName(part.toolName)) return false
+  /**
+   * 派活是**非阻塞**的：`agent-<id>` 的 tool-result 只是一个 taskId，派出去就回来了。
+   * 按「有没有输出」判会得出「早就跑完了」——停止钮在子任务真正跑着的那几分钟里不出现，
+   * 用户想掐就只剩「中止整轮」。这里只能看子任务自己的状态。
+   */
+  if (part.toolName.startsWith('agent-') && part.delegation) {
+    return part.delegation.status === 'running'
+  }
   const { hasOutput, streamingInput } = toolState(part)
   return !hasOutput && !streamingInput
 }
@@ -552,7 +560,9 @@ export const TOOL_LABELS: Record<string, string> = {
   // packages/agent/src/subagents.ts 的 SUBAGENT_SPECS。不用图标区分主次，
   // 一张卡 + 「子任务 · xxx」的标题已经够读。
   'agent-explorer': '子任务 · 侦察',
-  'agent-reviewer': '子任务 · 审查'
+  'agent-reviewer': '子任务 · 审查',
+  // 领结论：派活卡只负责「派出 + 过程」，子任务的结论落在这张卡里
+  task_wait: '领取子任务结论'
 }
 
 /** ACP agent 不给 name 时的占位工具名（与 @fizz/acp 的 acp.ts 里 ACP_UNNAMED_TOOL 一致） */
