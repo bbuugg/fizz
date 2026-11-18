@@ -735,10 +735,10 @@ export function ModelsTab({ app }: { app: AgentApp }) {
             }}
           >
             {/* 可滚动的内容区：字段多了在这里滚，标题 / 错误 / 按钮都不动。
-                `-mr-4` 抵消 `DialogContent` 的 `p-4`：滚动容器右缘贴到弹窗内边缘，
-                滚动条才在最右边（否则右边还留着 16px 空白）。内容与条之间靠 `pr-1` 留缝。 */}
+                `data-dialog-scroll`：滚动条贴弹窗右沿 + 左右留白恒为 16px（含没条时，
+                见 styles.css 里那条规则）。 */}
             {/* 字段间距 16px：label + 控件成组，组与组之间留白拉开层级（原来 12px 太挤） */}
-            <div className="min-h-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto pr-1 -mr-4">
+            <div data-dialog-scroll="" className="min-h-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto">
               <div className="space-y-1.5">
                 <span className="text-xs text-muted-foreground">{tr('模型 id')}</span>
                 <Input
@@ -958,8 +958,8 @@ export function ModelsTab({ app }: { app: AgentApp }) {
               </div>
 
               {/* 唯一允许滚动的容器：`min-h-0` 让它能缩到比内容更小，滚动条才会落在列表上。
-                  `-mr-4` 抵消 `DialogContent` 的 `p-4`，滚动条贴到弹窗右沿。 */}
-              <div className="min-h-0 flex-1 space-y-0.5 overflow-x-hidden overflow-y-auto pr-1 -mr-4">
+                  `data-dialog-scroll`：滚动条贴弹窗右沿，且没条时右侧也留满 16px（见 styles.css）。 */}
+              <div data-dialog-scroll="" className="min-h-0 flex-1 space-y-0.5 overflow-x-hidden overflow-y-auto">
                 {visible.map((id) => {
                   const already = (pickingConfig?.models ?? []).some((model) => model.id === id)
                   // 已有项默认勾上，取消勾选只是记进 `unpicked`（保存时才真的移出）

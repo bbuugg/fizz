@@ -309,8 +309,10 @@ export function HostDialog({
           {/* min-w-0 别删：本层是 flex 子项，默认 `min-width: auto`，
               而 Textarea 带 `field-sizing-content`（按内容定尺寸）—— 私钥里的一行长文本
               会把这一列顶得比弹窗还宽，输入框直接溢出去 */}
+          {/* `data-dialog-scroll`：滚动条贴弹窗右沿，且没条时右侧也留满 16px（见 styles.css） */}
           <form
-            className="min-w-0 flex-1 space-y-3 overflow-y-auto py-3 pr-1 -mr-4"
+            data-dialog-scroll=""
+            className="min-w-0 flex-1 space-y-3 overflow-y-auto py-3"
             onSubmit={(e) => {
               e.preventDefault()
               void save()

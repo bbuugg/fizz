@@ -46,8 +46,9 @@ export function PluginsDialog({
           下一轮对话生效，上传源重开附件菜单即生效。
         </DialogDescription>
 
-        {/* `-mr-4` 抵消 `DialogContent` 的 `p-4`，滚动条贴到弹窗右沿（原来挂 `no-scrollbar` 藏掉了） */}
-        <div className="min-h-0 flex-1 overflow-y-auto pt-1 pr-1 -mr-4">
+        {/* `data-dialog-scroll`：滚动条贴弹窗右沿 + 没条时右侧也留满 16px（见 styles.css）。
+            原来挂 `no-scrollbar` 把条整个藏了（那时条在 p-4 内侧、像多一条轨道）。 */}
+        <div data-dialog-scroll="" className="min-h-0 flex-1 overflow-y-auto pt-1">
           {workspaceId && (
             <PluginsPanel app={app} scope="workspace" workspaceId={workspaceId} />
           )}

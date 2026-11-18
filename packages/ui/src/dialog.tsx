@@ -38,12 +38,12 @@ function DialogOverlay({
     <DialogPrimitive.Overlay
       data-slot="dialog-overlay"
       className={cn(
-        // 遮罩**从常驻顶栏下沿开始**（`--sidebar-drawer-top` = 安全区 + 顶栏高）：
-        // `fixed inset-0` 会把 desktop 自绘标题栏、web 的 `WebTitleBar`、手机的
-        // `MobileAppBar` 一起蒙住 —— 桌面端那条还是窗口控制按钮所在的位置，蒙住之后
-        // 视觉上窗口按钮「没了」，点下去也只会命中遮罩。手机端这个 token 覆盖成
-        // `--safe-area-inset-top`，等于仍是整屏遮罩（与抽屉那边同一口径，见 tokens.css）。
-        "fixed inset-x-0 bottom-0 top-[var(--sidebar-drawer-top)] isolate z-50 bg-black/30 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+        // 上沿读 `--overlay-top`，**不写死 `inset-0`**：desktop 那条自绘标题栏右端是
+        // 窗口的最小化 / 最大化 / 关闭，且整条是 `app-drag`（Windows / Linux 下是系统级
+        // caption 命中，遮罩盖上去 mousedown 会被窗口过程拿去拖窗口），蒙住就等于把窗口
+        // 按钮收走了；web 那边这个 token 覆盖成 0，整屏压暗；手机 = 安全区，也是整屏。
+        // 各端取值在 tokens.css / 各端 styles.css 里，组件一行判断都不用加。
+        "fixed inset-x-0 bottom-0 top-[var(--overlay-top)] isolate z-50 bg-black/30 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
         className
       )}
       {...props}

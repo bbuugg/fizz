@@ -29,6 +29,27 @@
 }
 
 /*
+ * ════ 模态遮罩铺满整屏（web 专属） ════
+ *
+ * `--overlay-top` 是 Dialog / AlertDialog / Sheet / Drawer 那层遮罩的上沿（定义见
+ * `@fizz/ui-tokens` 的 tokens.css，默认 = 安全区 + 顶栏高）。desktop **必须**让开那
+ * 32px：自绘标题栏右端是窗口的最小化 / 最大化 / 关闭，整条还会是 `app-drag`
+ * （Windows / Linux 下是系统级 caption 命中，遮罩一盖上去 mousedown 直接被窗口过程
+ * 拿去拖窗口，跟 DOM 层级没关系）。所以那边吃默认值，这里一行都不动。
+ *
+ * web 没有窗口按钮、没有拖拽区，`WebTitleBar` 只是页面内的一条 `h-8` header ——
+ * 弹窗打开时它跟着一起压暗才是一整块，露一条亮边反而像「没盖住」。
+ *
+ * ⚠️ 必须**未分层**（不塞进 `@layer base`）：tokens.css 的 `:root` 就是未分层的，
+ * 分层样式压不过它，写进去会静默失效。
+ * ⚠️ desktop / mobile / 扩展都不覆盖：mobile 的 `--sidebar-drawer-top` 已是安全区、
+ * 扩展直接 import 手机版样式，两者都自动是整屏。
+ */
+:root {
+  --overlay-top: 0px;
+}
+
+/*
  * ════ 手机端整体放大：只抬根字号 ════
  *
  * 手机上一个字都不改地照搬桌面排版 = 12px（`text-xs`，541 处）与 10~11px 的小标签挤在
@@ -208,6 +229,29 @@ body {
      * 不需要像消息列那样两边都留。
      */
     [data-git-scroll] {
+      scrollbar-gutter: stable;
+    }
+
+    /*
+     * 弹窗里**自己滚**的那一段（标题 / 底部按钮固定，只有中间滚）：
+     * 滚动条贴到弹窗右沿，且**有没有条时左右留白都是 16px**。
+     *
+     * 三件事必须一起做，少一件就露馅：
+     * - `margin-right: -1rem` 抵消 `DialogContent` 的 `p-4`，容器右缘贴到弹窗边，
+     *   那 10px 的条才画在弹窗最右侧（否则条缩在 16px 内边距里，像多了一条轨道）；
+     * - `padding-right: 0.375rem` = 16px − 10px，文字右缘正好落在 16px 上，与左侧对称；
+     * - `scrollbar-gutter: stable` 让**没有条**时也占住那 10px。少了它，短内容（不滚 ⇒
+     *   没有条）文字右缘就只剩 6px，左边 16 / 右边 6 一眼就歪 —— 用户报的「没有滚动条
+     *   时左右边距不一致」；顺带也治了「条一出现内容横缩 10px」的跳动。
+     *
+     * ⚠️ 挂在**这条 media** 里而不是写死在类名上：判据与上面 `::-webkit-scrollbar
+     * { width: 10px }` 同源。窄视口 / 触屏根本不画条（另一条 media 里 `display: none`），
+     * 那时 `-1rem` 只会让内容白贴边、`stable` 也留不住 0 宽的空槽 —— 这些弹窗在手机上
+     * 就该老老实实吃 `DialogContent` 的 `p-4`，左右各 16px。
+     */
+    [data-dialog-scroll] {
+      margin-right: -1rem;
+      padding-right: 0.375rem;
       scrollbar-gutter: stable;
     }
   }

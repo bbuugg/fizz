@@ -148,15 +148,31 @@
    * `apps/mobile` 覆盖成 `--safe-area-inset-top`：那边的抽屉连顶栏一起盖住（推挤式
    * 抽屉从整屏左边滑出，头顶只剩半条顶栏反而碎）。
    *
-   * ⚠️ 抽屉与遮罩**必须读同一个 token**：各写一份就会出现「抽屉盖到顶栏、遮罩却从
-   * 顶栏下面开始」，顶栏右上那颗按钮点得到却不收起抽屉，等于露出半截可点的边。
-   *
-   * 同一个 token 也是**所有模态遮罩的上沿**（`packages/ui` 的 Dialog / AlertDialog /
-   * Sheet / Drawer 的 `*Overlay` 都写 `top-[var(--sidebar-drawer-top)]`）：遮罩盖住
-   * 常驻顶栏时，桌面端连窗口的最小化 / 关闭都看不见、点不到。手机端它等于安全区，
-   * 那边仍是整屏遮罩 —— 各端的取舍已经写在 token 里，组件一行判断都不用加。
+   * ⚠️ 抽屉与**它那层遮罩**必须读同一个 token：各写一份就会出现「抽屉盖到顶栏、
+   * 遮罩却从顶栏下面开始」，顶栏右上那颗按钮点得到却不收起抽屉，等于露出半截可点的边。
+   * （移动抽屉的遮罩在 `ActivitySidebar` 里，读的就是这个值；模态遮罩读下面的
+   * `--overlay-top`。）
    */
   --sidebar-drawer-top: calc(var(--safe-area-inset-top, 0px) + var(--app-titlebar-height));
+  /*
+   * **模态遮罩**的上沿（`packages/ui` 的 Dialog / AlertDialog / Sheet / Drawer 的
+   * `*Overlay` 都写 `top-[var(--overlay-top)]`）。
+   *
+   * 默认继承上面的抽屉上沿 = 顶栏下沿，因为 desktop 那条自绘标题栏右端是窗口的最小化 /
+   * 最大化 / 关闭：遮罩盖上去，按钮视觉上「没了」，点下去只会命中遮罩。更糟的是
+   * Windows / Linux 的 `app-drag` 是**系统级 caption 命中**（窗口过程对那条矩形返回
+   * `HTCAPTION`）—— 那 32px 里的 mousedown 会被拿去拖窗口，**与 DOM 的 z 序无关**，
+   * 所以这条边只能靠几何让开，抬 z-index 治不了。
+   *
+   * `apps/web` 覆盖成 `0px`：那边没有窗口按钮、没有拖拽区，`WebTitleBar` 只是页面内的
+   * 一条 header，弹窗打开时它跟着一起压暗才是一整块。手机端跟着 `--sidebar-drawer-top`
+   * 走（= 安全区），仍是整屏。
+   *
+   * ⚠️ 不直接改 `--sidebar-drawer-top`：那个值还管抽屉 / 侧边面板的上沿，web 把抽屉也
+   * 顶到 0 就会盖住顶栏里的品牌与侧栏开关（手机版敢这么干是因为它在抽屉里补了一行
+   * `AppBrand`）。**两个问题两个值，别混。**
+   */
+  --overlay-top: var(--sidebar-drawer-top);
 }
 
 /*

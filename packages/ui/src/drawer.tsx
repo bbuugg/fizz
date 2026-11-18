@@ -34,9 +34,9 @@ function DrawerOverlay({
     <DrawerPrimitive.Overlay
       data-slot="drawer-overlay"
       className={cn(
-        // 与 `DialogOverlay` 同一条：遮罩从常驻顶栏下沿开始（手机端 token 覆盖成安全区，
-        // 仍是整屏遮罩），别把标题栏 / 窗口按钮蒙住
-        "fixed inset-x-0 bottom-0 top-[var(--sidebar-drawer-top)] z-50 bg-black/10 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+        // 与 `DialogOverlay` 同一条：上沿读 `--overlay-top`（desktop 让开窗口按钮，
+        // web 覆盖成 0 = 整屏，手机 = 安全区），见 tokens.css
+        "fixed inset-x-0 bottom-0 top-[var(--overlay-top)] z-50 bg-black/10 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
         className
       )}
       {...props}

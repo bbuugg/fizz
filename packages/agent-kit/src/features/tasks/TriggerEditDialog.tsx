@@ -170,8 +170,8 @@ export function TriggerEditDialog({
         </DialogHeader>
 
         {/* 唯一的滚动区：表单字段（footer 在它外面，不滚）。
-            `-mr-4` 抵消 `DialogContent` 的 `p-4`，滚动条贴到弹窗右沿。 */}
-        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-1 -mr-4">
+            `data-dialog-scroll`：滚动条贴弹窗右沿，且没条时右侧也留满 16px（见 styles.css）。 */}
+        <div data-dialog-scroll="" className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
           <TriggerForm
             app={app}
             triggers={triggers}
