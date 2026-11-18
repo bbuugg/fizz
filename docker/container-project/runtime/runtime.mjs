@@ -4,11 +4,11 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createDeepSeek } from "@ai-sdk/deepseek";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { basename, delimiter, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
 import { z } from "zod";
 import { accessSync, constants, existsSync, lstatSync, promises, readdirSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, delimiter, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { simpleGit } from "simple-git";
 import { rm } from "node:fs/promises";
@@ -127,6 +127,15 @@ var CONTAINER_AGENT_TOOL_KEYS = [
 * 请重建容器」，而不是让帧静默对不上。**改容器内 `/runs` 的请求体或帧形状就把它 +1。**
 */
 var CONTAINER_PROTOCOL_VERSION = 1;
+/**
+* 派活工具（`agent-<id>`）交回父模型的**句柄**开头。
+*
+* 派活是非阻塞的：工具结果只是「已派出 + taskId + 结论靠 `task_wait` 领」，结论**不在**
+* 这一格里。界面据此判断「这一格的输出不是结论」，别把一串 taskId 当子任务结论渲染。
+*
+* 常量放契约层是因为两端都要认它：`packages/agent` 造这句话，界面判断这句话。
+*/
+var DELEGATION_HANDLE_PREFIX = "已派出「";
 /**
 * 给 UI 用的展示元数据（名称 + 一句话说明）。
 *
@@ -1308,11 +1317,25 @@ function findCutPoint(history, startIndex, endIndex, keepRecentTokens, tokens) {
 	let accumulated = 0;
 	let cutIndex = startIndex;
 	for (let i = endIndex - 1; i >= startIndex; i--) {
-		accumulated += tokens[i] ?? 0;
-		if (accumulated >= keepRecentTokens) {
-			cutIndex = i;
+		const own = tokens[i] ?? 0;
+		const next = accumulated + own;
+		if (next >= keepRecentTokens) {
+			/**
+			* 跨线的那条**自己就吃满保留预算**时，切点挪到它之后（一起摘要掉）。
+			*
+			* 早先一律 `cutIndex = i`（跨线那条留在保留区）。平时没差别（一条消息几百 token），
+			* 但一条消息本身就有保留区那么大时（读了一个大文件 / 一条长输出），它会被**整条**
+			* 留下 —— 压完几乎没变小 → 下一轮立刻又超阈值 → 连压好几次才落地（用户实测：
+			* 512k 窗口连压三次才回到 20k）。摘要掉它，这一次才算真的变小了。
+			*
+			* 只在 `own >= keepRecentTokens` 时才挪：否则「切在 user 消息上」的干净边界会被
+			* 推到回合中间，白白多一次 turn-prefix 摘要（两个模型调用）。
+			* 兜底 `endIndex - 1`：至少留最后一条，保留区不能是空的。
+			*/
+			cutIndex = own >= keepRecentTokens ? Math.min(i + 1, endIndex - 1) : i;
 			break;
 		}
+		accumulated = next;
 	}
 	const startsTurn = history[cutIndex]?.role === "user";
 	let turnStartIndex = -1;
@@ -1449,15 +1472,26 @@ async function compactHistory(history, opts) {
 	* 助手消息」，而那条 usage 可能早于检查点（就是 `usageIsStale` 要挡的东西），
 	* 一捞回来就等于把陈旧值又算进去了。这里只求和 `tokens`（已经按条算好），不做二次推断。
 	*/
-	let assembledTokens = baseTokens + (hasCheckpoint ? estimateTokens(cached.text) : 0);
-	for (let i = checkpointIndex; i < history.length; i += 1) assembledTokens += tokens[i] ?? 0;
+	let assembledTokens = baseTokens;
+	/** 保留区里**单条**最大的一条（含摘要正文）：判「真值是不是这份数组测出来的」用 */
+	let largestKeptTokens = 0;
+	if (hasCheckpoint) {
+		largestKeptTokens = estimateTokens(cached.text);
+		assembledTokens += largestKeptTokens;
+	}
+	for (let i = checkpointIndex; i < history.length; i += 1) {
+		const own = tokens[i] ?? 0;
+		assembledTokens += own;
+		if (own > largestKeptTokens) largestKeptTokens = own;
+	}
 	/** 真值之后新增的部分（通常就是本轮那条 user 消息） */
 	let trailingTokens = 0;
 	for (let i = history.length - 1; i >= 0; i -= 1) {
 		if (history[i] === lastAssistant) break;
 		trailingTokens += tokens[i] ?? 0;
 	}
-	const beforeTokens = contextUsed(realUsage + trailingTokens, assembledTokens);
+	const realWithTail = realUsage + trailingTokens;
+	const beforeTokens = realUsage > 0 && largestKeptTokens > realWithTail && !shouldCompact(realWithTail, opts.contextWindow, settings) && shouldCompact(assembledTokens, opts.contextWindow, settings) ? assembledTokens : contextUsed(realWithTail, assembledTokens);
 	const overBudget = shouldCompact(beforeTokens, opts.contextWindow, settings);
 	if (!opts.force && !overBudget) {
 		if (!hasCheckpoint) {
@@ -1495,7 +1529,8 @@ async function compactHistory(history, opts) {
 		skipped: "no-budget"
 	};
 	const cut = findCutPoint(history, checkpointIndex, history.length, settings.keepRecentTokens, tokens);
-	const historyEnd = cut.isSplitTurn ? cut.turnStartIndex : cut.firstKeptIndex;
+	const splitTurn = cut.isSplitTurn && cut.turnStartIndex > checkpointIndex;
+	const historyEnd = splitTurn ? cut.turnStartIndex : cut.firstKeptIndex;
 	if (historyEnd <= checkpointIndex) return hasCheckpoint ? {
 		history: assembled,
 		compressed: null,
@@ -1508,7 +1543,7 @@ async function compactHistory(history, opts) {
 		skipped: "below-keep"
 	};
 	const summarizeSlice = history.slice(checkpointIndex, historyEnd);
-	const turnPrefixSlice = cut.isSplitTurn ? history.slice(cut.turnStartIndex, cut.firstKeptIndex) : [];
+	const turnPrefixSlice = splitTurn ? history.slice(cut.turnStartIndex, cut.firstKeptIndex) : [];
 	const fileOps = createFileOps();
 	extractFileOps(summarizeSlice, fileOps);
 	extractFileOps(turnPrefixSlice, fileOps);
@@ -1530,7 +1565,7 @@ async function compactHistory(history, opts) {
 	}) : void 0;
 	const budget = summaryBudgetTokens(settings.keepRecentTokens);
 	let summary;
-	if (cut.isSplitTurn && turnPrefixSlice.length > 0) summary = `${summarizeSlice.length > 0 ? await generateSummary(await toModelMessages(summarizeSlice), opts.model, cached?.text, opts.signal, opts.customInstructions, checkpointDelta, budget) : cached?.text ?? "No prior history."}\n\n---\n\n**Turn Context (split turn):**\n\n${await generateTurnPrefixSummary(await toModelMessages(turnPrefixSlice), opts.model, opts.signal, turnPrefixDelta)}`;
+	if (splitTurn && turnPrefixSlice.length > 0) summary = `${summarizeSlice.length > 0 ? await generateSummary(await toModelMessages(summarizeSlice), opts.model, cached?.text, opts.signal, opts.customInstructions, checkpointDelta, budget) : cached?.text ?? "No prior history."}\n\n---\n\n**Turn Context (split turn):**\n\n${await generateTurnPrefixSummary(await toModelMessages(turnPrefixSlice), opts.model, opts.signal, turnPrefixDelta)}`;
 	else summary = await generateSummary(await toModelMessages(summarizeSlice), opts.model, cached?.text, opts.signal, opts.customInstructions, checkpointDelta, budget);
 	const text = `${summary}${formatFileOperations(fileOps)}`;
 	const firstKept = history[cut.firstKeptIndex];
@@ -1609,6 +1644,946 @@ function isContextOverflowError(err) {
 	const message = err instanceof Error ? err.message : String(err);
 	return /context[ _-]?length|context[ _-]?window|maximum context|prompt is too long|too many tokens|exceeds the maximum/i.test(message);
 }
+// packages/plugin/src/logger.ts
+var sink = null;
+/** 交给出口；出口自己坏了只吞掉，绝不让日志把业务带崩 */
+function forward(level, path, args) {
+	if (!sink) return;
+	try {
+		sink({
+			level,
+			path,
+			args
+		});
+	} catch {}
+}
+var Logger = class Logger {
+	label;
+	parent;
+	constructor(label, parent) {
+		this.label = label;
+		this.parent = parent;
+	}
+	/** 完整路径，如 `app:turn:builtin-file-tools` */
+	path() {
+		return this.parent ? `${this.parent.path()}:${this.label}` : this.label;
+	}
+	/** 只进 console：排查用的细粒度流水，不该刷进界面日志面板 */
+	debug(...args) {
+		console.debug(`[plugin:${this.path()}]`, ...args);
+	}
+	info(...args) {
+		console.info(`[plugin:${this.path()}]`, ...args);
+		forward("info", this.path(), args);
+	}
+	warn(...args) {
+		console.warn(`[plugin:${this.path()}]`, ...args);
+		forward("warn", this.path(), args);
+	}
+	error(...args) {
+		console.error(`[plugin:${this.path()}]`, ...args);
+		forward("error", this.path(), args);
+	}
+	/** 派生子 logger（名字追加一层），如 `ctx.logger.extend('mcp')` */
+	extend(label) {
+		return new Logger(label, this);
+	}
+};
+// packages/plugin/src/scope.ts
+var CURRENT = null;
+/** 在「CURRENT = ctx」的作用域里跑 `fn`，跑完恢复（支持嵌套） */
+function withContext(ctx, fn) {
+	const prev = CURRENT;
+	CURRENT = ctx;
+	try {
+		return fn();
+	} finally {
+		CURRENT = prev;
+	}
+}
+/**
+* 把 `disposer` 绑到「当前插件 fiber」（有的话）或 `owner` 上，返回幂等的提前回收器。
+*/
+function bindEffect(owner, disposer) {
+	return (CURRENT ?? owner)._pushEffect(disposer);
+}
+// packages/plugin/src/service.ts
+var Service = class {
+	ctx;
+	constructor(ctx) {
+		this.ctx = ctx;
+	}
+	/** 服务名（取自「提供它的 key」由容器负责；这里给个默认，子类可覆盖） */
+	get name() {
+		return this.constructor.name;
+	}
+	/**
+	* 在当前 Context 上登记一个可回收副作用（见 `Context.effect`）。
+	* 返回的 disposer 可手动提前回收（幂等）。
+	*/
+	effect(fn) {
+		return this.ctx.effect(fn);
+	}
+	/**
+	* 把「注册项」的 disposer 绑到发起注册的插件 fiber 上（不在插件里则绑到服务所属 Context）——
+	* 这样 `fork.dispose()` 能回收本插件加的工具 / 提示词段 / UI 声明。
+	*/
+	bind(disposer) {
+		return bindEffect(this.ctx, disposer);
+	}
+};
+// packages/plugin/src/services/events.ts
+/**
+* 事件总线服务：`ctx.events` 的实体。
+*
+* 之所以还要它（而不是只留 `ctx.on` / `ctx.emit`）：插件想「声明依赖事件能力」时可以
+* `inject: ['events']`，也可以在配置里被换掉（测试时给个记录用的假总线）。
+* 行为完全委托给 Context —— 事件沿 Context 树**向上冒泡**（子层注册的监听器先触发，
+* 再到父层），这样 App 层能统一监听所有 turn 的事件。
+*/
+var EventsService = class extends Service {
+	constructor(ctx) {
+		super(ctx);
+	}
+	get name() {
+		return "events";
+	}
+	/** 监听事件；返回 disposer（随 Context 卸载自动回收，无需手动调） */
+	on(name, listener) {
+		return this.ctx.on(name, listener);
+	}
+	/** 一对多广播，不收集返回值 */
+	emit(name, ...args) {
+		this.ctx.emit(name, ...args);
+	}
+	/**
+	* 安全广播：单个监听器抛错只记日志，不中断其余监听器，也不把异常抛回调用方。
+	* 长驻的会话状态钩子用它分发（见 `Context.emitSafe`）。
+	*/
+	emitSafe(name, ...args) {
+		this.ctx.emitSafe(name, ...args);
+	}
+	/**
+	* 拦截型钩子：监听器签名 `(...args, next)`，可读 / 改参数再 `next(...)` 继续，
+	* 或直接返回自己的结果**中断链路**（不再往下走）。
+	*/
+	waterfall(name, args, fallback) {
+		return this.ctx.waterfall(name, args, fallback);
+	}
+	/** 收集型：返回第一个「非 undefined」的监听器结果 */
+	bail(name, ...args) {
+		return this.ctx.bail(name, ...args);
+	}
+};
+// packages/plugin/src/context.ts
+/**
+* Context —— 插件框架的心脏（Cordis 风格的精简实现）。
+*
+* 一个 Context 是：
+* 1. **服务容器**：`get` / `set` / `has`，查找沿 parent 链向上（子能看见父的，父看不见子的）；
+* 2. **effect 作用域**：`effect(fn)` 登记的副作用在卸载时按 **LIFO 逆序回收**；
+* 3. **插件挂载点**：`plugin(p, cfg)` 为每个插件实例造一个**隔离子 Context（fiber）**并 apply，
+*    返回 `Fork`；`fork.dispose()` 回收该插件的一切；
+* 4. **依赖注入**：`inject(deps, cb)`（以及对象插件的 `inject`）在依赖齐全前**推迟**执行，
+*    依赖一旦被 `set` 提供就自动补跑 —— 所以挂载顺序无关紧要；
+* 5. **类型化事件总线**：`on` / `emit` / `waterfall` / `bail`，事件沿 parent 链**向上冒泡**；
+* 6. **生命周期**：`start()`（emit `ready`）/ `dispose()`（先拆子、再 emit `dispose`、最后 LIFO 回收）。
+*
+* 两层上下文用法（本仓库的实际用法）：
+* - **App Context**（长驻）：logger / storage / 插件发现加载器；
+* - `app.isolate('turn:<id>')` 派生的 **Turn Context**：挂 builtin 插件 + 每轮选中的插件，
+*   收尾 `turn.dispose()` —— 新一轮全部重建，互不污染。
+*
+* 隔离语义：`isolate()` 出来的子 Context **自带一套服务表与 effect 作用域**，
+* 但通过 parent 链仍能读到 App 层的长驻服务。这正是「每轮重建」实现的方式。
+*/
+/** 插件实例的运行句柄 */
+var Fork = class {
+	parent;
+	ctx;
+	constructor(parent, ctx) {
+		this.parent = parent;
+		this.ctx = ctx;
+	}
+	get name() {
+		return this.ctx.name;
+	}
+	/** 卸载这个插件（幂等）：回收其 fiber 的一切 effect，并从父的挂起表里摘掉 */
+	dispose() {
+		this.parent._dropPendingFor(this.ctx);
+		return this.ctx.dispose();
+	}
+};
+function isClass(fn) {
+	return /^class[\s{]/.test(Function.prototype.toString.call(fn));
+}
+/** 把三种插件形态归一成对象形态 */
+function normalizePlugin(plugin) {
+	if (typeof plugin === "function") {
+		if (isClass(plugin)) {
+			const Cls = plugin;
+			return {
+				name: plugin.name || "plugin",
+				apply: (ctx, config) => {
+					const inst = new Cls(ctx, config);
+					if (inst && typeof inst.dispose === "function") return () => inst.dispose();
+				}
+			};
+		}
+		const fn = plugin;
+		return {
+			name: fn.name || "plugin",
+			apply: fn
+		};
+	}
+	if (plugin && typeof plugin === "object" && typeof plugin.apply === "function") return plugin;
+	throw new Error("无效的插件：需要函数、类或 { apply } 对象");
+}
+function applyPlugin(ctx, plugin, config) {
+	const result = withContext(ctx, () => plugin.apply(ctx, config));
+	if (typeof result === "function") ctx._pushEffect(result);
+}
+var Context = class Context {
+	parent;
+	name;
+	_services = /* @__PURE__ */ new Map();
+	_effects = [];
+	_listeners = /* @__PURE__ */ new Map();
+	_children = /* @__PURE__ */ new Set();
+	_pending = [];
+	_logger;
+	_events;
+	_disposed = false;
+	constructor(parent = null, name = "root") {
+		this.parent = parent;
+		this.name = name;
+		parent?._children.add(this);
+	}
+	get disposed() {
+		return this._disposed;
+	}
+	/** 树的根（App Context） */
+	get root() {
+		return this.parent ? this.parent.root : this;
+	}
+	has(name) {
+		if (name === "logger" || name === "events") return true;
+		if (this._services.has(name)) return true;
+		return this.parent ? this.parent.has(name) : false;
+	}
+	get(name) {
+		if (name === "logger") return this.logger;
+		if (name === "events") return this.events;
+		if (this._services.has(name)) return this._services.get(name);
+		return this.parent ? this.parent.get(name) : void 0;
+	}
+	/** 提供服务（并登记一条 effect：卸载时自动摘除）；返回提前摘除的 disposer */
+	set(name, value) {
+		this._services.set(name, value);
+		const dispose = bindEffect(this, () => {
+			if (this._services.get(name) === value) this._services.delete(name);
+		});
+		this.root._flushPending();
+		return dispose;
+	}
+	get logger() {
+		if (!this._logger) this._logger = new Logger(this.name, this.parent?.logger);
+		return this._logger;
+	}
+	get events() {
+		if (!this._events) this._events = new EventsService(this);
+		return this._events;
+	}
+	/** 工具注册表（未提供时抛错：说明这轮没建 turn context） */
+	get tools() {
+		const s = this.get("tools");
+		if (!s) throw new Error("tools 服务未提供：请先 ctx.set(\"tools\", new ToolsService(ctx))");
+		return s;
+	}
+	get prompt() {
+		const s = this.get("prompt");
+		if (!s) throw new Error("prompt 服务未提供：请先 ctx.set(\"prompt\", new PromptService(ctx))");
+		return s;
+	}
+	get ui() {
+		const s = this.get("ui");
+		if (!s) throw new Error("ui 服务未提供：请先 ctx.set(\"ui\", new UiService(ctx))");
+		return s;
+	}
+	/**
+	* 模型配置注册表（`ctx.models`）。
+	*
+	* ⚠️ 只有**收集全局模型配置的 context** 才提供它（服务端启动 / 模型列表刷新时建的那份）。
+	* 回合 context 上也给了一份：插件顶层 `inject: ['models']` 不会被推迟（否则它在回合里
+	* 干脆不 apply，工具 / 提示词一起消失），但**工作区级插件注册的模型不会进设置页** ——
+	* 模型列表是全局的，见 `services/models.ts` 的说明。
+	*/
+	get models() {
+		const s = this.get("models");
+		if (!s) throw new Error("models 服务未提供：请先 ctx.set(\"models\", new ModelsService(ctx))");
+		return s;
+	}
+	/**
+	* 上传源注册表（`ctx.uploads`）。
+	*
+	* ⚠️ 只有**长驻的 upload context**（`apps/server/src/server/upload/registry.ts` 建的）才有它 ——
+	* 上传发生在「还没有回合」的时候，turn context 上**刻意不提供**它。所以回合里的插件要想用
+	* 上传源，得写 `inject: ['uploads']`：依赖不齐时框架会**推迟挂载**（那个回合里它干脆不 apply，
+	* 既不报错也不白跑），而不是让 `ctx.uploads.register` 撞一个 undefined。
+	*
+	* 没提供时这里抛错（与 tools / prompt 同款）：真走到了说明宿主漏建了这个能力，
+	* 报错比「静默什么都不做」好查。
+	*/
+	get uploads() {
+		const s = this.get("uploads");
+		if (!s) throw new Error("uploads 服务未提供：这个 context 没有上传能力（上传源注册只挂在长驻 upload context 上，回合里请用 inject: [\"uploads\"] 声明依赖）");
+		return s;
+	}
+	/** 钩子总线（未提供时抛错：说明这轮没建 turn context） */
+	get hooks() {
+		const s = this.get("hooks");
+		if (!s) throw new Error("hooks 服务未提供：请先 ctx.set(\"hooks\", new HooksService(ctx))");
+		return s;
+	}
+	/**
+	* 插件 RPC（前端半拿数据的通道，见 `services/rpc.ts`）。
+	*
+	* 只挂在**长驻 context** 上（与 uploads 同级）：前端可能在任意时刻调用它，
+	* 而回合结束时 turn context 已经销毁了。想在回合里注册方法就写 `inject: ['rpc']`。
+	*/
+	get rpc() {
+		const s = this.get("rpc");
+		if (!s) throw new Error("rpc 服务未提供：这个 context 没有 RPC 能力（只挂在长驻 context 上，回合里请用 inject: [\"rpc\"] 声明依赖）");
+		return s;
+	}
+	/**
+	* 工作区（`ctx.workspace`）：只有**绑定了目录的回合**才提供（未绑定目录的会话、以及
+	* 设置页那种临时 inspect context 都没有 —— 它们本来也没有「工作区」这个东西）。
+	*
+	* 所以插件**不要**把 `workspace` 写进顶层 `inject`：那样会在 inspect context 里被推迟，
+	* 连它的设置项声明都收不到（设置页就看不到它了）。要工作区的**工具那半**单独用
+	* `ctx.inject(['workspace', 'tools'], …)` 注册即可。
+	*
+	* 没提供时这里抛错（与 tools / uploads 同款）：真走到了说明宿主忘了 set。
+	*/
+	get workspace() {
+		const s = this.get("workspace");
+		if (!s) throw new Error("workspace 服务未提供：这个 context 没有绑定工作区（回合请用 inject: [\"workspace\"] 声明依赖）");
+		return s;
+	}
+	/**
+	* 运行 `fn` 并把它的返回值当作清理函数登记下来；返回一个**幂等**的提前回收器。
+	* 卸载时所有未回收的 effect 按登记顺序的**逆序**执行。
+	*/
+	effect(fn) {
+		const raw = fn();
+		if (typeof raw !== "function") return () => {};
+		return this._pushEffect(raw);
+	}
+	/** 直接登记一个已算好的清理函数（插件 apply 的返回值走这里） */
+	_pushEffect(dispose) {
+		const entry = { dispose };
+		this._effects.push(entry);
+		let done = false;
+		return () => {
+			if (done) return;
+			done = true;
+			const i = this._effects.indexOf(entry);
+			if (i >= 0) this._effects.splice(i, 1);
+			return entry.dispose();
+		};
+	}
+	/** 派生一个隔离子 Context（自带服务表与 effect 作用域，仍能读到父的服务） */
+	isolate(name = "isolate") {
+		return new Context(this, name);
+	}
+	/**
+	* 挂载插件：为它造一个隔离 fiber 并 apply。
+	* `inject` 声明的依赖没齐时**推迟**，等依赖被提供后自动补跑（顺序无关）。
+	*/
+	plugin(plugin, config) {
+		const obj = normalizePlugin(plugin);
+		const fiber = new Context(this, obj.name ?? "plugin");
+		const fork = new Fork(this, fiber);
+		const entry = {
+			ctx: fiber,
+			inject: obj.inject,
+			apply: () => applyPlugin(fiber, obj, config)
+		};
+		if (fiber._missing(obj.inject).length === 0) entry.apply();
+		else this.root._pending.push(entry);
+		return fork;
+	}
+	/** 声明式依赖：依赖齐全时立即跑 `cb`；否则挂起等依赖出现 */
+	inject(deps, cb) {
+		let inner = null;
+		const entry = {
+			ctx: this,
+			inject: deps,
+			apply: () => {
+				const d = cb(this);
+				inner = typeof d === "function" ? this._pushEffect(d) : null;
+			}
+		};
+		if (this._missing(deps).length === 0) {
+			entry.apply();
+			return () => {
+				inner?.();
+			};
+		}
+		this.root._pending.push(entry);
+		return () => {
+			const i = this.root._pending.indexOf(entry);
+			if (i >= 0) this.root._pending.splice(i, 1);
+			inner?.();
+		};
+	}
+	_missing(inject) {
+		return (inject ?? []).filter((name) => !this.has(name));
+	}
+	/** 摘掉「等这个 Context 的依赖」的挂起项（Fork 卸载时用；同一类内也会互相调） */
+	_dropPendingFor(ctx) {
+		this.root._pending = this.root._pending.filter((e) => e.ctx !== ctx);
+	}
+	_flushPending() {
+		if (this._pending.length === 0) return;
+		const runnable = [];
+		const remaining = [];
+		for (const entry of this._pending) {
+			if (entry.ctx._disposed) continue;
+			if (entry.ctx._missing(entry.inject).length === 0) runnable.push(entry);
+			else remaining.push(entry);
+		}
+		this._pending = remaining;
+		for (const entry of runnable) entry.apply();
+	}
+	/** 监听事件；返回 disposer（随本 Context 卸载自动回收） */
+	on(name, listener) {
+		let set = this._listeners.get(name);
+		if (!set) {
+			set = /* @__PURE__ */ new Set();
+			this._listeners.set(name, set);
+		}
+		set.add(listener);
+		const target = set;
+		return bindEffect(this, () => {
+			target.delete(listener);
+			if (target.size === 0 && this._listeners.get(name) === target) this._listeners.delete(name);
+		});
+	}
+	/** 广播：沿 parent 链向上，逐层触发监听器（近的层先触发） */
+	emit(name, ...args) {
+		for (let c = this; c; c = c.parent) {
+			const set = c._listeners.get(name);
+			if (set) for (const listener of [...set]) listener(...args);
+		}
+	}
+	/**
+	* 安全广播：触发顺序与 `emit` 完全一致，但**单个监听器抛错只记日志**，不影响后面的
+	* 监听器、也不把异常抛回调用方。
+	*
+	* 长驻的会话状态钩子用这条：一个通知插件写坏（网络、格式化、空指针）不该让会话收尾
+	* 跟着炸，更不该让另一个插件的通知也发不出去。
+	*/
+	emitSafe(name, ...args) {
+		for (let c = this; c; c = c.parent) {
+			const set = c._listeners.get(name);
+			if (!set) continue;
+			for (const listener of [...set]) try {
+				listener(...args);
+			} catch (err) {
+				c.logger.warn(`监听器执行失败（${name}）：`, err);
+			}
+		}
+	}
+	/**
+	* 拦截型钩子：监听器签名 `(...args, next)`。可读 / 改参数再 `next(...)` 继续，
+	* 或直接返回一个值**中断链路**（后面的监听器不再执行）。
+	* `fallback` 是所有人都放行后的兜底（通常是内置行为）。
+	*/
+	waterfall(name, args, fallback) {
+		const chain = [];
+		for (let c = this; c; c = c.parent) {
+			const set = c._listeners.get(name);
+			if (set) chain.push(...set);
+		}
+		let index = -1;
+		const next = (...override) => {
+			index += 1;
+			if (index >= chain.length) return fallback(...override.length ? override : args);
+			return chain[index](...args, next);
+		};
+		return next();
+	}
+	/** 收集型：第一个返回非 undefined 的监听器结果胜出 */
+	bail(name, ...args) {
+		for (let c = this; c; c = c.parent) {
+			const set = c._listeners.get(name);
+			if (!set) continue;
+			for (const listener of [...set]) {
+				const result = listener(...args);
+				if (result !== void 0) return result;
+			}
+		}
+	}
+	/** 启动：emit `ready`（挂载完成后调一次） */
+	start() {
+		this.emit("ready");
+	}
+	/**
+	* 卸载：先拆子 Context（含插件 fiber），再 emit `dispose`，最后 LIFO 回收本层 effect。
+	* 幂等。effect 的异常被吞掉（卸载不该因为一个清理失败而半途而废），但会打日志。
+	*/
+	async dispose() {
+		if (this._disposed) return;
+		this._disposed = true;
+		for (const child of [...this._children].reverse()) try {
+			await child.dispose();
+		} catch (err) {
+			this.logger.warn("子 Context 卸载失败：", err);
+		}
+		this._children.clear();
+		this._dropPendingFor(this);
+		this.emit("dispose");
+		for (const entry of [...this._effects].reverse()) try {
+			await entry.dispose();
+		} catch (err) {
+			this.logger.warn("effect 回收失败：", err);
+		}
+		this._effects.length = 0;
+		this._listeners.clear();
+		this._services.clear();
+		this.parent?._children.delete(this);
+	}
+};
+/** 造一个根 Context（App Context 的起点） */
+function createAppContext(name = "app") {
+	return new Context(null, name);
+}
+// packages/plugin/src/services/tools.ts
+/**
+* 工具注册表：`ctx.tools` 的实体。**这是插件「加 / 覆盖」Agent 工具的唯一入口。**
+*
+* 覆盖规则（信任模型的落点）：
+* - 每个注册项都带 `priority`（缺省 0）。同名工具里 **priority 最高者胜出**；
+* - 最高 priority 出现**并列**时**直接抛错** —— 默认谁也别想悄悄盖掉内置工具：
+*   内置工具以 priority 0 注册，插件想覆盖必须显式把自己的 priority 调到 > 0
+*   （见设置页的信任开关），否则加载期就炸，错误会一路冒到日志与 UI；
+* - priority 不同时**静默取高者** —— 这正是「用户显式调高 priority 后允许覆盖」。
+*
+* 工具名冲突的报错刻意写得「大声」：带上各自的来源（source）与 priority，
+* 让人一眼看出是谁想盖谁、该怎么调。
+*/
+var ToolsService = class extends Service {
+	/** 名字 → 该名字的所有注册（含被盖掉的，便于 UI 展示冲突） */
+	_byName = /* @__PURE__ */ new Map();
+	/** 首次出现的名字顺序，`build()` 按它输出，保证工具集键序稳定 */
+	_order = [];
+	constructor(ctx) {
+		super(ctx);
+	}
+	get name() {
+		return "tools";
+	}
+	/** 注册单个工具；返回 disposer（从注册表摘掉这一条） */
+	register(name, tool, opts = {}) {
+		if (typeof tool !== "object" || tool === null || typeof tool.execute !== "function") throw new Error(`工具「${name}」没有可调用的 execute（来源 ${opts.source ?? "unknown"}）：AI SDK 的工具对象必须是 { description, execute } 的形状（无参工具可省略 inputSchema）；handler 是别家的叫法，这里必须叫 execute。`);
+		const reg = {
+			name,
+			tool,
+			priority: opts.priority ?? 0,
+			origin: opts.origin ?? "plugin",
+			source: opts.source ?? "unknown",
+			mutating: opts.mutating ?? false
+		};
+		const list = this._byName.get(name);
+		if (list) list.push(reg);
+		else {
+			this._byName.set(name, [reg]);
+			this._order.push(name);
+		}
+		return this.bind(() => {
+			const cur = this._byName.get(name);
+			if (!cur) return;
+			const i = cur.indexOf(reg);
+			if (i >= 0) cur.splice(i, 1);
+			if (cur.length === 0) {
+				this._byName.delete(name);
+				const j = this._order.indexOf(name);
+				if (j >= 0) this._order.splice(j, 1);
+			}
+		});
+	}
+	/** 批量注册（同一个 priority / source），返回一次性摘掉全部的 disposer */
+	registerAll(tools, opts = {}) {
+		const disposers = Object.keys(tools).map((name) => this.register(name, tools[name], opts));
+		return () => {
+			for (const d of disposers) d();
+		};
+	}
+	/** 按名字取「胜出者」（不抛错：无冲突时的高者；有冲突时取最高，不在这里报错） */
+	get(name) {
+		const list = this._byName.get(name);
+		return list ? this._pick(name, list, false) : void 0;
+	}
+	/** 列出全部注册项（`build()` 顺序） */
+	list() {
+		const out = [];
+		for (const name of this._order) out.push(...this._byName.get(name) ?? []);
+		return out;
+	}
+	/** 是否存在冲突（并列最高 priority），供设置页 / 加载期体检 */
+	conflicts() {
+		const out = [];
+		for (const name of this._order) {
+			const list = this._byName.get(name);
+			if (list && list.length > 1) try {
+				this._pick(name, list, true);
+			} catch {
+				out.push({
+					name,
+					registrations: [...list]
+				});
+			}
+		}
+		return out;
+	}
+	/**
+	* 解析后的胜出清单（**含各自的注册信息**，如 `mutating`）。
+	*
+	* `build()` 就是它的投影；需要「按注册声明做事」的装配期逻辑用这个 —— 典型是给
+	* `mutating: true` 的工具套审批闸门（`@fizz/agent` 的 `wrapToolsWithApproval`）。
+	* 与 `build()` 一样：同名并列最高 priority 在这里抛错。
+	*/
+	entries() {
+		const out = [];
+		for (const name of this._order) {
+			const list = this._byName.get(name);
+			if (!list || list.length === 0) continue;
+			const registration = this._pick(name, list, true);
+			out.push({
+				name,
+				tool: registration.tool,
+				registration
+			});
+		}
+		return out;
+	}
+	/**
+	* 产出最终的「工具名 → 工具对象」。同名冲突（并列最高 priority）在这里抛错 ——
+	* 装配期就炸，不会等到模型调用一个来路不明的同名工具。
+	*/
+	build() {
+		const out = {};
+		for (const { name, tool } of this.entries()) out[name] = tool;
+		return out;
+	}
+	_pick(name, list, strict) {
+		if (list.length === 1) return list[0];
+		const sorted = [...list].sort((a, b) => b.priority - a.priority);
+		const topPriority = sorted[0].priority;
+		const atTop = sorted.filter((r) => r.priority === topPriority);
+		if (atTop.length > 1) {
+			if (!strict) return atTop[atTop.length - 1];
+			const detail = atTop.map((r) => `${r.source}(priority=${r.priority}, ${r.origin})`).join("  vs  ");
+			throw new Error(`工具名冲突：「${name}」被多个同优先级注册项争用 —— ${detail}。默认不允许插件覆盖内置工具；若确需覆盖，请在插件配置里显式把 priority 调高（> 0）。`);
+		}
+		return atTop[0];
+	}
+};
+// packages/plugin/src/services/prompt.ts
+/**
+* 提示词注册表：`ctx.prompt` 的实体。**这是插件往系统提示词里插话的唯一入口。**
+*
+* 一个 section = 一段提示词，带 id（同名视为同一段，后写覆盖）与 priority。
+* 渲染顺序 = priority 升序、同序按注册先后 —— 所以内置的基础提示词用 priority 0
+* 注册在最前，插件想插在后面用更大的 priority。
+*
+* `render()` 用空行（`\n\n`）连接各段，空文本段直接跳过（便于插件「先注册、运行期
+* 再决定填不填内容」）。
+*/
+var PromptService = class extends Service {
+	_byId = /* @__PURE__ */ new Map();
+	/** 首次出现的 id 顺序（决定同 priority 时的先后） */
+	_order = [];
+	constructor(ctx) {
+		super(ctx);
+	}
+	get name() {
+		return "prompt";
+	}
+	/** 写入 / 覆盖一段提示词；返回 disposer（仅当这段还在时移除） */
+	section(id, text, opts = {}) {
+		const existed = this._byId.has(id);
+		const sec = {
+			id,
+			text,
+			priority: opts.priority ?? 0,
+			source: opts.source ?? "unknown"
+		};
+		this._byId.set(id, sec);
+		if (!existed) this._order.push(id);
+		return this.bind(() => {
+			if (this._byId.get(id) === sec) {
+				this._byId.delete(id);
+				const i = this._order.indexOf(id);
+				if (i >= 0) this._order.splice(i, 1);
+			}
+		});
+	}
+	remove(id) {
+		this._byId.delete(id);
+		const i = this._order.indexOf(id);
+		if (i >= 0) this._order.splice(i, 1);
+	}
+	/** 按渲染顺序列出非空段 */
+	list() {
+		const pos = new Map(this._order.map((id, i) => [id, i]));
+		return [...this._byId.values()].filter((s) => s.text.trim().length > 0).sort((a, b) => a.priority - b.priority || (pos.get(a.id) ?? 0) - (pos.get(b.id) ?? 0));
+	}
+	/** 拼接成最终提示词正文（缺省空行分隔） */
+	render(separator = "\n\n") {
+		return this.list().map((s) => s.text).join(separator);
+	}
+};
+// packages/plugin/src/services/workspace.ts
+/**
+* 工作区服务：把「这一轮绑定的工作区根目录」交给插件。
+*
+* ## 为什么需要它
+*
+* 内置文件工具是**闭包**拿到工作区根的（`fileToolsPlugin(root, …)`，见
+* `@fizz/agent` 的 plugins.ts），插件却什么都没有 —— 于是插件写的工具**没法解析相对路径**。
+* 而模型的系统提示词里明确写着「所有路径一律使用相对工作区根目录的路径」，所以一个
+* 「把某个文件传上去」的插件工具，拿到的大概率就是 `notes/report.md` 这种相对路径。
+* 没有这个服务，插件只能要求绝对路径，跟全仓库的路径约定拧着来。
+*
+* ## 边界（刻意很小）
+*
+* 只回答两件事：工作区在哪（`path`）、怎么把模型给的路径变成绝对路径（`resolve`）。
+* **不做沙箱**：不拦着插件读写工作区外的文件 —— 插件本来就是**完全可信**的代码
+* （它能 `import node:fs` 干任何事），给一个「看起来能挡住」的 API 只会造成安全错觉。
+* 需要限制范围的插件请自己调 `contains` 判断。
+*
+* 提供时机：`runAgent` 建 turn context（挂载装配产物）时 set（未绑定目录的会话不提供 → 声明
+* `inject: ['workspace']` 的插件在那里会被**推迟挂载**，见 context.ts 的依赖注入说明）。
+*/
+var WorkspaceService = class extends Service {
+	/** 工作区根目录（已归一化） */
+	path;
+	/** 项目显示名 */
+	label;
+	constructor(ctx, info) {
+		super(ctx);
+		this.path = normalize(String(info?.path ?? ""));
+		this.label = String(info?.name ?? "");
+	}
+	get name() {
+		return "workspace";
+	}
+	/**
+	* 把模型给的路径解析成绝对路径：绝对路径原样归一化，相对路径拼到工作区根下。
+	*
+	* 不做「越界检查」——见文件头的边界说明。要判断的话用 `contains`。
+	*/
+	resolve(input) {
+		const raw = String(input ?? "").trim();
+		if (!raw) return this.path;
+		return normalize(isAbsolute(raw) ? raw : join(this.path, raw));
+	}
+	/** 这个路径（绝对或相对）是否落在工作区内 */
+	contains(input) {
+		const target = this.resolve(input);
+		const rel = relative(this.path, target);
+		return rel === "" || !rel.startsWith("..") && !isAbsolute(rel);
+	}
+};
+// packages/plugin/src/services/models.ts
+/**
+* 模型配置注册表：`ctx.models` 的实体。**插件往「设置 → 模型」里加配置的唯一入口。**
+*
+* 一条注册 = 设置页里的一份**模型配置**（网关 + 模型清单 + 每个模型自己的窗口 / 进阶设置）：
+*
+* ```ts
+* ctx.models.register({
+*   id: 'my-gateway',
+*   name: '我的网关',
+*   kind: 'openai-compatible',
+*   baseURL: 'https://gateway.example.com/v1',
+*   apiKey: config?.token,          // 密钥项由宿主解密后随 config 传进来
+*   models: [
+*     { id: 'model-a', contextWindow: 128_000 },
+*     { id: 'model-b', settings: { imageInput: false } }
+*   ]
+* })
+* ```
+*
+* ## 只读、不落盘
+*
+* 注册的配置**不写进 `agent-core.json`**：真源是插件自己（每次插件挂载时重新声明）。
+* 所以在设置页里它们是**只读**的 —— 不能编辑网关 / 增删模型，要改就改插件源码或它的设置项。
+* 插件被停用 / 卸载后，配置自然从列表里消失（正在用它的会话会得到「配置不存在」的明确报错）。
+*
+* ## 只认全局插件（内置 / 用户级）
+*
+* 模型列表是**全局**的（不属于某个项目）。工作区级插件（`<项目>/.fizz/plugins`）在某一轮
+* 对话里注册的配置不会进设置页，也不会参与模型解析 —— 那会让「同一个模型 id 在 A 项目有、
+* B 项目没有」变成隐形的状态。要全局可见就把插件放到内置 / 用户级目录。
+*
+* ## id 会被宿主加前缀
+*
+* 插件只给**插件内唯一**的 id（如 `main`）。宿主收集时拼成 `plugin:<插件入口路径>:<id>`，
+* 两个插件都用 `main` 也不会撞；设置页 / 会话里存的是拼好的那个。
+*/
+var KINDS = /* @__PURE__ */ new Set([
+	"openai",
+	"anthropic",
+	"deepseek",
+	"google",
+	"openai-compatible"
+]);
+/** 模型清单去空 / 去重 / 保序，并只保留已知字段（与 `AgentDomain.saveModel` 同一口径） */
+function normalizeModels(raw) {
+	if (!Array.isArray(raw)) return [];
+	const out = [];
+	const seen = /* @__PURE__ */ new Set();
+	for (const item of raw) {
+		if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+		const value = item;
+		const id = typeof value.id === "string" ? value.id.trim() : "";
+		if (!id || seen.has(id)) continue;
+		seen.add(id);
+		const entry = { id };
+		const window = value.contextWindow;
+		if (typeof window === "number" && Number.isFinite(window) && window > 0) entry.contextWindow = Math.floor(window);
+		const settings = value.settings;
+		if (settings && typeof settings === "object" && !Array.isArray(settings)) entry.settings = settings;
+		out.push(entry);
+	}
+	return out;
+}
+var ModelsService = class extends Service {
+	_byId = /* @__PURE__ */ new Map();
+	constructor(ctx) {
+		super(ctx);
+	}
+	get name() {
+		return "models";
+	}
+	/**
+	* 注册一份模型配置；返回 disposer（随插件 fiber 卸载自动回收）。
+	*
+	* 同一个 id 重复注册时**保留先注册的**并告警（与 `ctx.uploads.register` 同一取舍：
+	* 抛错会把整轮对话 / 整个设置页带停，代价远大于一条冲突）。
+	*/
+	register(input, opts = {}) {
+		const source = opts.source?.trim() || "unknown";
+		const id = typeof input?.id === "string" ? input.id.trim() : "";
+		if (!id || /\s/.test(id)) throw new Error(`模型配置 id 非法（来源 ${source}）：要是非空、不含空白的字符串`);
+		if (!KINDS.has(input.kind)) throw new Error(`模型配置「${id}」的 kind 非法（来源 ${source}）：${String(input.kind)}`);
+		const models = normalizeModels(input.models);
+		const reg = {
+			id,
+			name: input.name?.trim() || id,
+			kind: input.kind,
+			models,
+			...input.baseURL?.trim() ? { baseURL: input.baseURL.trim() } : {},
+			...input.apiKey?.trim() ? { apiKey: input.apiKey.trim() } : {},
+			...input.apiStyle ? { apiStyle: input.apiStyle } : {},
+			...typeof input.temperature === "number" && Number.isFinite(input.temperature) ? { temperature: input.temperature } : {},
+			...typeof input.maxTokens === "number" && Number.isFinite(input.maxTokens) ? { maxTokens: Math.floor(input.maxTokens) } : {},
+			...typeof input.contextMessages === "number" && Number.isFinite(input.contextMessages) ? { contextMessages: Math.floor(input.contextMessages) } : {},
+			source
+		};
+		const existing = this._byId.get(id);
+		if (existing) {
+			this.ctx.logger.warn(`[models] 模型配置 id 冲突：「${id}」已被 ${existing.source} 注册，忽略这次来自 ${source} 的注册`);
+			return () => {};
+		}
+		this._byId.set(id, reg);
+		return this.bind(() => {
+			if (this._byId.get(id) === reg) this._byId.delete(id);
+		});
+	}
+	/** 当前注册清单（注册顺序） */
+	list() {
+		return [...this._byId.values()];
+	}
+};
+// packages/plugin/src/hooks.ts
+/**
+* 钩子（hook）：插件**改写** Agent 行为的地方 —— 与 `ctx.events` 的「只通知、不干预」互补。
+*
+* 两种形态：
+* - **waterfall（拦截改写）**：监听器签名 `(...args, next)`。范式是
+*   `const out = next(); return 改写(out)`（around 中间件：先放行、拿下游结果再加工），
+*   也可以不调 `next()` 直接返回一个值**中断链路**（后面的监听器与兜底都不再跑）。
+*   ⚠️ 框架的 `next(新值)` **不会**把新值传给下一个监听器（`waterfall` 恒以**原始 args**
+*   调用链上的下一个），所以「按入参把新值往后推」这条陆走不通 —— 想串联改写一律用
+*   around 范式。见 Context.waterfall 的实现注释。
+* - **emit（只通知）**：`turn:start` / `turn:finish` 这类生命周期事件，参数是一个对象。
+*
+* 归属（与 `ctx.tools` 完全同款，是本模块存在的理由）：`hooks` 服务由 `runAgent`
+* 建在 **turn context** 上，插件 `ctx.hooks.on(...)` 注册的监听器因此落在 turn context、
+* 能被同一轮的 `waterfall` / `emit` 看见；而 disposer 经 `bindEffect` 记在**插件 fiber** 上，
+* 插件卸载 / 下一轮重建时自动摘掉。
+* （对比：`ctx.events` 的实体是 **fiber-local** 的，在插件 fiber 上注册的监听器父层看不见。）
+*
+* ## 会话状态钩子（`conversation:*`）挂在**长驻宿主**上
+*
+* `turn:*` 是单轮内部的钩子，ACP / 容器型会话甚至没有这个 turn context；而「一轮开始 /
+* 结束 / 在等审批 / 在等回答」是**产品层面的会话状态**，必须跨后端、跨轮次存在。
+*
+* 所以服务端另建一份按工作区长驻的 hooks 宿主（`apps/server/src/server/conversation-hooks.ts`），
+* 从全局瞬时事件总线桥接这六个 hook。插件要接它们，用
+* `ctx.inject(['hooks'], (c) => c.hooks.on('conversation:finished', ...))` —— 不要写进
+* 顶层 `inject`（设置页的 inspect context 没有 hooks，写顶层会让整个插件被推迟挂载）。
+*
+* 监听器里**不要 await 网络请求**：这条总线是同步的，通知类插件应当 fire-and-forget
+* 并在自己的 Promise 上 catch。
+*/
+/** 钩子名（用常量，避免各处手写字符串拼错） */
+var HOOKS = {
+	/** 工具调用前：参数 `(toolName, input)`，可改写成新的 input */
+	toolCall: "tool:call",
+	/** 工具返回后：参数 `(toolName, output)`，可改写成新的 output */
+	toolResult: "tool:result",
+	/** 系统提示词渲染完成后：参数 `(text)`，可改写成新的正文 */
+	promptRender: "prompt:render",
+	/** 一轮开始（emit，参数 `TurnStartPayload`） */
+	turnStart: "turn:start",
+	/** 一轮收尾（emit，参数 `TurnFinishPayload`） */
+	turnFinish: "turn:finish",
+	/** 会话一轮开跑（emit，参数 `ConversationStartedPayload`） */
+	conversationStarted: "conversation:started",
+	/** 会话一轮收尾（落盘之后；emit，参数 `ConversationFinishedPayload`） */
+	conversationFinished: "conversation:finished",
+	/** 工具调用在等用户审批（emit，参数 `ConversationConfirmPayload`） */
+	conversationConfirm: "conversation:confirm",
+	/** 审批有了答复（emit，参数 `ConversationConfirmResolvedPayload`） */
+	conversationConfirmResolved: "conversation:confirm-resolved",
+	/** Agent 在等用户回答提问（emit，参数 `ConversationFollowupPayload`） */
+	conversationFollowup: "conversation:followup",
+	/** 提问有了答复（emit，参数 `ConversationFollowupResolvedPayload`） */
+	conversationFollowupResolved: "conversation:followup-resolved"
+};
+/**
+* `waterfall` 的兜底：取出「被改写的主体」。约定 —— 钩子带两个及以上参数时，
+* **第 2 个**是主体（第 1 个是名字之类的标识）；只有一个参数时它就是主体。
+* 这样兜底既接得住 `fallback(name, payload)`，也接得住监听器 `next(payload)` 的单参形态。
+*/
+function hookValue(...args) {
+	return args.length >= 2 ? args[1] : args[0];
+}
+/**
+* 钩子总线：`ctx.hooks` 的实体。行为完全委托给所属 Context（与 `EventsService` 同），
+* 只是服务名不同 —— 让插件能 `inject: ['hooks']` 声明依赖，也便于测试给替身。
+*/
+var HooksService = class extends EventsService {
+	get name() {
+		return "hooks";
+	}
+};
 // packages/shells/src/shells.ts
 /**
 * 本地可用 shell 的探测与解析（**Node 专用**，零运行时依赖）。
@@ -2218,15 +3193,15 @@ var COMMON = {
 	"任务结束、出错、被中断或对话回复完成时提醒一次；后台走系统通知，前台走应用内提示。": "Notify once when a task finishes, fails, is interrupted, or a reply completes. Background uses system notifications; foreground uses in-app toasts.",
 	" 安卓端为本地通知，App 被系统清理后收不到。": " On Android these are local notifications; they cannot arrive after the app is killed by the system.",
 	"已开启（前台为应用内提示）": "Enabled (foreground shows in-app prompts)",
-	"系统通知权限已被关闭，页面无法再次申请。请到 系统设置 → 应用 → Fizz → 通知 里允许，回到 App 后这里会自动更新。在此之前：前台的右上角提示仍然会用，只有切到后台（含锁屏）时的系统提醒发不出去。": "System notification permission is off and the page cannot ask again. Allow it in System settings → Apps → Fizz → Notifications; this page updates when you return. Until then, foreground toasts still work; only background (including lock screen) system alerts are lost.",
-	"通知权限已被浏览器拒绝，且无法由页面再次申请。请在地址栏的站点设置里把「通知」改为允许，刷新本页后即可开启。在此之前：前台的右上角提示仍然会用，只有切到后台时的系统提醒发不出去。": "Notification permission was denied by the browser and cannot be requested again from the page. Allow “Notifications” in the site settings from the address bar and reload. Until then, foreground toasts still work; only background system alerts are lost.",
+	"系统通知权限已被关闭，页面无法再次申请。请到 系统设置 → 应用 → Fizz → 通知 里允许，回到 App 后这里会自动更新。在此之前：前台的右下角提示仍然会用，只有切到后台（含锁屏）时的系统提醒发不出去。": "System notification permission is off and the page cannot ask again. Allow it in System settings → Apps → Fizz → Notifications; this page updates when you return. Until then, foreground toasts still work; only background (including lock screen) system alerts are lost.",
+	"通知权限已被浏览器拒绝，且无法由页面再次申请。请在地址栏的站点设置里把「通知」改为允许，刷新本页后即可开启。在此之前：前台的右下角提示仍然会用，只有切到后台时的系统提醒发不出去。": "Notification permission was denied by the browser and cannot be requested again from the page. Allow “Notifications” in the site settings from the address bar and reload. Until then, foreground toasts still work; only background system alerts are lost.",
 	"再试一次": "Try again",
 	"开启系统通知": "Enable system notifications",
 	"授权浏览器通知": "Allow browser notifications",
 	"授权弹窗一直没弹出来 —— 多半被浏览器的「安静模式」拦截了（以前关过几次弹窗的站点会这样）。点地址栏左侧的小图标，或到 浏览器设置 → 网站设置 → 通知 里把本站改为「允许」，刷新后再试。": "The permission prompt never appeared — likely blocked by the browser’s quiet UI (common on sites where prompts were dismissed before). Click the icon at the left of the address bar, or allow this site under Browser settings → Site settings → Notifications, then reload and try again.",
 	"未开启系统通知，点此授权；后台提醒需要它，前台提示不需要。": "System notifications are off; click to authorize. Background alerts need them; foreground prompts do not.",
 	"未授权通知，点此在浏览器中允许；后台提醒需要它。": "Notifications are not authorized; click to allow them in the browser. Background alerts need this.",
-	"当前浏览器不支持系统通知（部分环境在非 HTTPS 下也会禁用）：切到后台时发不出提醒，但前台的右上角提示仍然会用。": "This browser does not support system notifications (some environments also disable them outside HTTPS). Background alerts cannot be sent, but foreground toasts still work.",
+	"当前浏览器不支持系统通知（部分环境在非 HTTPS 下也会禁用）：切到后台时发不出提醒，但前台的右下角提示仍然会用。": "This browser does not support system notifications (some environments also disable them outside HTTPS). Background alerts cannot be sent, but foreground toasts still work.",
 	"屏幕常亮": "Keep screen awake",
 	"有任务运行时保持屏幕常亮；跑完自动释放，切到后台也会释放，回来后按需重新获取。": "Keep the screen awake while tasks run; release automatically when done or when the page goes to the background, and reacquire as needed when you return.",
 	"不申请屏幕唤醒锁": "Do not request a screen wake lock",
@@ -2978,10 +3953,12 @@ var AGENT = {
 	"选择模型 / Agent": "Choose model / agent",
 	"触发时用什么跑：内置模型（配置 → 模型），或外部 Agent（ACP，可跟随它自己的默认模型）": "What to run with: a built-in model (config → model), or an external agent (ACP, which may use its own default model)",
 	"这个工作区的目录已不存在（{path}），保存会被拒绝：请重新选择工作区，或改用「每次运行自动创建」。": "This workspace directory no longer exists ({path}), so saving will be rejected: choose another workspace or use “Auto-created for each run”.",
+	"远端工作区首期不支持定时任务（触发时够不到 SSH 主机上的目录）：请改选本机工作区，或改用「每次运行自动创建」。": "Remote workspaces are not supported by scheduled tasks yet (a run cannot reach directories on the SSH host): pick a local workspace or use “Auto-created for each run”.",
+	"不适用（外部 Agent 自带）": "Not applicable (the external agent brings its own)",
 	"每次触发都在这个工作区里跑一轮会话。": "Each run happens in this workspace.",
 	"不绑工作区：每次触发自动新建一个临时工作区（空目录、不进项目列表），从零干一遍。": "No workspace: each run creates a temporary workspace (empty directory, not added to the project list) and starts from scratch.",
-	"权限 / 模型与新建会话时是同一套选项；浏览器 / MCP 只对内置模型生效 —— 外部 Agent 自带工具，不读这两个开关。": "Permission / model use the same options as a new conversation; browser / MCP only apply to built-in models — external agents bring their own tools and ignore these toggles.",
-	"权限 / 模型 / 浏览器 / MCP 与新建会话时是同一套选项；浏览器工具跑在服务端，无人值守也能用。": "Permission / model / browser / MCP use the same options as a new conversation; browser tools run on the server and also work unattended.",
+	"权限 / 模型与新建会话时是同一套选项；思考强度 / 浏览器 / MCP 只对内置模型生效 —— 外部 Agent 自带工具与思考档，不读这几项。": "Permission / model use the same options as a new conversation; reasoning effort / browser / MCP only apply to built-in models — external agents bring their own tools and thinking level.",
+	"权限 / 模型 / 思考强度 / 浏览器 / MCP 与新建会话时是同一套选项；浏览器工具跑在服务端，无人值守也能用。": "Permission / model / reasoning effort / browser / MCP use the same options as a new conversation; browser tools run on the server and also work unattended.",
 	"必须选一个目标（内置模型，或外部 Agent）—— 触发时没人值守，不会替你挑一个。外部 Agent 可以「跟随它自己的默认模型」。": "You must choose a target (built-in model or external agent) — no one is around when the task runs, so it will not pick one for you. External agents can use their own default model.",
 	"按时间表（cron）": "On a schedule (cron)",
 	"一次性（指定时刻）": "One-time (specific time)",
@@ -3053,6 +4030,7 @@ var CHAT = {
 	"会话加载失败": "Failed to load conversation",
 	"本轮用量": "This turn usage",
 	"整轮耗时 {time}": "Turn duration {time}",
+	"仅算模型生成的时间（工具执行与等待不计）": "Generation time only (tool runs and waits excluded)",
 	"合计": "Total",
 	"缓存命中率": "Cache hit rate",
 	"缓存命中 {cached} / 输入 {input}": "Cache reads {cached} / input {input}",
@@ -3217,6 +4195,9 @@ var CHAT = {
 	"创建插件": "Create plugin",
 	"子任务 · 侦察": "Sub-agent · Scout",
 	"子任务 · 审查": "Sub-agent · Reviewer",
+	"领取子任务结论": "Claim sub-agent result",
+	"列出子任务": "List sub-agents",
+	"取消子任务": "Cancel sub-agent",
 	"读取": "Read",
 	"移动文件": "Move file",
 	"切换模式": "Switch mode",
@@ -3311,6 +4292,8 @@ var CHAT = {
 	"跟随 agent 默认": "Follow agent default",
 	"还没有模型配置": "No model configs yet",
 	"还没有外部 Agent": "No external agents yet",
+	"搜索模型 / Agent": "Search models / agents",
+	"没有匹配的模型": "No matching models",
 	"远端工作区不能用外部 Agent（ACP）：它要在服务端本机起一个进程，够不到 SSH 主机上的目录。请用内置模型。": "External agents (ACP) are not available in a remote workspace: they run as a process on the server machine and cannot reach directories on the SSH host. Use a built-in model.",
 	"发送（本轮结束后自动执行）": "Send (runs automatically after this turn)",
 	"松开以添加附件": "Release to attach",
@@ -3338,6 +4321,11 @@ var CHAT = {
 	"停止并关闭这个对话？": "Stop and close this conversation?",
 	"这条会话正在生成回复，关闭标签会先停止当前回合（已生成的内容保留）。": "This conversation is still generating; closing the tab stops the current turn first (what has been generated is kept).",
 	"停止并关闭": "Stop and close",
+	"这个对话正在生成回复": "This conversation is still generating",
+	"仅关闭标签": "Close tab only",
+	"「仅关闭标签」时这一轮会在后台继续，随时点左侧那条会话就能回来。": "With “Close tab only” the turn keeps running in the background — click the conversation on the left to come back any time.",
+	"「仅关闭标签」时这一轮会在后台继续，随时点左侧那条会话就能回来；但标签右侧面板里挂着的 {count} 条终端会一起结束。": "With “Close tab only” the turn keeps running in the background — click the conversation on the left to come back any time. The {count} terminal(s) attached to this tab will end either way.",
+	"标签已关闭，这一轮仍在后台继续：点左侧那条会话可以回来": "Tab closed; the turn keeps running in the background — click the conversation on the left to come back",
 	"刷新这个对话？": "Reload this conversation?",
 	"这个标签右侧面板里挂着的 {count} 条终端会一起重开，里面正在运行的进程会一起结束。": "The {count} terminal(s) attached to this tab will reopen, and any running processes in them will end.",
 	"终端 {index}": "Terminal {index}",
@@ -3355,6 +4343,7 @@ var CHAT = {
 	"源代码管理": "Source control",
 	"源代码管理 · {name}": "Source control · {name}",
 	"源代码管理（{count} 处改动）": "Source control ({count} changes)",
+	"当前分支：{branch}（点击打开源代码管理）": "Current branch: {branch} (click to open source control)",
 	"收起源代码管理": "Hide source control",
 	"浏览器画面": "Browser view",
 	"预览 · {name}": "Preview · {name}",
@@ -3471,6 +4460,9 @@ var HOSTS = {
 	"密码（留空 = 不修改）": "Password (leave empty to keep)",
 	"私钥内容，如 -----BEGIN OPENSSH PRIVATE KEY-----": "Private key contents, e.g. -----BEGIN OPENSSH PRIVATE KEY-----",
 	"私钥口令（没有就留空）": "Passphrase (leave empty if none)",
+	"选择文件…": "Choose file…",
+	"已读取 {name}": "Loaded {name}",
+	"读不到这个文件：{name}": "Could not read this file: {name}",
 	"跳板机": "Jump host",
 	"不使用跳板": "No jump host",
 	"{name}（{summary}）": "{name} ({summary})",
@@ -3641,6 +4633,8 @@ var WORKSPACE = {
 	"从 Git 导入…": "Import from Git…",
 	"新建容器型项目…": "New container project…",
 	"连接远端服务器…": "Connect to a remote server…",
+	"搜索工作区": "Search workspaces",
+	"没有匹配的工作区": "No matching workspaces",
 	"添加远端工作区": "Add remote workspace",
 	"Agent 的文件读写与命令都在这台 SSH 主机上的目录里执行。会话历史仍保存在本机。": "The agent reads, writes, and runs commands in a directory on this SSH host. Conversation history stays on this machine.",
 	"还没有 SSH 主机：先在「主机」里添加一台，再回来选它。": "No SSH hosts yet: add one under “Hosts”, then come back and pick it.",
@@ -5849,11 +6843,7 @@ z.enum(["once", "always"]);
 */
 /** 工具名：模型用它向用户提问（对应工具定义里的 `name`） */
 var ASK_FOLLOWUP_TOOL = "ask";
-/**
-* 追加到系统提示词末尾的提示：工具光存在没用，模型得知道「什么时候该问、怎么问」。
-* 少了这一句，绝大多数模型会自己猜着往下做，工具一次都不会被调用。
-*/
-var ASK_FOLLOWUP_HINT = [
+[
 	"",
 	"需要用户做决定或补充信息时，用 ask 工具向他提问：一次可以问一道或多道结构化选择题，",
 	"每道题 single 单选 / multiSelect 多选，选项 2-4 个（可以是纯文本，也可以带说明对象）。",
@@ -7281,15 +8271,7 @@ var BrowserSessionManager = class {
 	}
 };
 new BrowserSessionManager();
-// packages/tools/src/browser/tools.ts
-/**
-* 系统提示词里的浏览器段落：只在挂了浏览器工具时追加。
-*
-* ⚠️ 与工具清单同样的取舍：**不逐个复述工具**（每个 browser_* 的 description 已经
-* 随 schema 发出去），只写 schema 里装不下的跨工具约定 —— 先 snapshot 拿 ref 的
-* 工作流、以及「操作会真的作用在网页上」这个安全前提。
-*/
-var BROWSER_PROMPT_SECTION = tr([
+[
 	"浏览器自动化（Playwright，浏览器无窗口运行、画面可在界面右侧查看）：",
 	"- 操作页面前**先 browser_snapshot 拿 ref**，再用 ref 点击 / 输入；页面一变 ref 就失效，要重新 snapshot；",
 	"- 浏览器是真实运行的，点击 / 输入会真的作用在网页上（可能提交表单、下单、删数据）—— 不可逆的操作前先向用户说明；",
@@ -7299,947 +8281,7 @@ var BROWSER_PROMPT_SECTION = tr([
 	"- Before interacting with a page, **call browser_snapshot to get refs**, then click/type with those refs. Refs become invalid after the page changes, so snapshot again;",
 	"- The browser is real: clicks and typing affect the live page (they may submit forms, place orders, or delete data) — explain before irreversible actions;",
 	"- To see what the page looks like, use browser_snapshot (text snapshot); it is better than a screenshot for understanding structure."
-].join("\n"));
-// packages/plugin/src/logger.ts
-var sink = null;
-/** 交给出口；出口自己坏了只吞掉，绝不让日志把业务带崩 */
-function forward(level, path, args) {
-	if (!sink) return;
-	try {
-		sink({
-			level,
-			path,
-			args
-		});
-	} catch {}
-}
-var Logger = class Logger {
-	label;
-	parent;
-	constructor(label, parent) {
-		this.label = label;
-		this.parent = parent;
-	}
-	/** 完整路径，如 `app:turn:builtin-file-tools` */
-	path() {
-		return this.parent ? `${this.parent.path()}:${this.label}` : this.label;
-	}
-	/** 只进 console：排查用的细粒度流水，不该刷进界面日志面板 */
-	debug(...args) {
-		console.debug(`[plugin:${this.path()}]`, ...args);
-	}
-	info(...args) {
-		console.info(`[plugin:${this.path()}]`, ...args);
-		forward("info", this.path(), args);
-	}
-	warn(...args) {
-		console.warn(`[plugin:${this.path()}]`, ...args);
-		forward("warn", this.path(), args);
-	}
-	error(...args) {
-		console.error(`[plugin:${this.path()}]`, ...args);
-		forward("error", this.path(), args);
-	}
-	/** 派生子 logger（名字追加一层），如 `ctx.logger.extend('mcp')` */
-	extend(label) {
-		return new Logger(label, this);
-	}
-};
-// packages/plugin/src/scope.ts
-var CURRENT = null;
-/** 在「CURRENT = ctx」的作用域里跑 `fn`，跑完恢复（支持嵌套） */
-function withContext(ctx, fn) {
-	const prev = CURRENT;
-	CURRENT = ctx;
-	try {
-		return fn();
-	} finally {
-		CURRENT = prev;
-	}
-}
-/**
-* 把 `disposer` 绑到「当前插件 fiber」（有的话）或 `owner` 上，返回幂等的提前回收器。
-*/
-function bindEffect(owner, disposer) {
-	return (CURRENT ?? owner)._pushEffect(disposer);
-}
-// packages/plugin/src/service.ts
-var Service = class {
-	ctx;
-	constructor(ctx) {
-		this.ctx = ctx;
-	}
-	/** 服务名（取自「提供它的 key」由容器负责；这里给个默认，子类可覆盖） */
-	get name() {
-		return this.constructor.name;
-	}
-	/**
-	* 在当前 Context 上登记一个可回收副作用（见 `Context.effect`）。
-	* 返回的 disposer 可手动提前回收（幂等）。
-	*/
-	effect(fn) {
-		return this.ctx.effect(fn);
-	}
-	/**
-	* 把「注册项」的 disposer 绑到发起注册的插件 fiber 上（不在插件里则绑到服务所属 Context）——
-	* 这样 `fork.dispose()` 能回收本插件加的工具 / 提示词段 / UI 声明。
-	*/
-	bind(disposer) {
-		return bindEffect(this.ctx, disposer);
-	}
-};
-// packages/plugin/src/services/events.ts
-/**
-* 事件总线服务：`ctx.events` 的实体。
-*
-* 之所以还要它（而不是只留 `ctx.on` / `ctx.emit`）：插件想「声明依赖事件能力」时可以
-* `inject: ['events']`，也可以在配置里被换掉（测试时给个记录用的假总线）。
-* 行为完全委托给 Context —— 事件沿 Context 树**向上冒泡**（子层注册的监听器先触发，
-* 再到父层），这样 App 层能统一监听所有 turn 的事件。
-*/
-var EventsService = class extends Service {
-	constructor(ctx) {
-		super(ctx);
-	}
-	get name() {
-		return "events";
-	}
-	/** 监听事件；返回 disposer（随 Context 卸载自动回收，无需手动调） */
-	on(name, listener) {
-		return this.ctx.on(name, listener);
-	}
-	/** 一对多广播，不收集返回值 */
-	emit(name, ...args) {
-		this.ctx.emit(name, ...args);
-	}
-	/**
-	* 安全广播：单个监听器抛错只记日志，不中断其余监听器，也不把异常抛回调用方。
-	* 长驻的会话状态钩子用它分发（见 `Context.emitSafe`）。
-	*/
-	emitSafe(name, ...args) {
-		this.ctx.emitSafe(name, ...args);
-	}
-	/**
-	* 拦截型钩子：监听器签名 `(...args, next)`，可读 / 改参数再 `next(...)` 继续，
-	* 或直接返回自己的结果**中断链路**（不再往下走）。
-	*/
-	waterfall(name, args, fallback) {
-		return this.ctx.waterfall(name, args, fallback);
-	}
-	/** 收集型：返回第一个「非 undefined」的监听器结果 */
-	bail(name, ...args) {
-		return this.ctx.bail(name, ...args);
-	}
-};
-// packages/plugin/src/context.ts
-/**
-* Context —— 插件框架的心脏（Cordis 风格的精简实现）。
-*
-* 一个 Context 是：
-* 1. **服务容器**：`get` / `set` / `has`，查找沿 parent 链向上（子能看见父的，父看不见子的）；
-* 2. **effect 作用域**：`effect(fn)` 登记的副作用在卸载时按 **LIFO 逆序回收**；
-* 3. **插件挂载点**：`plugin(p, cfg)` 为每个插件实例造一个**隔离子 Context（fiber）**并 apply，
-*    返回 `Fork`；`fork.dispose()` 回收该插件的一切；
-* 4. **依赖注入**：`inject(deps, cb)`（以及对象插件的 `inject`）在依赖齐全前**推迟**执行，
-*    依赖一旦被 `set` 提供就自动补跑 —— 所以挂载顺序无关紧要；
-* 5. **类型化事件总线**：`on` / `emit` / `waterfall` / `bail`，事件沿 parent 链**向上冒泡**；
-* 6. **生命周期**：`start()`（emit `ready`）/ `dispose()`（先拆子、再 emit `dispose`、最后 LIFO 回收）。
-*
-* 两层上下文用法（本仓库的实际用法）：
-* - **App Context**（长驻）：logger / storage / 插件发现加载器；
-* - `app.isolate('turn:<id>')` 派生的 **Turn Context**：挂 builtin 插件 + 每轮选中的插件，
-*   收尾 `turn.dispose()` —— 新一轮全部重建，互不污染。
-*
-* 隔离语义：`isolate()` 出来的子 Context **自带一套服务表与 effect 作用域**，
-* 但通过 parent 链仍能读到 App 层的长驻服务。这正是「每轮重建」实现的方式。
-*/
-/** 插件实例的运行句柄 */
-var Fork = class {
-	parent;
-	ctx;
-	constructor(parent, ctx) {
-		this.parent = parent;
-		this.ctx = ctx;
-	}
-	get name() {
-		return this.ctx.name;
-	}
-	/** 卸载这个插件（幂等）：回收其 fiber 的一切 effect，并从父的挂起表里摘掉 */
-	dispose() {
-		this.parent._dropPendingFor(this.ctx);
-		return this.ctx.dispose();
-	}
-};
-function isClass(fn) {
-	return /^class[\s{]/.test(Function.prototype.toString.call(fn));
-}
-/** 把三种插件形态归一成对象形态 */
-function normalizePlugin(plugin) {
-	if (typeof plugin === "function") {
-		if (isClass(plugin)) {
-			const Cls = plugin;
-			return {
-				name: plugin.name || "plugin",
-				apply: (ctx, config) => {
-					const inst = new Cls(ctx, config);
-					if (inst && typeof inst.dispose === "function") return () => inst.dispose();
-				}
-			};
-		}
-		const fn = plugin;
-		return {
-			name: fn.name || "plugin",
-			apply: fn
-		};
-	}
-	if (plugin && typeof plugin === "object" && typeof plugin.apply === "function") return plugin;
-	throw new Error("无效的插件：需要函数、类或 { apply } 对象");
-}
-function applyPlugin(ctx, plugin, config) {
-	const result = withContext(ctx, () => plugin.apply(ctx, config));
-	if (typeof result === "function") ctx._pushEffect(result);
-}
-var Context = class Context {
-	parent;
-	name;
-	_services = /* @__PURE__ */ new Map();
-	_effects = [];
-	_listeners = /* @__PURE__ */ new Map();
-	_children = /* @__PURE__ */ new Set();
-	_pending = [];
-	_logger;
-	_events;
-	_disposed = false;
-	constructor(parent = null, name = "root") {
-		this.parent = parent;
-		this.name = name;
-		parent?._children.add(this);
-	}
-	get disposed() {
-		return this._disposed;
-	}
-	/** 树的根（App Context） */
-	get root() {
-		return this.parent ? this.parent.root : this;
-	}
-	has(name) {
-		if (name === "logger" || name === "events") return true;
-		if (this._services.has(name)) return true;
-		return this.parent ? this.parent.has(name) : false;
-	}
-	get(name) {
-		if (name === "logger") return this.logger;
-		if (name === "events") return this.events;
-		if (this._services.has(name)) return this._services.get(name);
-		return this.parent ? this.parent.get(name) : void 0;
-	}
-	/** 提供服务（并登记一条 effect：卸载时自动摘除）；返回提前摘除的 disposer */
-	set(name, value) {
-		this._services.set(name, value);
-		const dispose = bindEffect(this, () => {
-			if (this._services.get(name) === value) this._services.delete(name);
-		});
-		this.root._flushPending();
-		return dispose;
-	}
-	get logger() {
-		if (!this._logger) this._logger = new Logger(this.name, this.parent?.logger);
-		return this._logger;
-	}
-	get events() {
-		if (!this._events) this._events = new EventsService(this);
-		return this._events;
-	}
-	/** 工具注册表（未提供时抛错：说明这轮没建 turn context） */
-	get tools() {
-		const s = this.get("tools");
-		if (!s) throw new Error("tools 服务未提供：请先 ctx.set(\"tools\", new ToolsService(ctx))");
-		return s;
-	}
-	get prompt() {
-		const s = this.get("prompt");
-		if (!s) throw new Error("prompt 服务未提供：请先 ctx.set(\"prompt\", new PromptService(ctx))");
-		return s;
-	}
-	get ui() {
-		const s = this.get("ui");
-		if (!s) throw new Error("ui 服务未提供：请先 ctx.set(\"ui\", new UiService(ctx))");
-		return s;
-	}
-	/**
-	* 模型配置注册表（`ctx.models`）。
-	*
-	* ⚠️ 只有**收集全局模型配置的 context** 才提供它（服务端启动 / 模型列表刷新时建的那份）。
-	* 回合 context 上也给了一份：插件顶层 `inject: ['models']` 不会被推迟（否则它在回合里
-	* 干脆不 apply，工具 / 提示词一起消失），但**工作区级插件注册的模型不会进设置页** ——
-	* 模型列表是全局的，见 `services/models.ts` 的说明。
-	*/
-	get models() {
-		const s = this.get("models");
-		if (!s) throw new Error("models 服务未提供：请先 ctx.set(\"models\", new ModelsService(ctx))");
-		return s;
-	}
-	/**
-	* 上传源注册表（`ctx.uploads`）。
-	*
-	* ⚠️ 只有**长驻的 upload context**（`apps/server/src/server/upload/registry.ts` 建的）才有它 ——
-	* 上传发生在「还没有回合」的时候，turn context 上**刻意不提供**它。所以回合里的插件要想用
-	* 上传源，得写 `inject: ['uploads']`：依赖不齐时框架会**推迟挂载**（那个回合里它干脆不 apply，
-	* 既不报错也不白跑），而不是让 `ctx.uploads.register` 撞一个 undefined。
-	*
-	* 没提供时这里抛错（与 tools / prompt 同款）：真走到了说明宿主漏建了这个能力，
-	* 报错比「静默什么都不做」好查。
-	*/
-	get uploads() {
-		const s = this.get("uploads");
-		if (!s) throw new Error("uploads 服务未提供：这个 context 没有上传能力（上传源注册只挂在长驻 upload context 上，回合里请用 inject: [\"uploads\"] 声明依赖）");
-		return s;
-	}
-	/** 钩子总线（未提供时抛错：说明这轮没建 turn context） */
-	get hooks() {
-		const s = this.get("hooks");
-		if (!s) throw new Error("hooks 服务未提供：请先 ctx.set(\"hooks\", new HooksService(ctx))");
-		return s;
-	}
-	/**
-	* 插件 RPC（前端半拿数据的通道，见 `services/rpc.ts`）。
-	*
-	* 只挂在**长驻 context** 上（与 uploads 同级）：前端可能在任意时刻调用它，
-	* 而回合结束时 turn context 已经销毁了。想在回合里注册方法就写 `inject: ['rpc']`。
-	*/
-	get rpc() {
-		const s = this.get("rpc");
-		if (!s) throw new Error("rpc 服务未提供：这个 context 没有 RPC 能力（只挂在长驻 context 上，回合里请用 inject: [\"rpc\"] 声明依赖）");
-		return s;
-	}
-	/**
-	* 工作区（`ctx.workspace`）：只有**绑定了目录的回合**才提供（未绑定目录的会话、以及
-	* 设置页那种临时 inspect context 都没有 —— 它们本来也没有「工作区」这个东西）。
-	*
-	* 所以插件**不要**把 `workspace` 写进顶层 `inject`：那样会在 inspect context 里被推迟，
-	* 连它的设置项声明都收不到（设置页就看不到它了）。要工作区的**工具那半**单独用
-	* `ctx.inject(['workspace', 'tools'], …)` 注册即可。
-	*
-	* 没提供时这里抛错（与 tools / uploads 同款）：真走到了说明宿主忘了 set。
-	*/
-	get workspace() {
-		const s = this.get("workspace");
-		if (!s) throw new Error("workspace 服务未提供：这个 context 没有绑定工作区（回合请用 inject: [\"workspace\"] 声明依赖）");
-		return s;
-	}
-	/**
-	* 运行 `fn` 并把它的返回值当作清理函数登记下来；返回一个**幂等**的提前回收器。
-	* 卸载时所有未回收的 effect 按登记顺序的**逆序**执行。
-	*/
-	effect(fn) {
-		const raw = fn();
-		if (typeof raw !== "function") return () => {};
-		return this._pushEffect(raw);
-	}
-	/** 直接登记一个已算好的清理函数（插件 apply 的返回值走这里） */
-	_pushEffect(dispose) {
-		const entry = { dispose };
-		this._effects.push(entry);
-		let done = false;
-		return () => {
-			if (done) return;
-			done = true;
-			const i = this._effects.indexOf(entry);
-			if (i >= 0) this._effects.splice(i, 1);
-			return entry.dispose();
-		};
-	}
-	/** 派生一个隔离子 Context（自带服务表与 effect 作用域，仍能读到父的服务） */
-	isolate(name = "isolate") {
-		return new Context(this, name);
-	}
-	/**
-	* 挂载插件：为它造一个隔离 fiber 并 apply。
-	* `inject` 声明的依赖没齐时**推迟**，等依赖被提供后自动补跑（顺序无关）。
-	*/
-	plugin(plugin, config) {
-		const obj = normalizePlugin(plugin);
-		const fiber = new Context(this, obj.name ?? "plugin");
-		const fork = new Fork(this, fiber);
-		const entry = {
-			ctx: fiber,
-			inject: obj.inject,
-			apply: () => applyPlugin(fiber, obj, config)
-		};
-		if (fiber._missing(obj.inject).length === 0) entry.apply();
-		else this.root._pending.push(entry);
-		return fork;
-	}
-	/** 声明式依赖：依赖齐全时立即跑 `cb`；否则挂起等依赖出现 */
-	inject(deps, cb) {
-		let inner = null;
-		const entry = {
-			ctx: this,
-			inject: deps,
-			apply: () => {
-				const d = cb(this);
-				inner = typeof d === "function" ? this._pushEffect(d) : null;
-			}
-		};
-		if (this._missing(deps).length === 0) {
-			entry.apply();
-			return () => {
-				inner?.();
-			};
-		}
-		this.root._pending.push(entry);
-		return () => {
-			const i = this.root._pending.indexOf(entry);
-			if (i >= 0) this.root._pending.splice(i, 1);
-			inner?.();
-		};
-	}
-	_missing(inject) {
-		return (inject ?? []).filter((name) => !this.has(name));
-	}
-	/** 摘掉「等这个 Context 的依赖」的挂起项（Fork 卸载时用；同一类内也会互相调） */
-	_dropPendingFor(ctx) {
-		this.root._pending = this.root._pending.filter((e) => e.ctx !== ctx);
-	}
-	_flushPending() {
-		if (this._pending.length === 0) return;
-		const runnable = [];
-		const remaining = [];
-		for (const entry of this._pending) {
-			if (entry.ctx._disposed) continue;
-			if (entry.ctx._missing(entry.inject).length === 0) runnable.push(entry);
-			else remaining.push(entry);
-		}
-		this._pending = remaining;
-		for (const entry of runnable) entry.apply();
-	}
-	/** 监听事件；返回 disposer（随本 Context 卸载自动回收） */
-	on(name, listener) {
-		let set = this._listeners.get(name);
-		if (!set) {
-			set = /* @__PURE__ */ new Set();
-			this._listeners.set(name, set);
-		}
-		set.add(listener);
-		const target = set;
-		return bindEffect(this, () => {
-			target.delete(listener);
-			if (target.size === 0 && this._listeners.get(name) === target) this._listeners.delete(name);
-		});
-	}
-	/** 广播：沿 parent 链向上，逐层触发监听器（近的层先触发） */
-	emit(name, ...args) {
-		for (let c = this; c; c = c.parent) {
-			const set = c._listeners.get(name);
-			if (set) for (const listener of [...set]) listener(...args);
-		}
-	}
-	/**
-	* 安全广播：触发顺序与 `emit` 完全一致，但**单个监听器抛错只记日志**，不影响后面的
-	* 监听器、也不把异常抛回调用方。
-	*
-	* 长驻的会话状态钩子用这条：一个通知插件写坏（网络、格式化、空指针）不该让会话收尾
-	* 跟着炸，更不该让另一个插件的通知也发不出去。
-	*/
-	emitSafe(name, ...args) {
-		for (let c = this; c; c = c.parent) {
-			const set = c._listeners.get(name);
-			if (!set) continue;
-			for (const listener of [...set]) try {
-				listener(...args);
-			} catch (err) {
-				c.logger.warn(`监听器执行失败（${name}）：`, err);
-			}
-		}
-	}
-	/**
-	* 拦截型钩子：监听器签名 `(...args, next)`。可读 / 改参数再 `next(...)` 继续，
-	* 或直接返回一个值**中断链路**（后面的监听器不再执行）。
-	* `fallback` 是所有人都放行后的兜底（通常是内置行为）。
-	*/
-	waterfall(name, args, fallback) {
-		const chain = [];
-		for (let c = this; c; c = c.parent) {
-			const set = c._listeners.get(name);
-			if (set) chain.push(...set);
-		}
-		let index = -1;
-		const next = (...override) => {
-			index += 1;
-			if (index >= chain.length) return fallback(...override.length ? override : args);
-			return chain[index](...args, next);
-		};
-		return next();
-	}
-	/** 收集型：第一个返回非 undefined 的监听器结果胜出 */
-	bail(name, ...args) {
-		for (let c = this; c; c = c.parent) {
-			const set = c._listeners.get(name);
-			if (!set) continue;
-			for (const listener of [...set]) {
-				const result = listener(...args);
-				if (result !== void 0) return result;
-			}
-		}
-	}
-	/** 启动：emit `ready`（挂载完成后调一次） */
-	start() {
-		this.emit("ready");
-	}
-	/**
-	* 卸载：先拆子 Context（含插件 fiber），再 emit `dispose`，最后 LIFO 回收本层 effect。
-	* 幂等。effect 的异常被吞掉（卸载不该因为一个清理失败而半途而废），但会打日志。
-	*/
-	async dispose() {
-		if (this._disposed) return;
-		this._disposed = true;
-		for (const child of [...this._children].reverse()) try {
-			await child.dispose();
-		} catch (err) {
-			this.logger.warn("子 Context 卸载失败：", err);
-		}
-		this._children.clear();
-		this._dropPendingFor(this);
-		this.emit("dispose");
-		for (const entry of [...this._effects].reverse()) try {
-			await entry.dispose();
-		} catch (err) {
-			this.logger.warn("effect 回收失败：", err);
-		}
-		this._effects.length = 0;
-		this._listeners.clear();
-		this._services.clear();
-		this.parent?._children.delete(this);
-	}
-};
-/** 造一个根 Context（App Context 的起点） */
-function createAppContext(name = "app") {
-	return new Context(null, name);
-}
-// packages/plugin/src/services/tools.ts
-/**
-* 工具注册表：`ctx.tools` 的实体。**这是插件「加 / 覆盖」Agent 工具的唯一入口。**
-*
-* 覆盖规则（信任模型的落点）：
-* - 每个注册项都带 `priority`（缺省 0）。同名工具里 **priority 最高者胜出**；
-* - 最高 priority 出现**并列**时**直接抛错** —— 默认谁也别想悄悄盖掉内置工具：
-*   内置工具以 priority 0 注册，插件想覆盖必须显式把自己的 priority 调到 > 0
-*   （见设置页的信任开关），否则加载期就炸，错误会一路冒到日志与 UI；
-* - priority 不同时**静默取高者** —— 这正是「用户显式调高 priority 后允许覆盖」。
-*
-* 工具名冲突的报错刻意写得「大声」：带上各自的来源（source）与 priority，
-* 让人一眼看出是谁想盖谁、该怎么调。
-*/
-var ToolsService = class extends Service {
-	/** 名字 → 该名字的所有注册（含被盖掉的，便于 UI 展示冲突） */
-	_byName = /* @__PURE__ */ new Map();
-	/** 首次出现的名字顺序，`build()` 按它输出，保证工具集键序稳定 */
-	_order = [];
-	constructor(ctx) {
-		super(ctx);
-	}
-	get name() {
-		return "tools";
-	}
-	/** 注册单个工具；返回 disposer（从注册表摘掉这一条） */
-	register(name, tool, opts = {}) {
-		if (typeof tool !== "object" || tool === null || typeof tool.execute !== "function") throw new Error(`工具「${name}」没有可调用的 execute（来源 ${opts.source ?? "unknown"}）：AI SDK 的工具对象必须是 { description, execute } 的形状（无参工具可省略 inputSchema）；handler 是别家的叫法，这里必须叫 execute。`);
-		const reg = {
-			name,
-			tool,
-			priority: opts.priority ?? 0,
-			origin: opts.origin ?? "plugin",
-			source: opts.source ?? "unknown",
-			mutating: opts.mutating ?? false
-		};
-		const list = this._byName.get(name);
-		if (list) list.push(reg);
-		else {
-			this._byName.set(name, [reg]);
-			this._order.push(name);
-		}
-		return this.bind(() => {
-			const cur = this._byName.get(name);
-			if (!cur) return;
-			const i = cur.indexOf(reg);
-			if (i >= 0) cur.splice(i, 1);
-			if (cur.length === 0) {
-				this._byName.delete(name);
-				const j = this._order.indexOf(name);
-				if (j >= 0) this._order.splice(j, 1);
-			}
-		});
-	}
-	/** 批量注册（同一个 priority / source），返回一次性摘掉全部的 disposer */
-	registerAll(tools, opts = {}) {
-		const disposers = Object.keys(tools).map((name) => this.register(name, tools[name], opts));
-		return () => {
-			for (const d of disposers) d();
-		};
-	}
-	/** 按名字取「胜出者」（不抛错：无冲突时的高者；有冲突时取最高，不在这里报错） */
-	get(name) {
-		const list = this._byName.get(name);
-		return list ? this._pick(name, list, false) : void 0;
-	}
-	/** 列出全部注册项（`build()` 顺序） */
-	list() {
-		const out = [];
-		for (const name of this._order) out.push(...this._byName.get(name) ?? []);
-		return out;
-	}
-	/** 是否存在冲突（并列最高 priority），供设置页 / 加载期体检 */
-	conflicts() {
-		const out = [];
-		for (const name of this._order) {
-			const list = this._byName.get(name);
-			if (list && list.length > 1) try {
-				this._pick(name, list, true);
-			} catch {
-				out.push({
-					name,
-					registrations: [...list]
-				});
-			}
-		}
-		return out;
-	}
-	/**
-	* 解析后的胜出清单（**含各自的注册信息**，如 `mutating`）。
-	*
-	* `build()` 就是它的投影；需要「按注册声明做事」的装配期逻辑用这个 —— 典型是给
-	* `mutating: true` 的工具套审批闸门（`@fizz/agent` 的 `wrapToolsWithApproval`）。
-	* 与 `build()` 一样：同名并列最高 priority 在这里抛错。
-	*/
-	entries() {
-		const out = [];
-		for (const name of this._order) {
-			const list = this._byName.get(name);
-			if (!list || list.length === 0) continue;
-			const registration = this._pick(name, list, true);
-			out.push({
-				name,
-				tool: registration.tool,
-				registration
-			});
-		}
-		return out;
-	}
-	/**
-	* 产出最终的「工具名 → 工具对象」。同名冲突（并列最高 priority）在这里抛错 ——
-	* 装配期就炸，不会等到模型调用一个来路不明的同名工具。
-	*/
-	build() {
-		const out = {};
-		for (const { name, tool } of this.entries()) out[name] = tool;
-		return out;
-	}
-	_pick(name, list, strict) {
-		if (list.length === 1) return list[0];
-		const sorted = [...list].sort((a, b) => b.priority - a.priority);
-		const topPriority = sorted[0].priority;
-		const atTop = sorted.filter((r) => r.priority === topPriority);
-		if (atTop.length > 1) {
-			if (!strict) return atTop[atTop.length - 1];
-			const detail = atTop.map((r) => `${r.source}(priority=${r.priority}, ${r.origin})`).join("  vs  ");
-			throw new Error(`工具名冲突：「${name}」被多个同优先级注册项争用 —— ${detail}。默认不允许插件覆盖内置工具；若确需覆盖，请在插件配置里显式把 priority 调高（> 0）。`);
-		}
-		return atTop[0];
-	}
-};
-// packages/plugin/src/services/prompt.ts
-/**
-* 提示词注册表：`ctx.prompt` 的实体。**这是插件往系统提示词里插话的唯一入口。**
-*
-* 一个 section = 一段提示词，带 id（同名视为同一段，后写覆盖）与 priority。
-* 渲染顺序 = priority 升序、同序按注册先后 —— 所以内置的基础提示词用 priority 0
-* 注册在最前，插件想插在后面用更大的 priority。
-*
-* `render()` 用空行（`\n\n`）连接各段，空文本段直接跳过（便于插件「先注册、运行期
-* 再决定填不填内容」）。
-*/
-var PromptService = class extends Service {
-	_byId = /* @__PURE__ */ new Map();
-	/** 首次出现的 id 顺序（决定同 priority 时的先后） */
-	_order = [];
-	constructor(ctx) {
-		super(ctx);
-	}
-	get name() {
-		return "prompt";
-	}
-	/** 写入 / 覆盖一段提示词；返回 disposer（仅当这段还在时移除） */
-	section(id, text, opts = {}) {
-		const existed = this._byId.has(id);
-		const sec = {
-			id,
-			text,
-			priority: opts.priority ?? 0,
-			source: opts.source ?? "unknown"
-		};
-		this._byId.set(id, sec);
-		if (!existed) this._order.push(id);
-		return this.bind(() => {
-			if (this._byId.get(id) === sec) {
-				this._byId.delete(id);
-				const i = this._order.indexOf(id);
-				if (i >= 0) this._order.splice(i, 1);
-			}
-		});
-	}
-	remove(id) {
-		this._byId.delete(id);
-		const i = this._order.indexOf(id);
-		if (i >= 0) this._order.splice(i, 1);
-	}
-	/** 按渲染顺序列出非空段 */
-	list() {
-		const pos = new Map(this._order.map((id, i) => [id, i]));
-		return [...this._byId.values()].filter((s) => s.text.trim().length > 0).sort((a, b) => a.priority - b.priority || (pos.get(a.id) ?? 0) - (pos.get(b.id) ?? 0));
-	}
-	/** 拼接成最终提示词正文（缺省空行分隔） */
-	render(separator = "\n\n") {
-		return this.list().map((s) => s.text).join(separator);
-	}
-};
-// packages/plugin/src/services/workspace.ts
-/**
-* 工作区服务：把「这一轮绑定的工作区根目录」交给插件。
-*
-* ## 为什么需要它
-*
-* 内置文件工具是**闭包**拿到工作区根的（`fileToolsPlugin(root, …)`，见
-* `@fizz/agent` 的 plugins.ts），插件却什么都没有 —— 于是插件写的工具**没法解析相对路径**。
-* 而模型的系统提示词里明确写着「所有路径一律使用相对工作区根目录的路径」，所以一个
-* 「把某个文件传上去」的插件工具，拿到的大概率就是 `notes/report.md` 这种相对路径。
-* 没有这个服务，插件只能要求绝对路径，跟全仓库的路径约定拧着来。
-*
-* ## 边界（刻意很小）
-*
-* 只回答两件事：工作区在哪（`path`）、怎么把模型给的路径变成绝对路径（`resolve`）。
-* **不做沙箱**：不拦着插件读写工作区外的文件 —— 插件本来就是**完全可信**的代码
-* （它能 `import node:fs` 干任何事），给一个「看起来能挡住」的 API 只会造成安全错觉。
-* 需要限制范围的插件请自己调 `contains` 判断。
-*
-* 提供时机：`buildAgentSetup` 建 turn context 时 set（未绑定目录的会话不提供 → 声明
-* `inject: ['workspace']` 的插件在那里会被**推迟挂载**，见 context.ts 的依赖注入说明）。
-*/
-var WorkspaceService = class extends Service {
-	/** 工作区根目录（已归一化） */
-	path;
-	/** 项目显示名 */
-	label;
-	constructor(ctx, info) {
-		super(ctx);
-		this.path = normalize(String(info?.path ?? ""));
-		this.label = String(info?.name ?? "");
-	}
-	get name() {
-		return "workspace";
-	}
-	/**
-	* 把模型给的路径解析成绝对路径：绝对路径原样归一化，相对路径拼到工作区根下。
-	*
-	* 不做「越界检查」——见文件头的边界说明。要判断的话用 `contains`。
-	*/
-	resolve(input) {
-		const raw = String(input ?? "").trim();
-		if (!raw) return this.path;
-		return normalize(isAbsolute(raw) ? raw : join(this.path, raw));
-	}
-	/** 这个路径（绝对或相对）是否落在工作区内 */
-	contains(input) {
-		const target = this.resolve(input);
-		const rel = relative(this.path, target);
-		return rel === "" || !rel.startsWith("..") && !isAbsolute(rel);
-	}
-};
-// packages/plugin/src/services/models.ts
-/**
-* 模型配置注册表：`ctx.models` 的实体。**插件往「设置 → 模型」里加配置的唯一入口。**
-*
-* 一条注册 = 设置页里的一份**模型配置**（网关 + 模型清单 + 每个模型自己的窗口 / 进阶设置）：
-*
-* ```ts
-* ctx.models.register({
-*   id: 'my-gateway',
-*   name: '我的网关',
-*   kind: 'openai-compatible',
-*   baseURL: 'https://gateway.example.com/v1',
-*   apiKey: config?.token,          // 密钥项由宿主解密后随 config 传进来
-*   models: [
-*     { id: 'model-a', contextWindow: 128_000 },
-*     { id: 'model-b', settings: { imageInput: false } }
-*   ]
-* })
-* ```
-*
-* ## 只读、不落盘
-*
-* 注册的配置**不写进 `agent-core.json`**：真源是插件自己（每次插件挂载时重新声明）。
-* 所以在设置页里它们是**只读**的 —— 不能编辑网关 / 增删模型，要改就改插件源码或它的设置项。
-* 插件被停用 / 卸载后，配置自然从列表里消失（正在用它的会话会得到「配置不存在」的明确报错）。
-*
-* ## 只认全局插件（内置 / 用户级）
-*
-* 模型列表是**全局**的（不属于某个项目）。工作区级插件（`<项目>/.fizz/plugins`）在某一轮
-* 对话里注册的配置不会进设置页，也不会参与模型解析 —— 那会让「同一个模型 id 在 A 项目有、
-* B 项目没有」变成隐形的状态。要全局可见就把插件放到内置 / 用户级目录。
-*
-* ## id 会被宿主加前缀
-*
-* 插件只给**插件内唯一**的 id（如 `main`）。宿主收集时拼成 `plugin:<插件入口路径>:<id>`，
-* 两个插件都用 `main` 也不会撞；设置页 / 会话里存的是拼好的那个。
-*/
-var KINDS = /* @__PURE__ */ new Set([
-	"openai",
-	"anthropic",
-	"deepseek",
-	"google",
-	"openai-compatible"
-]);
-/** 模型清单去空 / 去重 / 保序，并只保留已知字段（与 `AgentDomain.saveModel` 同一口径） */
-function normalizeModels(raw) {
-	if (!Array.isArray(raw)) return [];
-	const out = [];
-	const seen = /* @__PURE__ */ new Set();
-	for (const item of raw) {
-		if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-		const value = item;
-		const id = typeof value.id === "string" ? value.id.trim() : "";
-		if (!id || seen.has(id)) continue;
-		seen.add(id);
-		const entry = { id };
-		const window = value.contextWindow;
-		if (typeof window === "number" && Number.isFinite(window) && window > 0) entry.contextWindow = Math.floor(window);
-		const settings = value.settings;
-		if (settings && typeof settings === "object" && !Array.isArray(settings)) entry.settings = settings;
-		out.push(entry);
-	}
-	return out;
-}
-var ModelsService = class extends Service {
-	_byId = /* @__PURE__ */ new Map();
-	constructor(ctx) {
-		super(ctx);
-	}
-	get name() {
-		return "models";
-	}
-	/**
-	* 注册一份模型配置；返回 disposer（随插件 fiber 卸载自动回收）。
-	*
-	* 同一个 id 重复注册时**保留先注册的**并告警（与 `ctx.uploads.register` 同一取舍：
-	* 抛错会把整轮对话 / 整个设置页带停，代价远大于一条冲突）。
-	*/
-	register(input, opts = {}) {
-		const source = opts.source?.trim() || "unknown";
-		const id = typeof input?.id === "string" ? input.id.trim() : "";
-		if (!id || /\s/.test(id)) throw new Error(`模型配置 id 非法（来源 ${source}）：要是非空、不含空白的字符串`);
-		if (!KINDS.has(input.kind)) throw new Error(`模型配置「${id}」的 kind 非法（来源 ${source}）：${String(input.kind)}`);
-		const models = normalizeModels(input.models);
-		const reg = {
-			id,
-			name: input.name?.trim() || id,
-			kind: input.kind,
-			models,
-			...input.baseURL?.trim() ? { baseURL: input.baseURL.trim() } : {},
-			...input.apiKey?.trim() ? { apiKey: input.apiKey.trim() } : {},
-			...input.apiStyle ? { apiStyle: input.apiStyle } : {},
-			...typeof input.temperature === "number" && Number.isFinite(input.temperature) ? { temperature: input.temperature } : {},
-			...typeof input.maxTokens === "number" && Number.isFinite(input.maxTokens) ? { maxTokens: Math.floor(input.maxTokens) } : {},
-			...typeof input.contextMessages === "number" && Number.isFinite(input.contextMessages) ? { contextMessages: Math.floor(input.contextMessages) } : {},
-			source
-		};
-		const existing = this._byId.get(id);
-		if (existing) {
-			this.ctx.logger.warn(`[models] 模型配置 id 冲突：「${id}」已被 ${existing.source} 注册，忽略这次来自 ${source} 的注册`);
-			return () => {};
-		}
-		this._byId.set(id, reg);
-		return this.bind(() => {
-			if (this._byId.get(id) === reg) this._byId.delete(id);
-		});
-	}
-	/** 当前注册清单（注册顺序） */
-	list() {
-		return [...this._byId.values()];
-	}
-};
-// packages/plugin/src/hooks.ts
-/**
-* 钩子（hook）：插件**改写** Agent 行为的地方 —— 与 `ctx.events` 的「只通知、不干预」互补。
-*
-* 两种形态：
-* - **waterfall（拦截改写）**：监听器签名 `(...args, next)`。范式是
-*   `const out = next(); return 改写(out)`（around 中间件：先放行、拿下游结果再加工），
-*   也可以不调 `next()` 直接返回一个值**中断链路**（后面的监听器与兜底都不再跑）。
-*   ⚠️ 框架的 `next(新值)` **不会**把新值传给下一个监听器（`waterfall` 恒以**原始 args**
-*   调用链上的下一个），所以「按入参把新值往后推」这条陆走不通 —— 想串联改写一律用
-*   around 范式。见 Context.waterfall 的实现注释。
-* - **emit（只通知）**：`turn:start` / `turn:finish` 这类生命周期事件，参数是一个对象。
-*
-* 归属（与 `ctx.tools` 完全同款，是本模块存在的理由）：`hooks` 服务由 `buildAgentSetup`
-* 建在 **turn context** 上，插件 `ctx.hooks.on(...)` 注册的监听器因此落在 turn context、
-* 能被同一轮的 `waterfall` / `emit` 看见；而 disposer 经 `bindEffect` 记在**插件 fiber** 上，
-* 插件卸载 / 下一轮重建时自动摘掉。
-* （对比：`ctx.events` 的实体是 **fiber-local** 的，在插件 fiber 上注册的监听器父层看不见。）
-*
-* ## 会话状态钩子（`conversation:*`）挂在**长驻宿主**上
-*
-* `turn:*` 是单轮内部的钩子，ACP / 容器型会话甚至没有这个 turn context；而「一轮开始 /
-* 结束 / 在等审批 / 在等回答」是**产品层面的会话状态**，必须跨后端、跨轮次存在。
-*
-* 所以服务端另建一份按工作区长驻的 hooks 宿主（`apps/server/src/server/conversation-hooks.ts`），
-* 从全局瞬时事件总线桥接这六个 hook。插件要接它们，用
-* `ctx.inject(['hooks'], (c) => c.hooks.on('conversation:finished', ...))` —— 不要写进
-* 顶层 `inject`（设置页的 inspect context 没有 hooks，写顶层会让整个插件被推迟挂载）。
-*
-* 监听器里**不要 await 网络请求**：这条总线是同步的，通知类插件应当 fire-and-forget
-* 并在自己的 Promise 上 catch。
-*/
-/** 钩子名（用常量，避免各处手写字符串拼错） */
-var HOOKS = {
-	/** 工具调用前：参数 `(toolName, input)`，可改写成新的 input */
-	toolCall: "tool:call",
-	/** 工具返回后：参数 `(toolName, output)`，可改写成新的 output */
-	toolResult: "tool:result",
-	/** 系统提示词渲染完成后：参数 `(text)`，可改写成新的正文 */
-	promptRender: "prompt:render",
-	/** 一轮开始（emit，参数 `TurnStartPayload`） */
-	turnStart: "turn:start",
-	/** 一轮收尾（emit，参数 `TurnFinishPayload`） */
-	turnFinish: "turn:finish",
-	/** 会话一轮开跑（emit，参数 `ConversationStartedPayload`） */
-	conversationStarted: "conversation:started",
-	/** 会话一轮收尾（落盘之后；emit，参数 `ConversationFinishedPayload`） */
-	conversationFinished: "conversation:finished",
-	/** 工具调用在等用户审批（emit，参数 `ConversationConfirmPayload`） */
-	conversationConfirm: "conversation:confirm",
-	/** 审批有了答复（emit，参数 `ConversationConfirmResolvedPayload`） */
-	conversationConfirmResolved: "conversation:confirm-resolved",
-	/** Agent 在等用户回答提问（emit，参数 `ConversationFollowupPayload`） */
-	conversationFollowup: "conversation:followup",
-	/** 提问有了答复（emit，参数 `ConversationFollowupResolvedPayload`） */
-	conversationFollowupResolved: "conversation:followup-resolved"
-};
-/**
-* `waterfall` 的兜底：取出「被改写的主体」。约定 —— 钩子带两个及以上参数时，
-* **第 2 个**是主体（第 1 个是名字之类的标识）；只有一个参数时它就是主体。
-* 这样兜底既接得住 `fallback(name, payload)`，也接得住监听器 `next(payload)` 的单参形态。
-*/
-function hookValue(...args) {
-	return args.length >= 2 ? args[1] : args[0];
-}
-/**
-* 钩子总线：`ctx.hooks` 的实体。行为完全委托给所属 Context（与 `EventsService` 同），
-* 只是服务名不同 —— 让插件能 `inject: ['hooks']` 声明依赖，也便于测试给替身。
-*/
-var HooksService = class extends EventsService {
-	get name() {
-		return "hooks";
-	}
-};
+].join("\n");
 // packages/agent/src/project-doc.ts
 /**
 * 项目约束文档（`AGENTS.md`）与分层规则。
@@ -8487,7 +8529,7 @@ var MAX_STEPS = 80;
 /**
 * 「每次工具调用都要填 `intent`」这条使用约定。
 *
-* **单独成段、由 `buildAgentSetup` 按开关追加**，不写进 `buildAgentSystemPrompt` 的正文：
+* **单独成段、由 `assembleStandard` 按开关追加**，不写进 `buildAgentSystemPrompt` 的正文：
 * 这条约定只有在真的往工具 schema 注入了 `intent` 时才成立（见 `engine.ts` 的
 * `withToolIntent` 与设置里的「工具意图」开关）。schema 里没有这个字段却让模型填，
 * 模型只会把它塞进别的参数里，或者开始编造字段名。
@@ -8507,7 +8549,7 @@ function toolIntentHint() {
 * 历史（第 N 步的成本本来就是第 1 步的 N 倍，再乘一次就是灾难）。动态的剩余步数走
 * `stepBudgetReminder`（步骤边界注入到消息尾部，只影响尾部那一小段前缀）。
 *
-* 由 `buildAgentSetup` 按调用方传入的 `maxSteps` 追加（见那里的说明），
+* 由 `assembleStandard` 按调用方传入的 `maxSteps` 追加（见那里的说明），
 * 一轮只出现一次。
 */
 function stepBudgetHint(maxSteps) {
@@ -8581,7 +8623,7 @@ function stepBudgetReminder(state) {
 * 客户端工具各自的闸），模型被拦时拿到的拒绝文案已经写清「当前是只读模式，请让用户
 * 去设置里切换」，信息一点没少。
 */
-function buildAgentSystemPrompt(workspacePath, workspaceName, skills = [], projectDoc, browser, previewPort, containerStart, containerAutoStart) {
+function buildAgentSystemPrompt(workspacePath, workspaceName, skills = [], projectDoc, previewPort, containerStart, containerAutoStart) {
 	const lines = getLanguage() === "en" ? [
 		`You are an AI Agent running in Fizz (a coding and operations assistant). The workspace is “${workspaceName}” (${workspacePath}).`,
 		"Your job: understand the user’s intent and proactively use tools to complete development and operations tasks inside the workspace.",
@@ -8607,7 +8649,6 @@ function buildAgentSystemPrompt(workspacePath, workspaceName, skills = [], proje
 	if (projectDoc) lines.push("", buildProjectDocSection(projectDoc));
 	const skillsSection = buildSkillsPromptSection(skills);
 	if (skillsSection) lines.push("", skillsSection);
-	if (browser) lines.push("", BROWSER_PROMPT_SECTION);
 	if (previewPort !== void 0) lines.push("", buildPreviewPortSection(previewPort));
 	if (containerStart) lines.push("", buildContainerStartSection(previewPort, containerAutoStart));
 	return lines.join("\n");
@@ -8708,7 +8749,7 @@ function buildPlanningSection() {
 *
 * 这里把「系统原本手工塞进工具集的东西」改写成 **priority 0 的内置插件**：
 * 文件 / 命令工具、web_fetch，以及「把一批现成工具挂进注册表」的通用袋子
-* （extraTools、已构建好的 MCP 工具集都走它）。装配入口仍是 `buildAgentSetup`，
+* （extraTools、已构建好的 MCP 工具集都走它）。装配入口是 `assembleStandard`，
 * 只是它现在**只消费注册表产出的结果**，不再手工 `Object.assign` 拼工具集。
 *
 * 为什么放 @fizz/agent 而不是 @fizz/plugin：Core 要保持轻（谁都能依赖），
@@ -8886,6 +8927,12 @@ function wrapToolsWithHooks(tools, hooks) {
 * `streamText`**（自己的提示词、自己的工具白名单、自己的步数上限），只把最终结论交回
 * 父上下文。
 *
+* ⚠️ `execute` **不阻塞**：起完子 run 立刻返回一个句柄（taskId），结论要父模型调
+* `task_wait` 来领。原因见 `task_wait` 那段注释 —— 一步之内模型发完 tool-call 就交出了
+* 话轮，必须等这一步的工具全部 resolve 才能发下一次请求；派活挂在那里，模型那句
+* 「同时我自己看看这个文件」就只能排在子任务后面。代价是父轮收尾时必须主动
+* `settle()`（见 `DelegationToolSet.settle`）。
+*
 * 过程（思考 / 工具调用 / 正文）**原样转发**成 `subagent-event` 到父流：前端把它折叠进
 * 派活卡的 `delegation.parts`（与主消息同一套形状，`SubagentPanel` 直接复用 `MessageParts`
 * 渲染），服务端同样折叠后随消息落盘。从前只转正文与工具名，理由是「怕变成二级卡片树」，
@@ -8942,6 +8989,13 @@ var RESULT_TEXT_FAILED = "子任务执行失败。不要重试同一个派活，
 */
 var RESULT_TEXT_ABORTED = "用户中止了这个子任务。不要重试同一个派活，除非用户明确要求；需要的话你自己完成。";
 var RESULT_TEXT_BAIL = "子任务连续失败，已停止本轮。";
+/** 子任务终态的人话（`task_list` 用；`running` 在调用处单独拼时长） */
+var STATUS_TEXT = {
+	done: "已完成",
+	empty: "没有产出可用结论",
+	failed: "失败",
+	aborted: "已中止"
+};
 /**
 * 「用满步数上限、没来得及收尾」时交回父上下文的前缀。
 *
@@ -8958,6 +9012,84 @@ var RESULT_TEXT_TRUNCATED = "子任务跑到步数上限才停，没来得及收
 var MAX_FALLBACK_ANSWER_CHARS = 4e3;
 /** 同一个 subagentId 连续失败这么多次就不再派（否则父模型会无限换姿势重试） */
 var MAX_CONSECUTIVE_FAILURES = 3;
+/**
+* `task_wait` 单次最多等多久。
+*
+* 这不是「子任务最长能跑多久」（那是步数上限管的），而是「一次等待最多占住父轮多久」：
+* 超时就把话轮交回父模型 —— 它可以先去做别的、过一会儿再领，或者自己把那件事做完。
+*
+* 不设上限的话，一个卡在 provider 上的子任务会让主对话彻底没动静：派活卡在转，
+* 用户不知道它是在等还是卡死了。
+*/
+var WAIT_SLICE_MS = 6e4;
+/**
+* 父轮收尾时等子任务响应 abort 的上限。
+*
+* abort 之后子 run 要回到自己的 `catch` 里发 `subagent-end`（派活卡从「运行中」落地
+* 就靠这一帧）。正常几十毫秒就完；provider 卡住时不能为了这一帧把整轮收尾拖住 ——
+* 兜底是落盘那一步把 `running` 收敛成 `aborted`（见 `assistant-message.ts` 的
+* `settleDelegations`）。
+*/
+var SETTLE_WAIT_MS = 1500;
+/**
+* 子任务已运行多久（给父模型看的短文案）。
+*
+* 只用于「还在跑」这类过程说明，**不进结论**：模型据此判断「是刚起步还是已经卡了很久」，
+* 决定继续等、先做别的、还是直接取消。
+*/
+function formatElapsed(ms) {
+	const total = Math.max(0, Math.round(ms / 1e3));
+	if (total < 60) return `${total} 秒`;
+	const minutes = Math.floor(total / 60);
+	const seconds = total % 60;
+	if (minutes < 60) return seconds > 0 ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分`;
+	const hours = Math.floor(minutes / 60);
+	const rest = minutes % 60;
+	return rest > 0 ? `${hours} 小时 ${rest} 分` : `${hours} 小时`;
+}
+/**
+* 派活的一句话说明。
+*
+* 模型没填 `summary` 时退到任务原文的第一行（截到 24 字）：`task_list` 里必须有一个
+* 能区分「这是哪一条」的短标签，否则同时派三四条时只剩 taskId 和子任务类型可看。
+*/
+function shortTaskLabel(task) {
+	const first = task.split("\n").map((line) => line.trim()).find(Boolean) ?? "";
+	return first.length > 24 ? `${first.slice(0, 24)}…` : first;
+}
+/**
+* 派活工具的公共说明（拼在每个 `agent-<id>` 的 description 后面）。
+*
+* ⚠️ 这两句就是本能力的**行为契约**，少一句都会退化成坏行为：
+* - 「立即返回」：模型照老习惯以为工具返回的就是结论，不等就开写 → 幻觉；
+* - 「结论靠 task_wait 领 + 收尾前必须领回」：不写的话它派完就去收尾，结论白跑一趟。
+*/
+var DELEGATION_TOOL_SUFFIX = "\n\n调用后**立即返回**一个 taskId（不会等它跑完）：派完你可以继续做自己的事，需要结论时调 `task_wait`（同一个 taskId）领取。**收尾前必须把派出去的活都领回来**，否则本轮结束时会把它中止。同一批 tool-call 里派多个子任务是真的并行；派了多条时用 `task_list` 看各自的状态与进度。";
+/** 派活句柄交回父上下文的文案：要让模型自己接得上 `task_wait`，并说清「别干等」 */
+function handleText(name, taskId) {
+	return `${DELEGATION_HANDLE_PREFIX}${name}」（taskId: ${taskId}）。它在后台跑，进度看派活卡。\n你可以继续做自己的事；需要它的结论时调 task_wait（taskId 填 ${taskId}）。不需要了可以调 task_cancel 提前结束；收尾前记得领回结论，否则本轮结束时它会被中止。`;
+}
+/**
+* 等子任务落地，最多 `WAIT_SLICE_MS`；超时返回 null（调用方把话轮交回模型）。
+*
+* 同时返回**本次实际等了多久**：调用方要把它和「子任务总共跑了多久」一起说清，
+* 否则模型只看到「已等 60 秒」，会误以为子任务也只跑了 60 秒。
+*/
+async function waitSettled(task) {
+	const startedWaiting = Date.now();
+	let timer;
+	const timeout = new Promise((resolve) => {
+		timer = setTimeout(() => resolve(null), WAIT_SLICE_MS);
+	});
+	try {
+		return {
+			result: await Promise.race([task.settled, timeout]),
+			waitedMs: Date.now() - startedWaiting
+		};
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
+}
 var SUBAGENT_SPECS = {
 	explorer: {
 		id: "explorer",
@@ -9056,14 +9188,23 @@ function recordSubagentUsage(stats, id, usage) {
 	stats.subagents[id] = next;
 }
 /**
-* 建一组派活工具：`agent-<id>`。不启用子任务时调用方不传 ids，这里不会被调用。
+* 建一组派活工具：`agent-<id>` × N + `task_list`（看状态）+ `task_wait`（领取）
+* + `task_cancel`（提前结束）。不启用子任务时调用方不传 ids。
 *
-* 每次 `runAgent` 现建（与父同一节奏，代价只是几个对象）；`failures` 也是**每轮一份**，
-* 跨轮不共享 —— 上一轮连续失败不该影响这一轮的判断。
+* 每次 `runAgent` 现建（与父同一节奏，代价只是几个对象）；`failures` / `tasks` 也是
+* **每轮一份**，跨轮不共享 —— 上一轮连续失败不该影响这一轮的判断。
+*
+* ⚠️ 派活是**非阻塞**的：`agent-<id>` 起完子 run 立刻返回一个 taskId，结论由 `task_wait`
+* 领取。阻塞版的代价见 `task_wait` 那段注释（一步之内模型交出话轮，等这一步所有工具
+* resolve 才发下一次请求 —— 派活挂在那里会让「同时自己也看看」变成排队）。
 */
 function buildDelegationTools(ids, opts) {
 	const failures = /* @__PURE__ */ new Map();
 	const out = {};
+	/** 本轮的后台派活：taskId → 句柄。父轮收尾时由 `settle` 统一清理 */
+	const tasks = /* @__PURE__ */ new Map();
+	/** toolCallId 缺失时的兜底 id（测试 / 非标准调用方） */
+	let taskSeq = 0;
 	const remote = opts.backend?.kind === "remote";
 	const allTools = {
 		...buildAgentTools(opts.workspacePath, {
@@ -9096,14 +9237,27 @@ function buildDelegationTools(ids, opts) {
 		const definitionModel = opts.definitionModels?.[id];
 		const model = resolveModel(definitionModel ?? (spec.preferredModelId ? subagentModel(opts.model, spec.preferredModelId) : opts.subagentModel ?? opts.model));
 		out[`agent-${id}`] = {
-			description: spec.description,
-			inputSchema: z.object({ task: z.string().describe("要交给这个子任务的具体问题 / 目标。写清楚要找什么、要看哪里。") }),
+			description: spec.description + DELEGATION_TOOL_SUFFIX,
+			inputSchema: z.object({
+				task: z.string().describe("要交给这个子任务的具体问题 / 目标。写清楚要找什么、要看哪里。"),
+				summary: z.string().optional().describe("一句话说明这条派活是干什么的（不超过 20 字，例如「查 auth 入口」）。同时派多个子任务时，task_list 靠它区分谁是谁。")
+			}),
 			execute: async (input, options) => {
 				const toolCallId = options?.toolCallId ?? "";
 				const task = (input?.task ?? "").trim();
+				/** 一句话说明：模型给的优先，没给就取任务原文首行（`task_list` 必须有东西可区分） */
+				const summary = (input?.summary ?? "").trim().slice(0, 40) || shortTaskLabel(task);
 				if (!task) return RESULT_TEXT_EMPTY;
 				/**
-				* 这一条子 run 自己的中止开关（派活卡上的停止钮命中它）。
+				* 连败闸开在**派出去那一刻**：失败是在后台才发生的，等它回来时父模型可能已经又派了
+				* 一单。不闸的话它会一直换姿势重试同一个坏掉的子任务。
+				*/
+				if ((failures.get(id) ?? 0) >= MAX_CONSECUTIVE_FAILURES) {
+					failures.delete(id);
+					return RESULT_TEXT_BAIL;
+				}
+				/**
+				* 这一条子 run 自己的中止开关（派活卡上的停止钮 / 父轮收尾命中它）。
 				*
 				* 与父轮取或而不是覆盖：整轮停止仍然要带走子任务，单条停止只掐这一个 ——
 				* `AbortSignal.any` 任一触发即中止，正是要的语义。
@@ -9112,6 +9266,8 @@ function buildDelegationTools(ids, opts) {
 				const parents = [options?.abortSignal, opts.signal].filter((s) => s != null);
 				const signal = parents.length ? AbortSignal.any([...parents, own.signal]) : own.signal;
 				const startedAt = Date.now();
+				/** 终态只能报一次（`finish` 被 `done` 与兜底 catch 同时碰到时不能发两帧） */
+				let ended = false;
 				/**
 				* 终态一定要报：`subagent-end` 是派活卡从「运行中」落到结论的唯一信号，漏掉一条
 				* 提前返回的路，卡片就会永远停在三根竖条上。
@@ -9120,6 +9276,8 @@ function buildDelegationTools(ids, opts) {
 				* 更糟的是它可能作用到下一次复用了同一 toolCallId 的调用上。
 				*/
 				const finish = (status) => {
+					if (ended) return;
+					ended = true;
 					if (toolCallId) opts.commandStops?.delete(toolCallId);
 					opts.emit({
 						type: "subagent-end",
@@ -9127,6 +9285,15 @@ function buildDelegationTools(ids, opts) {
 						status,
 						durationMs: Date.now() - startedAt
 					});
+				};
+				/** 收尾并交出一份结论：`settled` 由它 resolve，`task_wait` 在那里等 */
+				const done = (status, text) => {
+					finish(status);
+					return {
+						text,
+						status,
+						durationMs: Date.now() - startedAt
+					};
 				};
 				opts.emit({
 					type: "subagent-start",
@@ -9146,121 +9313,317 @@ function buildDelegationTools(ids, opts) {
 				* 大半是这一条。
 				*/
 				const prose = [];
-				try {
-					const result = streamText({
-						model,
-						/**
-						* 预算也要告诉子 agent：子 run 是**独立的 streamText**，没有主对话那套步骤边界
-						* 提醒（它连 `prepareStep` 都没挂），模型不知道有闸就会一直读文件，直到被
-						* `stepCountIs` 硬停 —— 那时 `result.text` 往往是空串（最后一步还是工具调用），
-						* 父上下文只收到一句「没有产出可用结论」。提示词里先讲清预算，至少能让它把
-						* 结论排进前 N 步。
-						*/
-						system: spec.instructions + DELEGATION_PROMPT_SUFFIX + stepBudgetHint(maxSteps),
-						messages: [{
-							role: "user",
-							content: task
-						}],
-						tools,
-						stopWhen: stepCountIs(maxSteps),
-						abortSignal: signal
-					});
-					for await (const part of result.fullStream) {
-						const p = part;
-						/**
-						* 正文 / 思考增量的字段名跨 AI SDK 版本不同（`text` vs `textDelta`）：
-						* 取到一个就走，两个都没有就不发 —— 少一帧增量只是少一段过程，不影响结论。
-						*/
-						const chunk = typeof p.text === "string" ? p.text : typeof p.textDelta === "string" ? p.textDelta : "";
-						if (p.type === "text-delta") {
-							if (chunk) {
-								prose.push(chunk);
+				/**
+				* 真正的子 run。**调用方不 await**：`execute` 要立刻把 taskId 交回去，结论由
+				* `task_wait` 在模型真正需要的时候领。这里只保证「一定 resolve 成一份结论」，
+				* 绝不 reject —— `settle` / `waitSettled` 的 race 都建立在这一点上。
+				*/
+				const runSubagent = async () => {
+					try {
+						const result = streamText({
+							model,
+							/**
+							* 预算也要告诉子 agent：子 run 是**独立的 streamText**，没有主对话那套步骤边界
+							* 提醒（它连 `prepareStep` 都没挂），模型不知道有闸就会一直读文件，直到被
+							* `stepCountIs` 硬停 —— 那时 `result.text` 往往是空串（最后一步还是工具调用），
+							* 父上下文只收到一句「没有产出可用结论」。提示词里先讲清预算，至少能让它把
+							* 结论排进前 N 步。
+							*/
+							system: spec.instructions + DELEGATION_PROMPT_SUFFIX + stepBudgetHint(maxSteps),
+							messages: [{
+								role: "user",
+								content: task
+							}],
+							tools,
+							stopWhen: stepCountIs(maxSteps),
+							abortSignal: signal
+						});
+						for await (const part of result.fullStream) {
+							const p = part;
+							/**
+							* 正文 / 思考增量的字段名跨 AI SDK 版本不同（`text` vs `textDelta`）：
+							* 取到一个就走，两个都没有就不发 —— 少一帧增量只是少一段过程，不影响结论。
+							*/
+							const chunk = typeof p.text === "string" ? p.text : typeof p.textDelta === "string" ? p.textDelta : "";
+							if (p.type === "text-delta") {
+								if (chunk) {
+									prose.push(chunk);
+									opts.emit({
+										type: "subagent-event",
+										toolCallId,
+										event: {
+											type: "text-delta",
+											delta: chunk
+										}
+									});
+								}
+							} else if (p.type === "start-step") {
+								if (prose.length) prose.push("\n\n");
+							} else if (p.type === "reasoning-delta") {
+								if (chunk) opts.emit({
+									type: "subagent-event",
+									toolCallId,
+									event: {
+										type: "reasoning-delta",
+										delta: chunk
+									}
+								});
+							} else if (p.type === "tool-call" && typeof p.toolName === "string" && typeof p.toolCallId === "string") {
+								/**
+								* 子 agent 的每一次工具调用都原样转给前端 + 落盘（从前只报工具名，刻意不铺开）。
+								* 现在这条过程是「attach 进子任务后看到的完整消息流」的一部分，入参必须带上，
+								* 否则卡片点开是空的。
+								*/
+								const callInput = p.input !== void 0 ? p.input : p.args;
 								opts.emit({
 									type: "subagent-event",
 									toolCallId,
 									event: {
-										type: "text-delta",
-										delta: chunk
+										type: "tool-call",
+										toolCallId: p.toolCallId,
+										toolName: p.toolName,
+										input: callInput
 									}
 								});
-							}
-						} else if (p.type === "start-step") {
-							if (prose.length) prose.push("\n\n");
-						} else if (p.type === "reasoning-delta") {
-							if (chunk) opts.emit({
+							} else if (p.type === "tool-result" && typeof p.toolName === "string" && typeof p.toolCallId === "string") opts.emit({
 								type: "subagent-event",
 								toolCallId,
 								event: {
-									type: "reasoning-delta",
-									delta: chunk
-								}
-							});
-						} else if (p.type === "tool-call" && typeof p.toolName === "string" && typeof p.toolCallId === "string") {
-							/**
-							* 子 agent 的每一次工具调用都原样转给前端 + 落盘（从前只报工具名，刻意不铺开）。
-							* 现在这条过程是「attach 进子任务后看到的完整消息流」的一部分，入参必须带上，
-							* 否则卡片点开是空的。
-							*/
-							const callInput = p.input !== void 0 ? p.input : p.args;
-							opts.emit({
-								type: "subagent-event",
-								toolCallId,
-								event: {
-									type: "tool-call",
+									type: "tool-result",
 									toolCallId: p.toolCallId,
 									toolName: p.toolName,
-									input: callInput
+									output: p.output !== void 0 ? p.output : p.result,
+									...p.isError ? { isError: true } : {}
 								}
 							});
-						} else if (p.type === "tool-result" && typeof p.toolName === "string" && typeof p.toolCallId === "string") opts.emit({
-							type: "subagent-event",
-							toolCallId,
-							event: {
-								type: "tool-result",
-								toolCallId: p.toolCallId,
-								toolName: p.toolName,
-								output: p.output !== void 0 ? p.output : p.result,
-								...p.isError ? { isError: true } : {}
-							}
-						});
-					}
-					const usage = await Promise.resolve(result.totalUsage).catch(() => void 0);
-					recordSubagentUsage(opts.stats, id, usage);
-					const finalText = (await Promise.resolve(result.text).catch(() => "")).trim();
-					/** 最后一步的正文（正常收尾时就是它）；为空才退到整段累积（见 `prose` 的注释） */
-					const collected = prose.join("").trim();
-					if (!(finalText || collected)) {
-						const aborted = signal.aborted;
-						finish(aborted ? "aborted" : "empty");
-						return aborted ? RESULT_TEXT_ABORTED : RESULT_TEXT_EMPTY;
-					}
-					failures.delete(id);
-					finish("done");
-					if (finalText) return finalText;
-					console.error(`[subagent] ${id} 用满 ${maxSteps} 步仍未收尾，回退交回已产出的 ${collected.length} 字符`);
-					return `${RESULT_TEXT_TRUNCATED}${collected.length > MAX_FALLBACK_ANSWER_CHARS ? `${collected.slice(0, MAX_FALLBACK_ANSWER_CHARS)}\n\n…（此处截断，完整过程在派活卡里）` : collected}`;
-				} catch (err) {
-					const aborted = signal.aborted;
-					if (aborted) console.warn(`[subagent] ${id} 被用户中止`);
-					else console.error(`[subagent] ${id} 执行失败：`, err);
-					finish(aborted ? "aborted" : "failed");
-					/**
-					* 被停的不计入「连续失败」：用户掐掉一次不该让这个子任务在剩下的回合里被判死刑
-					* （`MAX_CONSECUTIVE_FAILURES` 一到，父模型再派就是 `RESULT_TEXT_BAIL`）。
-					*/
-					if (aborted) return RESULT_TEXT_ABORTED;
-					const n = (failures.get(id) ?? 0) + 1;
-					failures.set(id, n);
-					if (n >= MAX_CONSECUTIVE_FAILURES) {
+						}
+						const usage = await Promise.resolve(result.totalUsage).catch(() => void 0);
+						recordSubagentUsage(opts.stats, id, usage);
+						const finalText = (await Promise.resolve(result.text).catch(() => "")).trim();
+						/** 最后一步的正文（正常收尾时就是它）；为空才退到整段累积（见 `prose` 的注释） */
+						const collected = prose.join("").trim();
+						if (!(finalText || collected)) return signal.aborted ? done("aborted", RESULT_TEXT_ABORTED) : done("empty", RESULT_TEXT_EMPTY);
 						failures.delete(id);
-						return RESULT_TEXT_BAIL;
+						if (finalText) return done("done", finalText);
+						console.error(`[subagent] ${id} 用满 ${maxSteps} 步仍未收尾，回退交回已产出的 ${collected.length} 字符`);
+						const body = collected.length > MAX_FALLBACK_ANSWER_CHARS ? `${collected.slice(0, MAX_FALLBACK_ANSWER_CHARS)}\n\n…（此处截断，完整过程在派活卡里）` : collected;
+						return done("done", `${RESULT_TEXT_TRUNCATED}${body}`);
+					} catch (err) {
+						const aborted = signal.aborted;
+						if (aborted) console.warn(`[subagent] ${id} 被用户中止`);
+						else console.error(`[subagent] ${id} 执行失败：`, err);
+						/**
+						* 被停的不计入「连续失败」：用户掐掉一次不该让这个子任务在剩下的回合里被判死刑
+						* （`MAX_CONSECUTIVE_FAILURES` 一到，父模型再派就是 `RESULT_TEXT_BAIL`）。
+						*/
+						if (aborted) return done("aborted", RESULT_TEXT_ABORTED);
+						const n = (failures.get(id) ?? 0) + 1;
+						failures.set(id, n);
+						if (n >= MAX_CONSECUTIVE_FAILURES) {
+							failures.delete(id);
+							return done("failed", RESULT_TEXT_BAIL);
+						}
+						return done("failed", RESULT_TEXT_FAILED);
 					}
-					return RESULT_TEXT_FAILED;
-				}
+				};
+				/**
+				* 起跑，**不等**。
+				*
+				* `finished` 用闭包变量而不是读 promise 状态：`settle` 与 `task_wait` 都要在
+				* 同步语境里判断「还跑着吗」，没有别的可靠办法。
+				*/
+				let finished = false;
+				/** 终态与落地时刻：`task_list` 用，和 `settled` 一起在跑完时写 */
+				let outcome;
+				let finishedAt;
+				const settled = runSubagent().catch(() => done("failed", RESULT_TEXT_FAILED)).then((result) => {
+					finished = true;
+					finishedAt = Date.now();
+					if (result.status !== "running") outcome = result.status;
+					return result;
+				});
+				const taskId = toolCallId || `task-${++taskSeq}`;
+				tasks.set(taskId, {
+					id: taskId,
+					subagentId: id,
+					name: spec.name,
+					summary,
+					startedAt,
+					get outcome() {
+						return outcome;
+					},
+					get finishedAt() {
+						return finishedAt;
+					},
+					settled,
+					abort: () => own.abort(),
+					isFinished: () => finished,
+					claimed: false,
+					cancelled: false
+				});
+				return handleText(spec.name, taskId);
 			}
 		};
 	}
-	return out;
+	/**
+	* 一个 `agent-<id>` 都没建出来（设置里没开任何子智能体、或开着的 id 全被删 / 未定义）：
+	* **连 task_list / task_wait / task_cancel 也不挂**。
+	*
+	* 没有可领的派活时留着这两个工具是有害的：模型会凭空多出「好像有后台任务在跑」的
+	* 错觉，调过去只会拿到「没有这个 taskId」。能力在装配层整组缺席，别靠运行时空转兜底。
+	*/
+	if (Object.keys(out).length === 0) return {
+		tools: {},
+		settle: async () => void 0
+	};
+	/**
+	* 领取后台子任务的结论。
+	*
+	* 为什么是独立工具、而不是让 `agent-<id>` 阻塞着等：一步之内模型发完 tool-call 就把话轮
+	* 交出去了，必须等这一步的工具**全部** resolve 才能发下一次请求。派活挂在那里，模型那句
+	* 「同时我自己看这个文件」就只能排队在子任务后面 —— 明明能并行的事被串成了一条线。
+	* 拆成「立即返回句柄 + 需要时再领」，等的时机就交回模型自己定了。
+	*/
+	out.task_wait = {
+		description: "领取后台子任务的结论。派活工具（agent-*）会立即返回一个 taskId；子任务跑完后，结论由这个工具交回。**收尾前必须把派出去的活都领回来**。\n子任务还在跑时最多等 1 分钟：超时会返回「还在跑」（带它总共跑了多久），你可以先做别的、过一会儿再领，或者用 task_cancel 直接结束它。",
+		inputSchema: z.object({ taskId: z.string().describe("派活时返回的 taskId（照抄，不要改）") }),
+		execute: async (input) => {
+			const taskId = (input?.taskId ?? "").trim();
+			const entry = tasks.get(taskId);
+			if (!entry) {
+				const alive = [...tasks.values()].filter((t) => !t.isFinished());
+				return alive.length ? `没有这个 taskId。当前在跑的派活：${alive.map((t) => `${t.id}（${t.name}：${t.summary}）`).join("、")}。` : "没有这个 taskId。当前没有在跑的派活 —— 派活工具会返回它的 taskId，照抄过来。";
+			}
+			const { result, waitedMs } = await waitSettled(entry);
+			if (!result)
+ /**
+			* 两个时长都要说：模型只看到「已等 60 秒」会误以为子任务也只跑了 60 秒，
+			* 实际它可能已经跑了十分钟 —— 那正是应该取消而不是继续等的时候。
+			*/
+			return `「${entry.name}」${entry.summary ? `（${entry.summary}）` : ""}还在跑（已运行 ${formatElapsed(Date.now() - entry.startedAt)}，本次等待 ${formatElapsed(waitedMs)}）。先做别的，过一会儿再 task_wait（taskId: ${entry.id}）；也可以自己把这件事做完，或者用 task_cancel 直接结束它。`;
+			entry.claimed = true;
+			return result.text;
+		}
+	};
+	/**
+	* 主动结束后台子任务（一个 / 一组 / 全部在跑的）。
+	*
+	* 与派活卡上的停止钮是**同一个动作**（都走 `own.abort()`），区别只是发起者：那边是
+	* 用户点，这里是主模型自己判断「这活不要了」。没有这个工具时，模型只剩「一直等到
+	* 60 秒超时」或「把整轮停掉」两条烂路 —— 用户看到的就是「主 Agent 结束不了子任务」。
+	*
+	* 支持批量：同时派了三四条、发现方向全错时，一条调用就能收干净，不必逐个发。
+	* `taskIds` 是**唯一**入参 —— 单条也传数组，避免「taskId 还是 taskIds」的二选一。
+	*/
+	out.task_cancel = {
+		description: "结束后台子任务，释放它们的模型调用与工具执行。传要结束的 taskIds 数组（一条就传单元素数组；全部都要停就先 task_list 拿 id 再一起传）。派活已经没意义、用户改了主意、或你自己已经把这件事做完时用它。取消后结论作废，不必再 task_wait。",
+		inputSchema: z.object({ taskIds: z.array(z.string()).describe("要结束的子任务 id 列表（task_list 里能查到）") }),
+		execute: async (input) => {
+			/** 去重 + 去空白：模型偶尔会把同一个 id 写两遍 / 带空格 */
+			const requested = [...new Set((input?.taskIds ?? []).map((id) => id.trim()).filter(Boolean))];
+			if (requested.length === 0) {
+				const alive = [...tasks.values()].filter((t) => !t.isFinished());
+				if (!tasks.size) return "本轮还没有派过子任务。";
+				return alive.length ? `没有传 taskIds。当前在跑：${alive.map((t) => `${t.id}（${t.name}：${t.summary}）`).join("、")}。` : "当前没有在跑的子任务。";
+			}
+			const missing = [];
+			const alreadyDone = [];
+			const cancelled = [];
+			for (const id of requested) {
+				const entry = tasks.get(id);
+				if (!entry) {
+					missing.push(id);
+					continue;
+				}
+				if (entry.isFinished()) {
+					alreadyDone.push(entry);
+					continue;
+				}
+				entry.cancelled = true;
+				entry.abort();
+				cancelled.push(entry);
+			}
+			/** 等一小会儿让它们落地，好把「运行了多久」说准；卡住时不拖住父轮 */
+			if (cancelled.length > 0) {
+				let timer;
+				await Promise.race([Promise.all(cancelled.map((t) => t.settled)).catch(() => void 0), new Promise((resolve) => {
+					timer = setTimeout(resolve, SETTLE_WAIT_MS);
+				})]);
+				if (timer) clearTimeout(timer);
+			}
+			const label = (t) => `「${t.name}」${t.summary ? `（${t.summary}）` : ""}`;
+			if (requested.length === 1 && cancelled.length === 1) {
+				const entry = cancelled[0];
+				if (!entry) return "没有可结束的子任务。";
+				return entry.isFinished() ? `已结束${label(entry)}（运行 ${formatElapsed((entry.finishedAt ?? Date.now()) - entry.startedAt)}）。` : `已请求结束${label(entry)}，它正在收尾。`;
+			}
+			if (requested.length === 1 && alreadyDone.length === 1) {
+				const entry = alreadyDone[0];
+				if (!entry) return "没有可结束的子任务。";
+				return `「${entry.name}」已经跑完了，结论还在；用 task_wait（taskId: ${entry.id}）领取。`;
+			}
+			const lines = [];
+			if (cancelled.length > 0) {
+				lines.push(`已结束 ${cancelled.length} 个子任务：`);
+				for (const t of cancelled) lines.push(t.isFinished() ? `- ${label(t)}：运行 ${formatElapsed((t.finishedAt ?? Date.now()) - t.startedAt)}` : `- ${label(t)}：已请求结束，正在收尾`);
+			}
+			if (alreadyDone.length > 0) lines.push(`已经跑完、结论还在（用 task_wait 领取）：${alreadyDone.map((t) => `${t.id}（${t.name}）`).join("、")}`);
+			if (missing.length > 0) lines.push(`没有这些 taskId：${missing.join("、")}`);
+			if (lines.length === 0) return "当前没有在跑的子任务。";
+			return lines.join("\n");
+		}
+	};
+	/**
+	* 列出本轮所有后台子任务：同时派了多条时，模型回来分不清谁是谁就靠它。
+	*
+	* 每行必须带**派发时的一句话说明**（`summary`）与状态 / 时长：只有 taskId 和子任务
+	* 类型的话，三条「侦察」摆在一起还是认不出哪条是查 auth、哪条是查构建脚本。
+	*/
+	out.task_list = {
+		description: "列出本轮所有后台子任务：taskId、子任务类型、派发时的简短说明、状态（运行中 / 已完成 / 失败 / 已中止 / 已取消）与已运行时长。同时派了多个子任务、过一会儿回来分不清谁是谁时，先调它。",
+		inputSchema: z.object({}),
+		execute: async () => {
+			if (tasks.size === 0) return "本轮还没有派过子任务。";
+			const now = Date.now();
+			return ["本轮后台子任务：", ...[...tasks.values()].map((t) => {
+				const head = `${t.id} · ${t.name} · ${t.summary || "（无说明）"}`;
+				if (!t.isFinished()) return `- ${head} —— 运行中，已运行 ${formatElapsed(now - t.startedAt)}`;
+				return `- ${head} —— ${t.cancelled ? "已取消" : STATUS_TEXT[t.outcome ?? "done"]}，用时 ${formatElapsed((t.finishedAt ?? now) - t.startedAt)}${!t.cancelled && !t.claimed ? "（结论未领取，用 task_wait 领取）" : ""}`;
+			})].join("\n");
+		}
+	};
+	/**
+	* 父轮收尾：还在跑的子任务没人领了，掐掉。
+	*
+	* 不掐的话，子 run 会继续烧 token、`subagent-end` 发往一个已经关掉的事件通道，
+	* 派活卡在界面上永远转圈。掐掉是诚实的：让它落地成 `aborted`，用户看得见。
+	* abort 之后**短暂等**它们把 `subagent-end` 发出来（见 `SETTLE_WAIT_MS`），
+	* 但不为这一帧拖住整轮收尾。
+	*/
+	let settledOnce = false;
+	const settle = async () => {
+		if (settledOnce) return;
+		settledOnce = true;
+		const pending = [...tasks.values()].filter((t) => !t.isFinished());
+		for (const t of pending) t.abort();
+		if (pending.length > 0) {
+			let timer;
+			await Promise.race([Promise.all(pending.map((t) => t.settled)).catch(() => void 0), new Promise((resolve) => {
+				timer = setTimeout(resolve, SETTLE_WAIT_MS);
+			})]);
+			if (timer) clearTimeout(timer);
+		}
+		/**
+		* 跑完了却没被领走 = 结论白跑一趟（模型派完没 task_wait 就收尾了）。
+		* 静默丢掉会变成「花了钱什么都没有」，而且没人查得出来 —— 至少留一行日志。
+		*/
+		const lost = [...tasks.values()].filter((t) => t.isFinished() && !t.claimed && !t.cancelled);
+		if (lost.length > 0) console.warn(`[subagent] 本轮结束时这些派活的结论没被领走（模型没 task_wait）：${lost.map((t) => `${t.name}(${t.id})`).join("、")}`);
+	};
+	return {
+		tools: out,
+		settle
+	};
 }
 // packages/agent/src/engine.ts
 /**
@@ -9328,7 +9691,7 @@ var TOOL_INTENT_FIELD = "intent";
 * 只出现一次 —— schema 里只需要让模型知道这个字段是什么。
 *
 * 留一句「显示为卡片标题」是给**没有系统提示词那条约定**的路径兜底
-* （调用方自造 `setup` 的项目管理助手就走那条路）。
+* （自造 `assemble` 的助手 profile 就走那条路）。
 */
 function intentProperty() {
 	return {
@@ -9782,17 +10145,77 @@ function normalizeUsage(usage) {
 	};
 }
 /**
-* 把原始用量 + 计时折成对外展示的统计（TPS 按「首字 → 结束」的生成窗口算）。
+* 相邻两个输出增量的间隔超过这么久，就认为模型**没在吐字**（工具执行、等审批、
+* 上下文压缩、网络空窗），这一段不计入生成窗口。
+*
+* 为什么是 1 秒：正常流式下一帧是几十毫秒级（思考 / 工具入参增量同频，见
+* `INPUT_DELTA_FLUSH_MS`），慢模型单 token 也就几百毫秒；而一次工具执行、一条
+* bash 命令、一次审批等待都是秒级起步。1s 既留得住慢模型的真实吐字间隔，
+* 又能把工具空窗整段剔掉。
+*/
+var TPS_IDLE_GAP_MS = 1e3;
+function createTurnGenClock() {
+	return {
+		genMs: 0,
+		lastAt: null
+	};
+}
+/**
+* 记一个输出增量：只有「距上一帧足够近」的那段间隔才计入生成时间。
+*
+* - 第一帧只记时刻 —— 首字延迟（TTFT）本来就不该进分母；
+* - 空窗（间隔 > `idleGapMs`）整段丢弃，下一帧从零重新起算。
+*
+* 于是累计值 ≈ 「模型真正在吐 token 的总时长」。跨尝试（重试 / 断点续跑）共用同一个
+* clock 就是整轮的窗口 —— 分子也是跨尝试累加的，两边口径一致。
+*/
+function markTurnOutputDelta(clock, now, idleGapMs = TPS_IDLE_GAP_MS) {
+	const prev = clock.lastAt;
+	clock.lastAt = now;
+	if (prev === null) return;
+	const gap = now - prev;
+	if (gap > 0 && gap <= idleGapMs) clock.genMs += gap;
+}
+/**
+* 这个事件算不算「模型在吐 token」—— 只认模型自己生成的增量。
+*
+* 刻意排除的几类：
+* - `tool-result` / `tool-output-delta`：**工具自己**在产出（bash 的 stdout 能流几十秒），
+*   它不是模型的生成速度，计进去分母就又被工具时长污染；
+* - `file-part` / `subagent-*` / `collab-*`：不是本轮主模型吐的字（子任务的 token
+*   单独记在 `TurnUsage.subagents`，不并进父的 outputTokens），分子没有它们，分母也不能有；
+* - 空串增量：上游常先发一帧 `delta: ''` 占位（`tool-call-delta` 的「开始流式生成」
+*   那一帧也只有 id 没有内容），它不是内容，认了会把窗口撑大。
+*
+* 完整 `tool-call` 也算一帧：有的上游不发增量，那时它是模型吐过字的唯一证据。
+*/
+function isOutputDelta(event) {
+	switch (event.type) {
+		case "text-delta":
+		case "reasoning-delta": return event.delta.trim() !== "";
+		case "tool-call-delta": return event.inputTextDelta !== "";
+		case "tool-call": return true;
+		default: return false;
+	}
+}
+/**
+* 把原始用量 + 计时折成对外展示的统计（TPS = 整轮输出 tokens ÷ 生成窗口）。
 *
 * `contextTokens` 是**本轮最后一次请求**的上下文大小（pi 的 `calculateContextTokens` =
 * 最后一步上游上报的 `input + output`），见 `TurnUsage.contextTokens` 的说明
 * （整轮累计的 `inputTokens` 不能当上下文大小用）。
+*
+* `genMs` 由 `TurnGenClock` 累加得来（不是墙钟）—— 见那边的注释。
 */
-function buildTurnUsage(raw, startedAt, firstOutputAt, contextTokens, subagents) {
-	const endedAt = Date.now();
-	const durationMs = Math.max(0, endedAt - startedAt);
-	const genMs = Math.max(1, endedAt - (firstOutputAt ?? startedAt));
-	const tps = raw.outputTokens > 0 ? Math.round(raw.outputTokens / (genMs / 1e3) * 10) / 10 : 0;
+function buildTurnUsage(raw, startedAt, genMs, contextTokens, subagents) {
+	const durationMs = Math.max(0, Date.now() - startedAt);
+	/**
+	* `genMs` 为 0 = 一次间隔都没采到（上游把整段攒成一帧下发，或只吐了一个 chunk）。
+	* 这时没有「吐字速度」可言：退回整轮耗时当分母，至少不会算出几万 tok/s 的天文数字。
+	* 正常流式轮次 `genMs` 一定 > 0，走不到这条路。
+	*/
+	const windowMs = genMs > 0 ? genMs : Math.max(1, durationMs);
+	const tps = raw.outputTokens > 0 ? Math.round(raw.outputTokens / (windowMs / 1e3) * 10) / 10 : 0;
 	return {
 		...raw,
 		...contextTokens !== void 0 ? { contextTokens } : {},
@@ -9811,83 +10234,108 @@ function buildTurnUsage(raw, startedAt, firstOutputAt, contextTokens, subagents)
 */
 var INPUT_DELTA_FLUSH_CHARS = 240;
 var INPUT_DELTA_FLUSH_MS = 60;
+/** 把作用域解析成运行期统一的 `AgentWorkspace` 形状（global 的 path 恒为空串） */
+function resolveScopeWorkspace(scope) {
+	if (scope.kind === "workspace") return scope.workspace;
+	return {
+		id: scope.id,
+		name: scope.name,
+		path: "",
+		createdAt: 0,
+		updatedAt: 0
+	};
+}
 /**
-* 组装一次运行的静态部分（系统提示词 + 工具集）。
+* 标准装配：内置文件 / 命令工具 → extraTools → 调用方插件 → web_fetch。
 *
-* 单独拆出来是因为**上下文估算要用它**：系统提示词与工具 schema 每轮都要发出去，
-* 却不在 `messages` 里 —— `runAgent` 得拿到这两样，才能把「本轮实际请求多大」算准
-* （见 `estimateBaseTokens`）。建 Agent 本身只是 `new Agent(...)`，无副作用。
+* 只产出 `AgentAssembly`，**不建 Context、不挂载、不套钩子** —— 挂载与审批/钩子壳
+* 统一由 `runAgent` 的 `mountAssembly` 做。这样标准会话与自造 profile（助手 / 协作）
+* 走的是同一条管线，不会出现「一部分工具受插件钩子管辖、另一部分不受」。
 *
-* **实现已改为「由插件注册表产出」**：这里起一个一次性的 Context，把内置能力
-* （文件 / 联网工具）与调用方给的工具 / 插件按固定顺序挂上去，最后从
-* `ctx.tools` / `ctx.prompt` 读回结果。挂载顺序与从前手工 spread 的顺序**逐一对齐**，
-* 所以产出的工具键序、提示词正文都与改造前一致：
-*   文件工具 → extraTools → plugins → web_fetch → screenshot。
-*
-* 钩子（P3）：`hooks` 服务**先于插件挂载**建在这一轮的 context 上，插件 apply 里就能
-* `ctx.hooks.on(...)`；工具集在产出后再套一层钩子壳（`wrapToolsWithHooks`），
-* 提示词正文最后过一遍 `prompt:render`。没插件挂钩子时，这两步都是原样透传。
+* 上下文估算要用它：系统提示词与工具 schema 每轮都要发出去，却不在 `messages` 里，
+* `runAgent` 得拿到这两样才能把「本轮实际请求多大」算准（见 `estimateBaseTokens`）。
 */
-function buildAgentSetup(opts) {
-	const ctx = createAppContext("agent-setup");
+function assembleStandard(deps) {
+	const stopHooks = deps.commandStops ? {
+		onStart: (id, stop) => deps.commandStops.set(id, stop),
+		onEnd: (id) => deps.commandStops.delete(id)
+	} : {};
+	/**
+	* 挂载顺序与改造前**逐一对齐**（工具键序稳定，提示词正文才稳定）：
+	*   文件工具 → extraTools → 调用方插件 → web_fetch
+	*/
+	const plugins = [
+		{ plugin: fileToolsPlugin(deps.workspace.path, {
+			permissionMode: deps.permissionMode ?? "full",
+			...deps.getPermissionMode ? { getPermissionMode: deps.getPermissionMode } : {},
+			...deps.requestConfirm ? { requestConfirm: deps.requestConfirm } : {},
+			...deps.workspaceBackend ? { backend: deps.workspaceBackend } : {},
+			...deps.commandStops ? {
+				onCommandStart: (id, stop) => deps.commandStops.set(id, stop),
+				onCommandEnd: (id) => deps.commandStops.delete(id),
+				onCommandOutput: (id, stream, delta) => deps.onEvent?.({
+					type: "tool-output-delta",
+					toolCallId: id,
+					stream,
+					delta
+				})
+			} : {},
+			...deps.onBackgroundCommand ? { onBackgroundCommand: deps.onBackgroundCommand } : {},
+			skills: deps.skills ?? [],
+			...deps.nestedDocs ? { nestedDocs: deps.nestedDocs } : {}
+		}) },
+		...deps.extraTools ? [{ plugin: rawToolsPlugin("extra-tools", deps.extraTools, { source: "extra-tools" }) }] : [],
+		...deps.plugins ?? [],
+		{ plugin: webToolsPlugin(deps.workspace.path, stopHooks, deps.workspaceBackend) }
+	];
+	const base = deps.workspace.path ? buildAgentSystemPrompt(deps.workspace.path, deps.workspace.name, deps.skills ?? [], deps.projectDoc ?? null) : "你是 Fizz 的对话助手。本会话没有绑定工作区，因此不能读写文件或执行命令，但可以使用 web_fetch 工具打开网页抓取资料；只能基于对话内容或抓取到的网页内容回答问题、整理思路。";
+	const intentHint = deps.toolIntent === false ? "" : toolIntentHint();
+	const budgetHint = typeof deps.maxSteps === "number" && Number.isFinite(deps.maxSteps) ? stepBudgetHint(Math.max(1, Math.trunc(deps.maxSteps))) : "";
+	const extraPrompt = deps.extraPrompt?.trim() ? "\n\n" + deps.extraPrompt.trim() : "";
+	return {
+		instructions: base + intentHint + budgetHint + extraPrompt,
+		plugins,
+		capabilities: { ...deps.subagents ? { subagents: deps.subagents } : {} }
+	};
+}
+/**
+* 挂载装配产物：**全项目唯一的工具注册 / 审批 / 钩子 / 提示词收口点**。
+*
+* 标准会话与自造 profile 都经由这里，差异只在 `assembly` 的内容 —— 不会再出现
+* 「传了 setup 就绕开钩子与审批壳」的旁路。
+*/
+function mountAssembly(assembly, deps) {
+	const ctx = createAppContext("agent-assembly");
 	ctx.set("tools", new ToolsService(ctx));
 	ctx.set("models", new ModelsService(ctx));
 	ctx.set("prompt", new PromptService(ctx));
 	const hooks = new HooksService(ctx);
 	ctx.set("hooks", hooks);
-	if (opts.workspace.path) ctx.set("workspace", new WorkspaceService(ctx, {
-		path: opts.workspace.path,
-		name: opts.workspace.name
+	if (deps.workspace.path) ctx.set("workspace", new WorkspaceService(ctx, {
+		path: deps.workspace.path,
+		name: deps.workspace.name
 	}));
-	ctx.plugin(fileToolsPlugin(opts.workspace.path, {
-		permissionMode: opts.permissionMode ?? "full",
-		...opts.getPermissionMode ? { getPermissionMode: opts.getPermissionMode } : {},
-		...opts.requestConfirm ? { requestConfirm: opts.requestConfirm } : {},
-		...opts.workspaceBackend ? { backend: opts.workspaceBackend } : {},
-		...opts.commandStops ? {
-			onCommandStart: (id, stop) => opts.commandStops.set(id, stop),
-			onCommandEnd: (id) => opts.commandStops.delete(id),
-			onCommandOutput: (id, stream, delta) => opts.onEvent?.({
-				type: "tool-output-delta",
-				toolCallId: id,
-				stream,
-				delta
-			})
-		} : {},
-		...opts.onBackgroundCommand ? { onBackgroundCommand: opts.onBackgroundCommand } : {},
-		skills: opts.skills,
-		...opts.nestedDocs ? { nestedDocs: opts.nestedDocs } : {}
-	}));
-	if (opts.extraTools) ctx.plugin(rawToolsPlugin("extra-tools", opts.extraTools, { source: "extra-tools" }));
-	for (const mounted of opts.plugins ?? []) try {
+	for (const mounted of assembly.plugins ?? []) try {
 		ctx.plugin(mounted.plugin, mounted.config);
 	} catch (err) {
 		const name = mounted.plugin?.name ?? "匿名插件";
 		console.warn(`[agent] 插件挂载失败，本轮跳过：${name}`, err);
 	}
-	ctx.plugin(webToolsPlugin(opts.workspace.path ?? "", opts.commandStops ? {
-		onStart: (id, stop) => opts.commandStops.set(id, stop),
-		onEnd: (id) => opts.commandStops.delete(id)
-	} : {}, opts.workspaceBackend));
-	const tools = wrapToolsWithApproval(ctx.tools.entries(), {
-		permissionMode: opts.permissionMode ?? "full",
-		...opts.getPermissionMode ? { getPermissionMode: opts.getPermissionMode } : {},
-		...opts.requestConfirm ? { requestConfirm: opts.requestConfirm } : {}
+	let tools = wrapToolsWithApproval(ctx.tools.entries(), {
+		permissionMode: deps.permissionMode ?? "full",
+		...deps.getPermissionMode ? { getPermissionMode: deps.getPermissionMode } : {},
+		...deps.requestConfirm ? { requestConfirm: deps.requestConfirm } : {}
 	});
-	const askHint = "ask" in tools ? ASK_FOLLOWUP_HINT : "";
-	const base = opts.workspace.path ? buildAgentSystemPrompt(opts.workspace.path, opts.workspace.name, opts.skills, opts.projectDoc ?? null, opts.browser) : "你是 Fizz 的对话助手。本会话没有绑定工作区，因此不能读写文件或执行命令，但可以使用 web_fetch 工具打开网页抓取资料；只能基于对话内容或抓取到的网页内容回答问题、整理思路。";
-	const intentHint = opts.toolIntent === false ? "" : toolIntentHint();
-	const budgetHint = typeof opts.maxSteps === "number" && Number.isFinite(opts.maxSteps) ? stepBudgetHint(Math.max(1, Math.trunc(opts.maxSteps))) : "";
-	ctx.prompt.section("builtin", base + askHint + intentHint + budgetHint, { priority: 0 });
-	if (opts.extraPrompt?.trim()) ctx.prompt.section("caller", opts.extraPrompt.trim(), { priority: 1 });
+	tools = wrapToolsWithHooks(tools, hooks);
+	if (assembly.filterTools) tools = assembly.filterTools(tools);
+	ctx.prompt.section("builtin", assembly.instructions, { priority: 0 });
 	return {
 		instructions: hooks.waterfall(HOOKS.promptRender, [ctx.prompt.render()], hookValue),
-		tools: wrapToolsWithHooks(tools, hooks),
+		tools,
 		hooks,
 		ctx
 	};
 }
-/** 用静态部分 + 模型配置建一个 内置 Agent（每次尝试现建，代价只是一个配置对象） */
 /** 这一轮的序号（与时间戳拼成 turnId）：轮次之间可能重叠，得有个能区分的东西 */
 var turnSeq = 0;
 /**
@@ -9960,10 +10408,10 @@ async function runAgent(opts) {
 		return "";
 	};
 	/**
-	* 静态部分是不是**本轮自建**的。自建的那份带一个 turn context（插件加的工具 / 监听器
-	* 都挂在里面），收尾时必须卸载；调用方传进来的 `setup` 不归我们管（也不含 hooks）。
+	* 这一轮的作用域解析结果。global 会话（助手）的 `path` 为空 —— 下游的文件工具 /
+	* 子目录规则 / 插件工作区服务都按「空路径 = 不提供」处理，不需要各调用方各判一次。
 	*/
-	const ownSetup = !opts.setup;
+	const workspace = resolveScopeWorkspace(opts.scope);
 	/** 生效的重试上限（设置里 0 = 不限制 → Infinity） */
 	const maxRetries = resolveMaxRetries(opts.maxRetries);
 	/**
@@ -10025,10 +10473,13 @@ async function runAgent(opts) {
 	*/
 	let carriedUsage = null;
 	/**
-	* 整轮**第一个字**的时刻（TPS 的生成窗口起点）。跨尝试保留：续跑会让 token 累加，
-	* 若时间窗口只算最后一段，算出来的 TPS 会虚高几倍。
+	* 整轮的**生成窗口**计时器（TPS 的分母，见 `TurnGenClock`）：只累计「有输出增量」
+	* 的时间片，工具执行 / 等审批的空窗不算。
+	*
+	* 跨尝试共用一个 clock —— 续跑时分子（token）是累加的，窗口也必须是整轮的，
+	* 否则 TPS = 累计 token ÷ 最后一段时长，虚高好几倍。
 	*/
-	let turnFirstOutputAt = null;
+	const turnGenClock = createTurnGenClock();
 	/** 攒着的入参增量（null = 没有）。攒够阈值才下发，见 INPUT_DELTA_FLUSH_* */
 	let pendingDelta = null;
 	/**
@@ -10036,6 +10487,15 @@ async function runAgent(opts) {
 	* （队列里排着下一轮 + steer 插话），模块级会把 A 轮的账记到 B 轮头上。
 	*/
 	const stats = makeDelegationStats();
+	/**
+	* 本次尝试建的派活工具集的收尾函数（父轮走到尽头 / 重试换一份之前调用）。
+	*
+	* 派活是非阻塞的（`agent-<id>` 起完子 run 立刻返回 taskId），所以「本轮结束」这件事
+	* 必须主动做：还在后台跑的子任务没人领结论了，不掐会继续烧 token，`subagent-end`
+	* 还会发往一个已经关掉的事件通道，派活卡在界面上永远转圈。每次 attempt 重建工具集时
+	* 覆盖这一格（旧的必然已经在上一 attempt 的出口 settle 过）。
+	*/
+	let settleDelegations = null;
 	/** 上一次下发入参增量的时刻（节流的时间基准） */
 	let lastDeltaFlushAt = 0;
 	/** 把攒着的入参增量冲出去 */
@@ -10073,7 +10533,7 @@ async function runAgent(opts) {
 			console.error("[subagent] 派活汇总：" + lines);
 		}
 		try {
-			agentSetup.hooks?.emit(HOOKS.turnFinish, {
+			agentSetup.hooks.emit(HOOKS.turnFinish, {
 				turnId,
 				finishReason,
 				...usage ? { usage } : {}
@@ -10081,8 +10541,8 @@ async function runAgent(opts) {
 		} catch (err) {
 			console.error("[plugin] turn:finish 钩子出错：", err);
 		}
-		if (ownSetup) try {
-			await agentSetup.ctx?.dispose();
+		try {
+			await agentSetup.ctx.dispose();
 		} catch (err) {
 			console.error("[plugin] 本轮 context 卸载失败：", err);
 		}
@@ -10140,13 +10600,17 @@ async function runAgent(opts) {
 	* （见 `estimateBaseTokens`），重建不会变，但每次尝试重算会白跑一遍 schema 序列化。
 	*/
 	const loadedNestedDocs = extractNestedDocPaths(opts.history);
-	const nestedDocs = opts.workspace.path && !opts.workspace.remote ? (absPath, isDirectory) => readNestedProjectDocs(opts.workspace.path, absPath, loadedNestedDocs, isDirectory) : null;
-	const agentSetup = opts.setup ?? buildAgentSetup({
-		workspace: opts.workspace,
+	const nestedDocs = workspace.path && !workspace.remote ? (absPath, isDirectory) => readNestedProjectDocs(workspace.path, absPath, loadedNestedDocs, isDirectory) : null;
+	/**
+	* 装配输入：运行时把 scope / 权限通道 / 事件出口 / 行为开关汇总成这一份，
+	* 再交给调用方的 `assemble`（或标准装配）。装配函数是**纯函数**，不碰 context。
+	*/
+	const assemblyDeps = {
+		workspace,
 		...opts.workspaceBackend ? { workspaceBackend: opts.workspaceBackend } : {},
 		skills: opts.skills,
 		projectDoc: opts.projectDoc ?? null,
-		permissionMode: opts.permissionMode,
+		...opts.permissionMode ? { permissionMode: opts.permissionMode } : {},
 		...opts.getPermissionMode ? { getPermissionMode: opts.getPermissionMode } : {},
 		...opts.requestConfirm ? { requestConfirm: opts.requestConfirm } : {},
 		...opts.commandStops ? { commandStops: opts.commandStops } : {},
@@ -10154,18 +10618,21 @@ async function runAgent(opts) {
 		onEvent: (event) => emitEvent(event),
 		...opts.extraTools ? { extraTools: opts.extraTools } : {},
 		...opts.plugins ? { plugins: opts.plugins } : {},
-		...opts.browser ? { browser: true } : {},
 		...opts.extraPrompt ? { extraPrompt: opts.extraPrompt } : {},
 		...nestedDocs ? { nestedDocs } : {},
 		...opts.toolIntent === false ? { toolIntent: false } : {},
 		maxSteps: opts.maxSteps ?? MAX_STEPS
-	});
+	};
+	const assembly = opts.assemble ? await opts.assemble(assemblyDeps) : assembleStandard(assemblyDeps);
+	/** 挂载后的静态部分：`hooks` / `ctx` 恒存在（由本轮自建，收尾统一卸载） */
+	const agentSetup = mountAssembly(assembly, assemblyDeps);
+	/** 这一轮声明的子任务能力（没有 = 一个派活工具都不挂） */
+	const subagentCaps = assembly.capabilities?.subagents;
 	/**
 	* 工具调用开关关掉时**一个工具都不下发**（`AiModelSettings.toolCall`）。
 	*
-	* 闸放在这里而不是 `buildAgentSetup` 里：`opts.setup` 可能是调用方自造的
-	* （项目管理助手那套），只有这里能把所有入口一网打尽。提示词里补一句能力限制 ——
-	* 否则系统提示词还在教模型怎么用工具，它只能输出假的工具调用文本。
+	* 闸放在这里而不是装配函数里：所有 profile 的装配产物都要过这一关。提示词里补一句
+	* 能力限制 —— 否则系统提示词还在教模型怎么用工具，它只能输出假的工具调用文本。
 	*
 	* 开着的这一支要**先注入 `intent`**（见 `withToolIntent`）：注入放在 `estimateBaseTokens`
 	* 之前，工具 schema 的 token 估算才把这一字段算进去，圆环不会越跑越偏。
@@ -10178,10 +10645,10 @@ async function runAgent(opts) {
 	};
 	const baseTokens = await estimateBaseTokens(setupForModel.instructions, toolsForModel);
 	if (opts.conversationId) rememberBaseTokens(opts.conversationId, baseTokens);
-	agentSetup.hooks?.emit(HOOKS.turnStart, {
+	agentSetup.hooks.emit(HOOKS.turnStart, {
 		turnId,
-		workspaceId: opts.workspace.id,
-		workspaceName: opts.workspace.name
+		workspaceId: workspace.id,
+		workspaceName: workspace.name
 	});
 	/**
 	* 上游报 context overflow 时置为 true，下一次尝试**强制压缩**再发（pi 的 pre-turn 恢复）。
@@ -10192,7 +10659,10 @@ async function runAgent(opts) {
 	let overflowRecovered = false;
 	for (;;) {
 		/**
-		* 首字时刻（TPS 的生成窗口起点）、模型上报的原始用量、本轮上下文估算。
+		* 这次尝试**首个内容事件**的时刻（判「上游回了个空响应」还是「吐了半截才失败」用）、
+		* 模型上报的原始用量、本轮上下文估算。
+		*
+		* TPS 的分母不用它 —— 那个是轮级的 `turnGenClock`（只累计有输出增量的时间片）。
 		* **每次尝试各算一份**：放到 try 外面是为了 catch（异常 / 中止）分支里也能把已产出的
 		* token 补推出去 —— 路由侧只在 finish 事件带 usage 时才落盘（见 chat/route.ts 的 onEvent）。
 		*/
@@ -10289,7 +10759,14 @@ async function runAgent(opts) {
 						size: contextWindow,
 						base: baseTokens
 					});
-				}
+				} else if (compacted.skipped)
+ /**
+				* 超了阈值但**没压成**（`no-budget` / `below-keep`）。
+				*
+				* 这两种都是静默的：不抛错、不发事件，界面上只能看到「上下文一直涨」。留一行日志，
+				* 否则「为什么没压」在服务端日志里一个字都查不到（排查过一轮才发现）。
+				*/
+				console.warn(`[compaction] 越过阈值但未压缩（${compacted.skipped}）：窗口 ${contextWindow}、base ${baseTokens}、历史 ${opts.history.length} 条`);
 				messages = await toModelMessages(compacted.history, {
 					resolveFileUrl: opts.resolveFileUrl,
 					resolveAttachment: opts.resolveAttachment,
@@ -10306,15 +10783,15 @@ async function runAgent(opts) {
 			* 子任务：每个 id 一个 `agent-<id>` 工具，`execute` 里跑一条独立的子 run
 			* （见 `subagents.ts`）。不启用时是空对象 —— 与没有这个能力时逐字节一致。
 			*/
-			const delegationTools = opts.subagents?.length && modelSettings.toolCall ? buildDelegationTools(opts.subagents, {
-				workspacePath: opts.workspace.path,
-				workspaceName: opts.workspace.name,
+			const delegation = subagentCaps?.ids.length && modelSettings.toolCall ? buildDelegationTools(subagentCaps.ids, {
+				workspacePath: workspace.path,
+				workspaceName: workspace.name,
 				...opts.workspaceBackend ? { backend: opts.workspaceBackend } : {},
 				model: effectiveModel,
-				...opts.subagentModel ? { subagentModel: withModelApiStyle(opts.subagentModel) } : {},
-				...opts.subagentMaxSteps ? { maxSteps: opts.subagentMaxSteps } : {},
-				...opts.subagentDefs ? { definitions: opts.subagentDefs } : {},
-				...opts.subagentDefinitionModels ? { definitionModels: Object.fromEntries(Object.entries(opts.subagentDefinitionModels).map(([id, config]) => [id, withModelApiStyle(config)])) } : {},
+				...subagentCaps.model ? { subagentModel: withModelApiStyle(subagentCaps.model) } : {},
+				...subagentCaps.maxSteps ? { maxSteps: subagentCaps.maxSteps } : {},
+				...subagentCaps.defs ? { definitions: subagentCaps.defs } : {},
+				...subagentCaps.definitionModels ? { definitionModels: Object.fromEntries(Object.entries(subagentCaps.definitionModels).map(([id, config]) => [id, withModelApiStyle(config)])) } : {},
 				/**
 				* 子 run 的事件**不经过父流**（它是工具里自己起的流），所以看门狗的心跳
 				* 必须在这里刷新 —— 否则一个跑了 3 分钟但一直在吐字的子任务会被当成卡死。
@@ -10323,6 +10800,11 @@ async function runAgent(opts) {
 					if ((event.type === "subagent-start" || event.type === "subagent-event" || event.type === "subagent-end") && event.toolCallId) {
 						const info = activeDelegations.get(event.toolCallId);
 						if (info) info.lastAt = Date.now();
+						/**
+						* 派活的 `tool-result` 来得早（只是一个 taskId），所以「这个子任务结束了吗」
+						* 只能看 `subagent-end` —— 在这里注销，看门狗才盯得住后台跑着的那一段。
+						*/
+						if (event.type === "subagent-end") activeDelegations.delete(event.toolCallId);
 					}
 					emitEvent(event);
 				},
@@ -10333,10 +10815,11 @@ async function runAgent(opts) {
 				*/
 				...opts.commandStops ? { commandStops: opts.commandStops } : {},
 				stats
-			}) : {};
+			}) : null;
+			settleDelegations = delegation?.settle ?? null;
 			const engineTools = {
 				...toolsForModel,
-				...delegationTools
+				...delegation?.tools ?? {}
 			};
 			/** 上一次边界时 messages 的长度：只用来估「这一步新增的那部分」 */
 			let boundaryCount = messages.length;
@@ -10609,15 +11092,23 @@ async function runAgent(opts) {
 						lastAt: Date.now()
 					});
 				}
-				if (event.type === "tool-result" && activeDelegations.has(event.toolCallId)) activeDelegations.delete(event.toolCallId);
+				/**
+				* 派活工具的 tool-result 现在只是「已派出」的句柄（子任务还在后台跑），**不能**
+				* 在这里摘掉 —— 摘了就没人盯它了，卡住的子任务会一直挂着。真正的收工信号是
+				* `subagent-end`（在 emit 包装里注销）。
+				*/
+				if (event.type === "tool-result" && activeDelegations.has(event.toolCallId) && !activeDelegations.get(event.toolCallId)?.toolName?.startsWith("agent-")) activeDelegations.delete(event.toolCallId);
 				if (event.type === "subagent-start" || event.type === "subagent-event" || event.type === "subagent-end") {
 					const info = activeDelegations.get(event.toolCallId);
 					if (info) info.lastAt = Date.now();
 				}
-				if (firstOutputAt === null && event.type !== "error") {
-					firstOutputAt = Date.now();
-					turnFirstOutputAt ??= firstOutputAt;
-				}
+				const now = Date.now();
+				if (firstOutputAt === null && event.type !== "error") firstOutputAt = now;
+				/**
+				* 生成窗口：**只累计有输出增量的时间片**（见 `TurnGenClock`）。
+				* 工具执行 / 等审批的空窗会被 `TPS_IDLE_GAP_MS` 整段丢弃，不再把 TPS 拽低。
+				*/
+				if (isOutputDelta(event)) markTurnOutputDelta(turnGenClock, now);
 				emitEvent(event);
 			}
 			/**
@@ -10627,6 +11118,12 @@ async function runAgent(opts) {
 			*/
 			await Promise.resolve(streamIterator.return?.()).catch(() => void 0);
 			const finished = await engine.done;
+			/**
+			* 流结束 = 不会再有下一步，后台还跑着的派活已经没人领结论了：先收尾（它会发
+			* `subagent-end`，派活卡才落得下来）。已经领过的是空操作；这一步放在拼收尾
+			* 原因之前，是为了让中止的那批在 `turn:finish` 之前就把卡片收干净。
+			*/
+			await settleDelegations?.();
 			/**
 			* 这次尝试的收尾失败。两种形状走同一条路：
 			*
@@ -10667,7 +11164,7 @@ async function runAgent(opts) {
 			if (lastStepUsage) contextTokens = calculateContextTokens(lastStepUsage);
 			else if (finishChunks === 1 && rawUsage) contextTokens = calculateContextTokens(rawUsage);
 			if (watchdogFired) {
-				const usage = rawUsage ? buildTurnUsage(rawUsage, startedAt, turnFirstOutputAt, contextTokens, stats.subagents) : void 0;
+				const usage = rawUsage ? buildTurnUsage(rawUsage, startedAt, turnGenClock.genMs, contextTokens, stats.subagents) : void 0;
 				emitEvent({
 					type: "error",
 					message: watchdogFired
@@ -10680,7 +11177,7 @@ async function runAgent(opts) {
 				return finish("error", usage, watchdogFired);
 			}
 			if (runSignal.aborted) {
-				const usage = rawUsage ? buildTurnUsage(rawUsage, startedAt, turnFirstOutputAt, contextTokens, stats.subagents) : void 0;
+				const usage = rawUsage ? buildTurnUsage(rawUsage, startedAt, turnGenClock.genMs, contextTokens, stats.subagents) : void 0;
 				emitEvent({
 					type: "finish",
 					finishReason: "aborted",
@@ -10688,7 +11185,7 @@ async function runAgent(opts) {
 				});
 				return finish("aborted", usage);
 			}
-			const usage = rawUsage ? buildTurnUsage(rawUsage, startedAt, turnFirstOutputAt, contextTokens, stats.subagents) : void 0;
+			const usage = rawUsage ? buildTurnUsage(rawUsage, startedAt, turnGenClock.genMs, contextTokens, stats.subagents) : void 0;
 			const stop = !runSignal.aborted && (forcedWrapUp || finished.steps >= attemptBudget && finished.finishReason === "tool-calls") ? {
 				stopReason: "max-steps",
 				steps: stepsAtAttemptStart + finished.steps
@@ -10701,9 +11198,16 @@ async function runAgent(opts) {
 			});
 			return finish("done", usage, void 0, stop);
 		} catch (err) {
+			/**
+			* 出错 / 被中止也要收派活：这条路的出口（重试或收场）不会再有下一步请求，
+			* 后台子任务留着就是白烧 token、派活卡永远转圈。`settle` 内部吞掉一切，
+			* 不影响下面的错误判定与重试决策。
+			*/
+			await settleDelegations?.();
+			settleDelegations = null;
 			rawUsage = mergeRawUsage(carriedUsage, rawUsage);
 			const message = describeError(err);
-			const usage = rawUsage ? buildTurnUsage(rawUsage, startedAt, turnFirstOutputAt, contextTokens, stats.subagents) : void 0;
+			const usage = rawUsage ? buildTurnUsage(rawUsage, startedAt, turnGenClock.genMs, contextTokens, stats.subagents) : void 0;
 			if (watchdogFired) {
 				emitEvent({
 					type: "error",
@@ -10804,4 +11308,4 @@ async function runAgent(opts) {
 		}
 	}
 }
-export { ASK_FOLLOWUP_TOOL, CONTAINER_AGENT_TOOL_KEYS, CONTAINER_PROTOCOL_VERSION, buildAgentTools, buildAskFollowupTool, buildWebFetchTool, defaultContextWindowFromEnv, filterToolSet, resolveContextWindow, runAgent };
+export { ASK_FOLLOWUP_TOOL, CONTAINER_AGENT_TOOL_KEYS, CONTAINER_PROTOCOL_VERSION, buildAgentTools, buildAskFollowupTool, buildWebFetchTool, defaultContextWindowFromEnv, filterToolSet, rawToolsPlugin, resolveContextWindow, runAgent };

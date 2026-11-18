@@ -23,7 +23,7 @@
  * 收尾要掐干净。
  */
 import { describe, expect, it, vi } from 'vitest'
-import { streamText } from 'ai'
+import { asSchema, streamText, type FlexibleSchema } from 'ai'
 import { SUBAGENT_MAX_STEPS, SUBAGENT_META } from '@fizz/contracts/types'
 import type { AgentStreamEvent, AiModelConfig, SubagentId } from '@fizz/contracts/types'
 import { buildDelegationTools, makeDelegationStats, resolveMaxSteps } from './subagents'
@@ -45,6 +45,7 @@ vi.mock('./resolve-model', () => ({ resolveModel: () => ({}) }))
 
 type DelegationTool = {
   description: string
+  inputSchema: FlexibleSchema<{ task: string; summary?: string }>
   execute: (
     input: { task: string; summary?: string },
     options: { toolCallId: string }
@@ -556,15 +557,20 @@ describe('列出后台子任务', () => {
     await built.settle()
   })
 
-  it('模型没给说明时退到任务原文首行（不会出现一条认不出的任务）', async () => {
+  it.each([undefined, '', '   '])('说明缺失或空白时通过 schema 校验并回退到任务首行（%j）', async (summary) => {
     const built = build()
     vi.mocked(streamText).mockReturnValue(fakeStream('ok') as never)
-    await (built.tools['agent-explorer'] as DelegationTool).execute(
-      { task: '先看 src/auth.ts\n再看 index.ts' },
-      { toolCallId: 'p1' }
-    )
+    const tool = built.tools['agent-explorer'] as DelegationTool
+    const parsed = await asSchema(tool.inputSchema).validate!({
+      task: '先看 src/auth.ts\n再看 index.ts',
+      ...(summary !== undefined ? { summary } : {})
+    })
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) throw parsed.error
+    await tool.execute(parsed.value, { toolCallId: 'p1' })
 
     expect(await listTasks(built)).toContain('先看 src/auth.ts')
+    await wait(built, 'p1')
     await built.settle()
   })
 

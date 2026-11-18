@@ -8,7 +8,7 @@
  *   `skip_turn` 静默跳过），只有接下的人才会在会话时间线里留下回复；
  * - **协同**：Agent 之间用 `SendMessage` 投递消息（不等待），接收方在本轮空闲时
  *   继续跑一次并把自己的回复写回共享时间线；
- * - **同进程、同工作区**：每个 Agent 都是 `runAgent({ setup })`，共享工作区 / 审批通道 /
+ * - **同进程、同工作区**：每个 Agent 都是 `runAgent({ scope, assemble })`，共享工作区 / 审批通道 /
  *   命令停止表；回复由调用方按 `agentId` / `agentName` 落进 `conversation.json`。
  *
  * 状态旁路：任务 / 消息 / 实时状态仍通过 `collab-*` 流事件推给前端（名单面板用），

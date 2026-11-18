@@ -26,6 +26,7 @@ import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import {
   runAgent,
+  rawToolsPlugin,
   buildAgentTools,
   buildWebFetchTool,
   buildAskFollowupTool,
@@ -124,14 +125,12 @@ function handleHealth(_req, res) {
 /**
  * 组装这一轮的「静态部分」（系统提示词 + 工具集）。
  *
- * 工具集**不用 `buildAgentSetup`**（那是主进程 / server 那侧的工作区装配，带插件、
- * 浏览器、MCP 等一堆容器里没有的东西），而是三份现成工具合并后按
- * `CONTAINER_AGENT_TOOL_KEYS` 白名单过滤 —— **缺一个键 `filterToolSet` 会当场抛错**，
+ * 三份现成工具合并后按 `CONTAINER_AGENT_TOOL_KEYS` 白名单过滤并注册为内置插件；缺键立即抛错，
  * 所以「宿主以为给了、容器实际没有」这种漂移在起跑那一刻就暴露。
  *
  * 提示词由宿主组装好整份传下来（服务端只有这一份口径），这里不重新拼。
  */
-function makeSetup(body, requestConfirm, ask, commandStops) {
+function makeAssembly(body, requestConfirm, ask, commandStops) {
   const skills = (body.skills ?? []).map((skill) => ({
     id: skill.path,
     name: skill.name,
@@ -164,7 +163,10 @@ function makeSetup(body, requestConfirm, ask, commandStops) {
     },
     [...CONTAINER_AGENT_TOOL_KEYS]
   )
-  return { instructions: String(body.systemPrompt ?? ''), tools }
+  return {
+    instructions: String(body.systemPrompt ?? ''),
+    plugins: [{ plugin: rawToolsPlugin('container:tools', tools, { origin: 'builtin' }) }]
+  }
 }
 
 /**
@@ -257,9 +259,9 @@ async function handleRuns(req, res) {
       writeFrame(run, { type: 'followup-request', id, request })
     })
 
-  let setup
+  let assembly
   try {
-    setup = makeSetup(body, requestConfirm, ask, run.commandStops)
+    assembly = makeAssembly(body, requestConfirm, ask, run.commandStops)
   } catch (err) {
     // 工具集过滤失败（白名单漂移）属于部署事故：如实报出去，别让这一轮静默少工具
     clearInterval(run.heartbeat)
@@ -279,7 +281,8 @@ async function handleRuns(req, res) {
 
   /** 这一轮完成的信号：`runAgent` 自己返回，或 abort 抢先（`undefined` = 被 abort 打断） */
   const agentPromise = runAgent({
-    workspace: { id: runId, name: ENV_ID, path: WORKSPACE },
+    // 容器里的会话恒定绑定 `/workspace`（global 作用域没有意义：容器本来就是一个工作区）
+    scope: { kind: 'workspace', workspace: { id: runId, name: ENV_ID, path: WORKSPACE } },
     history: Array.isArray(body.history) ? body.history : [],
     // 压缩检查点的复用键（宿主每轮传同一个会话 id）：不传就每轮重摘要一次
     conversationId: typeof body.conversationId === 'string' ? body.conversationId : undefined,
@@ -292,10 +295,12 @@ async function handleRuns(req, res) {
       ? { autoSummarySeed: body.autoSummarySeed }
       : {}),
     model,
-    // setup 提供时 skills / permissionMode / projectDoc 等一律不参与装配（提示词已由宿主给全）
+    // 装配完全由 `assemble` 决定（提示词由宿主给全）；skills / projectDoc 不再参与装配
     skills: [],
     permissionMode: body.permissionMode,
-    setup,
+    requestConfirm,
+    // 装配产物在起跑前定稿：白名单漂移必须在开流前报错，而不是等模型请求回来
+    assemble: () => assembly,
     contextWindow,
     signal: controller.signal,
     onEvent: (event) => writeFrame(run, { type: 'event', event }),

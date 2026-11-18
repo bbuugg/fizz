@@ -538,6 +538,7 @@ export function buildDelegationTools(
           .describe('要交给这个子任务的具体问题 / 目标。写清楚要找什么、要看哪里。'),
         summary: z
           .string()
+          .optional()
           .describe(
             '一句话说明这条派活是干什么的（不超过 20 字，例如「查 auth 入口」）。' +
               '同时派多个子任务时，task_list 靠它区分谁是谁。'
