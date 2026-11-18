@@ -3,7 +3,7 @@
  *
  * 这里把「系统原本手工塞进工具集的东西」改写成 **priority 0 的内置插件**：
  * 文件 / 命令工具、web_fetch，以及「把一批现成工具挂进注册表」的通用袋子
- * （extraTools、已构建好的 MCP 工具集都走它）。装配入口仍是 `buildAgentSetup`，
+ * （extraTools、已构建好的 MCP 工具集都走它）。装配入口是 `assembleStandard`，
  * 只是它现在**只消费注册表产出的结果**，不再手工 `Object.assign` 拼工具集。
  *
  * 为什么放 @fizz/agent 而不是 @fizz/plugin：Core 要保持轻（谁都能依赖），

@@ -10,7 +10,7 @@
  *   around 范式。见 Context.waterfall 的实现注释。
  * - **emit（只通知）**：`turn:start` / `turn:finish` 这类生命周期事件，参数是一个对象。
  *
- * 归属（与 `ctx.tools` 完全同款，是本模块存在的理由）：`hooks` 服务由 `buildAgentSetup`
+ * 归属（与 `ctx.tools` 完全同款，是本模块存在的理由）：`hooks` 服务由 `runAgent`
  * 建在 **turn context** 上，插件 `ctx.hooks.on(...)` 注册的监听器因此落在 turn context、
  * 能被同一轮的 `waterfall` / `emit` 看见；而 disposer 经 `bindEffect` 记在**插件 fiber** 上，
  * 插件卸载 / 下一轮重建时自动摘掉。

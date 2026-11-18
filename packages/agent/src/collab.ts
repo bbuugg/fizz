@@ -37,7 +37,7 @@ import type {
 } from '@fizz/contracts/types'
 import { DEFAULT_COLLAB_SETTINGS, normalizeCollabSettings } from '@fizz/contracts/types'
 import type { SkillInfo } from '@fizz/skills'
-import { buildAgentSetup, runAgent, type RunAgentResult } from './agent'
+import { assembleStandard, runAgent, type RunAgentResult } from './agent'
 import { resolveCollabMentions } from './collab-mentions'
 import { appendPartDelta, appendToolCall, foldToolResult, trimCollabParts } from './collab-parts'
 import { pickCollabTools } from './collab-tools'
@@ -565,24 +565,13 @@ export class CollabRuntime {
         }
       : undefined
 
-    const setup = buildAgentSetup({
-      workspace: this.opts.workspace,
-      skills: this.opts.skills,
-      projectDoc: this.opts.projectDoc ?? null,
-      permissionMode: agent.permissionMode,
-      ...(requestConfirm ? { requestConfirm } : {}),
-      ...(this.opts.commandStops ? { commandStops: this.opts.commandStops } : {}),
-      onEvent,
-      extraTools
-    })
-
     const mode = broadcast
       ? '用户没有 @ 任何 Agent，这条消息被广播给全体 Agent。先判断它是否与你的职责相关：' +
         '无关就立即调用 `skip_turn` 并结束，不要输出解释；相关就直接处理。'
       : '用户点名了你（可能同时点名了其他 Agent）。只处理与你职责相关的部分；' +
         '需要别人配合时用 `SendMessage` 给对方投递消息。'
-    setup.instructions = [
-      setup.instructions,
+    /** 叠在标准提示词之后的协作身份段（装配时拼进去） */
+    const collabPrompt = [
       '## 你的角色（多智能体协作）',
       `你是「${agent.name}」。${agent.role ? `职责：${agent.role}。` : ''}`,
       agent.instructions || '只做与当前消息相关的工作，不要擅自扩大范围。',
@@ -592,7 +581,6 @@ export class CollabRuntime {
       '你的回复会直接显示给用户，请给出结论、证据与必要的文件 / 行号引用；不要寒暄，不要复述任务。',
       partners ? `\n可协作的伙伴：\n${partners}` : '\n当前没有其他可协作的 Agent。'
     ].join('\n')
-    setup.tools = pickCollabTools(setup.tools, [...agent.tools, ...Object.keys(extraTools)])
 
     const history = historyForAgent(this.turnHistory, agent.id)
 
@@ -610,7 +598,7 @@ export class CollabRuntime {
     let result: RunAgentResult | undefined
     try {
       result = await runAgent({
-        workspace: this.opts.workspace,
+        scope: { kind: 'workspace', workspace: this.opts.workspace },
         history,
         model,
         skills: this.opts.skills,
@@ -618,7 +606,19 @@ export class CollabRuntime {
         permissionMode: agent.permissionMode,
         ...(requestConfirm ? { requestConfirm } : {}),
         ...(this.opts.commandStops ? { commandStops: this.opts.commandStops } : {}),
-        setup,
+        /**
+         * 标准装配（文件 / 联网工具 + 工作区提示词）之上叠两样东西：
+         * - 协作身份提示词（每个 Agent 的职责 / 投递规则）；
+         * - 工具白名单（`picker` 在挂载后过滤最终工具集）。
+         */
+        assemble: (deps) => {
+          const assembly = assembleStandard(deps)
+          assembly.instructions = [assembly.instructions, collabPrompt].join('\n')
+          assembly.filterTools = (tools) =>
+            pickCollabTools(tools, [...agent.tools, ...Object.keys(extraTools)])
+          return assembly
+        },
+        extraTools,
         onEvent,
         signal: controller.signal,
         maxSteps
@@ -627,7 +627,6 @@ export class CollabRuntime {
       error = err instanceof Error ? err.message : String(err)
     } finally {
       if (watchdog) clearInterval(watchdog)
-      setup.ctx?.dispose()
     }
 
     if (this.closed) return this.finishTask(settle(task), 'cancelled', undefined, '已取消')

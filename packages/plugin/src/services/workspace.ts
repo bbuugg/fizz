@@ -16,7 +16,7 @@
  * （它能 `import node:fs` 干任何事），给一个「看起来能挡住」的 API 只会造成安全错觉。
  * 需要限制范围的插件请自己调 `contains` 判断。
  *
- * 提供时机：`buildAgentSetup` 建 turn context 时 set（未绑定目录的会话不提供 → 声明
+ * 提供时机：`runAgent` 建 turn context（挂载装配产物）时 set（未绑定目录的会话不提供 → 声明
  * `inject: ['workspace']` 的插件在那里会被**推迟挂载**，见 context.ts 的依赖注入说明）。
  */
 import { isAbsolute, join, normalize, relative } from 'node:path'

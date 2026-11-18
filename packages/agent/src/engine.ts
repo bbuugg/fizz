@@ -161,7 +161,7 @@ export const TOOL_INTENT_FIELD = 'intent'
  * 只出现一次 —— schema 里只需要让模型知道这个字段是什么。
  *
  * 留一句「显示为卡片标题」是给**没有系统提示词那条约定**的路径兜底
- * （调用方自造 `setup` 的项目管理助手就走那条路）。
+ * （自造 `assemble` 的助手 profile 就走那条路）。
  */
 function intentProperty(): JSONSchema7 {
   return {

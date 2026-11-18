@@ -198,7 +198,7 @@ async function guardClientToolCall(
  * ⚠️ 之所以不在 build 期按当前档决定「包不包」：权限档要能在运行中变（切档立刻生效），
  * 包不包若在 build 期定死，运行中把 `full` 改成 `confirm` 就拦不住了。
  *
- * 返回 `Record<string, unknown>`，调用方直接并进 `setup.tools` 或经 `rawToolsPlugin` 挂上。
+ * 返回 `Record<string, unknown>`，调用方经 `rawToolsPlugin` 挂进 `AgentAssembly.plugins`。
  */
 export function buildClientToolset(
   specs: readonly ClientToolSpec[],

@@ -57,6 +57,7 @@ import { createConfirmGate, releaseConfirmsFor } from './confirm-gate'
 import { agentPrefs } from './prefs'
 import { createFollowupGate, releaseFollowupsFor } from './followup-gate'
 import { startContainerTurn } from './container-projects/turn'
+import { buildCodingAssembly } from './profiles/coding'
 import { buildClientToolset, createClientToolGate } from './client-tool-gate'
 import { errorPart, excerptOf, foldEventIntoParts } from './agent-parts'
 import { createRun, emit, finishRun, type ChatRun } from './chat-run'
@@ -612,7 +613,7 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
      * 这一轮额外挂的能力，全部走**插件**通道（`RunAgentOptions.plugins`）。
      *
      * 与从前的差别只在**形式上**：以前是手工 `Object.assign(extraTools, …)` 拼一个大对象，
-     * 现在是「一项能力 = 一个插件」，由 `buildAgentSetup` 的 turn context 依序挂进工具注册表。
+     * 现在是「一项能力 = 一个插件」，由 `runAgent` 的装配管线依序挂进工具注册表。
      * 挂载顺序：MCP → 提问 → 浏览器（项目管理工具组不在此列，见下面那段）。
      * 走插件通道的好处是后续可以按插件粒度做覆盖 / 卸载 / 冲突体检（见 @fizz/plugin）。
      */
@@ -642,7 +643,7 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
      * 装一个下一轮自动以完全访问权限执行的自定义工具，把工作区边界（`resolveInside`）
      * 从侧门绕过去。
      *
-     * 唯一该持有它的通道是**项目管理助手**（`assistant-turn.ts`，经 `setup.tools` 装配）——
+     * 唯一该持有它的通道是**项目管理助手**（`profiles/project-assistant.ts`）——
      * 那里才是「跨项目管理」的正当场景。别把它搬回来。
      */
     /**
@@ -900,7 +901,7 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
 
     try {
       return await runAgent({
-        workspace,
+        scope: { kind: 'workspace', workspace },
       // 远端工作区的文件 / 命令走 SSH；不传 = 本地（行为与改造前一致）
       ...(workspaceBackend ? { workspaceBackend } : {}),
       // 自动摘要固化的缓存键：必须是**会话** id，不是 workspace.id（一个工作区下多个会话）
@@ -981,27 +982,33 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
               return { id: handle.id }
             }
           }),
-      plugins,
       /**
-       * 浏览器工具（browser_*）：**内置这套真的挂上了**才追加系统提示词里那段浏览器说明。
-       * 会话开关关掉、或被外部 MCP 的同名工具全顶掉时都是 false
-       * （见上面 browserTools 的让位逻辑）。
+       * 工作区 Agent profile：标准装配（文件 / 命令 / web_fetch + 工作区提示词），
+       * 这一轮额外挂的插件（客户端 / MCP / 浏览器 / 磁盘插件）随 profile 一起装配。
+       * 能力由这里显式声明：
+       * - `browser`：内置 browser_* 真的挂上了才追加提示词里的浏览器说明
+       *   （会话开关关掉、或工具全被外部 MCP 顶掉时都是 false）；
+       * - `subagents`：只在内置后端、非协作会话时声明（用户在设置里打开的 id 为空
+       *   时不会生成派活工具）。ACP 走上面的 `runAcpAgent`，外部 agent 自己管编排。
        */
-      browser: browserToolNames.length > 0,
-      /**
-       * 子任务（subagent）：只在 内置后端生效，且**要用户在设置里打开过**。
-       * 缺省 / 空数组 = 不挂 `agents`，与没有这个能力时逐字节一致（runAgent 与
-       * `newAgent` 都不传这个字段，引擎的派活工具压根不会生成）。
-       * ACP 会话走下面的 runAcpAgent：外部 agent 自己管编排，不该被我们塞子任务。
-       */
-      subagents: backend === 'builtin' && !isCollab ? subagentSettings.enabled : [],
-      ...(subagentDefinitions.length > 0 ? { subagentDefs: subagentDefinitions } : {}),
-      ...(Object.keys(subagentDefinitionModels).length > 0 ? { subagentDefinitionModels } : {}),
-      ...(backend === 'builtin' && subagentModel ? { subagentModel } : {}),
-      // 步数上限同理只在真会派活时下传：没启用子任务时这两个字段都是垃圾
-      ...(backend === 'builtin' && !isCollab && subagentSettings.maxSteps
-        ? { subagentMaxSteps: subagentSettings.maxSteps }
-        : {}),
+      assemble: (deps) =>
+        buildCodingAssembly(deps, {
+          plugins,
+          browser: browserToolNames.length > 0,
+          ...(backend === 'builtin' && !isCollab
+            ? {
+                subagents: {
+                  ids: subagentSettings.enabled,
+                  ...(subagentDefinitions.length > 0 ? { defs: subagentDefinitions } : {}),
+                  ...(Object.keys(subagentDefinitionModels).length > 0
+                    ? { definitionModels: subagentDefinitionModels }
+                    : {}),
+                  ...(subagentModel ? { model: subagentModel } : {}),
+                  ...(subagentSettings.maxSteps ? { maxSteps: subagentSettings.maxSteps } : {})
+                }
+              }
+            : {})
+        }),
       /**
        * 上下文窗口按「这一轮真正选中的模型」解析：`resolveModelConfig` 已经把
        * `model` 覆盖成选中那个 id，所以直接用 `modelConfig.model` 查表即可。

@@ -38,7 +38,7 @@ export interface ChatRun {
   controller: AbortController
   /**
    * 正在执行的 bash 停止表（toolCallId → 只停它的 stop）。
-   * 由 tools 层的 per-command AbortController 经 runAgent → buildAgentSetup 注册，
+   * 由 tools 层的 per-command AbortController 经 runAgent → mountAssembly 注册，
    * `POST /api/chat/command/stop` 命中它 = 杀那一条命令的进程树，与整轮停止
    * （`controller`）互不影响。收尾时清空（chat-turn 的 .then 链）。
    */

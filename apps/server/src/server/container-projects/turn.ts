@@ -641,7 +641,8 @@ export async function startContainerTurn(
       if (stopped()) return settleTurn('aborted')
 
       // 提示词由**宿主**组装（服务端只有这一份口径）：容器里跑的就是它，不再另拼一份。
-      // `browser: false` —— 容器内工具白名单里刻意没有 browser_*，提示词也不该提。
+      // 容器内工具白名单里刻意没有 browser_*，提示词也就不提（浏览器段落由挂工具的
+      // coding profile 追加，标准工作区提示词里没有这一段）。
       const projectDoc = await readProjectDoc(workspace.path)
       if (stopped()) return settleTurn('aborted')
       const systemPrompt = buildAgentSystemPrompt(
@@ -655,7 +656,6 @@ export async function startContainerTurn(
           file: skill.path
         })),
         projectDoc,
-        false,
         // 容器内预览端口：**只有这里能把「该监听哪个端口、该绑哪个地址」告诉容器里的模型**
         // （宿主端口是动态分配的、进不了容器）。不传的话模型只会自己挑一个顺眼的端口，
         // 用户填的预览端口就废了、页面空白且不报错 —— 见 `buildPreviewPortSection`。

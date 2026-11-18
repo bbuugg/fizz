@@ -22,7 +22,6 @@ import {
   type CompactionSummaryDelta,
   type CompactionSummaryStart
 } from './context'
-import { ASK_FOLLOWUP_HINT, ASK_FOLLOWUP_TOOL } from '@fizz/tools'
 import {
   createAppContext,
   HOOKS,
@@ -87,7 +86,13 @@ import type { SkillInfo } from '@fizz/skills'
 export type { AgentConfirmInput, RunAgentResult } from '@fizz/contracts/types'
 
 export interface RunAgentOptions {
-  workspace: AgentWorkspace
+  /**
+   * 这一轮的作用域：绑定工作区的会话，或跨项目的全局会话（助手）。
+   *
+   * 运行时内部统一解析成 `AgentWorkspace`（global 的 `path` 为空串），
+   * 所以调用方不再需要为了复用运行时伪造一个空工作区。
+   */
+  scope: AgentScope
   /**
    * 工作区后端（本地 / 远端）。不传 = 按 `workspace.path` 现建本地后端（行为与从前一致）。
    * 远端工作区由服务端注入 SSH 后端；此时子任务白名单会自动剔除 `git_read`。
@@ -118,34 +123,16 @@ export interface RunAgentOptions {
    */
   getPermissionMode?: () => AiPermissionMode
   /**
-   * 启用哪些子任务（subagent）。缺省 / 空数组 = 一个派活工具都不挂，与没有这个能力时
-   * 逐字节一致。
+   * 装配这一轮的静态部分（系统提示词 + 工具集）。
    *
-   * 子 agent 恒为只读（白名单见 subagents.ts）；它只收到派活时那一条任务文本，父的
-   * 系统提示词与完整历史不下发，派活 prompt 上另有一层注入防线。详见
-   * docs/superpowers/specs/2026-10-06-subagent-integration-design.md 的 §8。
-   */
-  subagents?: SubagentId[]
-  /** 用户自定义的子智能体（内置两个在代码里，不在这里） */
-  subagentDefs?: SubagentDefinition[]
-  /**
-   * 自定义子智能体各自的模型（server 已按定义里的 modelConfigId/modelId 解析好）。
-   * 缺省 / 没命中 = 退回全局 `subagentModel` → 父模型。
-   */
-  subagentDefinitionModels?: Record<string, AiModelConfig>
-  /**
-   * 子任务专用模型（完整配置：含明文 key / baseURL）。不传 = 沿用父会话模型；
-   * 传了但某个子任务自己的 `preferredModelId` 在父配置里命中时，仍以子任务规格为准。
+   * 不传 = `assembleStandard`（内置文件 / 联网工具 + 工作区版提示词）。
+   * 传了就必须自己给出完整的 `instructions` 与 `plugins` —— 运行时**只做挂载**，
+   * 不会偷偷再挂一份工作区工具。
    *
-   * server 从 `SubagentSettings.modelConfigId/modelId` 解析后传进来；配置被删 /
-   * 模型被移除时**不要抛错**，退回父模型并记日志即可。
+   * 这是**唯一**的装配入口：不再有「传个 setup 对象就绕开审批壳 / 钩子 / 提示词渲染」
+   * 的旁路，助手与主会话走同一条管线。
    */
-  subagentModel?: AiModelConfig
-  /**
-   * 设置页给的子任务步数上限（按 id）。缺省 = 各子任务的规格默认值
-   * （真源是 contracts 的 `SUBAGENT_META.defaultMaxSteps`，见 `resolveMaxSteps`）。
-   */
-  subagentMaxSteps?: Partial<Record<SubagentId, number>>
+  assemble?: (deps: AgentAssemblyDeps) => AgentAssembly | Promise<AgentAssembly>
   /**
    * confirm 模式下执行破坏性操作（bash）前的请示。
    *
@@ -214,13 +201,6 @@ export interface RunAgentOptions {
    * 挂载顺序：内置文件工具 → extraTools → plugins → web_fetch / screenshot。
    */
   plugins?: MountedPlugin[]
-  /**
-   * 覆盖「静态部分」（系统提示词 + 工具集）整个装配结果：提供时 `buildAgentSetup`
-   * 完全不执行 —— 不建工作区文件工具、不用工作区版提示词。给**不走单一工作区**的
-   * 调用方用（如项目管理助手：自定义身份提示词 + 纯项目工具集）。
-   * ⚠️ 提供时 `workspace / skills / projectDoc / permissionMode / extraTools / plugins` 全部失效。
-   */
-  setup?: AgentSetup
   /**
    * 模型请求失败后的自动重试次数（**0 = 不限制**，一直重试）。缺省 = `DEFAULT_MAX_RETRIES`。
    *
@@ -293,11 +273,6 @@ export interface RunAgentOptions {
     keptTurns: number
     summary?: string
   }) => void
-  /**
-   * 是否启用浏览器工具（browser_* 工具集 + 系统提示词里的浏览器使用说明）。
-   * 由调用方按「本后端能不能跑浏览器」决定（desktop / web 的共享后端都行，直接传 true）。
-   */
-  browser?: boolean
   /** 追加在系统提示词末尾的调用方专属说明（多智能体协作的派活规则等）。 */
   extraPrompt?: string
   /**
@@ -580,47 +555,51 @@ export function buildTurnUsage(
 const INPUT_DELTA_FLUSH_CHARS = 240
 const INPUT_DELTA_FLUSH_MS = 60
 
-export interface AgentSetup {
-  instructions: string
-  /** 工具名 → AI SDK 工具对象；估算上下文时也读它（见 `estimateBaseTokens`） */
-  tools: Record<string, unknown>
-  /**
-   * 钩子总线（`buildAgentSetup` 提供）。外部自造 setup（如 assistant-turn）可不传 ——
-   * 所有钩子调用都走可选链，缺了就等于「没有插件要拦截」。
-   */
-  hooks?: HooksService
-  /**
-   * 这一轮自建的 turn context（`buildAgentSetup` 提供）。`runAgent` 收尾时卸载它，
-   * 好让「每轮重建」真正闭环（插件加的工具 / 监听器随轮结束一起回收）。
-   * 外部自造 setup 不传 = 这一轮没有需要我们回收的东西。
-   */
-  ctx?: Context
+/**
+ * 这一轮「在哪儿干活」的身份。
+ *
+ * - `workspace`：绑定某个工作区的会话（Agent / 协作 / 任务会话）；
+ * - `global`：跨项目的全局会话（项目管理助手 / 终端助手）—— 没有工作区根，
+ *   不该为了复用运行时去伪造一个 `path: ''` 的工作区对象。
+ */
+export type AgentScope =
+  | { kind: 'workspace'; workspace: AgentWorkspace }
+  | { kind: 'global'; id: string; name: string }
+
+/** 把作用域解析成运行期统一的 `AgentWorkspace` 形状（global 的 path 恒为空串） */
+export function resolveScopeWorkspace(scope: AgentScope): AgentWorkspace {
+  if (scope.kind === 'workspace') return scope.workspace
+  return { id: scope.id, name: scope.name, path: '', createdAt: 0, updatedAt: 0 }
 }
 
 /**
- * 组装一次运行的静态部分（系统提示词 + 工具集）。
+ * 子任务（subagent）的装配参数。
  *
- * 单独拆出来是因为**上下文估算要用它**：系统提示词与工具 schema 每轮都要发出去，
- * 却不在 `messages` 里 —— `runAgent` 得拿到这两样，才能把「本轮实际请求多大」算准
- * （见 `estimateBaseTokens`）。建 Agent 本身只是 `new Agent(...)`，无副作用。
- *
- * **实现已改为「由插件注册表产出」**：这里起一个一次性的 Context，把内置能力
- * （文件 / 联网工具）与调用方给的工具 / 插件按固定顺序挂上去，最后从
- * `ctx.tools` / `ctx.prompt` 读回结果。挂载顺序与从前手工 spread 的顺序**逐一对齐**，
- * 所以产出的工具键序、提示词正文都与改造前一致：
- *   文件工具 → extraTools → plugins → web_fetch → screenshot。
- *
- * 钩子（P3）：`hooks` 服务**先于插件挂载**建在这一轮的 context 上，插件 apply 里就能
- * `ctx.hooks.on(...)`；工具集在产出后再套一层钩子壳（`wrapToolsWithHooks`），
- * 提示词正文最后过一遍 `prompt:render`。没插件挂钩子时，这两步都是原样透传。
+ * 能力声明的一部分：只有 profile 显式给出，运行时才会挂派活工具、才会为子 run 解析模型。
  */
+export interface AgentSubagentOptions {
+  ids: SubagentId[]
+  /** 用户自定义的子智能体（内置两个在代码里，不在这里） */
+  defs?: SubagentDefinition[]
+  /** 自定义子智能体各自的模型（调用方已按定义里的 modelConfigId/modelId 解析好） */
+  definitionModels?: Record<string, AiModelConfig>
+  /** 子任务专用模型（完整配置：含明文 key / baseURL）。缺省 = 沿用父会话模型 */
+  model?: AiModelConfig
+  /** 设置页给的子任务步数上限（按 id）。缺省 = 各子任务的规格默认值 */
+  maxSteps?: Partial<Record<SubagentId, number>>
+}
 
-export function buildAgentSetup(opts: {
+/**
+ * 装配一轮要用的输入：`runAgent` 把 scope + 选项汇总好，交给 `assemble`。
+ *
+ * 这里是**装配侧**的唯一入口：凡是不属于「循环怎么跑」的东西（工具、提示词、审批回调、
+ * 事件出口）都从这里进，不要再散回 `RunAgentOptions`。
+ */
+export interface AgentAssemblyDeps {
   workspace: AgentWorkspace
   /** 工作区后端（见 RunAgentOptions.workspaceBackend）；不传 = 本地 */
   workspaceBackend?: WorkspaceBackend
-  skills: SkillInfo[]
-  /** 工作区根目录的项目约束文档（AGENTS.md），见 RunAgentOptions.projectDoc */
+  skills?: SkillInfo[]
   projectDoc?: ProjectDoc | null
   permissionMode?: AiPermissionMode
   /**
@@ -640,10 +619,8 @@ export function buildAgentSetup(opts: {
     title: string
   }) => Promise<{ id: string }>
   extraTools?: Record<string, unknown>
-  /** 调用方额外挂的插件（server 的项目工具 / 浏览器 / MCP 桥接等），按数组顺序挂载 */
+  /** 调用方额外挂的插件（浏览器 / MCP 桥接 / 磁盘插件等），按数组顺序挂载 */
   plugins?: MountedPlugin[]
-  /** 是否启用浏览器工具（挂 browser_* 工具集 + 在系统提示词追加浏览器使用说明） */
-  browser?: boolean
   /** 追加在系统提示词末尾的调用方专属说明（例如多智能体协作的派活规则） */
   extraPrompt?: string
   /**
@@ -660,16 +637,135 @@ export function buildAgentSetup(opts: {
    * 本轮的**工具步数预算**（`runAgent` 的 `opts.maxSteps`）。给了就在系统提示词末尾追加
    * 一段「这轮有 N 步」的约定（见 `stepBudgetHint`）。
    *
-   * 为什么值得说：模型不知道有闸，就会一直「再查一个文件 / 再跑一次」，直到被
-   * `stepCountIs` 硬停 —— 那时它连一句「做到哪了」都没机会说。提前知道预算，它才会先规划、
-   * 把结论排进前 N 步。
-   *
    * 只放**常量预算**：剩余步数每步都变，进系统提示词会让上游前缀缓存从第一个 token 起
    * 全部失效（见 `stepBudgetHint` 的警告）；动态的那部分走步骤边界的 `stepBudgetReminder`。
    */
   maxSteps?: number
-}): AgentSetup {
-  const ctx = createAppContext('agent-setup')
+  /** 子任务能力；不传 = 一个派活工具都不挂 */
+  subagents?: AgentSubagentOptions
+}
+
+/**
+ * 装配产物：运行时只认它。
+ *
+ * 两种写法必须走同一条挂载管线（`mountAssembly`）：
+ * - 标准会话：`assembleStandard(deps)`；
+ * - 助手 / 协作：自己给 `instructions` + `plugins`（必要时再给 `filterTools`）。
+ */
+export interface AgentAssembly {
+  /** 系统提示词正文（插件仍可通过 `ctx.prompt` 追加段落） */
+  instructions: string
+  /** 工具插件：一个插件 = 一项能力，按数组顺序挂进本轮 context */
+  plugins?: MountedPlugin[]
+  /** 挂载后对最终工具集做一次过滤（协作 Agent 的工具白名单） */
+  filterTools?: (tools: Record<string, unknown>) => Record<string, unknown>
+  /**
+   * 能力声明：运行时据此决定**循环层**行为。
+   * 工具型能力（浏览器 / MCP / 项目工具）不在这里 —— 它们在不在，看 `plugins` 产出的工具集。
+   */
+  capabilities?: {
+    /** 子任务（派活工具 + 独立子 run）；缺省 = 一个都不挂 */
+    subagents?: AgentSubagentOptions
+  }
+}
+
+/**
+ * 标准装配：内置文件 / 命令工具 → extraTools → 调用方插件 → web_fetch。
+ *
+ * 只产出 `AgentAssembly`，**不建 Context、不挂载、不套钩子** —— 挂载与审批/钩子壳
+ * 统一由 `runAgent` 的 `mountAssembly` 做。这样标准会话与自造 profile（助手 / 协作）
+ * 走的是同一条管线，不会出现「一部分工具受插件钩子管辖、另一部分不受」。
+ *
+ * 上下文估算要用它：系统提示词与工具 schema 每轮都要发出去，却不在 `messages` 里，
+ * `runAgent` 得拿到这两样才能把「本轮实际请求多大」算准（见 `estimateBaseTokens`）。
+ */
+
+export function assembleStandard(deps: AgentAssemblyDeps): AgentAssembly {
+  const stopHooks = deps.commandStops
+    ? {
+        onStart: (id: string, stop: () => void) => deps.commandStops!.set(id, stop),
+        onEnd: (id: string) => deps.commandStops!.delete(id)
+      }
+    : {}
+
+  /**
+   * 挂载顺序与改造前**逐一对齐**（工具键序稳定，提示词正文才稳定）：
+   *   文件工具 → extraTools → 调用方插件 → web_fetch
+   */
+  const plugins: MountedPlugin[] = [
+    {
+      plugin: fileToolsPlugin(deps.workspace.path, {
+        // 三种模式原样透传（readonly 不能被吞成 full）
+        permissionMode: deps.permissionMode ?? 'full',
+        // 运行中活取权限档（用户在整轮中途切档时，闸门立刻按新档裁决）
+        ...(deps.getPermissionMode ? { getPermissionMode: deps.getPermissionMode } : {}),
+        // exactOptionalPropertyTypes 下不能传 undefined，条件展开
+        ...(deps.requestConfirm ? { requestConfirm: deps.requestConfirm } : {}),
+        // 单条命令停止 + 实时输出：三个回调成组注入（缺 commandStops = 都不注入）
+        ...(deps.workspaceBackend ? { backend: deps.workspaceBackend } : {}),
+        ...(deps.commandStops
+          ? {
+              onCommandStart: (id: string, stop: () => void) => deps.commandStops!.set(id, stop),
+              onCommandEnd: (id: string) => deps.commandStops!.delete(id),
+              // 实时输出**直出**：不经 emitEvent 的 pendingDelta（那是入参增量的收口逻辑）
+              onCommandOutput: (id: string, stream: 'stdout' | 'stderr', delta: string) =>
+                deps.onEvent?.({ type: 'tool-output-delta', toolCallId: id, stream, delta })
+            }
+          : {}),
+        // 后台执行通道：不传就没有 runInBackground（工具会如实回绝）
+        ...(deps.onBackgroundCommand ? { onBackgroundCommand: deps.onBackgroundCommand } : {}),
+        skills: deps.skills ?? [],
+        ...(deps.nestedDocs ? { nestedDocs: deps.nestedDocs } : {})
+      })
+    },
+    // 调用方注入的工具（transport 相关，如 ask）
+    ...(deps.extraTools
+      ? [{ plugin: rawToolsPlugin('extra-tools', deps.extraTools, { source: 'extra-tools' }) }]
+      : []),
+    // 调用方挂的插件（浏览器 / MCP 桥接 / 磁盘插件等）
+    ...(deps.plugins ?? []),
+    // web_fetch：全局只读工具，不依赖工作区（未绑定目录时也只截断、不落盘）
+    { plugin: webToolsPlugin(deps.workspace.path, stopHooks, deps.workspaceBackend) }
+  ]
+
+  // 未绑定目录（path 为空）的会话：不用工作区版提示词，只告诉模型「只能对话」
+  const base = deps.workspace.path
+    ? buildAgentSystemPrompt(
+        deps.workspace.path,
+        deps.workspace.name,
+        deps.skills ?? [],
+        deps.projectDoc ?? null
+      )
+    : '你是 Fizz 的对话助手。本会话没有绑定工作区，因此不能读写文件或执行命令，但可以使用 web_fetch 工具打开网页抓取资料；只能基于对话内容或抓取到的网页内容回答问题、整理思路。'
+  // 「工具意图」的约定：只有真的往 schema 注入 `intent` 时才追加（见 toolIntentHint）
+  const intentHint = deps.toolIntent === false ? '' : toolIntentHint()
+  // 「这轮有多少步」的约定：调用方没给预算就不追加 —— 说了也没有闸
+  const budgetHint =
+    typeof deps.maxSteps === 'number' && Number.isFinite(deps.maxSteps)
+      ? stepBudgetHint(Math.max(1, Math.trunc(deps.maxSteps)))
+      : ''
+  const extraPrompt = deps.extraPrompt?.trim() ? '\n\n' + deps.extraPrompt.trim() : ''
+
+  return {
+    instructions: base + intentHint + budgetHint + extraPrompt,
+    plugins,
+    capabilities: {
+      ...(deps.subagents ? { subagents: deps.subagents } : {})
+    }
+  }
+}
+
+/**
+ * 挂载装配产物：**全项目唯一的工具注册 / 审批 / 钩子 / 提示词收口点**。
+ *
+ * 标准会话与自造 profile 都经由这里，差异只在 `assembly` 的内容 —— 不会再出现
+ * 「传了 setup 就绕开钩子与审批壳」的旁路。
+ */
+function mountAssembly(
+  assembly: AgentAssembly,
+  deps: AgentAssemblyDeps
+): { instructions: string; tools: Record<string, unknown>; hooks: HooksService; ctx: Context } {
+  const ctx = createAppContext('agent-assembly')
   ctx.set('tools', new ToolsService(ctx))
   // 工作区级插件可能声明 `inject: ['models']`：给一份空注册表只为不推迟挂载。
   // 这里注册的模型**不会**进全局模型列表（模型是全局的，见 server/plugin-models.ts）。
@@ -679,48 +775,18 @@ export function buildAgentSetup(opts: {
   // 插件卸载时 disposer 随 fiber 回收。见 @fizz/plugin 的 hooks.ts 注释。
   const hooks = new HooksService(ctx)
   ctx.set('hooks', hooks)
-  // 工作区根目录：插件的工具要按「相对工作区根」的路径约定解析（模型的系统提示词就是这么
-  // 要求的），没有这个服务它们只能要求绝对路径。未绑定目录的会话（path 为空）不提供 ——
-  // 声明 `inject: ['workspace']` 的插件在那里会被推迟挂载，不会拿到一个空目录乱拼路径。
-  if (opts.workspace.path) {
-    ctx.set('workspace', new WorkspaceService(ctx, { path: opts.workspace.path, name: opts.workspace.name }))
+  // 工作区根目录：插件的工具要按「相对工作区根」的路径约定解析。未绑定目录的会话
+  // （path 为空）不提供 —— 声明 `inject: ['workspace']` 的插件会被推迟挂载。
+  if (deps.workspace.path) {
+    ctx.set(
+      'workspace',
+      new WorkspaceService(ctx, { path: deps.workspace.path, name: deps.workspace.name })
+    )
   }
 
-  // ① 内置文件 / 命令工具（未绑定目录的会话不注册，见 fileToolsPlugin）
-  ctx.plugin(
-    fileToolsPlugin(opts.workspace.path, {
-      // 三种模式原样透传（readonly 不能被吞成 full）
-      permissionMode: opts.permissionMode ?? 'full',
-      // 运行中活取权限档（用户在整轮中途切档时，闸门立刻按新档裁决）
-      ...(opts.getPermissionMode ? { getPermissionMode: opts.getPermissionMode } : {}),
-      // exactOptionalPropertyTypes 下不能传 undefined，条件展开
-      ...(opts.requestConfirm ? { requestConfirm: opts.requestConfirm } : {}),
-      // 单条命令停止 + 实时输出：三个回调成组注入（缺 commandStops = 都不注入，
-      // 行为与加这个能力之前逐字节一致；subagent 那条 buildAgentTools 刻意不传）
-      ...(opts.workspaceBackend ? { backend: opts.workspaceBackend } : {}),
-      ...(opts.commandStops
-        ? {
-            onCommandStart: (id: string, stop: () => void) => opts.commandStops!.set(id, stop),
-            onCommandEnd: (id: string) => opts.commandStops!.delete(id),
-            // 实时输出**直出**：不经 emitEvent 的 pendingDelta（那是入参增量的收口逻辑）
-            onCommandOutput: (id: string, stream: 'stdout' | 'stderr', delta: string) =>
-              opts.onEvent?.({ type: 'tool-output-delta', toolCallId: id, stream, delta })
-          }
-        : {}),
-      // 后台执行通道：不传就没有 runInBackground（工具会如实回绝），
-      // 与「这个环境不支持后台命令」是同一件事
-      ...(opts.onBackgroundCommand ? { onBackgroundCommand: opts.onBackgroundCommand } : {}),
-      skills: opts.skills,
-      ...(opts.nestedDocs ? { nestedDocs: opts.nestedDocs } : {})
-    })
-  )
-  // ② 调用方注入的工具（transport 相关，如 ask）
-  if (opts.extraTools) ctx.plugin(rawToolsPlugin('extra-tools', opts.extraTools, { source: 'extra-tools' }))
-  // ③ 调用方挂的插件（server 的项目工具 / 浏览器 / MCP 桥接）
   // **逐个 try/catch**：一个插件挂载失败不该拖垮整轮对话（与 loadPlugins 的取舍一致）。
-  // 典型失败：注册的工具形状不对（缺 execute，见 ToolsService.register）、与内置工具同名
-  // 并列最高 priority —— 这种插件本轮缺席，其余照常挂。
-  for (const mounted of opts.plugins ?? []) {
+  // 典型失败：注册的工具形状不对（缺 execute）、与内置工具同名并列最高 priority。
+  for (const mounted of assembly.plugins ?? []) {
     try {
       ctx.plugin(mounted.plugin, mounted.config)
     } catch (err) {
@@ -728,65 +794,25 @@ export function buildAgentSetup(opts: {
       console.warn(`[agent] 插件挂载失败，本轮跳过：${name}`, err)
     }
   }
-  // ④ web_fetch / screenshot 是全局只读工具：不依赖工作区，任何会话（含未绑定目录的「任务」会话）都可用。
-  //    `screenshot` 只在装了内置浏览器运行时的那一轮挂上（判据在 webToolsPlugin 里）。
-  // ② 内置 web 工具。`web_fetch` 也接同一张停止表：抓一个卡住的站点动辄 30s，
-  //    用户应该能只停这一条，而不是中止整轮。
-  ctx.plugin(
-    webToolsPlugin(
-      opts.workspace.path ?? '',
-      opts.commandStops
-        ? {
-            onStart: (id: string, stop: () => void) => opts.commandStops!.set(id, stop),
-            onEnd: (id: string) => opts.commandStops!.delete(id)
-          }
-        : {},
-      // 远端工作区把 web_fetch 的超长正文落回远端 .fizz/tool-output（不传 = 本地）
-      opts.workspaceBackend
-    )
-  )
 
   // 审批闸门：`mutating: true` 的工具按权限模式走（readonly 拒绝 / confirm 询问 / full 放行）。
-  // 内置文件工具**不经这里**（它们自己管自己的 guardWrite），所以行为与加这个能力之前一致。
-  const tools = wrapToolsWithApproval(ctx.tools.entries(), {
-    permissionMode: opts.permissionMode ?? 'full',
-    ...(opts.getPermissionMode ? { getPermissionMode: opts.getPermissionMode } : {}),
-    // exactOptionalPropertyTypes 下不能传 undefined，条件展开（与上面 requestConfirm 的用法一致）
-    ...(opts.requestConfirm ? { requestConfirm: opts.requestConfirm } : {})
+  // 内置文件工具**不经这里**（它们自己管自己的 guardWrite），所以行为与从前一致。
+  let tools = wrapToolsWithApproval(ctx.tools.entries(), {
+    permissionMode: deps.permissionMode ?? 'full',
+    ...(deps.getPermissionMode ? { getPermissionMode: deps.getPermissionMode } : {}),
+    // exactOptionalPropertyTypes 下不能传 undefined，条件展开
+    ...(deps.requestConfirm ? { requestConfirm: deps.requestConfirm } : {})
   })
-  // 桌面端**总是**在系统提示词后追加提问提示词；server 只在真正注入了 ask
-  // 工具时追加，避免给 CLI（没有卡片 UI）塞一个用不上的指引。
-  // 判据从「查 extraTools」改成「查注册表产出的工具集」——语义不变，但不再关心工具来自哪条通道。
-  const askHint = ASK_FOLLOWUP_TOOL in tools ? ASK_FOLLOWUP_HINT : ''
-  // 未绑定目录（path 为空）的会话：不用工作区版提示词，只告诉模型「只能对话」
-  const base = opts.workspace.path
-    ? buildAgentSystemPrompt(
-        opts.workspace.path,
-        opts.workspace.name,
-        opts.skills,
-        opts.projectDoc ?? null,
-        opts.browser
-      )
-    : '你是 Fizz 的对话助手。本会话没有绑定工作区，因此不能读写文件或执行命令，但可以使用 web_fetch 工具打开网页抓取资料；只能基于对话内容或抓取到的网页内容回答问题、整理思路。'
-  // 提示词也走注册表：内置提示词是唯一一段，插件可再追加（priority 更大的排在后面）
-  // 「工具意图」的约定：只有真的往 schema 注入 `intent` 时才追加（见 toolIntentHint）
-  const intentHint = opts.toolIntent === false ? '' : toolIntentHint()
-  // 「这轮有多少步」的约定：调用方没给预算（比如自造 setup 的项目助手）就不追加 ——
-  // 说了也没有闸，模型只会为一个不存在的上限做无谓的收尾
-  const budgetHint =
-    typeof opts.maxSteps === 'number' && Number.isFinite(opts.maxSteps)
-      ? stepBudgetHint(Math.max(1, Math.trunc(opts.maxSteps)))
-      : ''
-  ctx.prompt.section('builtin', base + askHint + intentHint + budgetHint, { priority: 0 })
-  if (opts.extraPrompt?.trim()) {
-    ctx.prompt.section('caller', opts.extraPrompt.trim(), { priority: 1 })
-  }
+  // 钩子壳：`tool:call` 可改写入参、`tool:result` 可改写返回（没插件时原样透传）
+  tools = wrapToolsWithHooks(tools, hooks)
+  if (assembly.filterTools) tools = assembly.filterTools(tools)
+
+  // 提示词也走注册表：装配产出的正文是唯一一段内置内容，插件可再追加（priority 更大的排在后面）
+  ctx.prompt.section('builtin', assembly.instructions, { priority: 0 })
   // 渲染完再过一遍钩子：插件可以整段改写最终正文（没插件时 hookValue 原样返回）
   const instructions = hooks.waterfall(HOOKS.promptRender, [ctx.prompt.render()], hookValue) as string
-  return { instructions, tools: wrapToolsWithHooks(tools, hooks), hooks, ctx }
+  return { instructions, tools, hooks, ctx }
 }
-
-/** 用静态部分 + 模型配置建一个 内置 Agent（每次尝试现建，代价只是一个配置对象） */
 
 /** 这一轮的序号（与时间戳拼成 turnId）：轮次之间可能重叠，得有个能区分的东西 */
 let turnSeq = 0
@@ -875,10 +901,10 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
   }
 
   /**
-   * 静态部分是不是**本轮自建**的。自建的那份带一个 turn context（插件加的工具 / 监听器
-   * 都挂在里面），收尾时必须卸载；调用方传进来的 `setup` 不归我们管（也不含 hooks）。
+   * 这一轮的作用域解析结果。global 会话（助手）的 `path` 为空 —— 下游的文件工具 /
+   * 子目录规则 / 插件工作区服务都按「空路径 = 不提供」处理，不需要各调用方各判一次。
    */
-  const ownSetup = !opts.setup
+  const workspace = resolveScopeWorkspace(opts.scope)
   /** 生效的重试上限（设置里 0 = 不限制 → Infinity） */
   const maxRetries = resolveMaxRetries(opts.maxRetries)
   /**
@@ -1019,10 +1045,10 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
         .join('，')
       console.error('[subagent] 派活汇总：' + lines)
     }
-    // 一轮收尾：先广播 `turn:finish`（插件据此记账 / 落状态），再卸载本轮自建的 context。
+    // 一轮收尾：先广播 `turn:finish`（插件据此记账 / 落状态），再卸载本轮的 context。
     // 顺序不能反 —— 卸载会把监听器一起摘掉，之后就没人收得到这个事件了。
     try {
-      agentSetup.hooks?.emit(HOOKS.turnFinish, {
+      agentSetup.hooks.emit(HOOKS.turnFinish, {
         turnId,
         finishReason,
         ...(usage ? { usage } : {})
@@ -1030,12 +1056,10 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
     } catch (err) {
       console.error('[plugin] turn:finish 钩子出错：', err)
     }
-    if (ownSetup) {
-      try {
-        await agentSetup.ctx?.dispose()
-      } catch (err) {
-        console.error('[plugin] 本轮 context 卸载失败：', err)
-      }
+    try {
+      await agentSetup.ctx.dispose()
+    } catch (err) {
+      console.error('[plugin] 本轮 context 卸载失败：', err)
     }
     return {
       finishReason,
@@ -1104,38 +1128,43 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
   // 远端工作区首期不注入 AGENTS.md（文件在远端主机，本地读不到），由服务端不传 projectDoc 配合。
   const loadedNestedDocs = extractNestedDocPaths(opts.history)
   const nestedDocs =
-    opts.workspace.path && !opts.workspace.remote
+    workspace.path && !workspace.remote
       ? (absPath: string, isDirectory: boolean) =>
-          readNestedProjectDocs(opts.workspace.path, absPath, loadedNestedDocs, isDirectory)
+          readNestedProjectDocs(workspace.path, absPath, loadedNestedDocs, isDirectory)
       : null
-  const agentSetup =
-    opts.setup ??
-    buildAgentSetup({
-      workspace: opts.workspace,
-      ...(opts.workspaceBackend ? { workspaceBackend: opts.workspaceBackend } : {}),
-      skills: opts.skills,
-      projectDoc: opts.projectDoc ?? null,
-      permissionMode: opts.permissionMode,
-      ...(opts.getPermissionMode ? { getPermissionMode: opts.getPermissionMode } : {}),
-      ...(opts.requestConfirm ? { requestConfirm: opts.requestConfirm } : {}),
-      ...(opts.commandStops ? { commandStops: opts.commandStops } : {}),
-      ...(opts.onBackgroundCommand ? { onBackgroundCommand: opts.onBackgroundCommand } : {}),
-      onEvent: (event) => emitEvent(event),
-      ...(opts.extraTools ? { extraTools: opts.extraTools } : {}),
-      ...(opts.plugins ? { plugins: opts.plugins } : {}),
-      ...(opts.browser ? { browser: true } : {}),
-      ...(opts.extraPrompt ? { extraPrompt: opts.extraPrompt } : {}),
-      ...(nestedDocs ? { nestedDocs } : {}),
-      ...(opts.toolIntent === false ? { toolIntent: false } : {}),
-      // 预算只报**总量**：续跑时本次尝试的剩余会变，那部分由边界提醒现算（见 onStepBoundary）
-      maxSteps: opts.maxSteps ?? MAX_STEPS
-    })
+  /**
+   * 装配输入：运行时把 scope / 权限通道 / 事件出口 / 行为开关汇总成这一份，
+   * 再交给调用方的 `assemble`（或标准装配）。装配函数是**纯函数**，不碰 context。
+   */
+  const assemblyDeps: AgentAssemblyDeps = {
+    workspace,
+    ...(opts.workspaceBackend ? { workspaceBackend: opts.workspaceBackend } : {}),
+    skills: opts.skills,
+    projectDoc: opts.projectDoc ?? null,
+    ...(opts.permissionMode ? { permissionMode: opts.permissionMode } : {}),
+    ...(opts.getPermissionMode ? { getPermissionMode: opts.getPermissionMode } : {}),
+    ...(opts.requestConfirm ? { requestConfirm: opts.requestConfirm } : {}),
+    ...(opts.commandStops ? { commandStops: opts.commandStops } : {}),
+    ...(opts.onBackgroundCommand ? { onBackgroundCommand: opts.onBackgroundCommand } : {}),
+    onEvent: (event) => emitEvent(event),
+    ...(opts.extraTools ? { extraTools: opts.extraTools } : {}),
+    ...(opts.plugins ? { plugins: opts.plugins } : {}),
+    ...(opts.extraPrompt ? { extraPrompt: opts.extraPrompt } : {}),
+    ...(nestedDocs ? { nestedDocs } : {}),
+    ...(opts.toolIntent === false ? { toolIntent: false } : {}),
+    // 预算只报**总量**：续跑时本次尝试的剩余会变，那部分由边界提醒现算（见 onStepBoundary）
+    maxSteps: opts.maxSteps ?? MAX_STEPS
+  }
+  const assembly = opts.assemble ? await opts.assemble(assemblyDeps) : assembleStandard(assemblyDeps)
+  /** 挂载后的静态部分：`hooks` / `ctx` 恒存在（由本轮自建，收尾统一卸载） */
+  const agentSetup = mountAssembly(assembly, assemblyDeps)
+  /** 这一轮声明的子任务能力（没有 = 一个派活工具都不挂） */
+  const subagentCaps = assembly.capabilities?.subagents
   /**
    * 工具调用开关关掉时**一个工具都不下发**（`AiModelSettings.toolCall`）。
    *
-   * 闸放在这里而不是 `buildAgentSetup` 里：`opts.setup` 可能是调用方自造的
-   * （项目管理助手那套），只有这里能把所有入口一网打尽。提示词里补一句能力限制 ——
-   * 否则系统提示词还在教模型怎么用工具，它只能输出假的工具调用文本。
+   * 闸放在这里而不是装配函数里：所有 profile 的装配产物都要过这一关。提示词里补一句
+   * 能力限制 —— 否则系统提示词还在教模型怎么用工具，它只能输出假的工具调用文本。
    *
    * 开着的这一支要**先注入 `intent`**（见 `withToolIntent`）：注入放在 `estimateBaseTokens`
    * 之前，工具 schema 的 token 估算才把这一字段算进去，圆环不会越跑越偏。
@@ -1145,7 +1174,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
       ? agentSetup.tools
       : await withToolIntent(agentSetup.tools as Parameters<typeof withToolIntent>[0])
     : {}
-  const setupForModel: AgentSetup = modelSettings.toolCall
+  const setupForModel = modelSettings.toolCall
     ? agentSetup
     : {
         ...agentSetup,
@@ -1161,10 +1190,10 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
 
   // `turn:start`：静态部分（提示词 / 工具集）已定稿、即将发第一次请求。
   // 放在这里而不是更早，是为了让插件看到的本轮提示词就是最终那一份。
-  agentSetup.hooks?.emit(HOOKS.turnStart, {
+  agentSetup.hooks.emit(HOOKS.turnStart, {
     turnId,
-    workspaceId: opts.workspace.id,
-    workspaceName: opts.workspace.name
+    workspaceId: workspace.id,
+    workspaceName: workspace.name
   } satisfies TurnStartPayload)
 
   /**
@@ -1322,21 +1351,21 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
        * （见 `subagents.ts`）。不启用时是空对象 —— 与没有这个能力时逐字节一致。
        */
       const delegation =
-        opts.subagents?.length && modelSettings.toolCall
-          ? buildDelegationTools(opts.subagents, {
-              workspacePath: opts.workspace.path,
-              workspaceName: opts.workspace.name,
+        subagentCaps?.ids.length && modelSettings.toolCall
+          ? buildDelegationTools(subagentCaps.ids, {
+              workspacePath: workspace.path,
+              workspaceName: workspace.name,
               ...(opts.workspaceBackend ? { backend: opts.workspaceBackend } : {}),
               model: effectiveModel,
-              ...(opts.subagentModel
-                ? { subagentModel: withModelApiStyle(opts.subagentModel) }
+              ...(subagentCaps.model
+                ? { subagentModel: withModelApiStyle(subagentCaps.model) }
                 : {}),
-              ...(opts.subagentMaxSteps ? { maxSteps: opts.subagentMaxSteps } : {}),
-              ...(opts.subagentDefs ? { definitions: opts.subagentDefs } : {}),
-              ...(opts.subagentDefinitionModels
+              ...(subagentCaps.maxSteps ? { maxSteps: subagentCaps.maxSteps } : {}),
+              ...(subagentCaps.defs ? { definitions: subagentCaps.defs } : {}),
+              ...(subagentCaps.definitionModels
                 ? {
                     definitionModels: Object.fromEntries(
-                      Object.entries(opts.subagentDefinitionModels).map(([id, config]) => [
+                      Object.entries(subagentCaps.definitionModels).map(([id, config]) => [
                         id,
                         withModelApiStyle(config)
                       ])

@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest'
 import { asSchema, jsonSchema, tool } from 'ai'
 import { z } from 'zod'
-import { buildAgentSetup } from './agent'
+import { assembleStandard } from './agent'
 import { TOOL_INTENT_FIELD, withToolIntent } from './engine'
 
 /** 取注入后的 JSON Schema（`jsonSchema` 可能是 PromiseLike，统一 await） */
@@ -111,10 +111,10 @@ describe('工具意图开关（设置 → AI → 通用）', () => {
   }
 
   it('默认把「每次调用都要填 intent」写进提示词', () => {
-    expect(buildAgentSetup(base).instructions).toContain('`intent`')
+    expect(assembleStandard(base).instructions).toContain('`intent`')
   })
 
   it('关掉后提示词里不再提 intent（schema 里也没有这个字段，不能让模型去填）', () => {
-    expect(buildAgentSetup({ ...base, toolIntent: false }).instructions).not.toContain('`intent`')
+    expect(assembleStandard({ ...base, toolIntent: false }).instructions).not.toContain('`intent`')
   })
 })

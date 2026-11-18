@@ -54,7 +54,7 @@ const MID_STREAM_ERROR =
 
 function baseOptions(onEvent: (event: AgentStreamEvent) => void) {
   return {
-    workspace: { id: 'w1', name: 'W', path: '', createdAt: 0, updatedAt: 0 },
+    scope: { kind: 'global', id: 'w1', name: 'W' } as const,
     history: [],
     model: {
       provider: 'openai',
@@ -63,8 +63,8 @@ function baseOptions(onEvent: (event: AgentStreamEvent) => void) {
       model: 'm1'
     } as unknown as AiModelConfig,
     skills: [],
-    /** 走自造 setup：不读工作区、不挂真实工具（本组只关心事件流） */
-    setup: { instructions: 'SYS', tools: {} },
+    /** 自造装配：不读工作区、不挂真实工具（本组只关心事件流） */
+    assemble: () => ({ instructions: 'SYS' }),
     toolIntent: false,
     maxRetries: 1,
     onEvent

@@ -3,7 +3,7 @@
  *
  * ## 为什么不能复用 turn context 上的 hooks
  *
- * `buildAgentSetup` 每轮现建一个 turn context，`runAgent` 收尾就 dispose；ACP 会话与
+ * `runAgent` 每轮现建一个 turn context（挂载装配产物），收尾就 dispose；ACP 会话与
  * 容器型会话甚至不走那条装配。而「一轮开始 / 结束 / 在等审批 / 在等回答」是产品层面的
  * 会话状态，必须跨轮次、跨后端存在。于是这里按**工作区**建长驻 context，只提供
  * `hooks`（+ 有目录时的 `workspace`），插件的 `ctx.inject(['hooks'], …)` 那一半在

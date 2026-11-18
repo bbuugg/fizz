@@ -20,7 +20,7 @@ export type {
   ResolveAttachment,
   UploadLikeFile
 } from './model-messages'
-import { buildAgentTools, type AgentPermissionMode, type AgentToolOptions, BROWSER_PROMPT_SECTION } from '@fizz/tools'
+import { buildAgentTools, type AgentPermissionMode, type AgentToolOptions } from '@fizz/tools'
 import { buildSkillsPromptSection, type AgentSkill } from '@fizz/skills'
 import { buildProjectDocSection, type ProjectDoc } from './project-doc'
 import { getLanguage } from '@fizz/i18n'
@@ -63,7 +63,7 @@ export type AgentStreamEvent =
 /**
  * 「每次工具调用都要填 `intent`」这条使用约定。
  *
- * **单独成段、由 `buildAgentSetup` 按开关追加**，不写进 `buildAgentSystemPrompt` 的正文：
+ * **单独成段、由 `assembleStandard` 按开关追加**，不写进 `buildAgentSystemPrompt` 的正文：
  * 这条约定只有在真的往工具 schema 注入了 `intent` 时才成立（见 `engine.ts` 的
  * `withToolIntent` 与设置里的「工具意图」开关）。schema 里没有这个字段却让模型填，
  * 模型只会把它塞进别的参数里，或者开始编造字段名。
@@ -92,7 +92,7 @@ export function toolIntentHint(): string {
  * 历史（第 N 步的成本本来就是第 1 步的 N 倍，再乘一次就是灾难）。动态的剩余步数走
  * `stepBudgetReminder`（步骤边界注入到消息尾部，只影响尾部那一小段前缀）。
  *
- * 由 `buildAgentSetup` 按调用方传入的 `maxSteps` 追加（见那里的说明），
+ * 由 `assembleStandard` 按调用方传入的 `maxSteps` 追加（见那里的说明），
  * 一轮只出现一次。
  */
 export function stepBudgetHint(maxSteps: number): string {
@@ -192,7 +192,6 @@ export function buildAgentSystemPrompt(
   workspaceName: string,
   skills: AgentSkill[] = [],
   projectDoc?: ProjectDoc | null,
-  browser?: boolean,
   previewPort?: number,
   /**
    * 容器型项目传 true：追加「容器启动脚本」段落（`.fizz/container/start.mjs`）。
@@ -249,7 +248,6 @@ export function buildAgentSystemPrompt(
   if (projectDoc) lines.push('', buildProjectDocSection(projectDoc))
   const skillsSection = buildSkillsPromptSection(skills)
   if (skillsSection) lines.push('', skillsSection)
-  if (browser) lines.push('', BROWSER_PROMPT_SECTION)
   if (previewPort !== undefined) lines.push('', buildPreviewPortSection(previewPort))
   if (containerStart) lines.push('', buildContainerStartSection(previewPort, containerAutoStart))
   return lines.join('\n')

@@ -2,7 +2,7 @@
  * 子 Agent 工具白名单的回归守卫。
  *
  * 防的是这一类回归：`skill` 被白名单挡掉。技能清单是系统提示词里固定的一段
- * （`buildAgentSetup` 按 `opts.skills` 自动拼），提示词还要求模型「相关时先
+ * （`assembleStandard` 按 `deps.skills` 自动拼），提示词还要求模型「相关时先
  * skill 再动手」——工具一旦没了，子 Agent 只会回「我无法读取技能」，
  * 而主智能体还以为它读过。
  */
