@@ -11,8 +11,8 @@
  * - 未连接 → 只显示连接页（不套外壳，免得「侧栏 + 登录表单」同时出现）；
  * - 已连接但 URL 还停在登录路径 → 由 `AppRoutes` 兜底 `replace` 回对话。
  */
-import { Toaster } from '@fizz/ui/sonner'
 import { TooltipProvider } from '@fizz/ui/tooltip'
+import { AppToaster } from '@fizz/agent-kit/shared/components/AppToaster'
 import { ConnectGate } from './ConnectGate'
 import { AppShell } from './app-shell'
 import { AppRoutes } from './app-routes'
@@ -33,7 +33,7 @@ export function App() {
 /**
  * 连接门禁：web 未登录时展示连接页，desktop（`showConnectionGate: false`）恒直接进主界面。
  *
- * `<Toaster />` 挂在**这一层**而不是 AppShell 里：未登录时 AppShell 直接 `return null`
+ * `<AppToaster />` 挂在**这一层**而不是 AppShell 里：未登录时 AppShell 直接 `return null`
  * （否则会先闪出外壳 / 与登录页打架），登录页上就一个 Toaster 都没有 ——
  * 那里的错误提示只能退化成输入框下面的红字。放上来之后登录页与工作台共用同一个实例。
  */
@@ -43,7 +43,7 @@ function AppGate() {
 
   return (
     <>
-      <Toaster theme={theme} position="bottom-right" />
+      <AppToaster theme={theme} />
       {host.showConnectionGate && !app.connection ? (
         <ConnectGate
           initial={app.connection}

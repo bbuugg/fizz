@@ -346,7 +346,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    */
 
   /**
-   * 全局错误 → 右上角 toast（不自动隐藏）。
+   * 全局错误 → 右下角 toast（不自动隐藏）。
    * 挂在外壳而不是各个视图：这些错误（连不上服务端、clone 失败…）在哪个视图都可能发生，
    * 以前是会话面板里一条贴顶的红条，切到别的视图就没了。
    */

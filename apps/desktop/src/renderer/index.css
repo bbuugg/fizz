@@ -32,7 +32,7 @@ body,
 /*
  * ════ sonner toast 必须落在标题栏之下，且不能被拖拽区吞掉点击 ════
  *
- * 症状：右上角通知的「关闭」按钮点不动。
+ * 症状：顶部提示（git 的顶中 toast）的「关闭」按钮点不动。
  *
  * 根因（Windows）：frameless 窗口的拖拽区是**系统级 caption 命中**（窗口过程对
  * `-webkit-app-region: drag` 的矩形返回 `HTCAPTION`），**与 DOM 的 z 序无关** ——

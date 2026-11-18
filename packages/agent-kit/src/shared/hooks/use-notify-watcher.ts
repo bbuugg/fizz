@@ -13,7 +13,7 @@
  * 内容组装（哪类事件要通知、正文取什么、用户是不是正看着这一屏）全在
  * `shared/lib/conversation-notify.ts`（纯函数、有单测）。这里**只做接线**：
  * 收事件 → 交给它 → `notify` 发出去。判据留在闭包里就会漏（审批 / 提问曾各漏一条
- * `alreadyInView`，用户盯着确认卡还被右上角弹一条）。
+ * `alreadyInView`，用户盯着确认卡还被右下角弹一条）。
  */
 import { useEffect } from 'react'
 import {
@@ -55,7 +55,7 @@ export function useNotifyWatcher(): void {
    *
    * 每条事件 → 至多一条通知（要不要发、走哪条通道由 `notify` 判：总开关关了两边都不发；
    * 否则后台 = 系统通知、前台 = 应用内 toast）。同 tag 互相顶掉，
-   * 同一会话连着跑多轮不会在右上角 / 通知中心堆一串。
+   * 同一会话连着跑多轮不会在右下角 / 通知中心堆一串。
    */
   useEffect(() => {
     // 运行态（侧栏转圈 / 待办角标）与通知读的是同一条事件流，在这儿一并绑定

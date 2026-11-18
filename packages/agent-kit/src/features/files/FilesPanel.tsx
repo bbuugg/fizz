@@ -126,7 +126,11 @@ import { notifyWorkspaceFsChanged } from '@fizz/agent-kit/shared/lib/fs-changed'
 import MonacoEditor, { monacoLanguageOf } from '@fizz/agent-kit/features/files/MonacoEditor'
 import { FileMarkdownPreview } from '@fizz/agent-kit/features/files/FileMarkdownPreview'
 import { FileHtmlPreview } from '@fizz/agent-kit/features/files/FileHtmlPreview'
-import { consumeOpenFileRequest, useOpenFileRequest } from '@fizz/agent-kit/features/files/open-file'
+import {
+  consumeOpenFileRequest,
+  matchesOpenFileRequest,
+  useOpenFileRequest
+} from '@fizz/agent-kit/features/files/open-file'
 import { useShowIgnored, setShowIgnored } from '@fizz/agent-kit/shared/lib/fs-tree-prefs'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import type { AgentFsEntry, FsListResult } from '@fizz/contracts/agent-api'
@@ -718,12 +722,18 @@ function PaneShell({
 export function FilesPanel({
   app,
   workspaceId,
+  panelKey,
   source,
   visible = true
 }: {
   app?: AgentApp
   /** 这个面板固定服务的工作区（按会话各挂一套：面板常驻，工作区不会中途变化） */
   workspaceId?: string
+  /**
+   * 这个面板所属标签的面板 key（`ConversationTab` 传它自己那个）。
+   * 外部「打开这个文件」的请求按它认领；不传 = 这个面板不接收外部打开请求。
+   */
+  panelKey?: string
   /**
    * 自定义数据来源；不传则用 `app` + `workspaceId`（工作区场景）。
    * 流程节点容器改传自己的 `FilesSource`，面板其余部分完全共用。
@@ -1249,25 +1259,31 @@ export function FilesPanel({
   }, [showIgnored])
 
   /**
-   * 执行外部的「打开这个文件」请求（消息下方的文档入口，见 `features/files/open-file.ts`）。
+   * 执行外部的「打开这个文件」请求（消息下方的文档入口 / 工具卡文件名，见
+   * `features/files/open-file.ts`）。
    *
    * 复用 `doOpen` —— 于是「已经打开过就切过去、不重读」这些既有取舍自动成立
    * （重读会把标签里未保存的改动冲掉）。
    *
-   * ⚠️ 两个「不消费」的分支，都是为了**别把请求白白吃掉**（吃掉了用户点一下毫无反应，
+   * ⚠️ 三个「不消费」的分支，都是为了**别把请求白白吃掉**（吃掉了用户点一下毫无反应，
    * 且没有第二次机会）：
    * - `!fsSource`：来源还没就绪，请求留着，等它就绪后的那次渲染再开；
-   * - `workspaceId` 对不上：这条是别的会话发的，留给它自己那套面板（这里不吃也不清）。
+   * - 不是发给这个面板（`panelKey` 对不上 / `workspaceId` 对不上）：留给目标面板，
+   *   这里不吃也不清；
+   * - 面板没有 `panelKey`（非会话场景）：不接收外部请求。
    *
    * ⚠️ **必须放在上面那个「切来源重来」的 effect 之后**：换工作区那一帧两者会同时触发，
    * 顺序反了的话先开的标签会立刻被重置清空 —— 用户点了文档却什么都没打开。
    */
   useEffect(() => {
-    if (!openRequest || !fsSource) return
-    if (!workspaceId || openRequest.workspaceId !== workspaceId) return
+    if (!fsSource || !matchesOpenFileRequest(openRequest, panelKey, workspaceId)) return
     consumeOpenFileRequest(openRequest.nonce)
-    // 单栏形态：文档入口点进来，就该直接落在文件那一屏（返回键即回树）
-    if (singlePane) setPane('file')
+    // 单栏形态：文档入口点进来，就该直接落在文件那一屏（返回键即回树）。
+    // ⚠️ 不能按 `singlePane` 判：面板可能**这一帧才挂出来**（手机 / 窄容器下面板第一次
+    // 展开），那时容器宽度还是 0，`singlePane` 为 false —— 请求处理完、宽度量出来了，
+    // 却已经没人再把页翻过去，用户看到的是文件树（「面板开了、文件没开」）。
+    // 两栏形态下 `pane` 不参与排版，无脑置位没有副作用。
+    setPane('file')
     const segments = openRequest.path.split(/[\\/]/)
     void doOpen({
       name: segments[segments.length - 1] || openRequest.path,
@@ -1276,7 +1292,7 @@ export function FilesPanel({
     })
     // `doOpen` 每次渲染都是新函数，进依赖等于每帧重跑一遍；「有没有变化」由请求的 nonce 表达
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openRequest, fsSource, workspaceId])
+  }, [openRequest, fsSource, workspaceId, panelKey])
 
   const toggleDir = (dir: string): void => {
     const state = dirs[dir]

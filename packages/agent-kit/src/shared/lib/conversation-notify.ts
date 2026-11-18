@@ -9,7 +9,7 @@
  *
  * `notify()` 收到它才敢在前台**不弹应用内 toast**（见 `notify.ts` 文件头：用户正看着
  * 那一屏时，通知的用途根本不成立）。以前只有「跑完」带了这个字段，审批与提问没带 ——
- * 于是用户明明就停在那个会话里、确认卡 / 提问卡就在眼前，右上角仍然飘一条
+ * 于是用户明明就停在那个会话里、确认卡 / 提问卡就在眼前，右下角仍然飘一条
  * 「等待你确认：…」「AI 有一个问题待回答：…」，纯属打扰。
  *
  * ⚠️ 它只回答「他是不是正看着这一屏」，**不管窗口在不在前台** —— 窗口在后台时
@@ -49,7 +49,7 @@ export function isConversationNotifyEvent(
 export interface ConversationNotifyOptions {
   title: string
   body: string
-  /** 同 tag 互相顶掉：同一会话连着跑多轮不会在右上角 / 通知中心堆一串 */
+  /** 同 tag 互相顶掉：同一会话连着跑多轮不会在右下角 / 通知中心堆一串 */
   tag: string
   /** 用户此刻正看着这个会话（= 前台不必再弹 toast，见文件头） */
   alreadyInView: boolean

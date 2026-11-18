@@ -16,9 +16,6 @@ import type { AskFollowupAnswer } from '@fizz/contracts/types'
 /** 工具名：模型用它向用户提问（对应工具定义里的 `name`） */
 export const ASK_FOLLOWUP_TOOL = 'ask'
 
-/** 提问最长等待时间：超时按「未作答」处理，工具继续往下跑而不是永远挂着 */
-export const ASK_FOLLOWUP_TIMEOUT_MS = 10 * 60 * 1000
-
 /**
  * 追加到系统提示词末尾的提示：工具光存在没用，模型得知道「什么时候该问、怎么问」。
  * 少了这一句，绝大多数模型会自己猜着往下做，工具一次都不会被调用。

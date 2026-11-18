@@ -13,7 +13,7 @@
  * | 状态 | 通道 | 为什么 |
  * |---|---|---|
  * | 后台（页面不可见 / 桌面窗口不在前台） | **系统通知**：web = `Notification` API，desktop = 主进程 Electron Notification，**安卓壳 = Capacitor 本地通知**（见 `native-notify.ts`） | 用户此刻看不到应用，只有 OS 通知中心能把他叫回来 |
- * | 前台（用户正盯着应用） | **应用内 toast**（sonner，右上角） | OS 通知在这种情况下反而经常看不见（被折叠 / 弹到别的显示器），而 toast 就在眼前，还能带「查看」按钮直接跳到对应任务 / 会话 |
+ * | 前台（用户正盯着应用） | **应用内 toast**（sonner，右下角） | OS 通知在这种情况下反而经常看不见（被折叠 / 弹到别的显示器），而 toast 就在眼前，还能带「查看」按钮直接跳到对应任务 / 会话 |
  *
  * 一条事件**只会走一条通道**：前台发了 toast 就不要再补一条系统通知，否则用户
  * 回到桌面时会在通知中心翻到一条自己早看过的东西。
@@ -302,7 +302,7 @@ export interface NotifyOptions {
   /**
    * 用户此刻**正看着它**（当前就停在对应的那一屏）。
    *
-   * 置 true 时**前台连应用内 toast 也不发** —— 结果 / 待办就在他眼前，右上角再飘一条
+   * 置 true 时**前台连应用内 toast 也不发** —— 结果 / 待办就在他眼前，右下角再飘一条
    * 纯属打扰（典型：自己正盯着的那个会话跑完了）。
    *
    * ⚠️ **后台时忽略它**：人根本看不到那一屏，系统通知照发，否则「跑完了」这件事就丢了。
@@ -313,11 +313,11 @@ export interface NotifyOptions {
 }
 
 /**
- * 前台用的**应用内**通知：右上角一条 sonner toast。**不判闸门** ——
+ * 前台用的**应用内**通知：右下角一条 sonner toast。**不判闸门** ——
  * 偏好那一层在 `notify` 里已经判过，这里只管发。
  *
  * `tag` 变成 toast 的 `id`：同一个任务 / 会话连着出多条时，后来的顶掉前面的，
- * 与系统通知 `tag` 的语义一致，不会在右上角堆一串同义的。
+ * 与系统通知 `tag` 的语义一致，不会在右下角堆一串同义的。
  * `id` 加 `notify:` 前缀，免得和别处的 toast id 撞上。
  */
 export function notifyInApp({ title, body, tag, onClick }: NotifyOptions): void {
@@ -419,7 +419,7 @@ export function notify(options: NotifyOptions): Notification | null {
   }
 
   // 前台（或系统通知不可用）：用户正看着这一屏就静默收场 —— 结果就在眼前，
-  // 右上角再飘一条纯属打扰；否则应用内 toast
+  // 右下角再飘一条纯属打扰；否则应用内 toast
   if (alreadyInView) return null
   notifyInApp(options)
   return null

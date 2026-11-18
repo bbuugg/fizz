@@ -393,7 +393,12 @@ export function ConversationTab({
         title: tr('工作区文件 · {name}', { name: workspaceName }),
         icon: <Files className="size-4" />,
         content: (
-          <FilesPanel app={app} workspaceId={workspaceId} visible={sideTab === 'files'} />
+          <FilesPanel
+            app={app}
+            workspaceId={workspaceId}
+            panelKey={key}
+            visible={sideTab === 'files'}
+          />
         ),
         onClose: () => closeSideTabOf(key, tabKey)
       }

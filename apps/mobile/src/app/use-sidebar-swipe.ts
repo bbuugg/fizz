@@ -77,10 +77,18 @@ function startsInHorizontalScroller(target: Element): boolean {
  * 手机上的 Dialog 已被 `vite.config.ts` 换成底部抽屉（vaul），所以除了 Radix 的
  * `role="dialog"` 还要认 vaul / 手机抽屉的标记 —— 只查 touch 目标本身不够：
  * 弹层的遮罩是内容的**兄弟节点**，手指落上去时 `closest` 找不到那个 role。
+ *
+ * 下拉菜单 / 选择器是 `role="menu"` / `role="listbox"`（不是 dialog），也要算弹层：
+ * 模型选择器底部那颗思考强度滑条，拖动本身就是大距离横向手势，不排除的话滑到
+ * 96px 就会被当成「右滑开抽屉」（用户反馈）。同理，菜单里任何按钮上的横向拖动
+ * 也不该触发全局手势。
+ *
+ * `data-slot` 是兜底：`data-state` 在关闭动画期间会变成 `closed`，而弹层此时还挂在
+ * DOM 里；只要这块面板还看得见，起手就该交回给它。
  */
 function hasOpenLayer(): boolean {
   return !!document.querySelector(
-    '[role="dialog"], [role="alertdialog"], [data-mobile-dialog], [data-vaul-drawer]'
+    '[role="dialog"], [role="alertdialog"], [role="menu"][data-state="open"], [role="listbox"][data-state="open"], [data-slot="dropdown-menu-content"], [data-slot="dropdown-menu-sub-content"], [data-slot="popover-content"], [data-mobile-dialog], [data-vaul-drawer]'
   )
 }
 
@@ -118,6 +126,8 @@ export function useSidebarSwipe(enabled: boolean): void {
         target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')
       )
         return
+      // 滑条（思考强度等）本身就是横向拖动控件：哪怕弹层标记没查到，也不能当成抽屉手势
+      if (target.closest('[role="slider"], [data-slot="slider"]')) return
       if (startsInHorizontalScroller(target)) return
       tracking = true
       closing = open

@@ -25,7 +25,7 @@
  * 「浮岛」卡片，黑白灰主体；
  * 彩色只从 logo 的渐变里借 —— 几团重 blur 的低透明度光斑 + 细点阵做氛围，克制不抢戏。
  *
- * 登录 / 鉴权失败统一由服务端回 401。表单级错误提示走**右上角 sonner toast**
+ * 登录 / 鉴权失败统一由服务端回 401。表单级错误提示走**右下角 sonner toast**
  * （`useErrorToast`，与工作台那条全局错误提示同一个机制、同一个固定 id），
  * **不显示在输入框下面**。
  */
@@ -84,7 +84,7 @@ export function ConnectGate({
   const [localError, setLocalError] = useState<string | null>(null)
 
   /**
-   * 错误提示 → 右上角 toast（固定 id：同一条反复触发只更新那一条，connect 失败重试时最容易堆）。
+   * 错误提示 → 右下角 toast（固定 id：同一条反复触发只更新那一条，connect 失败重试时最容易堆）。
    *
    * 本地错误（没填 / 密码错 / 连不上）优先于从 store 带过来的 `error`（401 掉线时
    * app-shell 特意留着的那份）—— 两者都通过这一个 hook 显示，不会同时弹两条。
@@ -269,7 +269,7 @@ export function ConnectGate({
               </div>
             </div>
 
-            {/* 错误提示不走表单内联：统一是右上角 toast（见上面的 useErrorToast） */}
+            {/* 错误提示不走表单内联：统一是右下角 toast（见上面的 useErrorToast） */}
 
             {/* 只在提交中置灰：是否填齐没法从 state 判断（自动填充不经过 onChange），
                 空值交给 submit 里的校验报错，否则会出现「已填却点不动」 */}

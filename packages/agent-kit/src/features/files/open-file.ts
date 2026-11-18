@@ -26,10 +26,19 @@
  *
  * 各会话各挂一套面板（面板常驻、工作区不中途变），同时活着的可能不止一套。带上归属，
  * 每套面板只认自己那一个工作区的请求 —— 否则点会话 A 的文档，会话 B 的面板也会去开。
+ *
+ * ## 为什么还要 panelKey
+ *
+ * 分屏 / 后台标签里可能同时挂着**同一个工作区的多套**文件面板。只按 workspaceId 认领时，
+ * 请求会被最先跑 effect 的那套面板消费掉 —— 发起方这一侧的面板打开了，文件却开在别的
+ * 标签里（表现为「只打开文件面板、文件没打开」，偶发，取决于面板挂载顺序）。
+ * 所以请求同时带**发起方标签的 panel key**，只有目标面板能消费。
  */
 import { createContext, useContext, useSyncExternalStore } from 'react'
 
 export interface OpenFileRequest {
+  /** 发起方所在标签的面板 key（`ConversationTab` 的 key：会话 id / `draft:<工作区>`） */
+  panelKey: string
   /** 目标文件所属工作区（`FilesPanel` 只认自己那一个） */
   workspaceId: string
   /** 工作区相对路径（'/' 分隔） */
@@ -47,14 +56,41 @@ function emit(): void {
 }
 
 /**
- * 请求在（某个工作区的）文件面板里打开一个文件。
+ * 请求在（某个标签的）文件面板里打开一个文件。
  *
  * 面板还没挂出来也没关系 —— 请求留在这里，面板挂上后的第一次渲染就会取走它。
+ *
+ * @param panelKey 发起方所在标签的面板 key（见 `ConversationTab` 的 key）
  */
-export function requestOpenWorkspaceFile(workspaceId: string, path: string): void {
-  if (!workspaceId || !path) return
-  current = { workspaceId, path, nonce: ++seq }
+export function requestOpenWorkspaceFile(
+  panelKey: string,
+  workspaceId: string,
+  path: string
+): void {
+  if (!panelKey || !workspaceId || !path) return
+  current = { panelKey, workspaceId, path, nonce: ++seq }
   emit()
+}
+
+/**
+ * 这条请求是不是发给**这个面板**的。
+ *
+ * `panelKey` 是主判据：同一个工作区可能同时挂着多套文件面板（分屏 / 后台标签），
+ * 只按 workspaceId 认领会被别的面板先消费掉。workspaceId 同时核对一次，防止
+ * 面板 key 复用或工作区切换瞬间的错配。
+ */
+export function matchesOpenFileRequest(
+  request: OpenFileRequest | null,
+  panelKey: string | undefined,
+  workspaceId: string | undefined
+): request is OpenFileRequest {
+  return (
+    !!request &&
+    !!panelKey &&
+    !!workspaceId &&
+    request.panelKey === panelKey &&
+    request.workspaceId === workspaceId
+  )
 }
 
 /**

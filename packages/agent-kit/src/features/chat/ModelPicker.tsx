@@ -131,6 +131,20 @@ export interface ModelPickerProps {
   defaultContextWindow?: number
   /** 打开设置里某个分组的入口；不传则整颗齿轮不渲染 */
   onOpenSettings?: (tab: 'models' | 'acp') => void
+  /**
+   * 固定在菜单底部的附加区块：**不随模型列表滚动**（列表在它上方单独滚）。
+   *
+   * 目前只有会话输入框的 `ModelSelect` 用它放「思考强度」（切模型时立刻跟着变），
+   * 定时任务表单 / 项目助手面板不传 —— 那些地方没有这个设置。
+   */
+  footer?: ReactNode
+  /**
+   * 选中一项后是否自动关闭下拉。默认 `true`（Radix 的默认行为）。
+   *
+   * 输入框里的选择器传 `false`：底部挂着思考强度，选完模型还要接着调档位，
+   * 一选就关会让用户每次都重新打开。
+   */
+  closeOnSelect?: boolean
 }
 
 export function ModelPicker({
@@ -145,7 +159,9 @@ export function ModelPicker({
   emptyLabel,
   emptyTitle,
   defaultContextWindow = DEFAULT_CONTEXT_WINDOW,
-  onOpenSettings
+  onOpenSettings,
+  footer,
+  closeOnSelect = true
 }: ModelPickerProps) {
   // 订阅语言：下面所有 t() 都是渲染期求值的
   useT()
@@ -207,6 +223,15 @@ export function ModelPicker({
   const fullLabel = modelTargetLabel(models, acpAgents, value, true)
   const triggerLabel = shortLabel ?? emptyLabel ?? t('选择模型')
 
+  /**
+   * 选中目标。`closeOnSelect === false` 时拦掉 Radix 的默认关闭 ——
+   * 输入框里的下拉底部挂着思考强度，选完模型要能接着调档位。
+   */
+  const selectTarget = (next: ModelTarget) => (event: Event) => {
+    if (!closeOnSelect) event.preventDefault()
+    onChange(next)
+  }
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -230,7 +255,8 @@ export function ModelPicker({
           Radix 算出的可用高度，列表比触发器上方的空间还高时会被顶出视口上沿。
           取 `min(80dvh, 可用高度)`：80dvh 兜住移动端动态视口（地址栏 / 键盘），可用
           高度兜住触发器以上的真实空间。collisionPadding 让面板与视口边缘留 8px，
-          它也会算进那个可用高度里。滚动由 DropdownMenuContent 自带的 overflow-y-auto 负责。 */}
+          它也会算进那个可用高度里。没有 footer 时滚动由 DropdownMenuContent 自带；
+          有 footer 时改由内部列表滚，底部那块固定在下面（见 `footer`）。 */}
       <DropdownMenuContent
         side="top"
         align="end"
@@ -238,9 +264,13 @@ export function ModelPicker({
         collisionPadding={8}
         className={cn(
           'min-w-56',
+          // 有 footer 时把滚动交给内部列表：外层只负责高度上限与裁切，
+          // 底部那一块始终留在可视区里，不会被一长串模型名顶出去。
+          footer && 'flex flex-col overflow-hidden p-0',
           isMobile && 'max-h-[min(80dvh,var(--radix-dropdown-menu-content-available-height))]'
         )}
       >
+        <div className={cn(footer && 'min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1')}>
         {lockedAgent ? (
           <>
             {/* ---- acp 会话：只显示绑定的这个 agent 的模型（其它一切不出现） ---- */}
@@ -248,7 +278,9 @@ export function ModelPicker({
             {/* agent 没挑白名单时它只有一个状态：用 agent 自己的默认（agent 侧的
                 缺省，不是 Fizz 的设置）；挑了白名单就必须具体选一个 */}
             {!(lockedAgent.models ?? []).length && (
-              <DropdownMenuItem onSelect={() => onChange({ backend: 'acp', configId: lockedAgent.id })}>
+              <DropdownMenuItem
+                onSelect={selectTarget({ backend: 'acp', configId: lockedAgent.id })}
+              >
                 <span className="truncate">{t('跟随 agent 默认')}</span>
                 {value?.backend === 'acp' && value.configId === lockedAgent.id && !value.modelId && (
                   <Check className="ml-auto size-3.5" />
@@ -264,9 +296,11 @@ export function ModelPicker({
                 <DropdownMenuItem
                   key={model.value}
                   title={model.description ?? model.name}
-                  onSelect={() =>
-                    onChange({ backend: 'acp', configId: lockedAgent.id, modelId: model.value })
-                  }
+                  onSelect={selectTarget({
+                    backend: 'acp',
+                    configId: lockedAgent.id,
+                    modelId: model.value
+                  })}
                 >
                   <span className="truncate">{model.name}</span>
                   {active && <Check className="ml-auto size-3.5" />}
@@ -296,9 +330,7 @@ export function ModelPicker({
                     <DropdownMenuItem
                       key={modelId}
                       title={modelId}
-                      onSelect={() =>
-                        onChange({ backend: 'builtin', configId: config.id, modelId })
-                      }
+                      onSelect={selectTarget({ backend: 'builtin', configId: config.id, modelId })}
                     >
                       <span className="truncate">{modelId}</span>
                       {/* 窗口一并显示：圆环的分母就是它，选之前就能对上预期 */}
@@ -339,7 +371,7 @@ export function ModelPicker({
                     const items = [
                       <DropdownMenuItem
                         key="__default"
-                        onSelect={() => onChange({ backend: 'acp', configId: agent.id })}
+                        onSelect={selectTarget({ backend: 'acp', configId: agent.id })}
                       >
                         <span className="truncate">{t('跟随 agent 默认')}</span>
                         {value?.backend === 'acp' &&
@@ -355,13 +387,11 @@ export function ModelPicker({
                           <DropdownMenuItem
                             key={model.value}
                             title={model.description ?? model.name}
-                            onSelect={() =>
-                              onChange({
-                                backend: 'acp',
-                                configId: agent.id,
-                                modelId: model.value
-                              })
-                            }
+                            onSelect={selectTarget({
+                              backend: 'acp',
+                              configId: agent.id,
+                              modelId: model.value
+                            })}
                           >
                             <span className="truncate">{model.name}</span>
                             {active && <Check className="ml-auto size-3.5" />}
@@ -376,6 +406,10 @@ export function ModelPicker({
               </>
             )}
           </>
+        )}
+        </div>
+        {footer && (
+          <div className="shrink-0 border-t border-border px-3 pt-2 pb-2">{footer}</div>
         )}
       </DropdownMenuContent>
     </DropdownMenu>

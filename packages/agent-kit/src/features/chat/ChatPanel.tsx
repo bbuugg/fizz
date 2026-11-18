@@ -209,7 +209,7 @@ function ChatPanelInner({
       const rel = workspaceRelativePath(path, root);
       if (!workspaceId || !rel) return;
       showSideTabOf(panelKey, "files");
-      requestOpenWorkspaceFile(workspaceId, rel);
+      requestOpenWorkspaceFile(panelKey, workspaceId, rel);
     },
     [panelKey, showSideTabOf]
   );
@@ -577,11 +577,19 @@ function ChatPanelInner({
               <ArtifactChips
                 docs={docs}
                 onOpen={(doc) => {
+                  /*
+                   * 与工具卡同一条归一化：`presentedDocsOf` 取的是工具入参原文，
+                   * 模型有时给绝对路径。不削掉工作区根的话，请求会带着面板读不了的
+                   * 路径进去 —— 面板打开、文件却打不开。
+                   *
+                   * 工作区按**这个会话**取（`fileWorkspaceId` / `fileWorkspaceRoot`），
+                   * 不是全局 `activeWorkspaceId`：分屏下点非焦点标签的文档时，两者可能
+                   * 不是同一个工作区，请求会没有面板认领。
+                   */
+                  const rel = workspaceRelativePath(doc.path, fileWorkspaceRoot);
+                  if (!fileWorkspaceId || !rel) return;
                   showSideTabOf(panelKey, "files");
-                  requestOpenWorkspaceFile(
-                    app.activeWorkspaceId ?? "",
-                    doc.path,
-                  );
+                  requestOpenWorkspaceFile(panelKey, fileWorkspaceId, rel);
                 }}
               />
             );

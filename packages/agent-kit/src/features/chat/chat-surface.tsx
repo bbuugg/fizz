@@ -64,9 +64,9 @@ import {
   MessageActionRow,
   MessageParts,
   ThinkingRow,
-  isWaitingNextStep,
   type MessageFollowupBridge
 } from '@fizz/agent-kit/features/chat/message-parts'
+import { waitingIndicatorSlot } from '@fizz/agent-kit/shared/lib/waiting-indicator'
 import type { AgentChatMessage } from '@fizz/contracts/agent-api'
 import { toolLabel } from '@fizz/agent-kit/shared/lib/parts'
 import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
@@ -490,6 +490,8 @@ export function MessageList({
                 const isEditing = !!editingMessageId && message.id === editingMessageId
                 const messageCompaction =
                   compaction && compaction.messageId === message.id ? compaction : null
+                /** 状态槽的三种落法见 `waitingIndicatorSlot`（压缩中不挂 / 真状态行 / 隐形占位） */
+                const waitingSlot = waitingIndicatorSlot(message.parts, messageCompaction)
                 // 实时回复还没落盘，不挂编辑 / 删除 / 签出这些需要稳定 id 的操作
                 const isLive = message.id.startsWith('collab-live-')
                 const actions = isLive
@@ -598,12 +600,8 @@ export function MessageList({
                       {streaming &&
                       message.role === 'assistant' &&
                       isStreamingLast &&
-                      messageCompaction?.status !== 'streaming' ? (
-                        /* 空 parts：只有「这一轮还什么都没吐」时才说正在思考 —— 已经挂了压缩卡
-                           的那种空 parts 属于「有内容但不在 parts 里」，别在这儿补一句干等 */
-                        (message.parts.length === 0
-                          ? !messageCompaction
-                          : isWaitingNextStep(message.parts)) ? (
+                      waitingSlot !== 'hidden' ? (
+                        waitingSlot === 'status' ? (
                           <StreamingStatusNotice retryNotice={retryNotice} reconnectNotice={reconnectNotice} />
                         ) : (
                           <ThinkingRow placeholder />

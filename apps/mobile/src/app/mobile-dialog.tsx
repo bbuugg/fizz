@@ -46,6 +46,16 @@
  * - 安全区由 `styles.css` 的 `[data-slot='drawer-content']` 补 —— 抽屉 portal 到
  *   body、在外壳那条 `--safe-area-inset-*` 内边距之外。
  *
+ * ## 为什么关掉 vaul 的 `repositionInputs`
+ *
+ * 手机壳的键盘是**缩布局视口**的（`capacitor.config.ts` 的 `Keyboard.resize: 'native'`，
+ * 见 `index.css` 的高度链说明），`fixed bottom-0` 与 `dvh` 自己就会贴到键盘上沿。
+ * vaul 默认还会按 `visualViewport` 再补偿一次，而它把**第一次收到 resize 时**的抽屉高度
+ * 记成「初始高度」—— 那时布局视口已经缩了，抽屉也被 `max-h` 压过，于是「初始高度」
+ * 记的就是压缩后的值；它还会写死一条内联 `height: Npx`。键盘收起后它只把内联高度恢复成
+ * 那个错误的值，表现为「打开一次输入法，弹窗变矮后永远恢复不了」（用户反馈）。
+ * 关掉之后高度完全交给 CSS 与布局视口：键盘弹起自然压短，收起自然恢复。
+ *
  * ## 只换 Dialog，不换 AlertDialog
  *
  * `@fizz/ui/alert-dialog` 是「确认 / 危险操作」的小弹窗（`useConfirm`、删除会话），
@@ -156,7 +166,9 @@ function Dialog({ children, ...props }: DialogProps) {
       {modal ? (
         <Desktop.Dialog {...props}>{children}</Desktop.Dialog>
       ) : (
-        <Drawer {...props}>{children}</Drawer>
+        <Drawer {...props} repositionInputs={false}>
+          {children}
+        </Drawer>
       )}
     </ModalForm.Provider>
   )

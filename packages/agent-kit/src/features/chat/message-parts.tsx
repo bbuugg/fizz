@@ -34,8 +34,7 @@ import {
   coalescePartFragments,
   isErrorText,
   isStoppableToolRunning,
-  textOf,
-  toolState
+  textOf
 } from '@fizz/agent-kit/shared/lib/parts'
 import {
   normalizeFollowup,
@@ -75,30 +74,6 @@ export function ThinkingRow({ placeholder = false }: { placeholder?: boolean }) 
       <ShimmerLabel active={!placeholder}>{tr('正在思考…')}</ShimmerLabel>
     </div>
   )
-}
-
-/**
- * 整轮还在跑，但**最后一段已经落地**、正在等模型下一步输出 —— 这时要在消息底部把最初那个
- * 「正在思考…」补回来，否则界面看着像已经结束了（用户要求：「思考结束了、工具调用结束了，
- * 下方应该显示刚开始那个思考中的效果，直到有其他消息或者停止」）。
- *
- * 判据只看**尾段自己有没有「正在进行」的观感**，有就不补：
- * - `text`：正文还在流，本身就是进行中；
- * - `reasoning`：思考条的触发器在 streaming 时自己闪着「正在思考…」（`ShimmerLabel`）；
- * - `tool-call` **还没出结果**：卡片上是 Running 徽章 —— 出了结果（`hasOutput`）才算落地；
- * - 孤儿 `tool-result`：落地。
- *
- * 这个判据顺带把「在等用户」的情况排掉了：`ask` 和「等审批」的工具都还没有
- * output，所以不会在那种时刻冒出「正在思考…」误导人。
- */
-export function isWaitingNextStep(parts: AgentMessagePart[]): boolean {
-  const last = parts[parts.length - 1]
-  // 一个 part 都还没有的情况由调用方按 `parts.length === 0` 单独认（同一个 ThinkingRow），
-  // 这里返回 false 是为了别在同一处渲染两遍
-  if (!last) return false
-  if (last.type === 'text' || last.type === 'reasoning') return false
-  if (last.type === 'tool-call') return toolState(last).hasOutput
-  return true
 }
 
 /**

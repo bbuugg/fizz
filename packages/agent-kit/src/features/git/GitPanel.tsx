@@ -163,13 +163,15 @@ function lastLine(text: string): string {
 }
 
 /**
- * git 操作的提示统一走**顶部居中的小 toast**（右上角那个位置留给 Agent 完成通知这类全局消息，顶中与它错开）。
+ * git 操作的提示统一走**顶部居中的小 toast**：位置 / 时长用 sonner 的**逐条**选项覆盖，
+ * 不动全局 `<AppToaster>`（那个固定右下角、被其余所有提示共用）。
  *
- * 两点说明：
- * - `position` 是 sonner 的**逐条**选项，不用动全局 `<Toaster>`（它被别的地方共用）；
- * - 宽度得用内联 `style` 覆盖 —— sonner 注入的样式没放进 `@layer`，优先级高于 Tailwind 工具类，
- *   靠 className 改宽度改不动。`fit-content` + maxWidth：一句话的提示只占一小块，
- *   长的 git 报错也不会撑出屏幕。
+ * 为什么单独一个位置：git 是高频的本地操作，提示做小、做短、顶中 —— 顶中不与右下角
+ * 那些全局消息（任务完成 / 更新提醒 / 报错）抢同一块，也不挡输入框。
+ *
+ * 宽度得用内联 `style` 覆盖 —— sonner 注入的样式没放进 `@layer`，优先级高于 Tailwind 工具类，
+ * 靠 className 改宽度改不动。`fit-content` + maxWidth：一句话的提示只占一小块，
+ * 长的 git 报错也不会撑出屏幕。
  */
 const GIT_TOAST = {
   position: 'top-center',

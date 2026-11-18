@@ -270,8 +270,8 @@ export function GeneralTab({ app }: { app: AgentApp }) {
             {permission === 'denied' && (
               <p className="text-xs leading-4 text-muted-foreground">
                 {nativeShell
-                  ? tr('系统通知权限已被关闭，页面无法再次申请。请到 系统设置 → 应用 → Fizz → 通知 里允许，回到 App 后这里会自动更新。在此之前：前台的右上角提示仍然会用，只有切到后台（含锁屏）时的系统提醒发不出去。')
-                  : tr('通知权限已被浏览器拒绝，且无法由页面再次申请。请在地址栏的站点设置里把「通知」改为允许，刷新本页后即可开启。在此之前：前台的右上角提示仍然会用，只有切到后台时的系统提醒发不出去。')}
+                  ? tr('系统通知权限已被关闭，页面无法再次申请。请到 系统设置 → 应用 → Fizz → 通知 里允许，回到 App 后这里会自动更新。在此之前：前台的右下角提示仍然会用，只有切到后台（含锁屏）时的系统提醒发不出去。')
+                  : tr('通知权限已被浏览器拒绝，且无法由页面再次申请。请在地址栏的站点设置里把「通知」改为允许，刷新本页后即可开启。在此之前：前台的右下角提示仍然会用，只有切到后台时的系统提醒发不出去。')}
               </p>
             )}
             {(permission === 'default' || permission === 'stuck') && (
@@ -295,7 +295,7 @@ export function GeneralTab({ app }: { app: AgentApp }) {
           </>
         ) : (
           <p className="text-xs leading-4 text-muted-foreground">
-            {tr('当前浏览器不支持系统通知（部分环境在非 HTTPS 下也会禁用）：切到后台时发不出提醒，但前台的右上角提示仍然会用。')}
+            {tr('当前浏览器不支持系统通知（部分环境在非 HTTPS 下也会禁用）：切到后台时发不出提醒，但前台的右下角提示仍然会用。')}
           </p>
         )}
       </section>

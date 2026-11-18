@@ -6,6 +6,7 @@
  * 2. 按**活动会话**算出「该不该锁后端」：acp 会话只显示它绑定的那个 agent，
  *    已有 内置会话时不出 ACP 组（换类型 = 新建会话）；
  * 3. 读写 `chatTarget`（`setChatTarget` 会顺手探 ACP 档位、把目标持久化到会话目录）。
+ *    思考强度面板也在这里挂到下拉底部：它和 `chatTarget` 同源，选完模型要立刻跟着变。
  *
  * 控件本身（分组 / 齿轮 / 手机拍平 / 勾选）全在 `ModelPicker` 里，定时任务表单复用的
  * 就是同一份 —— 那边没有 `AgentApp`，只多了一层局部状态。
@@ -13,6 +14,7 @@
 import { isRemoteWorkspace } from '@fizz/contracts/types'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import { ModelPicker } from '@fizz/agent-kit/features/chat/ModelPicker'
+import { ReasoningEffortPanel } from '@fizz/agent-kit/features/chat/ReasoningEffortPanel'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { t } from '@fizz/i18n'
@@ -52,6 +54,22 @@ export function ModelSelect({ app }: { app: AgentApp }) {
         )
       : undefined
 
+  /**
+   * 下拉底部「思考强度」的显示条件：只有这一轮确实会走**内置模型**才出现。
+   *
+   * - ACP 会话一律没有（`activeConversation.backend === 'acp'`）：即使绑定的 agent
+   *   被删、下拉临时退回内置清单，这一轮的 backend 也已经锁死，档位不会生效；
+   * - 切到外部 Agent（ACP）→ 隐藏（ACP 的思考档归 `AcpThoughtLevelSelect`）；
+   * - 选中的配置还没有具体模型 → 隐藏（没有可作用的档位）。
+   *
+   * 它读的是 `app.chatTarget`，所以在下拉里换模型时会立即跟着变。
+   */
+  const showReasoningEffort =
+    activeConversation?.backend !== 'acp' &&
+    app.chatTarget?.backend === 'builtin' &&
+    !!app.chatTarget.configId &&
+    !!app.chatTarget.modelId
+
   return (
     <ModelPicker
       models={app.models}
@@ -67,6 +85,18 @@ export function ModelSelect({ app }: { app: AgentApp }) {
       // 这里转成 undefined 让 `ModelPicker` 走它自己的 DEFAULT_CONTEXT_WINDOW 兜底
       defaultContextWindow={app.defaultContextWindow ?? undefined}
       onOpenSettings={openSettingsTab}
+      // 选完模型不关闭：底部思考强度要能接着调；首次选模型时面板也会当场出现
+      closeOnSelect={false}
+      {...(showReasoningEffort
+        ? {
+            footer: (
+              <ReasoningEffortPanel
+                value={app.reasoningEffort}
+                onChange={app.setReasoningEffort}
+              />
+            ),
+          }
+        : {})}
     />
   )
 }
