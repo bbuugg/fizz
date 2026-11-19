@@ -260,10 +260,14 @@ export function SidePanel({
         )}
         style={{ width: open ? width : 0 }}
       >
-        {/* 内容区固定宽度：外层只裁剪、不动里面的排版（见文件头约束 2） */}
+        {/* 内容区固定宽度：外层只裁剪、不动里面的排版（见文件头约束 2）。
+            覆盖形态下它铺满整个容器，左边框会变成一条贴在屏幕边缘的多余竖线 —— 那时不给。 */}
         <div
           style={{ width }}
-          className="flex h-full flex-col border-l border-border/70 bg-surface-1 shadow-2xl"
+          className={cn(
+            'flex h-full flex-col bg-surface-1 shadow-2xl',
+            !overlay && 'border-l border-border/70'
+          )}
         >
           {/* 标签条：左边各标签（图标 + 短名 + 悬停出现的关闭），右边收起面板 */}
           <div className="flex h-9 shrink-0 items-center gap-1 px-2">
