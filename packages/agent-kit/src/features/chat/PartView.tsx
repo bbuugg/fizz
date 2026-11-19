@@ -505,7 +505,7 @@ function AcpTextBlock({ text, singleLine }: { text: string; singleLine?: boolean
       <div
         // 工具输出（脚本 / 命令结果）：不是 <pre>，靠 data-selectable 进 styles.css 的内容白名单
         data-selectable
-        className="overflow-x-auto overflow-y-auto whitespace-pre rounded-md bg-muted/50 px-2 py-1.5 font-mono text-xs max-h-48"
+        className="overflow-x-auto overflow-y-auto no-scrollbar whitespace-pre rounded-md bg-muted/50 px-2 py-1.5 font-mono text-xs max-h-48"
         title={text}
       >
         {text}
@@ -513,7 +513,7 @@ function AcpTextBlock({ text, singleLine }: { text: string; singleLine?: boolean
     )
   }
   return (
-    <pre className="max-h-32 overflow-auto whitespace-pre rounded-md bg-muted/50 px-2 py-1.5 font-mono text-xs">
+    <pre className="max-h-32 overflow-auto no-scrollbar whitespace-pre rounded-md bg-muted/50 px-2 py-1.5 font-mono text-xs">
       {text}
     </pre>
   )

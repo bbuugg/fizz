@@ -572,6 +572,28 @@ export const TOOL_LABELS: Record<string, string> = {
 const ACP_UNNAMED_TOOL = 'tool'
 
 /**
+ * **外部 agent 自己起的工具名** → 中文。
+ *
+ * 与 `TOOL_LABELS` 分开：那张表是「本项目内置工具」，把 `exec_command` 混进去会让人
+ * 以为 Fizz 也有同名工具（`grep 'tool({' packages/tools/src` 对不上）。
+ *
+ * 为什么需要它：ACP 的 `toolCall.name` 是 agent 内部的程序化工具名，认不出时
+ * `toolCardTitle` 会**原样**把名字画到卡片标题上 —— codex 就是满屏 `exec_command`。
+ * 只登记「确认会出现在 `name` 字段里」的：codex-acp 对文件改动（`fileChange`）、
+ * MCP 工具、网页搜索**不给 name**（靠 `kind` 翻成「编辑文件 / 执行命令 / 搜索」），
+ * 那几类不必登记；`dynamicToolCall` 的名字由 agent 侧动态注册，穷举不了，认不出仍原样显示。
+ */
+export const ACP_TOOL_LABELS: Record<string, string> = {
+  // codex 的 unified exec：启动一条命令 / 往运行中的命令写 stdin（见 codex-acp 的 ToolCallName.ts）
+  exec_command: '执行命令',
+  write_stdin: '写入命令输入',
+  // codex 的看图工具（与内置的 `screenshot` 网页截图不是一回事）
+  view_image: '查看图片',
+  // codex 的沙箱额外授权申请（codex-acp 自己造的那条 toolCall）
+  request_permissions: '申请权限'
+}
+
+/**
  * ACP 的 `toolCall.kind` → 中文（agent 只给 kind + title、不给 name 时靠它翻）。
  *
  * 与 TOOL_LABELS 分开：这些是 ACP 协议枚举（read / edit / execute …），
@@ -592,7 +614,7 @@ export const ACP_KIND_LABELS: Record<string, string> = {
 }
 
 export function toolLabel(name: string): string {
-  const label = TOOL_LABELS[name] ?? ACP_KIND_LABELS[name]
+  const label = TOOL_LABELS[name] ?? ACP_TOOL_LABELS[name] ?? ACP_KIND_LABELS[name]
   // 认不出的工具名原样返回（agent 自己起的名，本来就是给终端用户看的英文名）
   return label ? t(label) : name
 }

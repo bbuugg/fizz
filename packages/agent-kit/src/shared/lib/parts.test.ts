@@ -59,6 +59,27 @@ describe('toolCardHead', () => {
 })
 
 /**
+ * 外部 agent（codex-acp）的程序化工具名也要翻成中文。
+ *
+ * 防的回归：认不出的名字会被 `toolCardTitle` **原样**画到卡片标题上 —— codex 的会话
+ * 因此满屏 `exec_command` / `write_stdin`（用户报过「显示的是命令名而不是运行命令」）。
+ * 只登记确认出现在 `name` 字段里的那几个；`dynamicToolCall` 这类动态名字仍原样显示，
+ * 所以第二条用例同时钉住「不许拿 kind 瞎猜」。
+ */
+describe('ACP 外部 agent 的工具名', () => {
+  it('codex 的 name 翻成中文', () => {
+    expect(toolCardTitle('exec_command', 'execute')).toBe('执行命令')
+    expect(toolCardTitle('write_stdin', 'execute')).toBe('写入命令输入')
+    expect(toolCardTitle('view_image', 'read')).toBe('查看图片')
+    expect(toolCardTitle('request_permissions', 'other')).toBe('申请权限')
+  })
+
+  it('表里没有的 agent 工具名仍原样显示（不拿 kind 瞎猜）', () => {
+    expect(toolCardTitle('some_dynamic_tool', 'execute')).toBe('some_dynamic_tool')
+  })
+})
+
+/**
  * 派活工具（`agent-<id>`）也能单条停止。
  *
  * 防的回归：判据被收紧回 `STOPPABLE_TOOLS.has(...)` —— 那样所有派活卡的停止钮都会消失，

@@ -9,6 +9,7 @@
  *   追加**：模型自己写的「其他」「其他（请说明）」在归一化时就被剔除了（理由见
  *   `ask-followup.ts` 的 `NormalizedQuestion.otherRequested`）。
  *   **多题时一题一屏、底部左右切换**（不再把题目竖着摞成一条长卡，见 `FollowupForm` 文件头）；
+ *   右上角那颗 `⌄` 能把整张卡收成「输入框那么高的窄条」（见 `FollowupForm` 的「折叠按钮」）；
  *   ⚠️ **正常待答时这张表单渲染在输入框槽位**（`ChatComposer` 的 cover，见 `AskFollowupPanel`），
  *   消息流里的 part 只留一条指引 —— 下面这三态描述的是 `AskFollowupCard` 自身；
  * - **已回答**：收成一条**与工具调用卡同构**的折叠条（图标 / 标题 / 状态徽章 / 箭头），
@@ -19,8 +20,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowRight,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   CircleCheck,
   CircleQuestionMark,
   CircleSlash,
@@ -177,6 +180,25 @@ import { useT } from '@fizz/agent-kit/shared/lib/language'
  * （用 `grow` 而非 `flex-1`：`flex-basis: auto` 才能让「高度 auto + min-height」的容器
  * 正确按内容做内在尺寸计算，`flex-1` 的 `0%` 基准在嵌套 flex 里容易把中间层压成 0 高。）
  *
+ * ## 折叠按钮：**收成输入框那么高，只留标题 + 一行题干**
+ *
+ * 上限之外还留了一个手动出口：展开态右上角那颗 `⌄`。答案（选项 + 描述）多的时候，光靠
+ * 上限加内部滚动仍然是一整块 36rem 的墙面 —— 用户想边看上面的对话边对照着答，就得来回滚。
+ * 折叠后整张卡只剩：
+ *   `⌃` 标题（没有标题时用题干）· 「第 N / M 题」· 一行截断的题干，
+ * 箭头方向按**卡片往哪边长**定：展开态 `⌄`（点它往下收）、折叠态 `⌃`（点它往上开）——
+ * 这张卡钉在屏幕底部的输入框槽位，不是居中弹出的折叠面板，用「展开=朝上」那套老规矩
+ * 会让人以为点下去会往上长。
+ * 折叠条里「第 N / M 题」与箭头**对整条垂直居中**（外层 `items-center`），不要用 `-mt`
+ * 去凑第一行文字的基线：有标题时左边是两行，凑出来的位置一定偏上。
+ * 高度接近输入框卡片本身（约两行字 + 上下内边距），因此**不是**另做一套摘要组件，
+ * 就是这张卡自己换个高度（与 `AnswerSummary` 那种「收成一条工具条」不同：那张是给
+ * 已回答的历史卡用的，这里必须还能一键展开继续答）。
+ * 已选的项、当前题号、自由的「其他」输入内容都挂在 `FollowupForm` 自己的 state 上，
+ * 收起 / 展开不丢（折叠态只是不渲染选项区，不是重挂载表单）。
+ * 换了一批题（新的 `ask` 请求落进同一个组件实例）会自动重新展开 —— 用户收起的上一张卡
+ * 不该把新的提问也一起藏掉。
+ *
  * ⚠️ 「其他」那个自由输入框的焦点：**只有刚点开「其他补充…」的那一刻才聚焦**。原来靠
  * `autoFocus`，但输入框是随当前题挂载 / 卸载的，翻页回到这一题会再抢一次焦点（用户正在点
  * `‹ ›` 翻页，焦点却被拽进输入框，接着按 ← → 就变成在输入框里移光标而不是翻页）。
@@ -207,11 +229,31 @@ function FollowupForm({
   const [page, setPage] = useState(0)
   /** 翻页方向：决定下一题的滑入动画从哪一侧进来 */
   const [dir, setDir] = useState<'next' | 'prev'>('next')
+  /** 折成「输入框那么高」的窄条（见文件头「折叠按钮」）；默认展开 */
+  const [collapsed, setCollapsed] = useState(false)
+
+  /** 消息区的滚动上下文（输入框槽位里拿不到，退化成空操作） */
+  const conversation = useConversationOptional()
 
   /** 多题才有一题一屏 + 左右切换这套导航 */
   const multiple = questions.length > 1
   const index = Math.min(page, Math.max(0, questions.length - 1))
   const current = questions[index]
+
+  /**
+   * 换了一批题就重新展开。
+   *
+   * 两处调用方都是「同一个组件实例换 props」（`AskFollowupPanel` 跟着 `followupRequests`
+   * 换、消息流里的补答卡跟着 part 换）。只按组件生命周期重置的话，用户收起的上一张卡会把
+   * 新的提问也藏成一条 —— agent 那边正停着等答复，界面上却只剩一行字。
+   * 渲染期比对（而不是 `useEffect`）：后者会先按旧状态画一帧，收起态闪一下再展开。
+   */
+  const requestKey = `${title}\u0000${questions.map((q) => `${q.id}:${q.question}`).join('\u0001')}`
+  const [seenRequestKey, setSeenRequestKey] = useState(requestKey)
+  if (seenRequestKey !== requestKey) {
+    setSeenRequestKey(requestKey)
+    setCollapsed(false)
+  }
 
   /** 待聚焦的题 id：`toggle` 勾上「其他」时写入，effect 消费一次就清掉（见文件头） */
   const focusPendingRef = useRef<string | null>(null)
@@ -301,6 +343,92 @@ function FollowupForm({
   const wantOther = needsOtherOption(current)
   const otherSelected = (selected[current.id] ?? []).includes(OTHER_LABEL)
 
+  /**
+   * 折叠 / 展开。开合让卡片高度突增突降，先 `holdScroll()` 退出自动贴底 ——
+   * 与 `AnswerSummary` 同一个理由：别把用户正在看的位置拽到底部。
+   * 输入框槽位里没有滚动上下文（`useConversationOptional` 返回 null），那里就是空操作。
+   */
+  const toggleCollapsed = (): void => {
+    conversation?.holdScroll()
+    setCollapsed((v) => !v)
+  }
+
+  /** 「第 N / M 题」：只有多题才有 */
+  const countLabel = multiple ? (
+    <span className="text-xs tabular-nums text-muted-foreground">
+      {tr('第 {index} / {total} 题', { index: index + 1, total: questions.length })}
+    </span>
+  ) : null
+
+  /**
+   * 折叠钮（展开态右上角那颗 `⌄`）。
+   *
+   * 手写一颗 `size-6` 的小图标钮，与本卡「其他」那一行右边那颗 ✕ 同一口径：
+   * `Button` 最小档 `icon-sm` 是 32px，比 `text-sm` 的标题行（20px）还高，会把整行顶起来。
+   *
+   * 方向跟着**卡片往哪边长**走，不跟「折叠面板」的老习惯：这张卡钉在输入框槽位（屏幕底部），
+   * 展开是向上长、收起是向下缩 —— 所以展开态是 `⌄`（点它往下收）、折叠态是 `⌃`（点它往上开）。
+   */
+  const collapseButton = (
+    <button
+      type="button"
+      aria-expanded={true}
+      aria-label={tr('折叠提问卡')}
+      title={tr('折叠提问卡')}
+      onClick={toggleCollapsed}
+      className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+    >
+      <ChevronDown className="size-3.5" />
+    </button>
+  )
+
+  /*
+   * 折叠态：一张「只有输入框那么高」的窄条（见文件头「折叠按钮」）。
+   *
+   * 整条**自己就是展开钮**（不是只在右上角留一颗小箭头）：收起来之后卡面只剩一两行字，
+   * 用户点哪儿都该展开 —— 让一颗 24px 的小箭头当唯一入口的话，手机上基本点不中。
+   * 用 `button` + 全 `span` 排版（button 的内容模型只允许 phrasing content，不能塞 `p` / `div`）。
+   * 整宽而不是 `w-fit`：才对得上输入框卡片的观感，消息流里也与 `AnswerSummary` 那条收起态同宽。
+   * hover **不动描边**（试过 `hover:border-primary/40`，整条太宽、边框一变色像整卡被框起来）：
+   * 反馈只留箭头那一颗转 `primary`，条本身保持 `border-border` 不变。
+   */
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        aria-expanded={false}
+        aria-label={tr('展开提问卡')}
+        title={tr('展开提问卡')}
+        onClick={toggleCollapsed}
+        className="group flex w-full items-center gap-2 rounded-xl border border-border bg-card/70 px-3 py-2.5 text-left"
+      >
+        {/* 左侧文字块：可能只有一行（没标题时就是题干），也可能两行。
+            交给外层 `items-center` 让右边那组对**整条**居中，而不是对第一行文字居中对齐 */}
+        <span className="flex min-w-0 grow flex-col">
+          {/* 没有整体描述时拿题干顶上去 —— 窄条上总得有一句话说明「在问什么」 */}
+          <span className="truncate text-sm font-medium text-foreground">{title || current.question}</span>
+          {/* 已经有标题了才再给一行题干：否则上面那行就是题干，重复一遍毫无意义 */}
+          {title && (
+            <span className="mt-1 flex min-w-0 items-start gap-1.5">
+              <span className="mt-0.5 shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">
+                {current.header}
+              </span>
+              <span className="min-w-0 grow truncate text-sm text-muted-foreground">
+                {current.question}
+              </span>
+            </span>
+          )}
+        </span>
+        {/* 题号计数 + 展开箭头：`items-center` 已经让这一组落在整条的中线上，
+            别再给 `-mt` 之类的偏移（那正是之前看着偏上的原因） */}
+        <span className="flex shrink-0 items-center gap-1.5">
+          {countLabel}
+          <ChevronUp className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-primary" />
+        </span>
+      </button>
+    )
+  }
+
   return (
     <div
       className={cn(
@@ -324,21 +452,22 @@ function FollowupForm({
         }
       }}
     >
-      {/* 顶部一行：整体描述（title）+ 「第 N / M 题」计数。
+      {/* 顶部一行：整体描述（title）+ 「第 N / M 题」计数 + 折叠钮。
           计数**跟着整体描述走**（不再挂在题干那一行的右端）—— 题干本身可能很长会换行，
           计数贴着题干会被挤到忽左忽右；钉在描述行右端，翻页时位置稳定。
           描述**换行不截断**（`break-words`）：它就是用户要读的那句话，截掉半截没法看。
-          只有多题（`multiple`）才显示计数。 */}
+          只有多题（`multiple`）才显示计数。
+          ⚠️ 两样都没有时这一行**整块不渲染**（多一行 24px 的空行只会抬高卡片），
+          折叠钮改挂到下面题干那一行的右端。 */}
       {(title || multiple) && (
         <div className="mb-2 flex shrink-0 items-start gap-2 px-3">
           {title && (
             <p className="min-w-0 grow break-words text-sm font-medium text-foreground">{title}</p>
           )}
-          {multiple && (
-            <span className="ml-auto shrink-0 pt-0.5 text-xs tabular-nums text-muted-foreground">
-              {tr('第 {index} / {total} 题', { index: index + 1, total: questions.length })}
-            </span>
-          )}
+          <span className="-mt-0.5 ml-auto flex shrink-0 items-center gap-1.5">
+            {countLabel}
+            {collapseButton}
+          </span>
         </div>
       )}
 
@@ -369,6 +498,8 @@ function FollowupForm({
           )}
           {/* 题干**换行不截断**：这是用户真正要读的内容，截断等于把问题吃掉一半 */}
           <span className="min-w-0 grow break-words text-sm text-foreground">{current.question}</span>
+          {/* 既没有整体描述也没有题号计数时，上面那一行不渲染 —— 折叠钮落在这里（仍是卡的右上角） */}
+          {!(title || multiple) && <span className="-mt-1 shrink-0">{collapseButton}</span>}
         </div>
         {/* `px-1` + 行内 `px-2` = 与题面那一行的 `px-3` 同一条左边界 */}
         <div className="flex min-h-0 grow flex-col overflow-y-auto overscroll-contain overflow-x-hidden px-1">
@@ -390,7 +521,13 @@ function FollowupForm({
                 onClick={() => toggle(current, opt.label)}
                 className={cn(
                   'flex w-full shrink-0 items-center gap-2.5 rounded-lg px-2 py-2 text-left text-sm transition-colors',
-                  checked ? 'bg-foreground/[0.07] text-foreground' : 'text-foreground hover:bg-foreground/5'
+                  /*
+                   * 底色走主题色的两档深浅（与侧边栏会话行同一套令牌）：
+                   * 选中 `bg-primary-subtle`（22%）、未选中的 hover `bg-primary-soft`（13%）。
+                   * 别退回 `bg-foreground/[0.07]` / `hover:bg-foreground/5` 那套中性灰 ——
+                   * 卡片其余地方已经不叠灰了，选项行再发灰会显得没被选中过。
+                   */
+                  checked ? 'bg-primary-subtle text-foreground' : 'text-foreground hover:bg-primary-soft'
                 )}
               >
                 <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-background text-xs font-medium text-muted-foreground">
@@ -416,10 +553,12 @@ function FollowupForm({
               它不是模型给的第 5 个选项，而是「以上都不合适」的出口。
               常态没有底色（与上面的选项行一样透明，只在 hover 时浮一点底）：底色的含义是
               「已选中 / 正在输入」，给一条还没被选中的出口项常驻灰底会被误读成「已经选上了」。
-              点开后就地变成输入框（同一位置、同一行高），底色跟着输入框的焦点走。 */}
+              点开后就地变成输入框（同一位置、同一行高），底色跟着输入框的焦点走
+              （输入中 = 已选中，用选中档 `primary-subtle`；未点开时 hover 用 `primary-soft`，
+              与上面选项行同一套深浅度令牌，不再发中性灰）。 */}
           {wantOther &&
             (otherSelected ? (
-              <div className="flex shrink-0 items-center gap-2.5 rounded-lg px-2 py-1 transition-colors focus-within:bg-foreground/10">
+              <div className="flex shrink-0 items-center gap-2.5 rounded-lg px-2 py-1 transition-colors focus-within:bg-primary-subtle">
                 <span className="flex size-6 shrink-0 items-center justify-center text-muted-foreground">
                   <Pencil className="size-3.5" />
                 </span>
@@ -445,7 +584,7 @@ function FollowupForm({
               <button
                 type="button"
                 onClick={() => toggle(current, OTHER_LABEL)}
-                className="flex w-full shrink-0 items-center gap-2.5 rounded-lg px-2 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                className="flex w-full shrink-0 items-center gap-2.5 rounded-lg px-2 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-primary-soft hover:text-foreground"
               >
                 <span className="flex size-6 shrink-0 items-center justify-center">
                   <Pencil className="size-3.5" />

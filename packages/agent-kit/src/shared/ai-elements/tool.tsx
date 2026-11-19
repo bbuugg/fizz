@@ -737,7 +737,8 @@ export const ToolOutput = ({
     Output = looksLikeJson(output) ? (
       <CodeBlock code={output} language="json" />
     ) : (
-      <pre className="m-0 overflow-auto whitespace-pre p-4 font-mono text-sm">
+      // 滚条藏掉（`no-scrollbar`）：这张卡里的滚动条会占掉十来个像素、把宽输出压窄
+      <pre className="m-0 overflow-auto whitespace-pre p-4 font-mono text-sm no-scrollbar">
         {output}
       </pre>
     );
@@ -750,7 +751,8 @@ export const ToolOutput = ({
       </h4>
       <div
         className={cn(
-          "overflow-x-auto rounded-md text-xs [&_table]:w-full",
+          // 横向内容（长命令 / 宽表格）本来就要滚：滚条藏掉，手势与滚轮照常
+          "overflow-x-auto no-scrollbar rounded-md text-xs [&_table]:w-full",
           errorText
             ? "bg-destructive/10 text-destructive"
             : "bg-muted/50 text-foreground"
