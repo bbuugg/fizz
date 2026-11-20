@@ -104,17 +104,18 @@ function limitToolConcurrency(tools: ToolSet, limit: number): ToolSet {
   if (!Number.isFinite(limit) || limit <= 0) return tools
   let active = 0
   const waiting: Array<() => void> = []
-  const acquire = (): Promise<void> =>
-    active < limit
-      ? Promise.resolve().then(() => {
-          active += 1
-        })
-      : new Promise<void>((resolve) =>
-          waiting.push(() => {
-            active += 1
-            resolve()
-          })
-        )
+  const acquire = (): Promise<void> => {
+    if (active < limit) {
+      active += 1
+      return Promise.resolve()
+    }
+    return new Promise<void>((resolve) =>
+      waiting.push(() => {
+        active += 1
+        resolve()
+      })
+    )
+  }
   const release = (): void => {
     active -= 1
     const next = waiting.shift()

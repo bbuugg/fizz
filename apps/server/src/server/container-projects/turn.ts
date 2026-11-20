@@ -46,6 +46,7 @@ import { describeError } from '../lib/http'
 import { resolveUploadModelUrl } from '../upload/index'
 import { ensureContainerAgentReady } from './lifecycle'
 import { containerSkillList, type ContainerSkill } from './skills'
+import { resolvePermissionMode } from '../permission-mode'
 
 /** 工作区在容器里的挂载点（`docker run -v <项目目录>:/workspace`，不作环境变量传递） */
 const CONTAINER_WORKSPACE_PATH = '/workspace'
@@ -408,7 +409,7 @@ export async function startContainerTurn(
     return rejectTurn(400, describeError(err).message)
   }
 
-  const permissionMode = (input.permissionMode ?? 'confirm') as AiPermissionMode
+  const permissionMode = resolvePermissionMode(input.permissionMode)
   const confirmTimeoutMs =
     typeof input.confirmTimeoutMs === 'number' &&
     Number.isFinite(input.confirmTimeoutMs) &&

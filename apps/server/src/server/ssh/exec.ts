@@ -115,16 +115,35 @@ class RemoteExecService {
     const maxBytes = opts.maxBytes ?? MAX_CAPTURE
 
     return new Promise<WorkspaceExecResult>((resolve) => {
-      if (opts.signal?.aborted) {
+      let settled = false
+      const removeAbortListener = (): void => opts.signal?.removeEventListener('abort', onAbort)
+      const onAbort = (): void => {
+        if (settled) return
+        settled = true
+        removeAbortListener()
         resolve({ stdout: '', stderr: '', exitCode: null, reason: 'aborted', truncated: false })
+      }
+      opts.signal?.addEventListener('abort', onAbort, { once: true })
+      if (opts.signal?.aborted) {
+        onAbort()
         return
       }
 
       void this.acquire(hostId)
         .then((entry) => {
+          if (settled) return
+          removeAbortListener()
+          if (opts.signal?.aborted) {
+            settled = true
+            resolve({ stdout: '', stderr: '', exitCode: null, reason: 'aborted', truncated: false })
+            return
+          }
           this.start(entry, command, { timeoutMs, maxBytes }, opts, resolve)
         })
         .catch((err: unknown) => {
+          if (settled) return
+          settled = true
+          removeAbortListener()
           resolve({
             stdout: '',
             stderr: '',
@@ -144,6 +163,10 @@ class RemoteExecService {
     opts: WorkspaceExecOptions,
     resolve: (result: WorkspaceExecResult) => void
   ): void {
+    if (opts.signal?.aborted) {
+      resolve({ stdout: '', stderr: '', exitCode: null, reason: 'aborted', truncated: false })
+      return
+    }
     const pidFile = pidFileFor(randomUUID().replace(/-/g, ''))
     const script = buildExecScript(command, {
       pidFile,

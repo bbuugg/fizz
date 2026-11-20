@@ -135,6 +135,37 @@ describe('runAgent 的失败提示', () => {
     expect(errors.every((e) => e.message === MID_STREAM_ERROR)).toBe(true)
   })
 
+  it('首个请求前的 prepareStep 不应建立可续跑断点', async () => {
+    streamText.mockImplementation(
+      (opts: {
+        messages: unknown[]
+        prepareStep?: (args: { messages: unknown[]; stepNumber: number }) => Promise<unknown>
+      }) => {
+        const attempt = streamText.mock.calls.length
+        return {
+          fullStream: (async function* () {
+            await opts.prepareStep?.({ messages: opts.messages, stepNumber: 0 })
+            yield { type: 'text-delta', text: `第 ${attempt} 次半截` }
+            if (attempt <= 2) {
+              yield { type: 'error', error: new Error(MID_STREAM_ERROR) }
+            } else {
+              yield { type: 'finish', finishReason: 'stop' }
+            }
+          })()
+        }
+      }
+    )
+
+    const events: AgentStreamEvent[] = []
+    const result = await runAgent(baseOptions((event) => events.push(event)))
+
+    expect(streamText).toHaveBeenCalledTimes(2)
+    const retry = events.find((event) => event.type === 'retry')
+    expect(retry).toMatchObject({ attempt: 1 })
+    expect(retry).not.toHaveProperty('resume')
+    expect(result.finishReason).toBe('error')
+  })
+
   it('执行过工具但**没有断点**（同一步内就失败）：不重试，避免重复副作用', async () => {
     // 真实 AI SDK 里工具执行完、发下一步请求之前一定会调 `prepareStep`，断点就在那里。
     // 这条用例模拟的是「同一步内工具结果之后立刻断流」：没有走到边界，也就没有断点可用，

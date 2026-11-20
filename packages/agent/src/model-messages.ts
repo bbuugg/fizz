@@ -173,17 +173,28 @@ async function resolveOne(
  */
 export async function planAttachments(
   files: UploadLikeFile[],
-  opts?: { resolveAttachment?: ResolveAttachment; budget?: InlineBudget }
+  opts?: { resolveAttachment?: ResolveAttachment; budget?: InlineBudget; omitCounted?: boolean }
 ): Promise<PlannedAttachment[]> {
   const planned: PlannedAttachment[] = await Promise.all(
     files.map(async (file) => ({ file, resolved: await resolveOne(file, opts?.resolveAttachment) }))
   )
   const budget = opts?.budget
   if (!budget) return planned
+  const seenInBatch = new Set<string>()
   for (let i = planned.length - 1; i >= 0; i--) {
     const item = planned[i]
     if (item.resolved.kind !== 'inline') continue
-    if (budget.counted.has(item.file.url)) continue
+    if (seenInBatch.has(item.file.url)) {
+      item.resolved = { kind: 'omit', note: `（重复附件「${item.file.name}」本轮只发送一次）` }
+      continue
+    }
+    seenInBatch.add(item.file.url)
+    if (budget.counted.has(item.file.url)) {
+      if (opts?.omitCounted) {
+        item.resolved = { kind: 'omit', note: `（重复附件「${item.file.name}」本轮只发送一次）` }
+      }
+      continue
+    }
     const size = item.resolved.bytes.byteLength
     if (size > budget.remainingBytes) {
       item.resolved = {
@@ -253,6 +264,8 @@ export async function attachmentParts(
     resolveAttachment?: ResolveAttachment
     resolveFileUrl?: (url: string) => string
     budget?: InlineBudget
+    /** 插话已与现有历史同发：已内联过的附件不应再重复占请求体。 */
+    omitCounted?: boolean
   }
 ): Promise<{ parts: Array<ImagePart | FilePart>; notes: string[] }> {
   const planned = await planAttachments(files, opts)
@@ -273,7 +286,7 @@ export async function attachmentParts(
  * 传字节算出来是同一个数；变的只是请求体大小（×4/3，且每轮重发）。所以真正的闸是
  * `MAX_INLINE_TOTAL_BYTES`（每轮总量），不是单条消息。
  */
-export async function toModelMessages(
+export async function toModelMessageGroups(
   history: Array<{ role: 'user' | 'assistant'; parts: AgentMessagePart[] }>,
   opts?: {
     resolveFileUrl?: (url: string) => string
@@ -289,7 +302,7 @@ export async function toModelMessages(
      */
     allowImages?: boolean
   }
-): Promise<ModelMessage[]> {
+): Promise<ModelMessage[][]> {
   /**
    * 先一次性规划**整段历史**的附件：预算要按「整轮、从新到旧」分配，
    * 逐条消息各规划一次会变成按时间先到先得 —— 最旧的图反而挤掉最新的。
@@ -323,9 +336,10 @@ export async function toModelMessages(
     }
   }
 
-  const messages: ModelMessage[] = []
+  const groups: ModelMessage[][] = history.map(() => [])
   for (let i = 0; i < history.length; i++) {
     const msg = history[i]
+    const messages = groups[i]!
     if (msg.role === 'user') {
       const text = msg.parts
         .map((p) => (p.type === 'text' ? p.text : ''))
@@ -429,5 +443,18 @@ export async function toModelMessages(
     }
     flush()
   }
-  return messages
+  return groups
+}
+
+/** 转换完整历史；分组入口由需要保留原始消息边界的调用方使用。 */
+export async function toModelMessages(
+  history: Array<{ role: 'user' | 'assistant'; parts: AgentMessagePart[] }>,
+  opts?: {
+    resolveFileUrl?: (url: string) => string
+    resolveAttachment?: ResolveAttachment
+    inlineBudget?: InlineBudget
+    allowImages?: boolean
+  }
+): Promise<ModelMessage[]> {
+  return (await toModelMessageGroups(history, opts)).flat()
 }

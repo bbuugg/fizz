@@ -11,11 +11,13 @@ vi.mock('./state', () => ({
   chatRuns: {
     runs: new Map(),
     activeByConversation: new Map(),
+    startingByConversation: new Set(),
     doneResolves: new Map()
   }
 }))
 
-const { compactFrames, stopConversationRun } = await import('./chat-run')
+const { compactFrames, reserveConversationRunStart, releaseConversationRunStart, stopConversationRun } =
+  await import('./chat-run')
 
 function frame(event: ChatStreamFrame['event']): ChatStreamFrame {
   return { type: 'event', requestId: 'req-1', event }
@@ -91,5 +93,26 @@ describe('stopConversationRun', () => {
 
   it('没有在跑的轮次时是 no-op', async () => {
     await expect(stopConversationRun('conv-idle')).resolves.toBe(false)
+  })
+})
+
+describe('conversation run reservation', () => {
+  it('同步拒绝重复启动，并在释放后允许下一轮', () => {
+    expect(reserveConversationRunStart('conv-starting')).toBe(true)
+    expect(reserveConversationRunStart('conv-starting')).toBe(false)
+    releaseConversationRunStart('conv-starting')
+    expect(reserveConversationRunStart('conv-starting')).toBe(true)
+    releaseConversationRunStart('conv-starting')
+  })
+
+  it('已有活跃 run 时拒绝新启动', () => {
+    const id = 'conv-active'
+    chatRuns.activeByConversation.set(id, 'req-active')
+    chatRuns.runs.set('req-active', { finishedAt: undefined } as ChatRun)
+
+    expect(reserveConversationRunStart(id)).toBe(false)
+
+    chatRuns.activeByConversation.delete(id)
+    chatRuns.runs.delete('req-active')
   })
 })

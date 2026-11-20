@@ -89,6 +89,28 @@ describe('exec', () => {
     expect(connectMock).not.toHaveBeenCalled()
   })
 
+  it('SSH 建连期间取消时不启动远端命令', async () => {
+    let finishConnect!: (entry: { client: FakeClient; dispose: () => void }) => void
+    connectMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishConnect = resolve
+      })
+    )
+    const client = new FakeClient({ stdout: 'must not execute' })
+    const controller = new AbortController()
+
+    const pending = remoteExecService.exec('h-connect-abort', 'rm -rf important', {
+      signal: controller.signal
+    })
+    await vi.waitFor(() => expect(connectMock).toHaveBeenCalled())
+    controller.abort()
+    await expect(pending).resolves.toMatchObject({ reason: 'aborted' })
+    finishConnect({ client, dispose: client.dispose })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(client.exec).not.toHaveBeenCalled()
+  })
+
   it('收集 stdout / stderr 与退出码，命令经 pid 文件包装', async () => {
     const client = new FakeClient({ stdout: 'out\n', stderr: 'err\n', exitCode: 3 })
     install(client)

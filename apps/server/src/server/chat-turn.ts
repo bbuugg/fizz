@@ -60,13 +60,21 @@ import { startContainerTurn } from './container-projects/turn'
 import { buildCodingAssembly } from './profiles/coding'
 import { buildClientToolset, createClientToolGate } from './client-tool-gate'
 import { errorPart, excerptOf, foldEventIntoParts } from './agent-parts'
-import { createRun, emit, finishRun, type ChatRun } from './chat-run'
+import {
+  createRun,
+  emit,
+  finishRun,
+  releaseConversationRunStart,
+  reserveConversationRunStart,
+  type ChatRun
+} from './chat-run'
 import { startBackgroundTask } from './background-tasks'
 import { refreshAcpSessionState } from './acp-session-state'
 import { appendAcpTranscript } from './acp-transcripts'
 import { describeError } from './lib/http'
 import { buildAssistantMessage } from './assistant-message'
 import { createRemoteBackend } from './ssh/workspace-backend'
+import { isAiPermissionMode, resolvePermissionMode } from './permission-mode'
 
 /** confirm 模式审批的缺省超时与等待体工厂迁到了 `./confirm-gate`(聊天 / 助手共用) */
 
@@ -212,7 +220,7 @@ export function beginTurnUserMessage(
 
 export type StartTurnResult =
   | { ok: true; run: ChatRun }
-  | { ok: false; status: 400 | 404 | 500; message: string }
+  | { ok: false; status: 400 | 404 | 409 | 500; message: string }
 
 /**
  * 插话收尾兜底（spec §1.4/§1.5）：插话进了收件箱但没被任何边界消费（撞 maxSteps
@@ -278,10 +286,28 @@ export async function drainSteerInbox(
  * 失败不抛：返回 `{ ok: false }` 让调用方决定回 400 还是记任务失败。
  */
 export async function startTurn(input: ChatRequest, opts?: { origin?: string }): Promise<StartTurnResult> {
+  const conversationId = input.conversationId
+  if (conversationId && !reserveConversationRunStart(conversationId)) {
+    return { ok: false, status: 409, message: '这个会话正在启动或回复中，请等待当前轮结束' }
+  }
+  try {
+    return await startTurnReserved(input, opts)
+  } finally {
+    if (conversationId) releaseConversationRunStart(conversationId)
+  }
+}
+
+async function startTurnReserved(
+  input: ChatRequest,
+  opts?: { origin?: string }
+): Promise<StartTurnResult> {
   const text = input.text?.trim()
   const files = input.files ?? []
   if (!input.conversationId || (!text && files.length === 0)) {
     return { ok: false, status: 400, message: '缺少 conversationId 或 text' }
+  }
+  if (input.permissionMode !== undefined && !isAiPermissionMode(input.permissionMode)) {
+    return { ok: false, status: 400, message: 'permissionMode 非法' }
   }
 
   // 附件校验**前置到会话查找之前**：坏引用（类型 / 归属不过）第一时间拒绝，
@@ -432,7 +458,7 @@ export async function startTurn(input: ChatRequest, opts?: { origin?: string }):
    * 以前这些值只能吃 `runAgent` 的缺省，设置页填的数字对无人值守的任务完全不生效。
    */
   const prefs = agentPrefs()
-  const permissionMode = (input.permissionMode ?? prefs.permissionMode) as AiPermissionMode
+  const permissionMode = resolvePermissionMode(input.permissionMode, prefs.permissionMode)
   const confirmTimeoutMs =
     typeof input.confirmTimeoutMs === 'number' && Number.isFinite(input.confirmTimeoutMs) && input.confirmTimeoutMs >= 0
       ? input.confirmTimeoutMs

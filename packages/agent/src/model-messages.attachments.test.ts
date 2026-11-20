@@ -12,9 +12,11 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
+  attachmentParts,
   createInlineBudget,
   MAX_INLINE_TOTAL_BYTES,
   type ResolvedAttachment,
+  toModelMessageGroups,
   toModelMessages
 } from './model-messages'
 
@@ -39,6 +41,32 @@ describe('不传 resolveAttachment：仍是 URL 直传', () => {
       filename: 'b.pdf',
       mediaType: 'application/pdf'
     })
+  })
+})
+
+describe('按原始消息分组转换', () => {
+  it('一次批量转换仍保留每条原始消息的 token 估算边界', async () => {
+    const history = [
+      user([{ type: 'text', text: 'hello' }]),
+      {
+        role: 'assistant' as const,
+        parts: [
+          {
+            type: 'tool-call' as const,
+            toolCallId: 'call-1',
+            toolName: 'read',
+            input: { path: 'a.ts' },
+            output: 'contents'
+          }
+        ]
+      }
+    ]
+    const groups = await toModelMessageGroups(history)
+
+    expect(groups).toHaveLength(2)
+    expect(groups[0]).toEqual([{ role: 'user', content: 'hello' }])
+    expect(groups[1]?.map((message) => message.role)).toEqual(['assistant', 'tool'])
+    expect(groups.flat()).toEqual(await toModelMessages(history))
   })
 })
 
@@ -116,6 +144,43 @@ describe('整轮内联预算', () => {
     // 第二次组装不能因为「预算已被扣过」而把这张图降级掉
     expect((first[0].content as Array<Record<string, unknown>>)[0]).toMatchObject({ type: 'image' })
     expect((second[0].content as Array<Record<string, unknown>>)[0]).toMatchObject({ type: 'image' })
+  })
+
+  it('同一 URL 在历史重复出现时只内联一次，避免重复字节绕过预算', async () => {
+    const budget = createInlineBudget(15 * 1024 * 1024)
+    const history = [
+      user([{ type: 'file', ...PIC }]),
+      user([{ type: 'file', ...PIC }])
+    ]
+    const messages = await toModelMessages(history, {
+      resolveAttachment: async () => ({ kind: 'inline', bytes: new Uint8Array(10 * 1024 * 1024) }),
+      inlineBudget: budget
+    })
+
+    const inlineParts = messages.flatMap((message) =>
+      Array.isArray(message.content)
+        ? (message.content as Array<Record<string, unknown>>).filter((part) => part.type === 'image')
+        : []
+    )
+    expect(inlineParts).toHaveLength(1)
+    expect(String(messages[0]?.content)).toContain('重复附件')
+    expect(budget.remainingBytes).toBe(5 * 1024 * 1024)
+  })
+
+  it('插话不能再次内联本轮已发送的同一 URL', async () => {
+    const budget = createInlineBudget(15 * 1024 * 1024)
+    await toModelMessages([user([{ type: 'file', ...PIC }])], {
+      resolveAttachment: async () => ({ kind: 'inline', bytes: new Uint8Array(10 * 1024 * 1024) }),
+      inlineBudget: budget
+    })
+    const { parts, notes } = await attachmentParts([PIC], {
+      resolveAttachment: async () => ({ kind: 'inline', bytes: new Uint8Array(10 * 1024 * 1024) }),
+      budget,
+      omitCounted: true
+    })
+
+    expect(parts).toHaveLength(0)
+    expect(notes.join(' ')).toContain('重复附件')
   })
 
   it('默认上限是 15MB', () => {

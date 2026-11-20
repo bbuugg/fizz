@@ -103,18 +103,7 @@ export function createSSEStream(
         writer.close()
       }
     },
-    /**
-     * ⚠️ 这个 `cancel` **不能省**（以前没有，是一处慢性泄漏）。
-     *
-     * 读端断开时（HTTP 连接断了 / desktop 的 `pump` 主动 `reader.cancel()` / 渲染端
-     * `closeSse`）会走到这里。没有它的话这条流只是被「关掉」，而 `onStream` 里那条
-     * `for (;;) { … await new Promise(resolve => { wake = resolve }) }` 会**永远挂在那里**：
-     * - 订阅者一直留在 `run.subscribers` 里 —— 每次断线重连都再挂一个，只增不减；
-     * - `emit` 每来一帧还要往这些已经没人读的连接上扇出一次。
-     *
-     * 桌面端是长驻进程、一轮对话可能重连很多次，这就是内存与 CPU 的慢性泄漏。置位信号后
-     * `pipeRun` 会醒来、`return` 掉、`finally` 里的 `sub.close()` 把订阅者摘掉。
-     */
+    /** 唤醒 pipeRun 的挂起写泵，让它清理订阅；断开本身不会中止 run。 */
     cancel() {
       gone.abort()
     }

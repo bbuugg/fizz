@@ -53,4 +53,49 @@ describe('runEngine 交给 streamText 的参数', () => {
     const firstCall = streamText.mock.calls[0] as unknown as [Record<string, unknown>]
     expect(firstCall[0].maxRetries).toBe(0)
   })
+
+  it('工具调用并发不超过配置上限', async () => {
+    let active = 0
+    let peak = 0
+    let release!: () => void
+    const hold = new Promise<void>((resolve) => {
+      release = resolve
+    })
+
+    streamText.mockImplementation((options: { tools: Record<string, { execute: () => Promise<unknown> }> }) => ({
+      fullStream: (async function* () {
+        const calls = [options.tools.work!.execute(), options.tools.work!.execute()]
+        await Promise.resolve()
+        await Promise.resolve()
+        release()
+        await Promise.all(calls)
+        yield { type: 'finish', finishReason: 'stop' }
+      })()
+    }))
+
+    const engine = runEngine({
+      model: {} as never,
+      system: 'SYS',
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: {
+        work: {
+          execute: async () => {
+            active += 1
+            peak = Math.max(peak, active)
+            await hold
+            active -= 1
+          }
+        } as never
+      },
+      maxSteps: 1,
+      toolCallConcurrency: 1
+    })
+
+    for await (const _event of engine.events) {
+      // Consume the engine stream so its completion promise settles.
+    }
+    await engine.done
+
+    expect(peak).toBe(1)
+  })
 })

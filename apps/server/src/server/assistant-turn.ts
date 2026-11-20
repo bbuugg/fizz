@@ -28,7 +28,7 @@
  */
 import type { AssistantSendInput } from '@fizz/contracts/agent-api'
 import { resolveContextWindow } from '@fizz/contracts/types'
-import type { AgentChatMessage, AgentStreamEvent, AiPermissionMode, TurnUsage } from '@fizz/contracts/types'
+import type { AgentChatMessage, AgentStreamEvent, TurnUsage } from '@fizz/contracts/types'
 import { defaultContextWindowFromEnv, runAgent, type RunAgentResult } from '@fizz/agent'
 import { probeAcpModels } from '@fizz/acp'
 import { probeMcpServerTools } from '@fizz/mcp'
@@ -55,8 +55,16 @@ import {
 import { createPluginFile } from './plugin-create'
 import { detectAcpAgents } from './acp-detect'
 import { acpProbeCwd } from './acp-probe'
-import { createRun, emit, findActiveByConversation, finishRun, type ChatRun } from './chat-run'
+import {
+  createRun,
+  emit,
+  finishRun,
+  releaseConversationRunStart,
+  reserveConversationRunStart,
+  type ChatRun
+} from './chat-run'
 import { describeError } from './lib/http'
+import { isAiPermissionMode, resolvePermissionMode } from './permission-mode'
 
 export type StartAssistantTurnResult =
   | { ok: true; run: ChatRun }
@@ -81,9 +89,23 @@ export async function startAssistantTurn(input: AssistantSendInput): Promise<Sta
   if (!input.sessionId || !text) {
     return { ok: false, status: 400, message: '缺少 sessionId 或 text' }
   }
-  if (findActiveByConversation(input.sessionId)) {
-    return { ok: false, status: 409, message: '这个助手会话正在回复中,等它收尾再发' }
+  if (input.permissionMode !== undefined && !isAiPermissionMode(input.permissionMode)) {
+    return { ok: false, status: 400, message: 'permissionMode 非法' }
   }
+  if (!reserveConversationRunStart(input.sessionId)) {
+    return { ok: false, status: 409, message: '这个助手会话正在启动或回复中，请等待当前轮结束' }
+  }
+  try {
+    return await startAssistantTurnReserved(input, text)
+  } finally {
+    releaseConversationRunStart(input.sessionId)
+  }
+}
+
+async function startAssistantTurnReserved(
+  input: AssistantSendInput,
+  text: string
+): Promise<StartAssistantTurnResult> {
 
   // 插件注册的模型：解析前刷新（与 chat-turn 同一口径）
   await refreshPluginModels()
@@ -181,7 +203,7 @@ export async function startAssistantTurn(input: AssistantSendInput): Promise<Sta
    * 对助手的所有工具生效（2026-11 反馈过「部分工具不受 pill 控制」，就是因为
    * `guardMutation` 从前只认 readonly）。档位用 getter 现取，中途切换立刻生效。
    */
-  const permissionMode = (input.permissionMode ?? prefs.permissionMode) as AiPermissionMode
+  const permissionMode = resolvePermissionMode(input.permissionMode, prefs.permissionMode)
   /**
    * 模型请求自动重试次数（0 = 不限制）；非法值 = 不传，交给 runAgent 用缺省。
    *

@@ -13,9 +13,6 @@ import {
 } from '@/lib/server/chat-run'
 import { createSSEStream } from '@/app/api/_lib/sse'
 
-/**
- * 把一条 run 接到这条 SSE 连接上：先回放帧日志（恢复现场），再消费本连接的直播队列。
- */
 export function pipeRun(run: ChatRun): Response {
   return createSSEStream(async (writer, clientGone) => {
     const queue: ChatStreamFrame[] = []
@@ -36,14 +33,7 @@ export function pipeRun(run: ChatRun): Response {
 
     const replay = attach(run, sub)
 
-    /**
-     * 读端断开（连接断了 / desktop 的 IPC 桥 cancel）：唤醒下面那个等待，让循环走到
-     * `if (closed) return`，`finally` 里的 `sub.close()` 才把订阅者摘掉。
-     *
-     * ⚠️ 没有这一条的话循环会永远挂在「等下一帧」上 —— 每次断线重连都往
-     * `run.subscribers` 里再挂一个只增不减的订阅者（见 `createSSEStream` 的 `cancel`）。
-     * 注意它**不中止这一轮**：run 继续跑完并照常落盘。
-     */
+    /** 断开只退订、不停止 run；同时唤醒写泵，以便 finally 移除订阅者。 */
     const onClientGone = (): void => {
       closed = true
       wake?.()

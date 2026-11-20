@@ -46,6 +46,8 @@ interface FizzState {
     runs: Map<string, ChatRun>
     /** conversationId → requestId（同一会话同时只跑一轮） */
     activeByConversation: Map<string, string>
+    /** startTurn 的异步准备阶段占位，防止并发请求同时通过活跃 run 检查。 */
+    startingByConversation: Set<string>
     /** requestId → finishRun 时要 resolve 的那个函数 */
     doneResolves: Map<string, () => void>
   }
@@ -241,6 +243,7 @@ async function getState(): Promise<FizzState> {
     chatRuns: {
       runs: new Map(),
       activeByConversation: new Map(),
+      startingByConversation: new Set(),
       doneResolves: new Map()
     },
     acpTranscripts: new Map(),
@@ -257,6 +260,7 @@ async function getState(): Promise<FizzState> {
 }
 
 const _state = await getState()
+_state.chatRuns.startingByConversation ??= new Set()
 
 // ---------------------------------------------------------------------------
 // 对外导出：全部从 globalThis 单例取，保证跨加载器一致

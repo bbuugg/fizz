@@ -13,7 +13,12 @@ import type { ChatRun } from './chat-run'
 // 真实的 state 会在 import 时初始化状态目录；这里只需要那两张表
 vi.mock('./state', () => ({
   pendingConfirms: new Map(),
-  chatRuns: { runs: new Map(), activeByConversation: new Map(), doneResolves: new Map() }
+  chatRuns: {
+    runs: new Map(),
+    activeByConversation: new Map(),
+    startingByConversation: new Set(),
+    doneResolves: new Map()
+  }
 }))
 
 const { createConfirmGate } = await import('./confirm-gate')

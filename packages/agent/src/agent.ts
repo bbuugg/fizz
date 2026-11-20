@@ -1487,12 +1487,14 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
            * 「工具跑完但没下文」的空回复），不如强制它把结论写出来。
            */
           const checkpoint = (value: EngineMessages) => {
-            // 存一份浅拷贝：引擎会把返回的数组接着用于下一步，直接存引用的话后续步骤可能
-            // 就地往里追加，快照就不再是「边界那一刻」的消息了
-            resumeMessages = [...value]
-            // 续跑会新建引擎，`stepNumber` 是从 0 重新数的：必须加上进入本次尝试时的基数，
-            // 否则每续跑一次步数预算就重置一次
-            resumeSteps = stepsAtAttemptStart + stepNumber
+            // `prepareStep` 也会在首个请求前以 stepNumber=0 调用；只有已完成至少一步时，
+            // 当前消息才是可安全续跑的检查点，原始输入不能让半截首轮输出误标为 resume。
+            if (stepNumber > 0) {
+              // 浅拷贝避免引擎后续原地修改消息数组，破坏边界快照。
+              resumeMessages = [...value]
+              // 续跑会新建引擎，stepNumber 从 0 重新数，所以加上本次尝试的步数基数。
+              resumeSteps = stepsAtAttemptStart + stepNumber
+            }
             const forceFinal =
               FORCE_FINAL_TEXT_STEP &&
               hasTools &&
@@ -1636,7 +1638,9 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
           const steerAttachments = await attachmentParts(steerFiles, {
             resolveAttachment: opts.resolveAttachment,
             resolveFileUrl: opts.resolveFileUrl,
-            budget: inlineBudget
+            budget: inlineBudget,
+            // 插话会与完整历史一起进入下一次请求，历史已发过的同 URL 附件不再重复内联。
+            omitCounted: true
           })
           // 形状由 `attachmentParts` 统一产出（ImagePart / FilePart），这里只负责拼成一条消息
           const steerContent: unknown[] = [...steerAttachments.parts]

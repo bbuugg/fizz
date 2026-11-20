@@ -15,7 +15,6 @@ import type { AiModelConfig } from '@fizz/contracts/types'
 
 // ---------- 兼容网关的「思考内容」归一化 ----------
 
-const sseDecoder = new TextDecoder()
 const sseEncoder = new TextEncoder()
 
 /**
@@ -188,10 +187,11 @@ export function normalizeReasoningFetch(
     if (!res.body || !contentType.includes('text/event-stream')) return res
 
     let buffer = ''
+    const decoder = new TextDecoder()
     const stream = res.body.pipeThrough(
       new TransformStream<Uint8Array, Uint8Array>({
         transform(chunk, controller) {
-          buffer += sseDecoder.decode(chunk, { stream: true })
+          buffer += decoder.decode(chunk, { stream: true })
           const lines = buffer.split('\n')
           // 最后一段可能是被切断的半行，留在缓冲里等下一块
           buffer = lines.pop() ?? ''
@@ -199,6 +199,7 @@ export function normalizeReasoningFetch(
           controller.enqueue(sseEncoder.encode(lines.map(rewriteSseLine).join('\n') + '\n'))
         },
         flush(controller) {
+          buffer += decoder.decode()
           if (buffer) controller.enqueue(sseEncoder.encode(rewriteSseLine(buffer)))
         }
       })

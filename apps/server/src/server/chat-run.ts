@@ -98,6 +98,8 @@ export interface ChatRun {
 const runs = chatRuns.runs
 /** conversationId → requestId：abort 端点据此找「这个会话有没有在跑」 */
 const activeByConversation = chatRuns.activeByConversation
+/** startTurn 完成异步准备前的同步占位，避免并发 POST 都通过活跃检查。 */
+const startingByConversation = chatRuns.startingByConversation
 
 /** 帧日志超过这个数就把相邻 delta 合并（回放等价、内存有界） */
 const MAX_FRAMES = 4000
@@ -244,6 +246,18 @@ export function findActiveByConversation(conversationId: string): ChatRun | unde
   if (!requestId) return undefined
   const run = runs.get(requestId)
   return run && run.finishedAt === undefined ? run : undefined
+}
+
+/** 同步保留会话启动位；run 登记前的异步准备期间也只能有一个发起者。 */
+export function reserveConversationRunStart(conversationId: string): boolean {
+  if (startingByConversation.has(conversationId) || findActiveByConversation(conversationId)) return false
+  startingByConversation.add(conversationId)
+  return true
+}
+
+/** startTurn 返回或失败时释放启动位；成功 run 已由 activeByConversation 接管。 */
+export function releaseConversationRunStart(conversationId: string): void {
+  startingByConversation.delete(conversationId)
 }
 
 /**

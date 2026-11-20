@@ -34,7 +34,7 @@ import {
   compactionReserveTokens
 } from '@fizz/contracts/types'
 import { resolveModel } from './resolve-model'
-import { toModelMessages } from './model-messages'
+import { toModelMessageGroups, toModelMessages } from './model-messages'
 import type { AgentChatMessage, AiModelConfig } from '@fizz/contracts/types'
 import type { ModelMessage } from 'ai'
 
@@ -1109,9 +1109,9 @@ export async function compactHistory(
 
   const baseTokens = Math.max(0, opts.baseTokens ?? 0)
 
-  /** 逐条估算：历史是调用方传进来的全量，逐条转一次比整份转再猜要准 */
-  const tokens: number[] = []
-  for (const m of history) tokens.push(estimateMessagesTokens(await toModelMessages([m])))
+  /** 一次批量转换并保留源消息分组，避免长历史逐条反复规划附件。 */
+  const modelGroups = await toModelMessageGroups(history)
+  const tokens = modelGroups.map(estimateMessagesTokens)
 
   // ① 先找检查点，拼出「当前真正会发出去的上下文」—— 阈值判的是**它**，不是原始历史。
   //    反过来的话，压缩完之后原始历史仍然巨大，下一轮又判超阈值 → 每轮重压一次。

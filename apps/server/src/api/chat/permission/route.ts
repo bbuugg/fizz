@@ -10,10 +10,8 @@
  */
 import type { PermissionSetInput } from '@fizz/contracts/agent-api'
 import { getRun } from '@/lib/server/chat-run'
+import { isAiPermissionMode } from '@/lib/server/permission-mode'
 import { jsonError, parseJsonBody } from '@/app/api/_lib/auth'
-
-/** 内置三档（与 `AiPermissionMode` 一致）；越界值直接 400，不写进 run */
-const PERMISSION_MODES = new Set(['full', 'confirm', 'readonly'])
 
 export async function POST(request: Request) {
   const body = await parseJsonBody<PermissionSetInput>(request)
@@ -21,7 +19,7 @@ export async function POST(request: Request) {
   if (typeof body?.requestId !== 'string' || typeof body?.permissionMode !== 'string') {
     return jsonError(400, '缺少 requestId 或 permissionMode')
   }
-  if (!PERMISSION_MODES.has(body.permissionMode)) {
+  if (!isAiPermissionMode(body.permissionMode)) {
     return jsonError(400, 'permissionMode 非法')
   }
   const run = getRun(body.requestId)
