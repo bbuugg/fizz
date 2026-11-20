@@ -195,7 +195,7 @@ export function AgentConfigDialog({
           </div>
         </div>
         <DialogFooter className="shrink-0">
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+          <Button data-dialog-dismiss="" variant="ghost" onClick={() => onOpenChange(false)}>
             取消
           </Button>
           <Button

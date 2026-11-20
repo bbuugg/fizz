@@ -336,7 +336,7 @@ export function OpenApiImportModal({
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>
+          <Button data-dialog-dismiss="" variant="ghost" onClick={onClose}>
             取消
           </Button>
           <Button

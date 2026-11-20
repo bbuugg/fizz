@@ -119,7 +119,7 @@ export function DeleteConversationDialog({
         )}
 
         <DialogFooter className="pt-1">
-          <Button
+          <Button data-dialog-dismiss="" autoFocus
             size="sm"
             variant="ghost"
             disabled={busy}

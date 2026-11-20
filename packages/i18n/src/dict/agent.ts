@@ -251,6 +251,7 @@ export const AGENT: Record<string, string> = {
   ' 下方仍是已添加的模型，取消勾选即可移出。': ' Added models are still listed below; uncheck to remove them.',
   '也可以在下面手动填模型 id。': 'You can also enter a model id manually below.',
   '搜索模型…': 'Search models…',
+  '查看模型 ID': 'View model ID',
   '没有匹配「{keyword}」的模型。': 'No models match “{keyword}”.',
   '手动添加：填模型 id（必填），展示名留空则直接用 id。': 'Manual add: enter a model id (required); leave the display name empty to use the id.',
   '模型 id，如 anthropic/claude-sonnet-4': 'Model id, e.g. anthropic/claude-sonnet-4',

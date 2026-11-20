@@ -308,6 +308,17 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     /** 发送队列里的一条：本轮在跑 = 插话（到下一个边界生效）；没在跑 = 立刻开新一轮 */
     sendQueuedMessage: (id: string) =>
       s.sendQueuedMessage(id, conversationId),
+    /**
+     * 只入队、不立刻发（发送方式里的「放入队列」）。
+     * 与本轮在不在跑无关：空闲时也照入，等用户自己按启动 / 排好顺序再发。
+     */
+    enqueueMessage: (text: string, files?: UploadFileRef[]) =>
+      s.enqueueMessage(text, files, conversationId),
+    /** 队列自动发送是否被用户手动暂停（会话级，落 localStorage，刷新不丢） */
+    queuePaused: activeSlice?.queuePaused ?? false,
+    /** 暂停 / 恢复队列自动发送；恢复时空闲会立刻顶下一条 */
+    setQueuePaused: (paused: boolean) =>
+      s.setQueuePaused(paused, conversationId),
     /** 清空待发送队列（失败暂停后的一键清空） */
     clearQueuedMessages: () => s.clearQueuedMessages(conversationId),
     /** 会话分叉（从此签出）：fork 本标签的会话到某条消息（含）并切到新会话 */
@@ -317,8 +328,11 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     ) => s.forkConversation(upToMessageId, opts, conversationId),
     /** 队列链为什么停了：'failed' = 上轮失败已暂停（头部提示 + 一键继续/清空） */
     queuePausedReason: activeSlice?.queuePausedReason ?? null,
-    /** 队列泵：没在跑时把下一条顶上来（失败暂停后「继续发下一条」也走它） */
-    pump: () => s.pump(conversationId),
+    /**
+     * 队列泵：没在跑时把下一条顶上来（失败暂停后「继续发下一条」也走它）。
+     * `force` = 无视用户的手动暂停（「启动 / 立即发送」这类显式点击）。
+     */
+    pump: (opts?: { force?: boolean }) => s.pump(conversationId, opts),
     permissionMode: s.permissionMode,
     // 动作
     connect: s.connect,
@@ -956,32 +970,17 @@ export function useAgentAppView(conversationId: string | null): AgentApp {
 export function useAttachRemoteRun(conversationId: string | null): void {
   const activity = useConversationActivity(conversationId);
   const { running, requestId } = activity;
+  const locallyRunning = useAgentStore((s) =>
+    !!conversationId && !!s.runningConversations[conversationId],
+  );
   useEffect(() => {
-    if (!conversationId || !running) return;
-    // 运行态与通知读的是同一条事件流，绑定本身幂等（本 hook 可能比通知监听先挂上）
+    if (!conversationId) return;
     initConversationActivity();
     const store = useAgentStore.getState();
-    // 本地自己订着这条流（本轮由本端发起 / 已经接上了）：不重复接
     if (store.runningConversations[conversationId]) return;
-    const backend = store.conversations.find(
-      (c) => c.id === conversationId,
-    )?.backend;
-    void (async () => {
-      /**
-       * 先拉一次权威历史再接手：这一轮的 **user 消息不在帧日志里**（帧只有助手的 parts
-       * 与插话的 `user-injected`），只在服务端落盘的历史里 —— 不先拉，接手后会出现
-       * 「只有回答、没有提问」。
-       *
-       * acp 例外（与 `settleRound` 同一条约定）：服务端历史恒为空，拉一次会把本地
-       * 回放出来的现场擦掉，而回放那条路要求「本地为空 + 是当前会话」，后台标签拿不到。
-       * 它的正文只能靠重开会话时的 `session/load` 重建，这里只接流。
-       */
-      if (backend !== "acp") await store.loadMessages(conversationId);
-      // 拉这一趟里用户可能已经在这个会话里自己发了一轮：让位给本端那一轮，别抢
-      const now = useAgentStore.getState();
-      if (now.runningConversations[conversationId]) return;
-      await now.attachRun(conversationId);
-    })();
-    // requestId 进依赖：同一条会话连着跑两轮时，第二轮同样要接（running 一直是 true）
-  }, [conversationId, running, requestId]);
+    const existing = store.slices[conversationId];
+    if (!running && existing) return;
+    void store.loadConversation(conversationId, { resetScroll: !existing });
+    // 旧订阅收场后再看一次：下一轮 started 可能早于上一轮 SSE 关闭到达。
+  }, [conversationId, running, requestId, locallyRunning]);
 }

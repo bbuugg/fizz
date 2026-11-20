@@ -91,6 +91,7 @@ function makeStore() {
     queuedMessages: { id: string; text: string; files: [] }[]
     pendingSteers: { id: string }[]
     queuePausedReason: string | null
+    queuePaused: boolean
   }
   const writeSlice = slice.writeSlice as (
     id: string,
@@ -116,7 +117,14 @@ function makeStore() {
     runRound,
     readSlice,
     queueIn,
-    pump: slice.pump as (scope?: string | null) => void,
+    pump: slice.pump as (
+      scope?: string | null,
+      opts?: { force?: boolean }
+    ) => void,
+    setQueuePaused: slice.setQueuePaused as (
+      paused: boolean,
+      scope?: string | null
+    ) => void,
     sendQueuedMessage: slice.sendQueuedMessage as (
       id: string,
       scope?: string | null
@@ -181,6 +189,56 @@ describe('sendQueuedMessage：作用域', () => {
     expect(runRound.mock.calls[0][3]).toBe(OTHER)
     // A 的队列原封不动
     expect(readSlice(FOCUS).queuedMessages.map((m) => m.text)).toEqual(['A 的消息'])
+  })
+})
+
+describe('setQueuePaused：手动暂停掐住自动链', () => {
+  it('暂停后 pump 不再自动发，队列原样留着', () => {
+    const { readSlice, runRound, queueIn, pump, setQueuePaused } = makeStore()
+    queueIn(OTHER, ['第二条'])
+    setQueuePaused(true, OTHER)
+
+    // 本轮自然结束 → settleRound 会调 pump；暂停状态下必须停下
+    pump(OTHER)
+
+    expect(runRound).not.toHaveBeenCalled()
+    expect(readSlice(OTHER).queuedMessages.map((m) => m.text)).toEqual(['第二条'])
+    expect(readSlice(OTHER).queuePaused).toBe(true)
+  })
+
+  it('force 无视暂停（「立即发送 / 启动」是显式动作），但开关不被悄悄改掉', () => {
+    const { readSlice, runRound, queueIn, pump, setQueuePaused } = makeStore()
+    queueIn(FOCUS, ['A 队首'])
+    setQueuePaused(true, FOCUS)
+
+    pump(FOCUS, { force: true })
+
+    expect(runRound.mock.calls[0][0]).toBe('A 队首')
+    expect(readSlice(FOCUS).queuePaused).toBe(true)
+  })
+
+  it('恢复暂停时若空闲，立刻顶下一条（点「启动」就得动起来）', () => {
+    const { readSlice, runRound, queueIn, setQueuePaused } = makeStore()
+    queueIn(FOCUS, ['A 队首'])
+    setQueuePaused(true, FOCUS)
+    expect(runRound).not.toHaveBeenCalled()
+
+    setQueuePaused(false, FOCUS)
+
+    expect(runRound).toHaveBeenCalledTimes(1)
+    expect(runRound.mock.calls[0][0]).toBe('A 队首')
+    expect(readSlice(FOCUS).queuePaused).toBe(false)
+  })
+
+  it('暂停只掐自动链：本会话正在跑的那轮不受影响', () => {
+    const { state, runRound, queueIn, pump, setQueuePaused } = makeStore()
+    queueIn(FOCUS, ['第二条'])
+    state.runningConversations = { [FOCUS]: true }
+
+    setQueuePaused(true, FOCUS)
+    pump(FOCUS)
+
+    expect(runRound).not.toHaveBeenCalled()
   })
 })
 

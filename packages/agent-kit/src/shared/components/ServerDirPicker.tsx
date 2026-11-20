@@ -332,7 +332,7 @@ export function ServerDirPicker({
           >
             {data?.path}
           </span>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+          <Button data-dialog-dismiss="" variant="ghost" onClick={() => onOpenChange(false)}>
             {tr('取消')}
           </Button>
           <Button

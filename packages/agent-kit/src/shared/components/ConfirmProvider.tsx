@@ -35,6 +35,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode
@@ -80,8 +81,8 @@ export interface ChooseOptions<T extends string> {
   title: string
   description?: ReactNode
   /**
-   * 按**从左到右**的顺序给（与 `AlertDialogFooter` 的排布一致：数组最后一颗靠右，
-   * 也就是主操作的位置）。
+   * 非取消操作按从左到右的顺序给。`cancelValue` 对应的按钮由共享 Footer 固定放最后，
+   * 横排靠右、竖排靠下，不要求调用方猜测断点布局。
    */
   actions: ChooseAction<T>[]
   /** Esc / 点遮罩 / 关掉弹窗时的答复（应当落在 `actions` 的某个 `value` 上） */
@@ -143,6 +144,11 @@ export function useConfirm(): ConfirmFn {
 
 export function ConfirmProvider({ children }: { children: ReactNode }) {
   const [current, setCurrent] = useState<PendingChoice | null>(null)
+  const cancelButtonRef = useRef<HTMLButtonElement | null>(null)
+  useLayoutEffect(() => {
+    // 移动 DOM 顺序后也不能让危险确认成为默认焦点；队列切到下一项时同样回到取消。
+    if (current) cancelButtonRef.current?.focus()
+  }, [current])
   /** 待显示队列（`current` 恒等于队首） */
   const queueRef = useRef<PendingChoice[]>([])
   /** 退场动画期间仍要渲染内容 —— 保留最后一份 options */
@@ -187,7 +193,12 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
           if (!next && current) close(current, current.options.cancelValue)
         }}
       >
-        <AlertDialogContent>
+        <AlertDialogContent onOpenAutoFocus={(event) => {
+          if (cancelButtonRef.current) {
+            event.preventDefault()
+            cancelButtonRef.current.focus()
+          }
+        }}>
           <AlertDialogHeader>
             <AlertDialogTitle>{options?.title ?? ''}</AlertDialogTitle>
             {options?.description !== undefined && (
@@ -198,7 +209,14 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
             {(options?.actions ?? []).map((action) => (
               <Button
                 key={action.value}
+                ref={action.value === options?.cancelValue ? cancelButtonRef : undefined}
                 variant={action.variant ?? 'outline'}
+                // 「取消」那颗在手机版的底部抽屉里要升回 outline（ghost 贴底几乎看不出是
+                // 按钮）：手机壳按这个属性做替换，见 `apps/mobile/src/app/mobile-sheet.tsx`
+                // 的 `restoreDismissVariants`。共享 Footer 也用它把取消固定排到最后。
+                {...(action.value === options?.cancelValue
+                  ? { 'data-dialog-dismiss': '' }
+                  : {})}
                 onClick={() => {
                   if (current) close(current, action.value)
                 }}

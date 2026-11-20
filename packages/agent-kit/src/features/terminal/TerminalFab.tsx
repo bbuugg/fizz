@@ -420,6 +420,8 @@ export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
             actions.map((action, index) => {
               const spot = ring[index]
               if (!spot) return null
+              // 只做缩放，不做淡入：整颗按钮从 opacity 0 起步时，玻璃底在头几帧是
+              // 透明的，看起来像「先透明、再突然变成液态玻璃」。
               return (
                 <IconTip key={action.key} label={action.label}>
                   <LiquidGlassButton
@@ -437,7 +439,7 @@ export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
                     }}
                     style={{ left: spot.x, top: spot.y, width: ITEM, height: ITEM }}
                     selected={action.active}
-                    className="pointer-events-auto absolute animate-in fade-in-0 zoom-in-90 duration-150"
+                    className="pointer-events-auto absolute animate-in zoom-in-90 duration-150"
                   >
                     <span className="grid size-4 place-items-center">{action.icon}</span>
                   </LiquidGlassButton>

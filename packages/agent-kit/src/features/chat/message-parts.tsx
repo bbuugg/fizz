@@ -821,7 +821,7 @@ export function MessageActionRow({
                 <DialogDescription>{tr('删除后无法恢复。')}</DialogDescription>
               </DialogHeader>
               <DialogFooter>
-                <Button variant="ghost" onClick={() => setConfirming(false)}>
+                <Button data-dialog-dismiss="" autoFocus variant="ghost" onClick={() => setConfirming(false)}>
                   {tr('取消')}
                 </Button>
                 <Button

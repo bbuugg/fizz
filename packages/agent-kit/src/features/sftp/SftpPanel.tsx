@@ -865,7 +865,7 @@ export function SftpPanel({ host }: { host: SshHostConfig }): React.JSX.Element 
             }}
           />
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setMkdirOpen(false)}>
+            <Button data-dialog-dismiss="" variant="ghost" onClick={() => setMkdirOpen(false)}>
               取消
             </Button>
             <Button disabled={!mkdirName.trim()} onClick={() => void submitMkdir()}>
@@ -902,7 +902,7 @@ export function SftpPanel({ host }: { host: SshHostConfig }): React.JSX.Element 
             （同名文件会被覆盖）
           </p>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setTargetOp(null)}>
+            <Button data-dialog-dismiss="" variant="ghost" onClick={() => setTargetOp(null)}>
               取消
             </Button>
             <Button disabled={!targetDir.trim()} onClick={() => void submitTargetOp()}>
@@ -927,7 +927,7 @@ export function SftpPanel({ host }: { host: SshHostConfig }): React.JSX.Element 
             }}
           />
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setRenaming(null)}>
+            <Button data-dialog-dismiss="" variant="ghost" onClick={() => setRenaming(null)}>
               取消
             </Button>
             <Button disabled={!renameText.trim()} onClick={() => void submitRename()}>
@@ -949,7 +949,7 @@ export function SftpPanel({ host }: { host: SshHostConfig }): React.JSX.Element 
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setPendingRemove(null)}>
+            <Button data-dialog-dismiss="" autoFocus variant="ghost" onClick={() => setPendingRemove(null)}>
               取消
             </Button>
             <Button variant="destructive" onClick={() => void confirmRemove()}>

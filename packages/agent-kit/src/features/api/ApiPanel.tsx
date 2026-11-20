@@ -873,7 +873,7 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
             />
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setGroupEdit(null)}>
+            <Button data-dialog-dismiss="" variant="ghost" onClick={() => setGroupEdit(null)}>
               取消
             </Button>
             <Button disabled={!groupEdit?.name.trim()} onClick={() => void submitGroupEdit()}>
@@ -925,7 +925,7 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setMetaTarget(null)}>
+            <Button data-dialog-dismiss="" variant="ghost" onClick={() => setMetaTarget(null)}>
               取消
             </Button>
             <Button onClick={() => void submitRequestMeta()}>确定</Button>
@@ -959,7 +959,7 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
             </SelectContent>
           </Select>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setMoveTarget(null)}>
+            <Button data-dialog-dismiss="" variant="ghost" onClick={() => setMoveTarget(null)}>
               取消
             </Button>
             <Button onClick={() => void confirmMoveGroup()}>移动</Button>
@@ -1001,7 +1001,7 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
               : '不勾选时，请求会随子孙分组一起上移一级（删除顶级分组则回到「未分组」）。'}
           </p>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setPendingGroupDelete(null)}>
+            <Button data-dialog-dismiss="" autoFocus variant="ghost" onClick={() => setPendingGroupDelete(null)}>
               取消
             </Button>
             <Button variant="destructive" onClick={() => void confirmGroupDelete()}>
@@ -1046,7 +1046,7 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
             className="h-48 w-full resize-none rounded-md border border-input bg-transparent p-2 font-mono text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
           <DialogFooter>
-            <Button
+            <Button data-dialog-dismiss=""
               variant="ghost"
               onClick={() => {
                 setCurlOpen(false)

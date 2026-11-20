@@ -124,11 +124,16 @@ export default defineConfig(({ mode }) => {
   const hosted = mode === 'hosted'
 
   /*
-   * 手机壳把 `@fizz/ui/dialog` 这个入口换成**底部抽屉版**（`src/app/mobile-dialog.tsx`）。
+   * 手机壳把 `@fizz/ui/dialog` 与 `@fizz/ui/alert-dialog` 两个入口换成**底部抽屉版**
+   * （`src/app/mobile-dialog.tsx` / `src/app/mobile-alert-dialog.tsx`，抽屉布局共用
+   * `src/app/mobile-sheet.tsx`）。
    *
-   * 手机版能弹到的 Dialog 全在共享包里（新建会话 / 插件 / 工作区设置 / 导入导出 …），
+   * 手机版能弹到的弹窗全在共享包里（新建会话 / 插件 / 工作区设置 / 导入导出 / 命令式确认 …），
    * 在那些组件里逐个加「手机走抽屉」的分支会同时改到 web / desktop。这里只在手机壳
    * 的构建期换掉入口：导出名与 Radix 版一一对应，共享组件一行不改。
+   *
+   * 两个入口都要换：只换 Dialog 时，`useConfirm()` 弹出的确认框（「重试这条消息」这类）
+   * 仍是居中卡片，与其它弹窗形态对不上（用户报过）。
    *
    * ⚠️ 必须 `delete` 之后再赋值：对象给**已有键**重新赋值不会改变它的位置，而
    * `@rollup/plugin-alias` 按表顺序取第一个命中项 —— moduleAliases 生成的旧键留在
@@ -136,12 +141,17 @@ export default defineConfig(({ mode }) => {
    * `@fizz/ui` 本体那条键排在 `...uiAliases` 之后，所以重新插入的
    * `@fizz/ui/dialog` 仍然先被匹配到。
    *
-   * 只换 Dialog：AlertDialog（确认 / 危险操作）保持居中；`packages/ui` 内部的
-   * `CommandDialog` 走相对路径 `./dialog`，不经过别名，命令面板仍是居中弹窗。
+   * `packages/ui` 内部的 `CommandDialog` 走相对路径 `./dialog`，不经过别名，
+   * 命令面板仍是居中弹窗。
    */
   const uiAliases = moduleAliases('../../packages/ui/src', '@fizz/ui')
   delete uiAliases['@fizz/ui/dialog']
   uiAliases['@fizz/ui/dialog'] = resolve(import.meta.dirname, 'src/app/mobile-dialog.tsx')
+  delete uiAliases['@fizz/ui/alert-dialog']
+  uiAliases['@fizz/ui/alert-dialog'] = resolve(
+    import.meta.dirname,
+    'src/app/mobile-alert-dialog.tsx'
+  )
 
   return {
     // 固定 root：否则从仓库根执行构建时，vite 会把仓库根当成站点根、找不到这个 index.html

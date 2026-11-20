@@ -231,12 +231,46 @@ export function lsRemove(key: string): void {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(key);
 }
+
+/**
+ * 队列自动发送的暂停开关（会话级）。
+ *
+ * 与队列同一条理由必须落盘：用户按下暂停后刷新页面 / 重启应用，如果开关跟着内存
+ * 一起丢，下一次一轮收场就会把攒着的需求静默发出去 —— 那正是他暂停要防的事。
+ * 只存 `true`（未暂停 = 没有这个 key），省得每个会话都留一条 false。
+ */
+const QUEUE_PAUSED_KEY_PREFIX = "fizz.web.queue-paused.";
+export function loadQueuePaused(conversationId: string): boolean {
+  try {
+    return lsGet(QUEUE_PAUSED_KEY_PREFIX + conversationId) === "1";
+  } catch {
+    return false;
+  }
+}
+export function saveQueuePaused(
+  conversationId: string | null,
+  paused: boolean,
+): void {
+  if (!conversationId) return;
+  try {
+    if (paused) lsSet(QUEUE_PAUSED_KEY_PREFIX + conversationId, "1");
+    else lsRemove(QUEUE_PAUSED_KEY_PREFIX + conversationId);
+  } catch {
+    // localStorage 不可用：暂停退回内存态（slice 里那份仍然生效），不阻塞发送
+  }
+}
+
 /** 清掉所有按会话隔离的待发送队列（登出 / 401 失效时别残留到下次登录） */
 export function clearAllQueues(): void {
   try {
     if (typeof window === "undefined") return;
     for (const key of Object.keys(window.localStorage)) {
-      if (key.startsWith(QUEUE_KEY_PREFIX)) window.localStorage.removeItem(key);
+      if (
+        key.startsWith(QUEUE_KEY_PREFIX) ||
+        key.startsWith(QUEUE_PAUSED_KEY_PREFIX)
+      ) {
+        window.localStorage.removeItem(key);
+      }
     }
   } catch {
     // localStorage 不可用：队列本来就只是内存态，跳过

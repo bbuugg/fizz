@@ -218,7 +218,7 @@ export function ScriptEditDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" onClick={() => void requestClose()}>
+          <Button data-dialog-dismiss="" variant="ghost" onClick={() => void requestClose()}>
             取消
           </Button>
           <Button disabled={!name.trim() || saving} onClick={() => void save()}>

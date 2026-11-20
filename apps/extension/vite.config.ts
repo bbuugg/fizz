@@ -105,9 +105,9 @@ export default defineConfig({
       '@fizz/agent-kit/shell': resolve(REPO_ROOT, 'packages/agent-kit/src/shell'),
       '@fizz/agent-kit': resolve(REPO_ROOT, 'packages/agent-kit/src/index.ts'),
 
-      // 无业务原语（逐条展开）。`@fizz/ui/dialog` 换成手机版的**底部抽屉**，
-      // 与手机版逐字一致（见 `apps/mobile/vite.config.ts` 里那段长注释）
-      ...withMobileDialog(moduleAliases('../../packages/ui/src', '@fizz/ui')),
+      // 无业务原语（逐条展开）。`@fizz/ui/dialog` / `@fizz/ui/alert-dialog` 换成手机版的
+      // **底部抽屉**，与手机版逐字一致（见 `apps/mobile/vite.config.ts` 里那段长注释）
+      ...withMobileModals(moduleAliases('../../packages/ui/src', '@fizz/ui')),
       '@fizz/ui': resolve(REPO_ROOT, 'packages/ui/src/index.ts'),
 
       // 客户端能力层（API + 宿主契约 + 浏览器兜底）
@@ -149,13 +149,18 @@ export default defineConfig({
 })
 
 /**
- * 把 `@fizz/ui/dialog` 换成手机版的抽屉实现。
+ * 把 `@fizz/ui/dialog` / `@fizz/ui/alert-dialog` 换成手机版的抽屉实现。
+ *
+ * 两个入口都要换：只换 Dialog 时确认框（`useConfirm` 的「重试这条消息」这类）还是居中卡片，
+ * 与其它弹窗形态对不上（见 `apps/mobile/vite.config.ts` 里那段长注释）。
  *
  * ⚠️ 必须 `delete` 之后再赋值：对象给**已有键**重新赋值不会改变它的位置，而 alias 按表
  * 顺序命中 —— 旧键留在前面的话新路径永远不生效（构建不报错，只是抽屉没出现）。
  */
-function withMobileDialog(aliases: Record<string, string>): Record<string, string> {
+function withMobileModals(aliases: Record<string, string>): Record<string, string> {
   delete aliases['@fizz/ui/dialog']
   aliases['@fizz/ui/dialog'] = resolve(MOBILE_ROOT, 'src/app/mobile-dialog.tsx')
+  delete aliases['@fizz/ui/alert-dialog']
+  aliases['@fizz/ui/alert-dialog'] = resolve(MOBILE_ROOT, 'src/app/mobile-alert-dialog.tsx')
   return aliases
 }

@@ -304,7 +304,7 @@ export function ContainerSettingsDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" disabled={busy !== null} onClick={() => onOpenChange(false)}>
+          <Button data-dialog-dismiss="" variant="ghost" disabled={busy !== null} onClick={() => onOpenChange(false)}>
             取消
           </Button>
           <Button variant="secondary" disabled={!!invalid || busy !== null} onClick={() => save(false)}>

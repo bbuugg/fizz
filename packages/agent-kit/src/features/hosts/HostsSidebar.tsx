@@ -767,7 +767,7 @@ export function HostsSidebar({
             )}
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setGroupEdit(null)}>
+            <Button data-dialog-dismiss="" variant="ghost" onClick={() => setGroupEdit(null)}>
               {t('取消')}
             </Button>
             <Button disabled={!groupEdit?.name.trim()} onClick={() => void submitGroupEdit()}>
@@ -809,7 +809,7 @@ export function HostsSidebar({
             </label>
           )}
           <DialogFooter>
-            <Button
+            <Button data-dialog-dismiss="" autoFocus
               variant="ghost"
               onClick={() => {
                 setPendingGroupDelete(null)
@@ -850,7 +850,7 @@ export function HostsSidebar({
             </SelectContent>
           </Select>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setMoveTarget(null)}>
+            <Button data-dialog-dismiss="" variant="ghost" onClick={() => setMoveTarget(null)}>
               {t('取消')}
             </Button>
             <Button onClick={() => void confirmMoveGroup()}>{t('移动')}</Button>

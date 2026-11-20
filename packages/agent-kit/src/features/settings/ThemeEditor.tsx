@@ -339,7 +339,7 @@ export function ThemeEditor({
             {tab === 'background' ? tr('清除背景') : tr('恢复默认')}
           </Button>
           {error && <p className="mr-auto text-xs text-destructive">{error}</p>}
-          <Button variant="ghost" size="sm" onClick={onClose}>
+          <Button data-dialog-dismiss="" variant="ghost" size="sm" onClick={onClose}>
             {tr('取消')}
           </Button>
           <Button size="sm" onClick={handleSave}>

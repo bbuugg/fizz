@@ -559,7 +559,7 @@ export function HostDialog({
         </div>
 
         <DialogFooter className="shrink-0">
-          <Button type="button" size="sm" variant="ghost" onClick={() => onOpenChange(false)}>
+          <Button data-dialog-dismiss="" type="button" size="sm" variant="ghost" onClick={() => onOpenChange(false)}>
             {t('取消')}
           </Button>
           <Button type="button" size="sm" disabled={!canSave} onClick={() => void save()}>

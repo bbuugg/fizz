@@ -347,3 +347,227 @@ describe('attachRun · 本端 live 流还活着时不重复接', () => {
     expect(api.attachRun).not.toHaveBeenCalled()
   })
 })
+
+/**
+ * 「重新加载会话」撞上正在直播的一轮（回归测试）。
+ *
+ * ## 防的是什么
+ *
+ * 跑到一半刷新页面，偶尔看到「本轮输出先单独出现在最顶部（还没有历史），随后历史
+ * 消息一出现，这段输出就没了」。宿主的自动补拉（`MessageList` 那条「一条消息都没有
+ * 就静默 reload 一次」）会在刷新恢复的窗口里触发 `reloadAcpSession`：
+ *
+ * 1. `useAttachRemoteRun` 先接上这一轮，占位消息上已经回放出正文（= 最顶部那段输出）；
+ * 2. `reloadAcpSession` 拿到的快照是**进程内快照再把本轮助手消息摘掉**（见 transcript
+ *    路由），它在没跑的那条路上是「整份换掉」—— 于是直接把直播那条连 id 一起盖没；
+ * 3. 紧接着那次 `attachRun(resume)` 看到本端 live 流还活着，直接放行（不会再建占位）：
+ *    没人把助手消息加回来，之后每一帧都因 `liveIndex < 0` 被静默丢弃 —— 正文永久消失。
+ *
+ * 这里钉住：跑动中的重载必须**合并**快照（历史在前、本地直播消息接在后面），
+ * 正在写的那条助手消息连 parts 一起原样留着。
+ */
+describe('reloadAcpSession · 跑动中重载不能抹掉正在直播的助手消息', () => {
+  it('快照与本地现场合并，直播消息（含已回放正文）保留', async () => {
+    const currentUser: AgentChatMessage = {
+      id: 'u-1',
+      role: 'user',
+      parts: [{ type: 'text', text: '这一轮的提问' }],
+      createdAt: 3
+    }
+    const liveAssistant: AgentChatMessage = {
+      id: 'a-live',
+      role: 'assistant',
+      parts: [{ type: 'text', text: '已经回放出来的正文' }],
+      createdAt: 4
+    }
+    const api = {
+      getConversation: vi.fn(async (id: string) => ({
+        id,
+        backend: 'acp' as const,
+        configId: 'cfg-1',
+        acpSessionId: 'sess-1',
+        workspaceId: 'ws-1',
+        title: 'acp 会话',
+        createdAt: 1,
+        updatedAt: 1,
+        messages: [] as AgentChatMessage[]
+      })),
+      activeRun: vi.fn(async () => ({
+        run: { requestId: 'r-1', assistantMessageId: 'a-live' }
+      })),
+      // 跑动中服务端只给快照，且把本轮助手消息摘掉了（见 transcript 路由）
+      getAcpTranscript: vi.fn(async () => ({ messages: [currentUser] })),
+      attachRun: vi.fn(async () => undefined)
+    }
+    const { state, read } = makeStore(api)
+    const slices = state.slices as Record<string, ConvSlice>
+    slices[CONVERSATION_ID] = {
+      ...emptySlice(),
+      messages: [liveAssistant],
+      streaming: true,
+      request: {
+        id: 'r-1',
+        controller: new AbortController(),
+        assistantId: 'a-live'
+      },
+      loadGen: 1
+    }
+
+    const reload = state.reloadAcpSession as (id: string) => Promise<boolean>
+    const ok = await reload(CONVERSATION_ID)
+
+    expect(ok).toBe(true)
+    // 历史在前、本地直播消息在后；live 那条的正文一个 part 都不能少
+    expect(read(CONVERSATION_ID).messages.map((m) => m.id)).toEqual([
+      'u-1',
+      'a-live'
+    ])
+    expect(
+      read(CONVERSATION_ID).messages.find((m) => m.id === 'a-live')?.parts
+    ).toEqual(liveAssistant.parts)
+    // 本端这条 live 流还活着：不许再挂第二条
+    expect(api.attachRun).not.toHaveBeenCalled()
+    expect(read(CONVERSATION_ID).streaming).toBe(true)
+  })
+})
+
+/**
+ * 刷新撞上运行中的 ACP 会话（回归测试 · 第二轮）。
+ *
+ * ## 防的是什么
+ *
+ * 「历史消息未加载：刷新后只有输出，没有历史消息」。
+ *
+ * 1. `useAttachRemoteRun` 先接上这一轮：占位 + 回放正文，并把 `runningConversations`
+ *    置位（它只接流、不拉历史 —— ACP 那条路刻意跳过 `loadMessages`）；
+ * 2. `loadConversation` 的 `peekActiveRun` 这时才回来：以前看见 `runningConversations`
+ *    有这条会话就当成「本端自己正在跑」整段跳过（连快照都不拉）；
+ * 3. 于是没有任何一处把历史写进切片 —— 界面只剩本轮那条输出，再刷新一次才回来
+ *    （那次走的是 idle 回放）。
+ *
+ * 这里钉住：本端已订着流时**仍然**补拉快照并合并历史，只是不再 attach。
+ */
+describe('loadConversation · 先 attach 也要补历史', () => {
+  it('runningConversations 已有这条会话时仍拉快照合并，且不再 attach', async () => {
+    const gate = deferred<{ run: { requestId: string; assistantMessageId: string } }>()
+    const snapshot: AgentChatMessage[] = [
+      { id: 'u-old', role: 'user', parts: [{ type: 'text', text: '更早的问题' }], createdAt: 1 },
+      { id: 'a-old', role: 'assistant', parts: [{ type: 'text', text: '更早的回复' }], createdAt: 2 },
+      { id: 'u-now', role: 'user', parts: [{ type: 'text', text: '这一轮的提问' }], createdAt: 3 }
+    ]
+    const api = {
+      getConversation: vi.fn(async (id: string) => ({
+        id,
+        backend: 'acp' as const,
+        configId: 'cfg-1',
+        acpSessionId: 'sess-1',
+        workspaceId: 'ws-1',
+        title: 'acp 会话',
+        createdAt: 1,
+        updatedAt: 1,
+        messages: [] as AgentChatMessage[]
+      })),
+      activeRun: vi.fn(async () => gate.promise),
+      getAcpTranscript: vi.fn(async () => ({ messages: snapshot })),
+      attachRun: vi.fn(async () => undefined)
+    }
+    const { state, read, loadConversation } = makeStore(api)
+    const done = loadConversation(CONVERSATION_ID)
+    // loadMessages 已经收尾、正在等 peekActiveRun —— 这时远程流先接上了
+    await vi.waitFor(() => expect(api.activeRun).toHaveBeenCalledTimes(1))
+    const slices = state.slices as Record<string, ConvSlice>
+    slices[CONVERSATION_ID] = {
+      ...emptySlice(),
+      messages: [
+        {
+          id: 'a-live',
+          role: 'assistant',
+          parts: [{ type: 'text', text: '直播出来的正文' }],
+          createdAt: 4
+        }
+      ],
+      streaming: true,
+      request: { id: 'r-1', controller: new AbortController(), assistantId: 'a-live' },
+      loadGen: 1
+    }
+    state.runningConversations = { [CONVERSATION_ID]: true }
+
+    gate.resolve({ run: { requestId: 'r-1', assistantMessageId: 'a-live' } })
+    await done
+
+    // 历史在前、直播那条接在后面（正文一个 part 都不能少）
+    expect(read(CONVERSATION_ID).messages.map((m) => m.id)).toEqual([
+      'u-old',
+      'a-old',
+      'u-now',
+      'a-live'
+    ])
+    // 本端已经有一条流：不许再挂第二条
+    expect(api.attachRun).not.toHaveBeenCalled()
+    expect(read(CONVERSATION_ID).streaming).toBe(true)
+  })
+})
+
+/**
+ * 同一场景的另一半：刷新恢复的窗口里这一轮**已经收尾**。
+ *
+ * `peekActiveRun` 回来时 run 已结束 → 走 idle 的 `session/load` 回放。以前那条
+ * 「本地消息必须为空才写」的判据把回放整份丢掉（本地有 attach 接出来的占位），
+ * 界面同样是「只有输出、没有历史」。
+ *
+ * 回放是权威全量，整份换掉才对；本地存在 user 消息（用户刚发出了新一轮）才让位。
+ */
+describe('loadConversation · 收尾恰好发生在装载途中', () => {
+  it('idle 回放整份替换掉 attach 残留的占位，历史不再丢', async () => {
+    const gate = deferred<{ run: null }>()
+    const full: AgentChatMessage[] = [
+      { id: 'u-old', role: 'user', parts: [{ type: 'text', text: '更早的问题' }], createdAt: 1 },
+      { id: 'a-old', role: 'assistant', parts: [{ type: 'text', text: '更早的回复' }], createdAt: 2 },
+      { id: 'u-now', role: 'user', parts: [{ type: 'text', text: '这一轮的提问' }], createdAt: 3 },
+      { id: 'a-final', role: 'assistant', parts: [{ type: 'text', text: '这一轮的回复' }], createdAt: 4 }
+    ]
+    const api = {
+      getConversation: vi.fn(async (id: string) => ({
+        id,
+        backend: 'acp' as const,
+        configId: 'cfg-1',
+        acpSessionId: 'sess-1',
+        workspaceId: 'ws-1',
+        title: 'acp 会话',
+        createdAt: 1,
+        updatedAt: 1,
+        messages: [] as AgentChatMessage[]
+      })),
+      activeRun: vi.fn(async () => gate.promise),
+      getAcpTranscript: vi.fn(async () => ({ messages: full })),
+      attachRun: vi.fn(async () => undefined)
+    }
+    const { state, read, loadConversation } = makeStore(api)
+    const done = loadConversation(CONVERSATION_ID)
+    await vi.waitFor(() => expect(api.activeRun).toHaveBeenCalledTimes(1))
+    const slices = state.slices as Record<string, ConvSlice>
+    slices[CONVERSATION_ID] = {
+      ...emptySlice(),
+      messages: [
+        {
+          id: 'a-live',
+          role: 'assistant',
+          parts: [{ type: 'text', text: '直播出来的正文' }],
+          createdAt: 5
+        }
+      ],
+      loadGen: 1
+    }
+
+    gate.resolve({ run: null })
+    await done
+
+    // 回放是全量：占位（同一条回复的临时 id）被换掉，不重复
+    expect(read(CONVERSATION_ID).messages.map((m) => m.id)).toEqual([
+      'u-old',
+      'a-old',
+      'u-now',
+      'a-final'
+    ])
+  })
+})

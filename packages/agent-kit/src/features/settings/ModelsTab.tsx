@@ -696,7 +696,7 @@ export function ModelsTab({ app }: { app: AgentApp }) {
             </p>
 
             <DialogFooter className="pt-1">
-              <Button type="button" size="sm" variant="ghost" onClick={closeDialog}>
+              <Button data-dialog-dismiss="" type="button" size="sm" variant="ghost" onClick={closeDialog}>
                 {tr('取消')}
               </Button>
               <Button type="submit" size="sm" disabled={busy}>
@@ -907,7 +907,7 @@ export function ModelsTab({ app }: { app: AgentApp }) {
             {modelError && <p className="shrink-0 text-xs text-destructive">{modelError}</p>}
 
             <DialogFooter className="shrink-0 pt-1">
-              <Button type="button" size="sm" variant="ghost" onClick={closeModelDialog}>
+              <Button data-dialog-dismiss="" type="button" size="sm" variant="ghost" onClick={closeModelDialog}>
                 {tr('取消')}
               </Button>
               <Button type="submit" size="sm" disabled={modelBusy || windowInvalid || outputInvalid}>
@@ -1079,7 +1079,7 @@ export function ModelsTab({ app }: { app: AgentApp }) {
           )}
 
           <DialogFooter className="shrink-0 pt-1">
-            <Button type="button" size="sm" variant="ghost" onClick={closePicker}>
+            <Button data-dialog-dismiss="" type="button" size="sm" variant="ghost" onClick={closePicker}>
               {tr('取消')}
             </Button>
             <Button

@@ -154,6 +154,14 @@ export interface ConvSlice {
    * 成功开轮、手动发队列、清空队列时复位为 null。null = 没有暂停。
    */
   queuePausedReason: "failed" | null;
+  /**
+   * 队列自动发送的**用户开关**（与「因失败暂停」的 `queuePausedReason` 不是一回事）：
+   * true = 一轮自然结束后不再自动顶下一条，队列停在原地等用户点启动。
+   *
+   * 落 localStorage（`saveQueuePaused`）：刷新页面不该把用户亲手按下的暂停弄丢，
+   * 否则下一次收场就把攒着的需求全发出去。
+   */
+  queuePaused: boolean;
   /** 历史装载中（打开会话后拉存档 / acp 回放的窗口）：消息区此时显示装载中而不是旧列表 */
   loading: boolean;
   /**
@@ -467,7 +475,7 @@ export interface ConversationSlice {
   attachRun: (conversationId: string) => Promise<boolean>;
   /**
    * 重接一条进行中的对话：用户点消息区「连接中断」条上的按钮、或页面从后台回来时调。
-   * 内部就是 attachRun —— 查服务端有没有在跑的 run、复用现有占位消息、断线自动重接。
+   * 共用恢复流程补齐历史，复用现有占位与订阅；不会因重连重复追加帧。
    */
   reconnectRun: (conversationId: string) => Promise<boolean>;
   /**
@@ -475,7 +483,11 @@ export interface ConversationSlice {
    * 那条网络错误（页面回前台 / 网络恢复时调）。返回 true = 换回来了。
    */
   reconcileDroppedRun: (conversationId: string) => Promise<boolean>;
-  loadConversation: (conversationId: string) => Promise<void>;
+  /** 历史就绪后返回；直播独立继续，不等整轮结束。相同会话的并发恢复共享一次请求。 */
+  loadConversation: (
+    conversationId: string,
+    opts?: { resetScroll?: boolean },
+  ) => Promise<boolean>;
   /**
    * 把「当前会话」切到这条（顺带补装载 / 后台刷历史 / 泵队列）。
    *
@@ -489,8 +501,8 @@ export interface ConversationSlice {
   ) => void;
   retryLoadMessages: () => void;
   /**
-   * 重新加载一条 ACP 会话：**当场**再走一次 `session/load`，用 agent 侧回放**整体重建**
-   * 本地消息列表。
+   * 重新加载一条 ACP 会话：空闲时用 `session/load` 整体重建消息；
+   * 运行中只读历史快照并接回当前轮，不重启 agent 进程。
    *
    * 与「重启会话」（`restartAcpSession`）的分工：重启会立刻 `session/load` 重连，但视图
    * 一动不动（用途是让 agent 侧启动期读的配置生效）；本项是**把视图拉回来对齐** ——
@@ -508,8 +520,7 @@ export interface ConversationSlice {
    * 两个入口都用它：消息里那条「⚠️ …」错误块下面的「重新加载」按钮，以及主区域标签
    * 右键菜单的「刷新」（对话标签走这条路，工具标签才走 `tab-reload` 的卸载重挂）。
    *
-   * 内置 走服务端权威历史覆盖、ACP 走 `session/load` 回放（与刷新页面后打开同源）；
-   * **正在生成时直接返回 `false`**（不做事），避免把流式现场盖掉。
+   * 与刷新、远端接手共用恢复流程；运行中合并历史并复用现有订阅，不清空直播。
    * 成功 `true`；失败 `false`（原因进 `error`，界面自己显示）。
    */
   reloadConversation: (conversationId: string) => Promise<boolean>;
@@ -635,8 +646,16 @@ export interface ConversationSlice {
   /**
    * 队列泵：把**`scope` 那条会话**（不传 = 活跃会话）队列里的下一条顶上来开跑。
    * 分屏时非焦点标签上的「继续发送」必须带上它。
+   *
+   * `opts.force` = 无视用户的手动暂停（队列头部的「启动 / 立即发送」）。
+   * 失败暂停（`queuePausedReason`）不靠它解除 —— 现存逻辑本来就是「泵一次即复位」。
    */
-  pump: (scope?: string | null) => void;
+  pump: (scope?: string | null, opts?: { force?: boolean }) => void;
+  /**
+   * 暂停 / 恢复队列自动发送（会话级，落 localStorage）。
+   * 恢复时若本会话空闲且有存量，立刻顶下一条（点「启动」就得动起来）。
+   */
+  setQueuePaused: (paused: boolean, scope?: string | null) => void;
   /**
    * 真正发起一轮（`true` = 确实开跑了；`false` = 没连上 / 没选模型 / 建会话失败被拦下）。
    * `onStarted` 见 `send` 的说明 —— 由它一路透传进来。

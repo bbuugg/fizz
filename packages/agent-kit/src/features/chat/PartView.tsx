@@ -542,13 +542,16 @@ function renderAcpDirect(part: AgentMessagePart): DirectResult | null {
     if (item?.type === 'diff' && (item.newText !== undefined || item.oldText !== undefined)) {
       // 文件修改：直接给前后对比（与内置 edit 的直显同一套视图）
       nodes.push(
-        <FileDiffView
-          key={`diff-${i}`}
-          path={item.path ?? ''}
-          hunks={[
-            { header: `@@ ${item.path ?? 'diff'} @@`, lines: diffLines(item.oldText ?? '', item.newText ?? '') }
-          ]}
-        />
+        // 与内置 fileDiff 同一套视口约束：长 diff 不把消息撑高，滚动条隐藏
+        <div key={`diff-${i}`} className="max-h-72 overflow-y-auto no-scrollbar">
+          <FileDiffView
+            hideScrollbar
+            path={item.path ?? ''}
+            hunks={[
+              { header: `@@ ${item.path ?? 'diff'} @@`, lines: diffLines(item.oldText ?? '', item.newText ?? '') }
+            ]}
+          />
+        </div>
       )
     } else if (item?.type === 'content' && item.content?.type === 'text' && item.content.text) {
       nodes.push(<AcpTextBlock key={`text-${i}`} text={item.content.text} />)
@@ -1115,7 +1118,13 @@ function PartViewInner({
         {hasBody && (
           <div className="flex flex-col gap-2 border border-border rounded-lg mt-2">
             {isError && <AcpTextBlock text={toolErrorText(output)} />}
-            {fileDiff && <FileDiffView key="diff" {...fileDiff} />}
+            {fileDiff && (
+              // 工具卡里的 diff 只给一个固定视口：长文件不把整条消息撑高；
+              // 滚动条隐藏（no-scrollbar），内容仍可滚轮 / 触控滚动。
+              <div className="max-h-72 overflow-y-auto no-scrollbar">
+                <FileDiffView key="diff" hideScrollbar {...fileDiff} />
+              </div>
+            )}
             {acpDirect?.content}
             {builtinDirect?.content}
           </div>

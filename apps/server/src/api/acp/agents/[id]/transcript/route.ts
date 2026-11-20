@@ -8,9 +8,10 @@
  */
 import { replayAcpSession, type AcpAgentConfig } from '@fizz/acp'
 import { domain } from '@/lib/server/state'
-import { findActiveByConversation } from '@/lib/server/chat-run'
+import { findActiveByConversation, summarize } from '@/lib/server/chat-run'
 import {
   carryOverDurations,
+  acpTranscriptView,
   getAcpTranscript,
   setAcpTranscript
 } from '@/lib/server/acp-transcripts'
@@ -43,13 +44,7 @@ export async function GET(
    */
   const active = findActiveByConversation(conversationId)
   if (active) {
-    // 收尾时助手消息会先写进快照、再 finishRun；这中间仍算「在跑」，而 attach 的
-    // 帧日志会从头重建同一条助手消息 —— 这里先把当前轮的助手消息摘掉，避免叠加两份。
-    const currentId = active.assistantMessageId
-    const messages = getAcpTranscript(conversationId) ?? []
-    return Response.json({
-      messages: currentId ? messages.filter((m) => m.id !== currentId) : messages
-    })
+    return Response.json(acpTranscriptView(conversationId, summarize(active)))
   }
   if (!sessionId || !cwd) {
     return jsonError(400, '缺少 sessionId / cwd')
@@ -76,7 +71,9 @@ export async function GET(
     setAcpTranscript(conversationId, [...messages, ...appended])
     // load 会把 agent 广告的档位带回来（可能被重置成默认）：刷新进会话配置，保留用户选的档
     refreshAcpSessionState(conversationId, agent.id)
-    return Response.json({ messages })
+    // load 期间可能又开了下一轮：返回最新快照及其所属轮次，不让调用方接回旧 run。
+    const current = findActiveByConversation(conversationId)
+    return Response.json(acpTranscriptView(conversationId, current ? summarize(current) : null))
   } catch (err) {
     const { status, message } = describeError(err)
     return jsonError(status, message)

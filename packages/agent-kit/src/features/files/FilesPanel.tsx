@@ -3040,7 +3040,7 @@ export function FilesPanel({
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button size="sm" variant="ghost" onClick={() => setUploadConflict(null)}>
+            <Button data-dialog-dismiss="" autoFocus size="sm" variant="ghost" onClick={() => setUploadConflict(null)}>
               {t("取消")}
             </Button>
             <Button
@@ -3087,7 +3087,7 @@ export function FilesPanel({
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button size="sm" variant="ghost" onClick={() => setDeletingEntries([])}>
+            <Button data-dialog-dismiss="" autoFocus size="sm" variant="ghost" onClick={() => setDeletingEntries([])}>
               {t("取消")}
             </Button>
             <Button size="sm" variant="destructive" onClick={() => void confirmDelete()}>
@@ -3128,7 +3128,7 @@ export function FilesPanel({
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button size="sm" variant="ghost" onClick={() => setPastingDir(null)}>
+            <Button data-dialog-dismiss="" size="sm" variant="ghost" onClick={() => setPastingDir(null)}>
               {t("取消")}
             </Button>
             <Button size="sm" onClick={() => void confirmPaste()}>
@@ -3165,7 +3165,7 @@ export function FilesPanel({
             />
           </div>
           <DialogFooter>
-            <Button
+            <Button data-dialog-dismiss=""
               size="sm"
               variant="ghost"
               onClick={() => {
@@ -3199,7 +3199,7 @@ export function FilesPanel({
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button size="sm" variant="ghost" onClick={() => setPendingReload(null)}>
+            <Button data-dialog-dismiss="" autoFocus size="sm" variant="ghost" onClick={() => setPendingReload(null)}>
               {t("取消")}
             </Button>
             <Button

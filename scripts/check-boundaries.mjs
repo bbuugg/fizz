@@ -167,6 +167,11 @@ const EXCEPTIONS = [
     file: 'apps/mobile/src/app/mobile-dialog.tsx',
     spec: /^\.\.\/.*packages\/ui\/src\/dialog$/,
     why: '`@fizz/ui/dialog` 的 vite 别名正指向本文件，从本文件 import 它就是自指（见该文件头注释）'
+  },
+  {
+    file: 'apps/mobile/src/app/mobile-alert-dialog.tsx',
+    spec: /^\.\.\/.*packages\/ui\/src\/alert-dialog$/,
+    why: '与 mobile-dialog 相同：`@fizz/ui/alert-dialog` 的 vite 别名正指向本文件，宽屏须直接复用桌面实现（见该文件头注释）'
   }
 ]
 

@@ -8,13 +8,14 @@ import { textOf } from "@fizz/agent-kit/shared/lib/parts";
 import { fileRefsOfParts } from "@fizz/agent-kit/shared/lib/attachments";
 import { errorMessage, nextLocalId } from "@fizz/agent-kit/shared/lib/stores/shared";
 import type { ConvInternals } from "../internals/context";
+import { saveQueuePaused } from "../storage";
 import type { ConversationSlice } from "../types";
 
 export function createQueueActions(
   ctx: ConvInternals,
 ): Pick<
   ConversationSlice,
-  "enqueueMessage" | "removeQueuedMessage" | "updateQueuedMessage" | "moveQueuedMessage" | "moveQueuedMessageBy" | "sendQueuedMessage" | "sendSteer" | "clearQueuedMessages" | "removeSteer" | "moveSteer" | "moveSteerBy"
+  "enqueueMessage" | "removeQueuedMessage" | "updateQueuedMessage" | "moveQueuedMessage" | "moveQueuedMessageBy" | "sendQueuedMessage" | "sendSteer" | "clearQueuedMessages" | "removeSteer" | "moveSteer" | "moveSteerBy" | "setQueuePaused"
 > {
   const {
     get,
@@ -43,6 +44,22 @@ export function createQueueActions(
         ...readSlice(conversationId).queuedMessages,
         item,
       ]);
+    },
+    /**
+     * 暂停 / 恢复队列自动发送。
+     *
+     * 暂停只掐「一轮结束后自动顶下一条」这条链：正在跑的那轮不动，队列原样留着，
+     * 用户手动「直接发送」也不受影响。
+     * 恢复时若本会话空闲就立刻开跑 —— 点「启动」是显式动作，走 `force` 不然会被
+     * 自己刚写下的 `queuePaused: false` 之外的判断绕住（语义上也该无视暂停）。
+     */
+    setQueuePaused: (paused, scope) => {
+      const conversationId = resolveConvId(scope);
+      if (!conversationId) return;
+      if (readSlice(conversationId).queuePaused === paused) return;
+      writeSlice(conversationId, (s) => ({ ...s, queuePaused: paused }));
+      saveQueuePaused(conversationId, paused);
+      if (!paused) get().pump(conversationId, { force: true });
     },
     removeQueuedMessage: (id, scope) => {
       const conversationId = resolveConvId(scope);

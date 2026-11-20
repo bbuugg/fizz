@@ -8,7 +8,8 @@
  *
  * 模型清单走 **Dialog**（用户要求，与「模型」页一致）：点列表行的**拉取模型图标**
  * （`Download`，与「模型」页那份同款）弹出，顶部带搜索框，
- * 勾选后点「保存」把选中的写进白名单。列表行只显示人类可读的 name，模型 id（value）收进悬停 tooltip；
+ * 勾选后点「保存」把选中的写进白名单。列表行只显示人类可读的 name，模型 id（value）收进悬停 tooltip
+ * （触屏没有悬停，行尾另给一颗 ⓘ，点开 Popover 查看）；
  * 移除靠「取消勾选」（不再有独立的 × 按钮）。除了勾选探测到的候选，还能**手动添加**模型 id ——
  * agent 没广告清单（`configId` 为空）/ 探测失败时兜底，或直接按 id 指定模型。
  * 已添加的模型会作为可移除的标签直接显示在 ACP 列表里，每个标签带 ×，点一下弹二次确认 ——
@@ -27,9 +28,10 @@
  * 比「点两次按钮就地确认」值得多问一句。移除白名单里的单个模型同样走这套确认弹窗。
  */
 import { useEffect, useState } from 'react'
-import { Check, ChevronDown, ChevronRight, Download, Loader2, Pencil, Plus, Power, RefreshCw, Trash2, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Download, Info, Loader2, Pencil, Plus, Power, RefreshCw, Trash2, X } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
 import { Input } from '@fizz/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@fizz/ui/popover'
 import {
   Select,
   SelectContent,
@@ -54,6 +56,7 @@ import {
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { formatCommandArgs, parseCommandArgs } from '@fizz/agent-kit/shared/lib/command-args'
+import { isTouchOnlyInput } from '@fizz/agent-kit/shared/hooks/useVirtualKeyBar'
 import { formatDuration } from '@fizz/agent-kit/shared/lib/duration'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import type {
@@ -73,6 +76,36 @@ const ACP_TYPE_LABELS: Record<AcpAgentType, string> = {
   generic: '通用',
   opencode: 'opencode',
   pi: 'pi'
+}
+
+/**
+ * 触屏上的模型 id 查看入口。
+ *
+ * 桌面把 id 收在悬停 tooltip 里；`Tooltip` 在触屏被整体停用（没有悬停语义），
+ * 所以手机额外给一颗 ⓘ —— 点开 Popover 看完整 id 与 agent 给的描述。
+ */
+function ModelIdInfo({ value, description }: { value: string; description?: string }) {
+  const tr = useT()
+  if (!isTouchOnlyInput()) return null
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={tr('查看模型 ID')}
+          className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+        >
+          <Info className="size-3.5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent side="top" align="end" sideOffset={6} className="w-auto max-w-72 text-xs">
+        <div className="break-all font-mono">{value}</div>
+        {description ? (
+          <div className="mt-1 text-muted-foreground">{description}</div>
+        ) : null}
+      </PopoverContent>
+    </Popover>
+  )
 }
 
 export function AcpTab({ app }: { app: AgentApp }) {
@@ -709,7 +742,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
               </p>
             )}
             <DialogFooter className="pt-1">
-              <Button type="button" size="sm" variant="ghost" onClick={closeAcpForm}>
+              <Button data-dialog-dismiss="" type="button" size="sm" variant="ghost" onClick={closeAcpForm}>
                 {tr('取消')}
               </Button>
               <Button type="submit" size="sm" disabled={!acpCommand.trim() || duplicate}>
@@ -791,7 +824,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
           )}
 
           <DialogFooter className="pt-1">
-            <Button type="button" size="sm" variant="ghost" onClick={closeDetect}>
+            <Button data-dialog-dismiss="" type="button" size="sm" variant="ghost" onClick={closeDetect}>
               {tr('取消')}
             </Button>
             <Button
@@ -1003,6 +1036,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
                       )}
                     </TooltipContent>
                   </Tooltip>
+                  <ModelIdInfo value={model.value} description={model.description} />
                 </div>
               ))}
             {modelRows.length === 0 && keyword && (
@@ -1079,7 +1113,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
             `mt-auto` 只是兜底，保证即使列表容器将来被改成不占空间，按钮也不会浮上去。
           */}
           <DialogFooter className="mt-auto shrink-0 pt-1">
-            <Button type="button" size="sm" variant="ghost" onClick={closeModelDialog}>
+            <Button data-dialog-dismiss="" type="button" size="sm" variant="ghost" onClick={closeModelDialog}>
               {tr('取消')}
             </Button>
             <Button

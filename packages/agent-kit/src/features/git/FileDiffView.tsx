@@ -37,7 +37,8 @@ export function FileDiffView({
   path,
   hunks,
   deleted,
-  hideHeader
+  hideHeader,
+  hideScrollbar = false
 }: {
   path: string
   hunks: DiffHunk[]
@@ -45,6 +46,8 @@ export function FileDiffView({
   deleted?: boolean
   /** 调用方自己已展示路径与增删计数时（如提交详情的文件行）隐藏文件头 */
   hideHeader?: boolean
+  /** 消息流里的工具卡用：隐藏横向滚动条（内容仍可横向滚动） */
+  hideScrollbar?: boolean
 }) {
   const t = useT()
   const { adds, dels } = diffStat(hunks)
@@ -75,7 +78,7 @@ export function FileDiffView({
       ) : (
         // 整块 diff 正文进内容白名单（styles.css）：挂在滚动容器上，跨行拖选才连得起来。
         // 行号 / 增删号 / ± 号各自带 `select-none`（utilities 层，压得住这条），不会被一起划中。
-        <div data-selectable className="overflow-x-auto">
+        <div data-selectable className={cn('overflow-x-auto', hideScrollbar && 'no-scrollbar')}>
           {/*
             min-w-max：让整块内容按**最宽的那一行**撑开（而不是被滚动容器卡在可视宽度）。
             里面的行都是块级盒子，宽度自动铺满这块内容宽 —— 增/删的行底色、片段头

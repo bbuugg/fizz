@@ -90,7 +90,7 @@ export function WorkspaceDeleteDialog({
         )}
 
         <DialogFooter className="pt-1">
-          <Button size="sm" variant="ghost" onClick={close}>
+          <Button data-dialog-dismiss="" autoFocus size="sm" variant="ghost" onClick={close}>
             {tr('取消')}
           </Button>
           <Button

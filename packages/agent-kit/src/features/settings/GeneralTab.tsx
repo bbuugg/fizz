@@ -619,7 +619,7 @@ function RemoteAccessSection({ app }: { app: AgentApp }) {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setPasswordOpen(false)} disabled={passwordBusy}>
+            <Button data-dialog-dismiss="" variant="outline" onClick={() => setPasswordOpen(false)} disabled={passwordBusy}>
               {tr('取消')}
             </Button>
             <Button onClick={() => void submitPassword()} disabled={passwordBusy}>

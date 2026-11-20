@@ -214,7 +214,7 @@ export function FilePreviewDialog({
           {isTextual(kind) && text !== null ? (
             editing ? (
               <>
-                <Button variant="ghost" onClick={() => setEditing(false)} disabled={saving}>
+                <Button data-dialog-dismiss="" variant="ghost" onClick={() => setEditing(false)} disabled={saving}>
                   取消编辑
                 </Button>
                 <Button onClick={() => void save()} disabled={saving || draft === text}>
@@ -233,7 +233,7 @@ export function FilePreviewDialog({
             <Download className="size-4" />
             下载
           </Button>
-          <Button variant="ghost" onClick={onClose}>
+          <Button data-dialog-dismiss="" variant="ghost" onClick={onClose}>
             关闭
           </Button>
         </DialogFooter>

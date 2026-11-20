@@ -12,12 +12,12 @@ export function createStreamActions(
   ConversationSlice,
   "reconnectRun" | "reconcileDroppedRun"
 > {
-  const { get, attachRun, reconcileDroppedRound } = ctx;
+  const { loadConversation, reconcileDroppedRound } = ctx;
 
   return {
     /**
      * 重接一条进行中的对话：用户点消息区「连接中断」条上的按钮、或页面从后台回来时调。
-     * 内部就是 attachRun —— 查服务端有没有在跑的 run、复用现有占位消息、断线自动重接。
+     * 共用恢复流程补齐历史，现有订阅与占位由 attachRun 复用，不另开一条流。
      *
      * 已经在重接中（退避睡眠还没醒）时，把那个睡眠**提前唤醒**：退避 sleep 一醒循环
      * 立刻重试，等于 "立即重连" 真的立即。以前做不到这一点 —— attachRun 对「正在接」
@@ -25,7 +25,7 @@ export function createStreamActions(
      */
     reconnectRun: (conversationId: string) => {
       reconnectNudges.get(conversationId)?.();
-      return attachRun(conversationId);
+      return loadConversation(conversationId, { resetScroll: false });
     },
     /**
      * 对账一个「断线失败」的轮次：拉服务端权威历史，它确实存下了这一轮就用它替换本地

@@ -59,6 +59,7 @@ import { MessageOutline } from '@fizz/agent-kit/features/chat/MessageOutline'
 import { ChatFind } from '@fizz/agent-kit/features/chat/chat-find'
 import { ContextCompactionCard } from '@fizz/agent-kit/features/chat/ContextCompactionCard'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
+import { useConversationActivity } from '@fizz/agent-kit/shared/lib/conversation-activity'
 import { Composer } from '@fizz/agent-kit/features/chat/composer'
 import {
   MessageActionRow,
@@ -245,25 +246,29 @@ export function MessageList({
   /**
    * 重拉这条会话（与标签右键的「刷新」同一个 action）。
    *
-   * 只由空态里那颗「重新加载会话」调用：一条消息都没有常常是历史没拉回来，光看空态
-   * 分不清「本来就没有」还是「加载失败」，得给一个显式出口。
+   * 两条触发路径：空态里那颗「重新加载会话」按钮，以及空态出现时的**自动补拉**
+   * （一条消息都没有常常是历史没拉回来；自动拉一次能救回来就别先让用户自己点）。
+   * 自动那一趟静默成功，不从 toast 里冒出来。
    */
   const [reloading, setReloading] = useState(false)
-  const refreshConversation = useCallback(async () => {
-    if (!conversationId || reloading) return
-    // 正在生成时 store 会拒绝（权威历史会把流式现场整段盖掉）—— 先说清为什么没反应
-    if (streaming) {
-      toast(tr('这一轮还在生成，先停止再重新加载'))
-      return
-    }
-    setReloading(true)
-    try {
-      const ok = await useAgentStore.getState().reloadConversation(conversationId)
-      if (ok) toast.success(tr('已重新加载会话'))
-    } finally {
-      setReloading(false)
-    }
-  }, [conversationId, streaming, tr, reloading])
+  const refreshConversation = useCallback(
+    async (silent = false) => {
+      if (!conversationId || reloading) return
+      // 正在生成时 store 会拒绝（权威历史会把流式现场整段盖掉）—— 先说清为什么没反应
+      if (streaming) {
+        if (!silent) toast(tr('这一轮还在生成，先停止再重新加载'))
+        return
+      }
+      setReloading(true)
+      try {
+        const ok = await useAgentStore.getState().reloadConversation(conversationId)
+        if (ok && !silent) toast.success(tr('已重新加载会话'))
+      } finally {
+        setReloading(false)
+      }
+    },
+    [conversationId, streaming, tr, reloading]
+  )
   /**
    * 消息区根节点，给右侧「消息目录」定位用。
    *
@@ -317,6 +322,50 @@ export function MessageList({
    * 必须是**完整列表**口径 —— 删除「本条及其后」的条数靠 `total - index` 算，按窗口算会少删。
    */
   const fullTotal = baseMessages.length + live.length
+
+  /**
+   * 空态自动补拉：本屏已经绑了会话、又没在装载 / 生成 / 重放 / 删除 / 报错，却一条消息
+   * 都没有 —— 大概率是历史没拉回来。每个会话只自动试一次，静默进行；拉回来仍是空
+   * （本来就没有 / 确实失败）再露出手动按钮，不反复请求。
+   *
+   * ⚠️ 服务端还说这条会话在跑时**不能补拉**：那时「一条消息都没有」只是恢复还没走完
+   * （`useAttachRemoteRun` 正在接这一轮的业务），历史与正文都在路上。这时补拉会走
+   * `reloadAcpSession`，用「进程内快照（已摘掉本轮助手消息）」覆盖刚刚 attach 出来的
+   * 现场；随后 `attachRun` 看到本端流还活着直接放行，助手消息再也建不回来，之后每一帧
+   * 都被丢弃 —— 用户看到的就是「输出先出现、历史一到就没了」。
+   */
+  const activity = useConversationActivity(conversationId ?? null)
+  const [autoReloadedFor, setAutoReloadedFor] = useState<string | null>(null)
+  useEffect(() => {
+    setAutoReloadedFor(null)
+  }, [conversationId])
+  useEffect(() => {
+    if (
+      !conversationId ||
+      activity.running ||
+      total > 0 ||
+      loading ||
+      streaming ||
+      replaying ||
+      deleting ||
+      error
+    )
+      return
+    if (autoReloadedFor === conversationId) return
+    setAutoReloadedFor(conversationId)
+    void refreshConversation(true)
+  }, [
+    conversationId,
+    activity.running,
+    total,
+    loading,
+    streaming,
+    replaying,
+    deleting,
+    error,
+    autoReloadedFor,
+    refreshConversation
+  ])
 
   /**
    * 展开更早一批。展开前记下滚动容器的高度与位置，layout effect 里把差值补回 `scrollTop`
@@ -447,7 +496,7 @@ export function MessageList({
                 撞上装载窗口）。空态本身看不出「是本来就没有，还是加载失败」，这里给一个
                 显式出口，别让人以为会话被清空了。生成中不给 —— 那会和流式现场抢历史。
               */}
-              {conversationId && !streaming ? (
+              {conversationId && !streaming && autoReloadedFor === conversationId ? (
                 <div className="flex flex-col items-center gap-1.5">
                   <span className="text-xs text-muted-foreground">
                     {tr('历史消息没有显示？')}
@@ -844,6 +893,13 @@ export interface ChatComposerProps {
   onChange: (value: string) => void
   /** 发送（Enter 或点发送钮）；本轮在跑时入队，等本轮结束按序自动发 */
   onSubmit: () => void
+  /**
+   * 只入队、不立刻发（发送方式下拉里的「放入队列」）。不传 = 显示单颗发送钮。
+   * 见 `Composer` 上同名字段。
+   */
+  onEnqueue?: () => void
+  /** 「放入队列」不可用（编辑态）：菜单项灰掉并给出原因 */
+  enqueueDisabled?: boolean
   /** 停止（点停止钮，或输入框里按 Esc） */
   onCancel: () => void
   streaming: boolean
@@ -923,6 +979,8 @@ export function ChatComposer({
   value,
   onChange,
   onSubmit,
+  onEnqueue,
+  enqueueDisabled,
   onCancel,
   streaming,
   disabled,
@@ -983,6 +1041,8 @@ export function ChatComposer({
             value={value}
             onChange={onChange}
             onSubmit={onSubmit}
+            onEnqueue={onEnqueue}
+            enqueueDisabled={enqueueDisabled}
             onCancel={onCancel}
             streaming={streaming}
             disabled={disabled}

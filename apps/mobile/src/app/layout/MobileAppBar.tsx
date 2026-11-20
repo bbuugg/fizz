@@ -10,8 +10,9 @@
  * `layout/Sidebar.tsx`）：
  *
  * - **左**：抽屉开关（唯一的侧栏入口，见 `mobile-sidebar.ts`）；
- * - **中**：当前标签的名字（解析与桌面标签条同一份 `useTabMeta`）；
- * - **右**：后台任务徽标（有事才出现，见下）、新建对话。
+ * - **中**：留白。会话名在**会话内容的工具条**里（`ConversationTab` 的 `ViewHeader`），
+ *   这里再显示一遍就是同一行字出现两次；
+ * - **右**：后台任务徽标、SFTP 传输徽标、AI 助手开关（前两个有事才出现，见下）。
  *
  * ## 单标签：没有标签条，也没有标签列表
  *
@@ -43,14 +44,12 @@
  * ⚠️ 本工程是**手机壳**：从 `app-shell.tsx` 到这里都按手机形态写死，不再按窗口宽度
  * 分岔（共享组件内部的 `useIsMobile` 是它们自己的事，真机上同样落在手机分支）。
  */
-import { Menu, Plus, Sparkles } from 'lucide-react'
+import { Menu, Sparkles } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
 import {
   setMobileSidebarOpen,
   useMobileSidebarOpen
 } from '@fizz/agent-kit/shared/lib/mobile-sidebar'
-import { activeTabKey, openTab, usePanelState } from '@fizz/agent-kit/shared/lib/panel-store'
-import { NEW_TAB_KEY } from '@fizz/agent-kit/shared/lib/panel-tabs'
 import { BackgroundTasksBadge } from '@fizz/agent-kit/shared/components/BackgroundTasksBadge'
 import { TransferBadge } from '@fizz/agent-kit/shared/components/TransferBadge'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
@@ -60,39 +59,15 @@ import {
 } from '@fizz/agent-kit/shared/lib/assistant-panel'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
-import { useTabMeta } from '@/app/layout/use-tab-meta'
 
 /** 顶栏上按钮的统一尺寸：`size-10` 在 18px 根字号下约 45px，够触摸目标推荐值 */
 const BAR_BUTTON = 'size-10! shrink-0 p-0! text-muted-foreground hover:text-foreground'
 
 export function MobileAppBar() {
-  /** 订阅面板状态：当前标签被打开 / 替换时标题要跟着变（`activeTabKey()` 本身是裸读） */
-  const panelState = usePanelState()
-  const tabMeta = useTabMeta()
   const { app } = useAppContext()
   const sidebarOpen = useMobileSidebarOpen()
   const assistantOpen = useAssistantPanelOpen()
   const tr = useT()
-
-  /**
-   * 当前标签：单标签模式下它恒等于「唯一开着的那一个」，标题直接取它的元数据。
-   */
-  const key = activeTabKey(panelState)
-  const meta = key ? tabMeta(key) : null
-  const label = meta?.label ?? 'Fizz'
-
-  /**
-   * 新建对话：与侧栏「项目行 → 新建会话」走同一条路。
-   *
-   * ⚠️ 不能只 `openTab(NEW_TAB_KEY)`：占位标签换了，但「当前会话」还是上一个，
-   * 侧栏会继续高亮旧会话、新对话页也还挂在旧会话上下文上。必须先
-   * `openConversation(null)` 把选中态退回空态。
-   */
-  const newConversation = (): void => {
-    app.selectWorkspace(app.activeWorkspaceId, false)
-    app.openConversation(null)
-    openTab(NEW_TAB_KEY)
-  }
 
   return (
     <header
@@ -116,10 +91,8 @@ export function MobileAppBar() {
         <Menu className="size-5" />
       </Button>
 
-      {/* 当前标签：只留名字。名字截断（长会话标题很常见），完整标题走 title */}
-      <div className="flex min-w-0 flex-1 items-center px-1" title={meta?.title}>
-        <span className="truncate text-sm font-medium">{label}</span>
-      </div>
+      {/* 中段留白：会话名由正文里的工具条显示（见文件头），顶栏不再重复 */}
+      <div className="min-w-0 flex-1" />
 
       {/*
         后台任务徽标（与桌面状态栏同一份组件）：没任务时回 null，跑着时「转圈 + 后台 N」，
@@ -140,7 +113,7 @@ export function MobileAppBar() {
       <TransferBadge side="bottom" contentClassName="w-[calc(100vw-1rem)]" />
 
       {/*
-        AI 助手开关：放在新建对话**左侧**。颜色即状态（收起灰 / 展开主题色），
+        AI 助手开关：颜色即状态（收起灰 / 展开主题色），
         与桌面那颗 `AiAssistantButton` 同一套语义，只是尺寸按手机的触摸目标放大。
         助手是整屏浮层、只盖正文，所以这颗键开着也点得到（收起走它）。
       */}
@@ -153,17 +126,6 @@ export function MobileAppBar() {
         onClick={() => setAssistantPanelOpen(!assistantOpen)}
       >
         <Sparkles className="size-5" />
-      </Button>
-
-      {/* 新建对话：与侧栏「项目行 → 新建会话」同一条路 */}
-      <Button
-        variant="ghost"
-        className={BAR_BUTTON}
-        aria-label="新建对话"
-        title="新建对话"
-        onClick={newConversation}
-      >
-        <Plus className="size-5" />
       </Button>
     </header>
   )

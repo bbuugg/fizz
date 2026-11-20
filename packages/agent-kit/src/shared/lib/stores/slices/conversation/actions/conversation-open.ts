@@ -3,7 +3,7 @@
  * 内部助手一律从 ctx 拿，internals 不会反过来依赖它。
  */
 import { errorMessage } from "@fizz/agent-kit/shared/lib/stores/shared";
-import { saveActiveConversationId, loadQueue, saveQueue } from "../storage";
+import { saveActiveConversationId } from "../storage";
 import type { ConvInternals } from "../internals/context";
 import type { ConversationSlice } from "../types";
 
@@ -13,7 +13,7 @@ export function createConversationOpenActions(
   ConversationSlice,
   "openConversation" | "retryLoadMessages" | "reloadAcpSession" | "reloadConversation"
 > {
-  const { set, get, api, readSlice, writeSlice, pruneSlices, preferredTarget, fetchQueue, attachRun, loadConversation, loadMessages, peekActiveRun, pump } = ctx;
+  const { set, get, api, readSlice, writeSlice, pruneSlices, preferredTarget, loadConversation, loadMessages, pump } = ctx;
 
   return {
     openConversation: (conversationId, opts) => {
@@ -142,36 +142,7 @@ export function createConversationOpenActions(
        * 删除 / 编辑，拿的是旧消息 id 配新会话 id，服务端对不上就报错（实测踩过的坑）。
        */
       /** localStorage 缓存先顶上：服务端那份要等一个往返，不能让它拖住首帧 */
-      const cached = loadQueue(conversationId);
-      writeSlice(conversationId, (s) => ({
-        ...s,
-        touchedAt: Date.now(),
-        loading: true,
-        error: null,
-        // 先铺本地缓存（顺序可能与服务端不同：排序是跨端的，服务端那份才是权威）
-        queuedMessages: cached,
-      }));
       void loadConversation(conversationId);
-      /**
-       * 队列的权威在服务端（拖拽排序要跨端一致），但拉它得一个来回 ——
-       * 所以本地缓存先顶上、后台拉回来**无感替换**。
-       *
-       * 身份守卫：这一个来回里用户可能已经改了队列（加 / 删 / 拖），那份改动不能被
-       * 这趟晚到的应答盖掉。判据是「slice 里躺的还是我刚铺上的那个数组」（引用相等）
-       * —— 只有 patchQueue 才会换掉这个引用。slice 被淘汰时引用也变了，同样不会覆盖。
-       *
-       * 刻意**不再判「还是不是焦点会话」**：队列是这条会话自己的事，晚到的应答盖掉它
-       * 只跟「这段时间里队列有没有人动过」有关，跟用户此刻在看哪块无关（分屏时它多半
-       * 已经不是焦点了 —— 那样这份远端顺序就永远补不上）。
-       */
-      void (async () => {
-        const remote = await fetchQueue(conversationId);
-        if (!remote) return;
-        if (readSlice(conversationId).queuedMessages !== cached) return;
-        // 只写切片 + 缓存，不回写服务端（这份数据本来就来自它）
-        writeSlice(conversationId, (s) => ({ ...s, queuedMessages: remote }));
-        saveQueue(conversationId, remote);
-      })();
       pruneSlices(conversationId);
     },
     retryLoadMessages: () => {
@@ -181,133 +152,17 @@ export function createConversationOpenActions(
         ...s,
         loading: true,
         error: null,
-        messages: [],
       }));
       void loadConversation(id);
     },
-    /**
-     * 重新加载一条 ACP 会话（见接口上的注释）。刻意**不复用 `loadConversation`**：
-     * 那段 ACP 回放要求「当前就是这条会话」且「本地还没有消息」才写入 —— 后者是为
-     * 首次打开准备的（不能盖掉用户刚发出的内容），而本项是用户主动要求的**覆盖式重建**，
-     * 两条路径的写入策略正相反，合成一个带 flag 的 helper 只会把两套语义搅在一起。
-     *
-     * 回放为空就写成空：用户点这一项的含义就是「以 agent 侧为准重来一遍」，
-     * 那边没有内容就是真的没有 —— 不像 `convertAcpConversation` 那样把「空」当失败
-     * （它要造新会话，空会话没有意义；这里只是重建视图，空视图是诚实的结果）。
-     */
     reloadAcpSession: async (conversationId) => {
-      const api = get().getApi();
-      const conv = get().conversations.find((c) => c.id === conversationId);
-      if (!api || !conv || conv.backend !== "acp") return false;
-      // 亮起装载标记：消息区显示「装载中」而不是旧内容（重载本来就是「整份换掉」），
-      // 顺带清掉上一次遗留的错误态（与 retryLoadMessages 同一套起手式）
-      writeSlice(conversationId, (s) => ({ ...s, loading: true, error: null }));
-
-      /**
-       * 「重新加载」也先看有没有在跑。跑动中只能从进程内快照 + 帧日志恢复：
-       * session/load 会 teardown 正在跑的 ACP 进程（`ACP connection closed`）。
-       */
-      const activeRun = await peekActiveRun(conversationId);
-      if (activeRun) {
-        let attached = false;
-        try {
-          if (conv.configId) {
-            const activeCwd = get().workspaces.find(
-              (w) => w.id === conv.workspaceId,
-            )?.path;
-            try {
-              const { messages } = await api.getAcpTranscript(
-                conv.configId,
-                conversationId,
-                conv.acpSessionId ?? "",
-                activeCwd ?? "",
-              );
-              // 快照为空（这份内存视图没建起来）时保留本地现场，别把用户已经看到的
-              // 历史擦成空；非空才按「重新加载 = 整份换掉」覆盖。
-              if (messages.length > 0) {
-                writeSlice(conversationId, (s) => ({
-                  ...s,
-                  messages,
-                  scrollResetSeq: s.scrollResetSeq + 1,
-                }));
-              }
-            } catch {
-              // 快照不可用不挡 attach：当前这一轮仍可由帧日志重建
-            }
-          }
-          attached = await attachRun(
-            conversationId,
-            activeRun.assistantMessageId
-              ? {
-                  requestId: activeRun.requestId,
-                  assistantId: activeRun.assistantMessageId,
-                }
-              : undefined,
-          );
-        } finally {
-          writeSlice(conversationId, (s) => ({ ...s, loading: false }));
-        }
-        if (attached) return true;
-        // attach 没接上（刚结束 / 连接失败）：继续走下面的 idle 重建
-        writeSlice(conversationId, (s) => ({ ...s, loading: true, error: null }));
-      }
-
-      if (!conv.configId || !conv.acpSessionId) {
-        writeSlice(conversationId, (s) => ({ ...s, loading: false }));
-        get().setError("这条会话没有 agent 侧会话，重新加载不了");
-        return false;
-      }
-      const cwd = get().workspaces.find((w) => w.id === conv.workspaceId)?.path;
-      if (!cwd) {
-        writeSlice(conversationId, (s) => ({ ...s, loading: false }));
-        get().setError("找不到这条会话的工作区目录，重新加载不了");
-        return false;
-      }
-      try {
-        const { messages } = await api.getAcpTranscript(
-          conv.configId,
-          conversationId,
-          conv.acpSessionId,
-          cwd,
-        );
-        // 整体覆盖 + 复位落底同一次写入（同 loadMessages 的 resetScroll，别拆两帧）
-        writeSlice(conversationId, (s) => ({
-          ...s,
-          messages,
-          scrollResetSeq: s.scrollResetSeq + 1,
-        }));
-        return true;
-      } catch (err) {
-        // 回放失败（agent 不支持 load / 会话失效 / OpenCode 服务故障）：本地那份**原样留着**
-        // （没覆盖过），原因走全局 error 弹 toast —— 与 convertAcpConversation 同一套收场
-        get().setError(errorMessage(err));
-        return false;
-      } finally {
-        writeSlice(conversationId, (s) => ({ ...s, loading: false }));
-      }
+      const conversation = get().conversations.find((c) => c.id === conversationId);
+      if (conversation?.backend !== "acp") return false;
+      const restored = await loadConversation(conversationId);
+      if (!restored && readSlice(conversationId).error)
+        get().setError(readSlice(conversationId).error!);
+      return restored;
     },
-    /**
-     * **重新加载这一条会话**：等价于「刷新页面 → 点开这个会话」，但只作用于它，不动别的
-     * 标签、也不重挂 React 树（终端 / 面板现场都还在）。
-     *
-     * 两条路按后端分（与刷新页面后打开会话**完全同源**）：
-     * - **内置**：拉服务端落盘的权威历史（`loadMessages`，覆盖式）。断线时本地渲染的
-     *   那条「⚠️ 网络错误」会被真正的回复顶掉 —— 那正是用户刷新整页想达到的效果；
-     * - **ACP**：消息在 agent 侧，只有 `session/load` 回放能重建（`reloadAcpSession`）。
-     *
-     * ⚠️ **正在跑就拒绝**：`loadMessages` 的过期判据是「代次」，本轮已经开跑时代次没变，
-     * 服务端快照会把正在流式攒的现场整段盖掉（等于把直播掐了）。调用方（错误块那颗按钮）
-     * 也据此禁用。
-     */
-    reloadConversation: async (conversationId) => {
-      if (readSlice(conversationId).streaming) return false;
-      const conv = get().conversations.find((c) => c.id === conversationId);
-      if (conv?.backend === "acp") return get().reloadAcpSession(conversationId);
-      const fetched = await loadMessages(conversationId, {
-        loadError: true,
-        resetScroll: true,
-      });
-      return fetched !== null;
-    },
+    reloadConversation: (conversationId) => loadConversation(conversationId),
   };
 }

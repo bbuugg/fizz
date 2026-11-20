@@ -291,7 +291,7 @@ export function DataTransferDialog({
         )}
 
         <DialogFooter>
-          <Button variant="ghost" onClick={handleClose} disabled={busy}>
+          <Button data-dialog-dismiss="" variant="ghost" onClick={handleClose} disabled={busy}>
             取消
           </Button>
           <Button

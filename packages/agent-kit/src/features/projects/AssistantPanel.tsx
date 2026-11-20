@@ -292,20 +292,18 @@ export function AssistantPanel({
       {/* 顶栏：会话切换器（标题 + 历史会话）+ 新建 + 删除当前会话。
           新建从下拉里提出来常驻在删除左侧 —— 它是这段面板最高频的动作，
           收进菜单只会多一次点击；切换器因此只保留「历史会话」，宽度也不再撑满。
-          全局形态的收起键在顶栏右上角的 AI 助手开关上，只有嵌入形态才在这里补一颗。 */}
+          全局形态的收起键在顶栏右上角的 AI 助手开关上，只有嵌入形态才在这里补一颗。
+          ⚠️ 入口左侧**不放图标**（用户要求移除）：那只是给同一个人看的装饰，
+          占掉面板最窄处的宽度、还把标题挤小；标题本身就是入口，下箭头说明它能展开。
+          标题用 `text-foreground`（用户要求深色）：它是这块面板的主标识，灰色太轻。 */}
       <div className="flex items-center gap-2 px-3 py-2">
-        {embedded ? (
-          <Terminal className="size-4 shrink-0 text-muted-foreground" />
-        ) : (
-          <Sparkles className="size-4 shrink-0 text-muted-foreground" />
-        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               type="button"
               aria-label="切换助手会话"
               title={`${embedded ? '终端助手' : '项目助手'} · ${activeTitle}`}
-              className="flex min-w-0 max-w-56 items-center gap-1 rounded-md px-1.5 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground data-[state=open]:bg-accent/60"
+              className="flex min-w-0 max-w-56 items-center gap-1 rounded-md px-1.5 py-1 text-left text-sm text-foreground transition-colors hover:bg-accent/60 data-[state=open]:bg-accent/60"
             >
               <span className="truncate">{activeTitle}</span>
               <ChevronDown className="size-3 shrink-0 opacity-60" />

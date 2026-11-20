@@ -438,6 +438,22 @@ function ChatPanelInner({
         clearDraftArea();
       });
     },
+    /**
+     * 「放入队列」：只入队，不触发这一轮（空闲时也照入 —— 用户要先攒几条、调好顺序再发）。
+     *
+     * 编辑态 / 斜杠命令已经由 `enqueueDisabled` 挡在菜单项上，这里不再分支；
+     * 附件与引用照旧随这条走（附件进 `files`，引用拼进正文），与本轮在跑时
+     * `send` 的入队路径完全一致。
+     *
+     * 入队是本地同步动作，没有「开跑」这一步 —— 立刻回调 `onStarted` 清输入框。
+     */
+    onEnqueue: (text, onStarted) => {
+      const files = collectSendFiles();
+      if (hasUploadingAttachment) return;
+      app.enqueueMessage(buildQuotedText(quotes, text), files);
+      onStarted();
+      clearDraftArea();
+    },
   });
 
   // 初始页：没打开任何会话时（点「新建会话」/ 首次进入），中央输入框 + 下方选工作空间。

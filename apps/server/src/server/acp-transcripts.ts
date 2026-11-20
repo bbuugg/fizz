@@ -14,12 +14,27 @@
  * 只在内存里：服务端重启后连同 run 一起消失，下一次空闲打开会话会重新 load。
  */
 import type { AgentChatMessage } from '@fizz/contracts/types'
+import type { AcpTranscriptResult, ChatRunSummary } from '@fizz/contracts/agent-api'
 import { acpTranscripts } from './state'
 
 /** 取一份快照（只读；调用方不要原地修改消息）。没有记录时返回 undefined */
 export function getAcpTranscript(conversationId: string): AgentChatMessage[] | undefined {
   const cached = acpTranscripts.get(conversationId)
   return cached ? cached.slice() : undefined
+}
+
+/** 同一个同步窗口中读取的运行态决定历史边界；当前轮由帧日志重建，不能出现两份。 */
+export function acpTranscriptView(
+  conversationId: string,
+  run: ChatRunSummary | null
+): AcpTranscriptResult {
+  const messages = getAcpTranscript(conversationId) ?? []
+  return {
+    messages: run?.assistantMessageId
+      ? messages.filter((m) => m.id !== run.assistantMessageId)
+      : messages,
+    run
+  }
 }
 
 /** `session/load` 完成后整体替换快照（agent 侧权威视图） */

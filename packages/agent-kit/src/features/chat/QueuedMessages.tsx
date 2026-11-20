@@ -1,5 +1,5 @@
 // 从 `ChatPanel.tsx` 抽出（原文件太大，按「一块视图一个文件」拆开）。
-import { Clock } from "lucide-react";
+import { Clock, Pause, Play } from "lucide-react";
 import { useCallback } from "react";
 import { useConfirm } from "@fizz/agent-kit/shared/components/ConfirmProvider";
 import { supportsTouch } from "@fizz/agent-kit/shared/lib/supports-touch";
@@ -18,11 +18,11 @@ import { turnIsAcp } from "@fizz/agent-kit/features/chat/session-backend";
  * 两种状态共用同一个容器与标题，只是行的行为不同：
  * - **插话（在前）**：已经投递进当前轮收件箱，等下一个工具步骤边界生效。行上转圈直到
  *   agent 消费它；本轮结束时还没生效的，右侧换成 ➤ 可当新消息发出。
- * - **队列（在后）**：本轮结束后按顺序自动发送。行上的 ➤ 是「插话」——点它就把这条投到
- *   当前轮，投递期间转圈，成功后才从队列移出、出现在上面的插话区。
+ * - **队列（在后）**：本轮自然结束后按顺序自动发送；用户也可以随时按标题栏的
+ *   启动 / 暂停把它掐住，或点行上的 ➤ 立刻插进当前轮。
  *
- * 所以用户脑子里只有一件事：「待发送的东西都在这儿；想让某条立刻插进当前轮，点它的 ➤」。
- * 不用在发送时先选「队列 / 插话」。
+ * 攒队列的入口在输入框的发送方式选择器（「直接发送 / 放入队列」）：放进来的是队列，
+ * 不是插话 —— 插话仍然只能在这里点 ➤ 发起。
  */
 export function QueuedMessages({
   app,
@@ -75,7 +75,37 @@ export function QueuedMessages({
         <Clock className="size-3.5" />
         <span className="min-w-0 flex-1">
           {t("待发送 · {count} 条", { count: total })}
+          {app.queuePaused && items.length > 0 ? ` · ${t("已暂停自动发送")}` : ""}
         </span>
+        {/*
+          启停开关（只对队列项有意义，插话已经投递出去了）：
+          - 暂停中 → 「启动」：解除暂停 + 立刻发下一条
+          - 正在跑 → 「暂停」：这一轮照常跑完，结束后不再自动顶下一条
+          - 空闲且未暂停 → 「发送下一条」：队列已经攒好了，用户点名开跑
+          三种状态都有意义，不做成「永远一颗 Pause」——空闲时按下去什么都不发生最费解。
+        */}
+        {items.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              if (app.queuePaused) app.setQueuePaused(false);
+              else if (running) app.setQueuePaused(true);
+              else app.pump({ force: true });
+            }}
+            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-muted"
+          >
+            {app.queuePaused || !running ? (
+              <Play className="size-3" />
+            ) : (
+              <Pause className="size-3" />
+            )}
+            {app.queuePaused
+              ? t("启动")
+              : running
+                ? t("暂停")
+                : t("发送下一条")}
+          </button>
+        )}
       </span>
       {/* 失败停链提示（spec §3）：上一轮失败后队列静默停住没人知道，这里把状态
         挑明，并把「继续 / 清空」两个决定递到用户手边 */}
@@ -85,7 +115,8 @@ export function QueuedMessages({
           <button
             type="button"
             disabled={running}
-            onClick={() => app.pump()}
+            // 显式「继续」：无视手动暂停（失败了都还能继续，用户点的就是这一下）
+            onClick={() => app.pump({ force: true })}
             className="shrink-0 rounded px-1.5 py-0.5 transition-colors hover:bg-destructive/15 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {t("继续发下一条")}

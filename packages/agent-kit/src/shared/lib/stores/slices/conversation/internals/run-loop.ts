@@ -27,11 +27,30 @@ import {
 import { httpStatusOf } from "@fizz/agent-client/api";
 import { saveLastTarget } from "@fizz/agent-kit/shared/lib/last-target";
 import { errorMessage, nextLocalId } from "@fizz/agent-kit/shared/lib/stores/shared";
-import { saveQueue } from "../storage";
+import { loadQueue, loadQueuePaused, saveQueue } from "../storage";
 import { subscribing, reconciling, sleep, sleepReconnect } from "../reconnect";
 import { isSteerAssistant } from "../state";
 import { applyCollabEvent } from "../collab";
 import type { ConvCore } from "./context";
+
+/** 历史提供顺序；当前轮及更新代次的本地消息仍由直播持有，不能被旧快照覆盖。 */
+function mergeHistory(
+  history: AgentChatMessage[],
+  local: AgentChatMessage[],
+  assistantId?: string,
+  preserveLocal = false,
+): AgentChatMessage[] {
+  const localById = new Map(local.map((m) => [m.id, m]));
+  const known = new Set(history.map((m) => m.id));
+  return [
+    ...history.map((m) =>
+      preserveLocal || (assistantId && isSteerAssistant(m, assistantId))
+        ? localById.get(m.id) ?? m
+        : m,
+    ),
+    ...local.filter((m) => !known.has(m.id)),
+  ];
+}
 
 export function createConversationRunLoop(ctx: ConvCore) {
   const {
@@ -43,42 +62,31 @@ export function createConversationRunLoop(ctx: ConvCore) {
     markRunning,
     persistTarget,
     syncQueueToServer,
+    fetchQueue,
     guardTarget,
     waitConversationsLoaded,
-    // 「这条会话是不是焦点」只从这两个助手取，别在这里裸读 activeConversationId
-    // （`scripts/check-conversation-scope.mjs` 会拦）
     resolveConvId,
-    isFocus,
   } = ctx;
+
+  const recoveries = new Map<string, Promise<boolean>>();
+  const messageLoads = new Map<string, object>();
 
   const attachRun = async (
     conversationId: string,
-    opts?: { requestId?: string; assistantId?: string },
+    opts?: { requestId?: string; assistantId?: string; handoff?: boolean },
   ): Promise<boolean> => {
     const api = get().getApi();
     if (!api || !conversationId) return false;
-    const resume =
-      opts?.requestId && opts.assistantId
-        ? { requestId: opts.requestId, assistantId: opts.assistantId }
-        : null;
     // 已经有个循环在接这条会话（自动重接的退避睡眠还没醒 / 正接着）：别重复接 ——
     // 多一条空占位消息是小事，`handleFrame` 是追加式的，回放帧追加两遍会让正文重复
-    if (!resume && subscribing.has(conversationId)) return true;
-    /**
-     * `resume` 的语义是「强制重接」，但**本端自己那条 live 流还活着时没有可重接的对象**：
-     * 再挂一条就是两条流往同一条助手消息追加同一批帧（`attachRun` 先清空再从头回放，
-     * `runRound` 的直播同时在写），表现是正文每个字都重复，只有整轮结束重载会话才恢复。
-     *
-     * 只卡 `resume` 这条路：断线续接（`runRound` 的 catch 里转交过来，不带 `requestId`
-     * 以外的强制语义）与刷新页面（切片里根本没有流）都不受影响。
-     */
-    if (resume) {
-      const own = readSlice(conversationId);
-      if (own.streaming && !own.request?.controller?.signal.aborted) return true;
-    }
+    if (subscribing.has(conversationId)) return true;
+    // 只有原 POST 已断开的显式交接可以接管仍标为 streaming 的现场。
+    const own = readSlice(conversationId);
+    if (!opts?.handoff && own.streaming && own.request && !own.request.controller.signal.aborted)
+      return true;
     subscribing.add(conversationId);
     try {
-      let requestId = resume?.requestId ?? "";
+      let requestId = opts?.requestId ?? "";
       /** `GET /api/chat/active` 探到的这条 run（resume 路径不探：调用方把 id 都给全了） */
       let probed: ChatRunSummary | null = null;
       if (!requestId) {
@@ -93,6 +101,12 @@ export function createConversationRunLoop(ctx: ConvCore) {
         }
       }
 
+      // 探测期间也可能开出了本端直播；异步边界之后必须重新检查所有权。
+      if (get().getApi() !== api) return false;
+      const current = readSlice(conversationId);
+      if (!opts?.handoff && current.streaming && current.request && !current.request.controller.signal.aborted)
+        return true;
+
       /**
        * 占位消息：服务端落盘的历史里还没有这条助手消息，回放的帧要往它上面追加。
        * 本地已经挂着这一轮的占位（断线续接 / 断线重连）就**复用**，别再 push 一条空的 ——
@@ -100,7 +114,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
        */
       const live = readSlice(conversationId);
       const reuseId =
-        live.request?.assistantId &&
+        live.request?.id === requestId && live.request.assistantId &&
         live.messages.some((m) => m.id === live.request!.assistantId)
           ? live.request.assistantId
           : null;
@@ -113,7 +127,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
        * 历史时这回放出来的正文才不会整棵重挂载。缺省（老客户端没传）退回自生成，行为同以前。
        */
       const assistantId =
-        resume?.assistantId ??
+        opts?.assistantId ??
         reuseId ??
         probed?.assistantMessageId ??
         nextLocalId("a");
@@ -148,7 +162,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
         reconnectNotice: null,
         // 作废在途的消息加载：从现在起本地这份「回放现场」是真源
         loadGen: s.loadGen + 1,
-        request: s.request
+        request: s.request && !s.request.controller.signal.aborted
           ? { ...s.request, id: requestId, assistantId }
           : { id: requestId, controller: new AbortController(), assistantId },
       }));
@@ -186,9 +200,10 @@ export function createConversationRunLoop(ctx: ConvCore) {
          * ⚠️ **必须每次重连各建一个**：上一轮缓冲里的残留不能跨连接漏到下一轮 ——
          * 下一轮开头刚把这一轮的 parts 清空，漏一帧过去就是「回放重建完又被追加一遍」。
          */
-        const batch = createFrameBatcher((frame) =>
-          handleFrame(conversationId, assistantId, frame),
-        );
+        const batch = createFrameBatcher((frame) => {
+          if (get().getApi() === api && readSlice(conversationId).request?.controller === controller)
+            handleFrame(conversationId, assistantId, frame);
+        });
 
         try {
           /**
@@ -201,6 +216,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
           await api.attachRun(
             requestId,
             (frame) => {
+              if (get().getApi() !== api || readSlice(conversationId).request?.controller !== controller) return;
               if (!reconnected) {
                 reconnected = true;
                 writeSlice(conversationId, (s) =>
@@ -213,6 +229,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
           );
           // 流关了：先把缓冲里的尾巴落干净再收场，别让最后几帧等 16ms 的定时器
           batch.flush();
+          if (readSlice(conversationId).request?.controller !== controller) return true;
           // 流正常关闭 = 收到过 end 帧（服务端把已结束的 run 回放完也会直接 close）
           settleRound(conversationId, controller.signal);
           return true;
@@ -222,6 +239,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
            * 而不是回退到几帧之前（缓冲里那些帧还没写进 store）。
            */
           batch.flush();
+          if (get().getApi() !== api || readSlice(conversationId).request?.controller !== controller) return true;
           // 用户点了「停止」（或睡眠期间点了）：这条流是我们自己断的，照常收场
           if (controller.signal.aborted) {
             settleRound(conversationId, controller.signal);
@@ -281,19 +299,6 @@ export function createConversationRunLoop(ctx: ConvCore) {
       subscribing.delete(conversationId);
     }
   };
-
-  /**
-   * 等会话清单第一次成功落地（`conversationsLoaded` 置位；workspaces 与它同一次
-   * refresh() 写入，到位即同时到位）。
-   *
-   * 刷新后的深链走「乐观打开」：清单还没到，深链 effect 就先 openConversation 了。
-   * 此时 loadConversation 里的 convMeta / workspaces 查找全是空 —— ACP 的 transcript
-   * 回放会被静默跳过（界面就是一个空会话，观感即「消息全没了，成了新会话」），
-   * chatTarget 也恢复不了。清单到位后这些查找才有意义。
-   *
-   * 超时兜底：服务端一直不可达时直接放行，流程按「清单拉不到」的原样收场
-   * （loadMessages 已经写过错误态，界面上有重试按钮）。
-   */
 
   const handleFrame = (
     conversationId: string,
@@ -670,347 +675,193 @@ export function createConversationRunLoop(ctx: ConvCore) {
     });
   };
 
-  /**
-   * 这个会话有没有在跑的服务端 run（**查不到一律算没有**：网络不通 / 401 / 5xx）。
-   *
-   * 多试几次再放弃（每次间隔 500ms）：调用点都在「连接刚断」的异常路径上，那时一次
-   * `activeRun` 很可能只是同一个网络抖动，直接判「没在跑」会把还活着的 run 误判成结束。
-   */
-
-  const loadConversation = async (conversationId: string): Promise<void> => {
-    // 拉服务端落盘的权威历史（内置）；acp 服务端历史恒为空，这里只是走个过场
-    // resetScroll：首次装载，消息写入与复位落底同帧（见 loadMessages 的 opts 注释）
-    const fetched = await loadMessages(conversationId, {
-      loadError: true,
-      resetScroll: true,
-    });
-    // 乐观打开（刷新后的深链）时清单多半还没到：先等它落地，再查 convMeta。
-    // loadMessages 收尾已把「装载中」撤掉，等清单 + 回放的这段窗口里重新亮起，
-    // 免得界面是一片无提示的空白；清单已到的常规路径（点侧栏 / 重试）瞬间放行。
-    if (!get().conversationsLoaded) {
-      writeSlice(conversationId, (s) => ({ ...s, loading: true }));
-      await waitConversationsLoaded();
-    }
-    /**
-     * acp 会话下面还要走两个往返：`peekActiveRun`（这一轮是不是还在跑）+ 回放 / attach。
-     * 而 `loadMessages` 收尾已经把装载标记撤掉了 —— **清单已经到齐的路径根本没进上面那个
-     * 分支**，于是这段窗口 `loading` 是 false、`messages` 还空着，消息区就按「一条消息都
-     * 没有」渲染空态（「在「x」里说点什么」），回放一到又被消息顶掉。
-     *
-     * 刷新页面必中：现在的恢复入口是 `PanelView` 等清单落地后把当前会话对齐到焦点标签，
-     * 所以进 `loadConversation` 时 `conversationsLoaded` 恒为 true。ACP 比内置多这两个
-     * 往返，肉眼就是「刷新闪一下空态」。
-     *
-     * 这里补亮，撤掉的地方不变（各分支的 finally 与收尾统一撤）。
-     */
-    if (
-      get().conversations.find((c) => c.id === conversationId)?.backend === "acp"
-    ) {
-      writeSlice(conversationId, (s) => ({ ...s, loading: true }));
-    }
-    // 协作会话：任务 / 消息状态在独立的 collab.json，随打开一起拉（失败不挡主历史）
-    if (
-      (fetched ?? get().conversations.find((c) => c.id === conversationId))
-        ?.kind === "collab"
-    ) {
-      const api = get().getApi();
-      if (api) {
+  /** 按会话合并所有恢复入口；只等待历史就绪，接上的 SSE 独立持有整轮生命周期。 */
+  const loadConversation = (
+    conversationId: string,
+    opts?: { resetScroll?: boolean },
+  ): Promise<boolean> => {
+    const existing = recoveries.get(conversationId);
+    if (existing) return existing;
+    const api = get().getApi();
+    if (!api) return Promise.resolve(false);
+    const fresh = !get().slices[conversationId];
+    const generation = readSlice(conversationId).loadGen;
+    const current = (): boolean =>
+      get().getApi() === api && !!get().slices[conversationId];
+    const pending: Promise<boolean> = Promise.resolve().then(async (): Promise<boolean> => {
+      let allowQueuePump = false;
+      if (fresh) {
+        const cached = readSlice(conversationId).queuedMessages;
+        void fetchQueue(conversationId).then((remote) => {
+          if (!remote || !current() || readSlice(conversationId).queuedMessages !== cached) return;
+          writeSlice(conversationId, (s) => ({ ...s, queuedMessages: remote }));
+          saveQueue(conversationId, remote);
+          // 队列可能晚于历史到达；只有本次已确认空闲，才允许自动续发。
+          if (allowQueuePump && !get().runningConversations[conversationId]) pump(conversationId);
+        });
+      }
+      try {
+        let run: ChatRunSummary | null = null;
+        let probeError: unknown;
         try {
-          const { collab } = await api.getCollabState(conversationId);
-          if (isFocus(conversationId)) {
+          // 先查 run 再读历史：探测返回空闲时，后面的历史已经包含刚完成的轮次。
+          ({ run } = await api.activeRun(conversationId));
+        } catch (err) {
+          probeError = err;
+        }
+        if (!current()) return false;
+        const fetched = await loadMessages(conversationId, {
+          loadError: true,
+          keepLoading: true,
+        });
+        if (!current()) return false;
+        if (!get().conversationsLoaded) await waitConversationsLoaded();
+        if (!current()) return false;
+        const conversation = fetched ?? get().conversations.find((c) => c.id === conversationId);
+        if (probeError) throw probeError;
+        let restored = fetched !== null;
+        if (get().runningConversations[conversationId] && !readSlice(conversationId).request)
+          return restored;
+
+        if (conversation?.kind === "collab") {
+          try {
+            const { collab } = await api.getCollabState(conversationId);
+            if (!current()) return false;
             writeSlice(conversationId, (s) => ({
               ...s,
-              collab: { state: collab, liveText: {}, liveParts: {} },
+              collab: { state: collab, liveText: s.collab?.liveText ?? {}, liveParts: s.collab?.liveParts ?? {} },
             }));
+          } catch (err) {
+            console.warn("[collab] Recovery failed:", err);
           }
-        } catch (err) {
-          console.warn("[collab] 运行态装载失败：", err);
         }
-      }
-    }
-    // acp 会话：消息在 agent 侧，用 session/load 回放重建视图（不落盘，刷新后重放）
-    const convMeta = get().conversations.find((c) => c.id === conversationId);
-    let resumedActive = false;
-    if (convMeta?.backend === "acp" && isFocus(conversationId)) {
-      /**
-       * ⚠️ 先看这一轮是不是还在跑。
-       *
-       * 跑动中刷新**不能**走 session/load：服务端回放入口的第一件事是 teardown 同 key
-       * 的 ACP 进程，正在等 nextUpdate 的 ActiveSession 会以 `ACP connection closed`
-       * 失败（用户看到的就是这条报错）。正确恢复方式是「进程内视图快照 + attach 帧日志」：
-       * 快照给出已完成的轮次与本轮用户消息，attach 从帧日志头部回放当前助手消息并接回直播。
-       */
-      // 装载标记已在上面按 backend 亮起（含 `peekActiveRun` 这次往返），这里不再重复写
-      const activeRun = await peekActiveRun(conversationId);
-      /**
-       * 本端自己就在这一轮里跑（`runRound` 的 live 流正在往这条助手消息追加）——
-       * **一条流都不许再接**。
-       *
-       * 撞得最狠的是「新会话第一条」：`newConversation` 建完会话先把
-       * `activeConversationId` 切过去，界面立刻从空态页进会话；而 ACP 还要下发
-       * `setAcpAgentMode` / `setAcpThoughtLevel`（两次进程往返）才 `writeSlice` 落占位。
-       * 这段窗口里 `slices[id]` 还不存在，任何一次 `openConversation(id)`
-       * （PanelView 对齐标签 / 侧栏点会话 / 刷新后恢复）都会走到这里，而那一刻
-       * `runRound` 的 `streamChat` 已经上路 —— `peekActiveRun` 探到的正是**自己这一轮**。
-       *
-       * 再 attach 的后果：`attachRun` 先把 parts 清空再从头回放，`runRound` 那条直播
-       * 同时在写，两条流往同一条助手消息追加同一批帧 —— 正文每个字都出现两遍，
-       * 只有整轮结束手动「重新加载会话」才恢复（用户报的现状）。
-       */
-      if (activeRun && get().runningConversations[conversationId]) {
-        resumedActive = true;
-      } else if (activeRun) {
-        try {
-          const api = get().getApi();
-          // 有 active run 时服务端只读内存快照，不会碰 agent 进程；sessionId / cwd
-          // 这时可以不齐（会话刚新建、还没绑定 session）—— 服务端按 conversationId 判断。
-          if (api && convMeta.configId) {
-            const cwd = get().workspaces.find(
-              (w) => w.id === convMeta.workspaceId,
-            )?.path;
+
+        if (conversation?.backend === "acp" && conversation.configId) {
+          const cwd = get().workspaces.find((w) => w.id === conversation.workspaceId)?.path;
+          if (run || (conversation.acpSessionId && cwd)) {
             try {
-              const { messages: snapshot } = await api.getAcpTranscript(
-                convMeta.configId,
-                conversationId,
-                convMeta.acpSessionId ?? "",
-                cwd ?? "",
+              const transcript = await api.getAcpTranscript(
+                conversation.configId, conversationId, conversation.acpSessionId ?? "", cwd ?? "",
               );
-              if (isFocus(conversationId) && snapshot.length > 0) {
-                /**
-                 * ⚠️ **不能只在本地消息为空时才写快照**。
-                 *
-                 * 刷新时 `useAttachRemoteRun` 可能抢在本次装载前面先 `attachRun`，那时
-                 * 本地已经挂了本轮助手占位（`messages.length` = 1，但不是历史）。原来的
-                 * `length === 0` 判据会因此整份丢弃快照 —— 表现就是「跑到一半刷新，
-                 * 历史消息不显示，结束后再刷新才回来」。
-                 *
-                 * 改成合并：快照（已完成的轮次 + 本轮用户消息）在前，本地那些快照里
-                 * 没有的（当前助手占位 / 已回放的 part）接在后面，按 id 去重。
-                 * 本地已经有用户消息（用户刚发的乐观消息）时不合并 —— 快照里多半还没
-                 * 有它，硬并会重复一条。
-                 */
-                writeSlice(conversationId, (s) => {
-                  if (s.messages.some((m) => m.role === "user")) return s;
-                  const ids = new Set(snapshot.map((m) => m.id));
-                  const extras = s.messages.filter((m) => !ids.has(m.id));
-                  return {
-                    ...s,
-                    messages: [...snapshot, ...extras],
-                    scrollResetSeq: s.scrollResetSeq + 1,
-                  };
-                });
-              }
-            } catch {
-              // 快照拉不到不该挡住 attach：帧日志仍然能恢复当前这一轮
+              if (!current()) return false;
+              // 以「读取历史时」的运行态为准，处理探测后恰好结束 / 开出下一轮的窗口。
+              if (transcript.run !== undefined) run = transcript.run;
+              const active = run;
+              writeSlice(conversationId, (s) => ({
+                ...s,
+                messages: active
+                  ? mergeHistory(transcript.messages, s.messages, s.request?.assistantId, generation !== s.loadGen)
+                  : generation === s.loadGen || (!s.streaming && !s.messages.some((m) => m.role === "user"))
+                    ? transcript.messages
+                    : s.messages,
+                error: null,
+              }));
+              restored = true;
+            } catch (err) {
+              if (!run) throw err;
+              // 历史暂不可用也不能拦住直播；错误留下供重试，而非静默显示成空会话。
+              if (current()) writeSlice(conversationId, (s) => ({ ...s, error: errorMessage(err) }));
+              restored = false;
             }
           }
-          resumedActive = await attachRun(
-            conversationId,
-            activeRun.assistantMessageId
-              ? {
-                  requestId: activeRun.requestId,
-                  assistantId: activeRun.assistantMessageId,
-                }
-              : undefined,
-          );
-        } finally {
-          writeSlice(conversationId, (s) => ({ ...s, loading: false }));
         }
-      }
-    }
-    if (
-      !resumedActive &&
-      convMeta?.backend === "acp" &&
-      convMeta.acpSessionId &&
-      convMeta.configId &&
-      isFocus(conversationId)
-    ) {
-      const cwd = get().workspaces.find(
-        (w) => w.id === convMeta.workspaceId,
-      )?.path;
-      if (cwd) {
-        // loadMessages 收尾已把「装载中」撤掉，回放又要一个往返 —— 这段窗口里界面
-        // 只是一片空白。重新亮起装载标记，回放结束（成功 / 失败）再撤。
-        writeSlice(conversationId, (s) => ({ ...s, loading: true }));
-        try {
-          const api = get().getApi();
-          const { messages: replayed } = await api!.getAcpTranscript(
-            convMeta.configId,
-            conversationId,
-            convMeta.acpSessionId,
-            cwd,
-          );
-          // 回放期间用户可能已经发出了新一轮（本地已有消息）或切走了会话：都不覆盖
-          if (
-            replayed.length > 0 &&
-            isFocus(conversationId) &&
-            readSlice(conversationId).messages.length === 0
-          ) {
-            // 回放出来的消息与复位落底同一次写入（同 loadMessages 的 resetScroll，别拆两帧）
-            writeSlice(conversationId, (s) => ({
-              ...s,
-              messages: replayed,
-              scrollResetSeq: s.scrollResetSeq + 1,
-            }));
-          }
-        } catch (err) {
-          // 回放失败（agent 不支持 load / 会话失效 / OpenCode 服务故障）：写错误态，
-          // 让消息列表展示错误 + 重试，而不是静默吞掉变成「历史丢了」
-          writeSlice(conversationId, (s) => ({
-            ...s,
-            error: errorMessage(err),
-          }));
-        } finally {
-          writeSlice(conversationId, (s) => ({ ...s, loading: false }));
+        if (!current()) return false;
+        if (run) {
+          // 不 await 直播：占位同步建立后即可展示历史，不能让 loading 挂到生成结束。
+          void attachRun(conversationId, {
+            requestId: run.requestId, assistantId: run.assistantMessageId,
+          }).catch((err) => {
+            if (current()) writeSlice(conversationId, (s) => ({ ...s, error: errorMessage(err) }));
+          });
+        } else if (restored && !get().runningConversations[conversationId]) {
+          allowQueuePump = true;
+          pump(conversationId);
         }
+        return restored;
+      } catch (err) {
+        if (current()) writeSlice(conversationId, (s) => ({ ...s, error: errorMessage(err) }));
+        return false;
+      } finally {
+        if (current()) writeSlice(conversationId, (s) => ({
+          ...s,
+          loading: false,
+          scrollResetSeq: opts?.resetScroll === false ? s.scrollResetSeq : s.scrollResetSeq + 1,
+        }));
+        if (recoveries.get(conversationId) === pending) recoveries.delete(conversationId);
       }
-    }
-    /*
-     * 收尾：撤掉「装载中」，并兜底再复位一次落底。
-     *
-     * 消息本身的写入已经各自带上了 resetScroll（内置 走 loadMessages、acp 走回放那块），
-     * 这里的 bump 只为覆盖「压根没有消息可写」的窗口 —— 比如等会话清单期间用户就切走了、
-     * 或回放没跑（缺 cwd / 非当前会话）。空会话落底本来就无副作用。
-     */
+    });
+    recoveries.set(conversationId, pending);
     writeSlice(conversationId, (s) => ({
-      ...s,
-      scrollResetSeq: s.scrollResetSeq + 1,
-      loading: false,
+      ...s, loading: true, error: null,
+      ...(fresh
+        ? {
+            queuedMessages: loadQueue(conversationId),
+            // 用户按下的暂停要跟着会话回来：刷新后静默把攒着的队列全发出去是最糟的错
+            queuePaused: loadQueuePaused(conversationId),
+          }
+        : {}),
     }));
-    // 这里原本还有一段「把会话详情里的模型 / MCP / 浏览器偏好 / 思考强度搬进全局现场」
-    // 的恢复块（还得比对引用，防止盖掉装载期间用户自己改的选择）。现在不需要了：视图的
-    // 现场从**会话清单项**派生（`scopedSettingsOf`），`loadMessages` 收尾已经把详情校正
-    // 进清单项，派生出来自然最新 —— 「搬运」这件事一旦存在，就总会有人漏一个分支。
-    //
-    // 本地没人订着这条会话、但服务端还挂着 run（刷新 / 断线重连 / 换端回来）：
-    // 接回去回放现场继续看直播。接上了就到此为止 —— 收尾（拉权威历史 / 续队列）
-    // 由 attachRun 的收场负责
-    if (!get().runningConversations[conversationId]) {
-      const attached = await attachRun(conversationId);
-      if (attached) return;
-    }
-    // 本会话没在跑但有排队消息：依次发出（刷新后也能续上；被停掉的那轮结束后同样接着跑）
-    if (!get().runningConversations[conversationId]) pump(conversationId);
+    return pending;
   };
 
   const loadMessages = async (
     conversationId: string,
-    opts?: {
-      loadError?: boolean;
-      /**
-       * 「打开会话的首次装载」才传：消息到位与**复位落底**（`scrollResetSeq`）必须在
-       * **同一次 writeSlice** 里落下去。
-       *
-       * 拆成两次（先写 messages、后 bump seq）会漏出一个中间帧：那一帧消息已经渲染、
-       * resetKey 却没变，滚动容器不做同步落底，内容高度暴增就交给库的 ResizeObserver
-       * 用 spring 接管 —— 观感是「切进长会话时从顶部平滑滚到底部」。而且这两次写入
-       * 是否落在同一个 React 批里取决于调用链的 await 时序（内置 与 acp 两条路径不同），
-       * 于是出现了「有的会话滚、有的不滚」。
-       *
-       * 静默刷新 / 每轮收尾的权威回拉刻意**不传** —— 那几种情况不能把正在翻历史的
-       * 用户拽到底部（见 `scrollResetSeq` 的注释）。
-       */
-      resetScroll?: boolean;
-    },
+    opts?: { loadError?: boolean; resetScroll?: boolean; keepLoading?: boolean },
   ): Promise<AgentConversation | null> => {
     const api = get().getApi();
     if (!api) return null;
+    if (!get().slices[conversationId]) writeSlice(conversationId, (s) => s);
     const gen = readSlice(conversationId).loadGen;
+    const token = {};
+    messageLoads.set(conversationId, token);
+    const current = (): boolean => get().getApi() === api &&
+      messageLoads.get(conversationId) === token && !!get().slices[conversationId];
     get().setBusy(true);
     try {
-      const conversation: AgentConversation =
-        await api.getConversation(conversationId);
-      // 唯一的过期条件是代次：期间这个会话已经开出了新一轮（runRound / attachRun 会
-      // +1），本地正在流式攒的消息不能被服务端快照盖掉
+      const conversation = await api.getConversation(conversationId);
+      if (!current()) return null;
+      const known = new Set(conversation.messages.map((m) => m.id));
+      writeSlice(conversationId, (s) => ({
+        ...s,
+        // ACP 详情里的 messages 恒为空，不是可以覆盖 transcript 的权威历史。
+        messages: conversation.backend === "acp"
+          ? s.messages
+          : s.streaming || s.request || gen !== s.loadGen
+            ? mergeHistory(conversation.messages, s.messages, s.request?.assistantId, gen !== s.loadGen)
+            : conversation.messages,
+        pendingSteers: s.pendingSteers.filter((m) => !known.has(m.id)),
+        error: null,
+        scrollResetSeq: opts?.resetScroll ? s.scrollResetSeq + 1 : s.scrollResetSeq,
+      }));
       if (gen === readSlice(conversationId).loadGen) {
-        /**
-         * 权威历史里已经出现的插话，从「插入中 / 未发出」列表里划掉。
-         *
-         * 收尾兜底落盘时**复用插话自己的 id**（`drainSteerInbox` 传 `userMessageId`），
-         * 所以「id 出现在历史里」= 它已经被服务端收下（作为普通消息），本地不该再留一份
-         * —— 否则下一轮开跑时它会被转进待发送队列，等于**同一句话发两遍**。
-         * 正常情况客户端早就按 `user-injected` 出列了，这里兜的是「断线恰好错过那批事件」。
-         */
-        const known = new Set(conversation.messages.map((m) => m.id));
-        writeSlice(conversationId, (s) => ({
-          ...s,
-          messages: conversation.messages,
-          ...(s.pendingSteers.some((m) => known.has(m.id))
-            ? { pendingSteers: s.pendingSteers.filter((m) => !known.has(m.id)) }
-            : {}),
-          error: null,
-          scrollResetSeq: opts?.resetScroll
-            ? s.scrollResetSeq + 1
-            : s.scrollResetSeq,
-        }));
-        /**
-         * 顺手把**会话设置**（模型 / 思考强度 / MCP / 浏览器偏好）按这份详情校正进清单项。
-         *
-         * 视图的现场是从清单项派生的（`scopedSettingsOf`），清单项不跟着校就等于「别的端
-         * 改过模型，这边还显示旧的」。放在代次判断里：刚开新一轮时清单已经由 `persistTarget`
-         * 写过，这份快照比它旧，不能拿它盖回去。
-         */
         set((state) => ({
-          conversations: state.conversations.map((c) =>
-            c.id === conversationId
-              ? {
-                  ...c,
-                  backend: conversation.backend,
-                  configId: conversation.configId,
-                  modelId: conversation.modelId,
-                  reasoningEffort: conversation.reasoningEffort,
-                  mcpServerIds: conversation.mcpServerIds,
-                  browserSettings: conversation.browserSettings,
-                }
-              : c,
-          ),
+          conversations: state.conversations.map((c) => c.id === conversationId ? {
+            ...c,
+            backend: conversation.backend,
+            configId: conversation.configId,
+            modelId: conversation.modelId,
+            reasoningEffort: conversation.reasoningEffort,
+            mcpServerIds: conversation.mcpServerIds,
+            browserSettings: conversation.browserSettings,
+          } : c),
         }));
-      } else if (conversation.messages.length > 0) {
-        /**
-         * 代次变了（刷新时 `attachRun` 抢在前面把 `loadGen` +1）也不能把这份历史**丢掉**。
-         *
-         * 这是「跑到一半刷新，历史消息全不见了」的直接成因：`attachRun` 先挂了本轮
-         * 助手占位，随后的历史响应因代次不符被整份丢弃 —— 界面上只剩占位 + 回放的
-         * 当前一轮，更早的消息没了，要等这一轮结束、再刷新一次靠空闲路径重拉才回来。
-         *
-         * 这里改成**合并**：服务端历史在前（权威顺序），本地那些历史里还没有的消息
-         * （本轮占位 / 回放出来的助手内容 / 乐观发送的用户消息）按原顺序接在后面。
-         * 按 id 去重 —— 收尾落盘会复用占位 id，届时服务端那份覆盖本地那份正好。
-         */
-        writeSlice(conversationId, (s) => {
-          const historyIds = new Set(conversation.messages.map((m) => m.id));
-          const extras = s.messages.filter((m) => !historyIds.has(m.id));
-          if (extras.length === 0) return s;
-          return { ...s, messages: [...conversation.messages, ...extras] };
-        });
       }
-      // 把服务端那份回给调用方：打开会话时用它判断 kind / 是否需要回放，比列表快照新
       return conversation;
     } catch (err) {
-      // 打开会话这条装载链路：失败归到消息列表的错误态（带重试），不污染底部通用错误条
-      if (opts?.loadError) {
-        writeSlice(conversationId, (s) => ({ ...s, error: errorMessage(err) }));
-      } else {
-        get().setError(errorMessage(err));
+      if (current()) {
+        if (opts?.loadError) writeSlice(conversationId, (s) => ({ ...s, error: errorMessage(err) }));
+        else get().setError(errorMessage(err));
       }
       return null;
     } finally {
-      get().setBusy(false);
-      writeSlice(conversationId, (s) => ({ ...s, loading: false }));
+      if (get().getApi() === api) get().setBusy(false);
+      if (messageLoads.get(conversationId) === token) {
+        messageLoads.delete(conversationId);
+        if (get().getApi() === api && get().slices[conversationId] && !opts?.keepLoading && !recoveries.has(conversationId))
+          writeSlice(conversationId, (s) => ({ ...s, loading: false }));
+      }
     }
   };
-
-  /**
-   * 断线轮次的**对账**：这一轮在客户端看是失败了（`runRound` 渲染了「网络错误」），
-   * 但服务端多半在断线期间把它跑完并落盘了 —— run 的生命周期不挂在客户端连接上。
-   * 拉一次服务端权威历史：确实多出了这一轮的助手回复就用它盖掉本地那条错误。
-   *
-   * 息屏 / 休眠醒来时网络往往**刚**恢复，一次拉不到很正常，所以重试几次再放弃。
-   *
-   * 只在「服务端历史比这一轮开跑前更长、且末位是助手消息」时才采纳 —— 否则
-   * （这一轮压根没开跑 / 落盘失败）保留本地渲染出来的错误，别拿一份旧历史把它擦成
-   * 「什么都没发生过」。acp 会话没有权威历史可对（服务端历史恒为空），直接放弃。
-   */
 
   const patchQueue = (conversationId: string, next: QueuedMessage[]): void => {
     writeSlice(conversationId, (s) => ({ ...s, queuedMessages: next }));
@@ -1053,10 +904,16 @@ export function createConversationRunLoop(ctx: ConvCore) {
    * `scope` 不传 = 活跃会话；分屏时非焦点标签的续跑带上自己的 id —— 队列是**那条会话
    * 自己的事**，用户此刻在看哪块不该决定它跑不跑。
    */
-  const pump = (scope?: string | null): void => {
+  const pump = (
+    scope?: string | null,
+    opts?: { force?: boolean },
+  ): void => {
     const conversationId = resolveConvId(scope);
     if (!conversationId) return;
     if (get().runningConversations[conversationId]) return;
+    // 用户手动暂停：自动链到此为止（队列原样留着）。`force` 是用户点「启动 / 立即发送」
+    // 的那一下，属于显式动作，不该被自己的暂停拦住。
+    if (!opts?.force && readSlice(conversationId).queuePaused) return;
     const queue = readSlice(conversationId).queuedMessages;
     const next = queue[0];
     if (!next) return;
@@ -1388,6 +1245,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
           await attachRun(conversationId, {
             requestId: alive.requestId,
             assistantId,
+            handoff: true,
           });
         } else {
           failed = true;
@@ -1483,6 +1341,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
    * `runRound` 与 `attachRun`（含断线重接循环）共用同一套收场语义。
    */
   const settleRound = (conversationId: string, signal: AbortSignal): void => {
+    if (readSlice(conversationId).request?.controller.signal !== signal) return;
     writeSlice(conversationId, (s) => ({
       ...s,
       streaming: false,

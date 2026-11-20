@@ -3,6 +3,7 @@ import { cn } from "cn"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { Button } from "./button"
+import { orderDialogActions } from "./dialog-actions"
 import { useHeightTransition } from "./height-transition"
 import { XIcon } from "lucide-react"
 
@@ -110,6 +111,7 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   )
 }
 
+/** 取消用 DialogClose 或 data-dialog-dismiss 标记；末尾顺序由 Footer 统一保证。 */
 function DialogFooter({
   className,
   showCloseButton = false,
@@ -122,12 +124,12 @@ function DialogFooter({
     <div
       data-slot="dialog-footer"
       className={cn(
-        "-mx-4 -mb-4 flex flex-col-reverse gap-2 rounded-b-xl p-4 sm:flex-row sm:justify-end",
+        "-mx-4 -mb-4 flex flex-col gap-2 rounded-b-xl p-4 sm:flex-row sm:justify-end",
         className
       )}
       {...props}
     >
-      {children}
+      {orderDialogActions(children, [DialogClose, DialogPrimitive.Close])}
       {showCloseButton && (
         <DialogPrimitive.Close asChild>
           <Button variant="outline">Close</Button>

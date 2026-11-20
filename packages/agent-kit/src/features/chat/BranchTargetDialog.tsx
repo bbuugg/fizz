@@ -164,7 +164,7 @@ export function BranchTargetDialog({
         </RadioGroup>
 
         <DialogFooter>
-          <Button variant="ghost" onClick={close} disabled={busy}>
+          <Button data-dialog-dismiss="" variant="ghost" onClick={close} disabled={busy}>
             取消
           </Button>
           <Button onClick={() => void submit()} disabled={busy}>

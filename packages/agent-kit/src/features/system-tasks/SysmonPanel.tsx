@@ -970,7 +970,7 @@ function KillDialog({
         </label>
 
         <DialogFooter>
-          <Button data-dialog-dismiss="" variant="ghost" size="sm" onClick={onCancel}>
+          <Button autoFocus data-dialog-dismiss="" variant="ghost" size="sm" onClick={onCancel}>
             取消
           </Button>
           <Button

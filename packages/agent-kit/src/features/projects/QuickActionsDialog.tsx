@@ -458,11 +458,11 @@ export function QuickActionsDialog({
                 data-slot="dialog-footer"
                 className="flex shrink-0 justify-end gap-2 border-t pt-3"
               >
-                <Button data-dialog-dismiss="" variant="ghost" size="sm" onClick={() => setDraft(null)}>
-                  {tr('取消')}
-                </Button>
                 <Button size="sm" disabled={busy} onClick={() => void submitDraft()}>
                   {tr('保存')}
+                </Button>
+                <Button data-dialog-dismiss="" variant="ghost" size="sm" onClick={() => setDraft(null)}>
+                  {tr('取消')}
                 </Button>
               </div>
             </>

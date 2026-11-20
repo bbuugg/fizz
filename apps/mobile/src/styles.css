@@ -243,7 +243,8 @@
  * fallback 0。
  *
  * `data-slot='drawer-content'` 是 `@fizz/ui/drawer` 的稳定钩子（手机版的
- * Dialog 已被换成抽屉版，见 `app/mobile-dialog.tsx`）。
+ * Dialog / AlertDialog 都已换成抽屉版，见 `app/mobile-dialog.tsx` 与
+ * `app/mobile-alert-dialog.tsx`）。
  */
 [data-slot='drawer-content'] {
   padding-bottom: var(--safe-area-inset-bottom, 0px);
@@ -278,6 +279,28 @@
   ):not(:has(> :nth-child(3)))
   > :is([data-slot='button'], [data-slot='spinner-button']) {
   flex: 1 1 0%;
+}
+
+/*
+ * 底部动作行**三个及以上**按钮时改成一行一个。
+ *
+ * 「取消 / 仅本条 / 及后续 N 条」这种三选一挤在一行，手机上每个只剩几十 px，文字换行、
+ * 点哪个都容易误触。超过两个就不横向分了：竖着排，每颗按钮占满整行。
+ *
+ * DOM 已统一成「执行操作在前、取消最后」，竖排也保持这个顺序，取消贴底。
+ *
+ * 判据是**按钮个数**（三个同级按钮的 `~` 链），不是子元素个数 —— footer 里可能还夹着
+ * 路径 / 错误提示这类兄弟（`ServerDirPicker`），不能因为它们把两颗按钮排成竖的
+ * （上面那条「恰好两个按钮等宽」的规则同理，它数的是子元素）。
+ */
+[data-mobile-dialog]
+  [data-slot='dialog-footer']:has(
+    > :is([data-slot='button'], [data-slot='spinner-button'])
+      ~ :is([data-slot='button'], [data-slot='spinner-button'])
+      ~ :is([data-slot='button'], [data-slot='spinner-button'])
+  ) {
+  flex-direction: column;
+  align-items: stretch;
 }
 
 ::selection {

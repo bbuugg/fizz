@@ -341,7 +341,7 @@ export function McpTab({ app }: { app: AgentApp }) {
             )}
 
             <DialogFooter className="pt-1">
-              <Button type="button" size="sm" variant="ghost" onClick={closeMcpForm}>
+              <Button data-dialog-dismiss="" type="button" size="sm" variant="ghost" onClick={closeMcpForm}>
                 {tr('取消')}
               </Button>
               <Button

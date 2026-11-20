@@ -65,6 +65,13 @@ export function useMainComposerProps(
      * 写的内容吃掉。`onStarted` 恰好是「会话已建好、消息已落本地」那一刻。
      */
     onSubmit: (text: string, onStarted: () => void) => void | boolean | Promise<boolean>;
+    /**
+     * 只入队、不立刻发（发送方式下拉里的「放入队列」）。不传 = 不显示带下拉的发送钮。
+     *
+     * 与 `onSubmit` 同一个签名、同样由 store 的 `onStarted` 驱动清草稿 —— 入队是本地
+     * 同步动作，调用方会立刻回调它，输入框随即清空。
+     */
+    onEnqueue?: (text: string, onStarted: () => void) => void | boolean;
     /** 暴露 textarea 引用（编辑队列消息写回输入框后聚焦用）；不传则内部自建 */
     textareaRef?: RefObject<HTMLTextAreaElement | null>;
     /** 正在编辑重发的那条消息（非空时输入框卡片内显示「编辑消息」条）；初始页没有 */
@@ -121,7 +128,7 @@ export function useMainComposerProps(
   latestDraftRef.current = textInput.value;
   const ownRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = opts.textareaRef ?? ownRef;
-  const { streaming, activeWorkspace } = app;
+  const { streaming } = app;
   const isAcp = turnIsAcp(app);
   const running = streaming;
   /**
@@ -141,11 +148,12 @@ export function useMainComposerProps(
    * （用户要求：认不出就照发，别拦正文）；拦下的只剩缺参数 / 当前会话不可用。
    * 编辑重发态不分发：那段文本是要原样重发的旧消息，不是命令语境。
    */
-  const dispatchSlashCommand = (text: string): boolean => {
-    const all = builtinSlashCommands(slashContext);
-    const outcome = resolveSlashDispatchFor(text, all, (c) =>
+  const slashDispatchOf = (text: string) =>
+    resolveSlashDispatchFor(text, builtinSlashCommands(slashContext), (c) =>
       c.available ? c.available(slashContext) : true,
     );
+  const dispatchSlashCommand = (text: string): boolean => {
+    const outcome = slashDispatchOf(text);
     if (outcome.kind === "run") {
       outcome.command.run(slashContext, outcome.args);
       return true;
@@ -174,6 +182,19 @@ export function useMainComposerProps(
     if (shouldClearChatDraft(latestDraftRef.current, draft)) textInput.clear();
   };
 
+  /**
+   * 「放入队列」何时不可用：
+   * - 编辑态（重发 / 编辑插话）：这条要走的是「替换 / 重插」，再另存一份进队列只会重复；
+   * - 斜杠命令：命令要在提交那一刻执行，进了队列就只是普通正文，等发出去时已经没意义。
+   * 仍然显示成灰项（不是隐藏）—— 选项突然消失会让人以为功能没了。
+   */
+  const draftTrimmed = textInput.value.trim();
+  const enqueueDisabled =
+    !!opts.editing ||
+    !!opts.editingSteer ||
+    // 先看首字符再建命令表：这段在渲染期跑，流式时每来一个 token 都会执行一次
+    (draftTrimmed.startsWith("/") && slashDispatchOf(draftTrimmed).kind !== "text");
+
   return {
     value: textInput.value,
     onChange: textInput.setInput,
@@ -200,6 +221,24 @@ export function useMainComposerProps(
       }
       opts.onSubmit(trimmed, () => clearDraftAfterStarted(trimmed));
     },
+    /**
+     * 只入队、不立刻发：守卫与 `onSubmit` 同一套（空正文 + 附件 / 引用兜底、压缩中禁发），
+     * 但**不分发斜杠命令** —— 入队的是正文，命令该走的执行路径不存在了，所以上面把
+     * 这条入口直接灰掉（`enqueueDisabled`）。
+     */
+    onEnqueue: opts.onEnqueue
+      ? () => {
+          const trimmed = textInput.value.trim();
+          const hasSendableAttachment = (opts.attachments ?? []).some(
+            (a) => a.uploaded && a.url,
+          );
+          const hasQuote = (opts.quotes ?? []).length > 0;
+          if (!trimmed && !hasSendableAttachment && !hasQuote) return;
+          if (app.contextCompressing) return;
+          opts.onEnqueue?.(trimmed, () => clearDraftAfterStarted(trimmed));
+        }
+      : undefined,
+    enqueueDisabled,
     onCancel: () => void app.stop(),
     streaming,
     // 没有工作区也能聊（无项目会话）：不再按 `!activeWorkspace` 整体禁用输入框
@@ -226,9 +265,9 @@ export function useMainComposerProps(
      * 分支只会多一处不一致。
      */
     sending: !app.activeConversationId && app.creatingConversation,
-    placeholder: activeWorkspace
-      ? t("交给 Agent 做点什么…（Enter 发送，Shift+Enter 换行）")
-      : t("有什么想问的？…（不指定项目，会话存在服务端）"),
+    // 提示语不按工作区分支：没选项目也能聊（发送时服务端建临时工作区），
+    // 换一句「不指定项目」的文案只会让人以为这里少了什么。
+    placeholder: t("交给 Agent 做点什么…（Enter 发送，Shift+Enter 换行）"),
     // 输入框卡片内（`header`）从上到下：引用 / 附件预览 / 编辑条（正在改哪条历史）/
     // 编辑插话条（正在改哪条未生效插话）/ 统一的待发送列表（插话 + 队列），都与输入框浑然一体
     //（各自自带底部分隔线）

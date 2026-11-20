@@ -75,7 +75,7 @@ export function NameDialog({
           />
         </div>
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+          <Button data-dialog-dismiss="" variant="ghost" onClick={() => onOpenChange(false)}>
             取消
           </Button>
           <Button onClick={submit} disabled={!value.trim()}>
@@ -122,7 +122,7 @@ export function ConfirmDialog({
           </pre>
         ) : null}
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+          <Button data-dialog-dismiss="" autoFocus variant="ghost" onClick={() => onOpenChange(false)}>
             取消
           </Button>
           <Button
@@ -193,7 +193,7 @@ export function CompressDialog({
           />
         </div>
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+          <Button data-dialog-dismiss="" variant="ghost" onClick={() => onOpenChange(false)}>
             取消
           </Button>
           <Button
@@ -259,7 +259,7 @@ export function ExtractDialog({
           />
         </div>
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+          <Button data-dialog-dismiss="" variant="ghost" onClick={() => onOpenChange(false)}>
             取消
           </Button>
           <Button
@@ -306,7 +306,7 @@ export function PropertiesDialog({
           <dd>{formatTime(entry?.mtime ?? 0)}</dd>
         </dl>
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>
+          <Button data-dialog-dismiss="" variant="ghost" onClick={onClose}>
             关闭
           </Button>
         </DialogFooter>

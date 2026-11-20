@@ -692,7 +692,7 @@ export function NotesSidebar({
             className="font-mono text-sm"
           />
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setRenaming(null)}>
+            <Button data-dialog-dismiss="" variant="ghost" onClick={() => setRenaming(null)}>
               取消
             </Button>
             <Button

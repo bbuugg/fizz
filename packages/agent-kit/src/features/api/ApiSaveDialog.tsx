@@ -266,7 +266,7 @@ export function ApiSaveDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+          <Button data-dialog-dismiss="" variant="ghost" onClick={() => onOpenChange(false)}>
             取消
           </Button>
           {/* 没有名称输入框时（HTTP）把焦点落在「保存」上：Ctrl+S 打开弹窗后直接回车

@@ -5,9 +5,12 @@
  * JSX —— 外壳、圆钮、pill 的类名各写一遍，只靠注释「与主会话对齐」维持一致，改一处
  * 忘一处就漂。这里把**真正共用的那部分**收成一个组件：
  * - 外壳：圆角卡片 + 恒定描边 + 无边框 textarea（Enter 发送 / Shift+Enter 换行）；
- * - 发送 / 停止圆钮：**同一个位置只放一颗钮**。没在跑 = 发送（空草稿时禁用占位）；
- *   跑着 + 空草稿 = 停止；跑着 + 有草稿 = 发送（入队，本轮结束后按序自动发）。
- *   停止快捷键仍是 Esc。
+ * - 发送 / 停止：**同一个位置只放一组**。没在跑 + 有内容 = 带下拉的发送钮（左半直接
+ *   发送 / 右半选「直接发送 · 放入队列」）；没在跑 + 空草稿 = 发送（禁用占位）；
+ *   跑着 + 空草稿 = 停止；**跑着 + 有内容 = 单颗发送钮（点下去就是入队）** —— 这一轮
+ *   没结束，两种去向没有行为差异，不摆选择器。回车恒等于直接发送（跑着时即入队），
+ *   停止快捷键仍是 Esc。没有 `onEnqueue` 的调用方（新对话初始页：还没有会话可挂队列）
+ *   也退回单颗圆钮。
  * - 操作行布局：左 `leading`、右 `trailing`，发送 / 停止钮永远在最右。
  *
  * **刻意不共用**的是两侧 pill 里的东西：主会话那边是「工作区 / 后端模型（二级菜单）」，
@@ -27,11 +30,19 @@ import { filterCommands, parseSlashInput } from '@fizz/agent-kit/shared/lib/slas
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { useVoiceSilenceTimeout } from '@fizz/agent-kit/shared/lib/voice-prefs'
 import { Popover, PopoverAnchor, PopoverContent } from '@fizz/ui/popover'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from '@fizz/ui/dropdown-menu'
 import { LiquidGlassButton } from '@fizz/ui/liquid-glass'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@fizz/ui/select'
 import type { AiPermissionMode } from '@fizz/contracts/types'
 import {
   AtSign,
+  ChevronDown,
+  Clock,
   Eye,
   ImagePlus,
   Loader2,
@@ -95,6 +106,19 @@ interface ComposerProps {
   onChange: (value: string) => void
   /** 发送（Enter 或点发送钮）；本轮在跑时进待发送队列 */
   onSubmit: () => void
+  /**
+   * 只入队、不立刻发（发送方式里的「放入队列」）。不传 = 不显示这颗带下拉的发送钮，
+   * 退回单颗发送圆钮（新对话初始页没有会话，队列无处可挂）。
+   *
+   * 与 `onSubmit` 的区别只在**空闲**时：`onSubmit` 会立刻开一轮，这个只往队列里排一条，
+   * 等用户排好顺序 / 按启动再发；本轮在跑时两者都只是入队。
+   */
+  onEnqueue?: () => void
+  /**
+   * 「放入队列」不可用（编辑态：这条要重发 / 重插，不能再另存一份）。
+   * 菜单项照常显示但灰掉 —— 直接消失会让人以为功能没了。
+   */
+  enqueueDisabled?: boolean
   /** 停止（点停止钮，或输入框里按 Esc） */
   onCancel: () => void
   streaming: boolean
@@ -181,6 +205,8 @@ export function Composer({
   value,
   onChange,
   onSubmit,
+  onEnqueue,
+  enqueueDisabled,
   onCancel,
   streaming,
   disabled,
@@ -385,6 +411,23 @@ export function Composer({
   const showSend = !showSending && (hasContent || !streaming)
   /** 停止钮只在没有草稿时占这个位置；有草稿时让给发送，见上面那段 */
   const showStop = !showSending && streaming && !hasContent
+  /**
+   * 发送方式选择器（带下拉的发送钮）：**只在空闲、有内容、且调用方支持入队时出**。
+   *
+   * 跑着时不给选：那一轮还没结束，此时点发送 / 回车**都只是往队列里放**（`send` 的
+   * 入队分支），「直接发送」和「放入队列」根本没有行为差异 —— 摆两个选项只会让人
+   * 以为能插队开第二轮。所以跑着时退回单颗发送钮（点下去 = 入队，标题也照实说
+   * 「本轮结束后自动执行」）。
+   *
+   * 空闲时两种去向：直接发送 = `onSubmit`（立刻开跑）；放入队列 = `onEnqueue`
+   * （照入，攒着等用户排顺序 / 按启动）。回车始终走 `onSubmit`。
+   */
+  const showChooser =
+    !showSending && !showStop && !streaming && hasContent && !!onEnqueue
+  /** 「放入队列」为什么不能点（编辑态）；真正点不点得动还要看 sendDisabled */
+  const enqueueHint = enqueueDisabled
+    ? tr('当前输入不能排队（编辑态 / 斜杠命令）')
+    : tr('存进待发送队列，可调整顺序、可暂停')
   const sendTitle = streaming ? tr('发送（本轮结束后自动执行）') : tr('发送')
 
   // ---------- 粘贴 / 拖拽上传附件 ----------
@@ -675,6 +718,60 @@ export function Composer({
                     <Loader2 className="size-4 animate-spin" />
                   </LiquidGlassButton>
                 </IconTip>
+              ) : showChooser ? (
+                /*
+                  发送方式选择器（split）：左半 = 直接发送，右半 chevron 展开两项。
+                  只做成「整颗点开再选」不够用 —— 用户心里的主路径是「回车 / 点发送就走」，
+                  把发送动作藏进二级菜单等于每次多一次点击。所以左半就是发送，右半才是选择。
+                  左窄右窄共用一条 `bg-primary` 药丸底，中间一道半透明分隔线。
+                */
+                <div className="flex h-8 shrink-0 items-stretch overflow-hidden rounded-full bg-primary text-primary-foreground">
+                  <IconTip label={sendDisabled ? (sendDisabledHint ?? tr('上下文压缩中，稍后再发')) : sendTitle}>
+                    <button
+                      type="button"
+                      aria-label={tr('发送')}
+                      disabled={disabled || sendDisabled}
+                      onClick={onSubmit}
+                      className="flex items-center pl-2.5 pr-1.5 transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Send className="size-4" />
+                    </button>
+                  </IconTip>
+                  {/* 分隔线用 foreground 半透明而不是 border 变量：药丸底是 primary，描边色在暗色下几乎看不见 */}
+                  <span className="my-1.5 w-px shrink-0 bg-primary-foreground/25" aria-hidden />
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label={tr('选择发送方式：直接发送 / 放入队列')}
+                        disabled={disabled || sendDisabled}
+                        className="flex items-center pl-0.5 pr-1.5 transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <ChevronDown className="size-3.5 opacity-80" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent side="top" align="end" sideOffset={6} className="min-w-64">
+                      <DropdownMenuItem onSelect={onSubmit}>
+                        <Send className="size-3.5" />
+                        <span className="flex min-w-0 flex-col gap-0.5">
+                          <span>{tr('直接发送')}</span>
+                          {/* 选择器只在空闲时出现（跑着时不摆选项），所以这里是确定的「立刻」 */}
+                          <span className="text-xs text-muted-foreground">{tr('立刻发出')}</span>
+                        </span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onSelect={() => onEnqueue?.()}
+                        disabled={enqueueDisabled}
+                      >
+                        <Clock className="size-3.5" />
+                        <span className="flex min-w-0 flex-col gap-0.5">
+                          <span>{tr('放入队列')}</span>
+                          <span className="text-xs text-muted-foreground">{enqueueHint}</span>
+                        </span>
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
               ) : showSend ? (
                 // 发送：主色玻璃圆钮，空草稿禁用（空草稿 + 跑着时这个位置是停止钮，见 showStop）；
                 // sendDisabled（压缩进行中）只灰发送钮，不影响打字

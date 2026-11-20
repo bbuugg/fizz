@@ -305,7 +305,7 @@ export function SubagentDialog({
           ) : null}
 
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+            <Button data-dialog-dismiss="" type="button" variant="ghost" onClick={() => onOpenChange(false)}>
               {tr('取消')}
             </Button>
             <Button type="submit" disabled={saving}>

@@ -2051,6 +2051,13 @@ export interface ChatActiveResult {
   run: ChatRunSummary | null;
 }
 
+/** ACP 历史与其对应的运行态一同读取，避免把空闲全量回放当作运行中前缀再拼接。 */
+export interface AcpTranscriptResult {
+  messages: AgentChatMessage[];
+  /** 缺省只用于兼容旧服务端；null 明确表示 messages 已包含全部完成轮次。 */
+  run?: ChatRunSummary | null;
+}
+
 /**
  * POST /api/chat/compress（手动压缩）的响应。
  *

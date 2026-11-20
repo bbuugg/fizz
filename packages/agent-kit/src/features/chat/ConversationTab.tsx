@@ -62,6 +62,7 @@ import { TerminalPanel } from '@fizz/agent-kit/features/terminal/TerminalPanel'
 import { BrowserPane } from '@fizz/agent-kit/features/chat/BrowserPane'
 import { PreviewPane } from '@fizz/agent-kit/features/preview/PreviewPane'
 import { ViewHeader } from '@fizz/agent-kit/shared/components/view-header'
+import { conversationTitle } from '@fizz/agent-kit/shared/lib/conversation-title'
 import { WorkspaceQuickActions } from '@fizz/agent-kit/features/projects/WorkspaceQuickActions'
 import {
   draftPanelKey,
@@ -289,17 +290,22 @@ export function ConversationTab({
    */
   const workspaceName = workspace?.name ?? tr('工作区')
   /**
-   * 顶栏标题：**临时会话显示它自己的会话标题**，不显示工作区名。
+   * 顶栏标题：**始终显示会话标题**（三端一致）。
    *
-   * 临时工作区是一条会话一个、名字全都叫「临时会话」—— 拿它当标题等于没有信息，
-   * 而侧栏会话行显示的是 `conversation.title`，两处对不上更让人困惑。普通项目仍显示
-   * 项目名：顶栏是**工作区**工具条（终端 / 文件 / 源码都以这个工作区为前提），
-   * 同一项目下多个会话的区分交给标签栏。
+   * 早先只有临时会话显示标题、普通项目显示工作区名 —— 同一项目下开着多个会话时，
+   * 顶栏长得一模一样，分不清当前看的是哪一条；而侧栏会话行显示的是 `conversation.title`，
+   * 两处对不上更让人困惑。工作区名与路径仍挂在 `titleHint` 里，悬停即可看到。
    *
-   * 标题还没生成（新会话 / 草稿标签）时回退到工作区名，别留一条空标题。
+   * 标题还没生成（新会话 / 草稿标签）或还没有会话时回退到工作区名，别留一条空标题。
+   *
+   * 「开始新对话」页例外：工作区归属由输入框下方那一行表达（还能直接改），顶栏再显示
+   * 「未指定工作区 / 工作区名」只是同一件事说两遍，所以这里固定叫「新对话」。
    */
-  const headerTitle =
-    workspace?.scratch && conversation?.title?.trim() ? conversation.title : workspaceName
+  const headerTitle = !conversationId
+    ? tr('新对话')
+    : conversation?.title?.trim()
+      ? conversationTitle(conversation.title)
+      : workspaceName
 
   /** 「任务」这类虚拟工作区（path 为空）没有目录概念：终端 / 文件 / 快捷功能全部隐藏 */
   const hasDirectory = !!workspace?.path
@@ -499,14 +505,14 @@ export function ConversationTab({
         title={
           listsLoading ? (
             <Skeleton className="h-5 w-36" />
-          ) : workspace ? (
+          ) : !conversationId || workspace ? (
             headerTitle
           ) : (
             tr('未指定工作区')
           )
         }
         titleHint={
-          workspace
+          conversationId && workspace
             ? workspace.scratch
               ? tr('{title} · 临时会话：不指定项目的对话（目录在服务端数据目录）', { title: headerTitle })
               : `${workspaceName}（${workspace.path}）`

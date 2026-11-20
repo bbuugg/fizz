@@ -518,7 +518,7 @@ export function ScriptsPanel() {
               : '不勾选时，组内脚本会移到「未分组」。'}
           </p>
           <DialogFooter>
-            <Button data-dialog-dismiss="" variant="ghost" onClick={() => setPendingGroupDelete(null)}>
+            <Button autoFocus data-dialog-dismiss="" variant="ghost" onClick={() => setPendingGroupDelete(null)}>
               取消
             </Button>
             <Button variant="destructive" onClick={() => void confirmGroupDelete()}>

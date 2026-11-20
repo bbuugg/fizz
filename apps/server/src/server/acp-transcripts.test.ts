@@ -6,10 +6,11 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentChatMessage } from '@fizz/contracts/types'
+import type { ChatRunSummary } from '@fizz/contracts/agent-api'
 
 vi.mock('./state', () => ({ acpTranscripts: new Map() }))
 
-const { carryOverDurations } = await import('./acp-transcripts')
+const { carryOverDurations, setAcpTranscript, acpTranscriptView } = await import('./acp-transcripts')
 
 function msg(
   id: string,
@@ -60,5 +61,26 @@ describe('carryOverDurations', () => {
     carryOverDurations(from, to)
 
     expect(to[1].durationMs).toBeUndefined()
+  })
+})
+
+/** 防止查运行态与读取快照之间收尾，客户端把全量回放和旧轮正文拼成两份。 */
+describe('acpTranscriptView', () => {
+  it('运行快照明确携带所属 run，排除当前助手但保留历史与本轮提问', () => {
+    const run: ChatRunSummary = {
+      requestId: 'r', conversationId: 'c', status: 'running', startedAt: 1,
+      assistantMessageId: 'a-live'
+    }
+    setAcpTranscript('c', [msg('u-old', 'user'), msg('a-old', 'assistant'), msg('u-now', 'user'), msg('a-live', 'assistant')])
+    const view = acpTranscriptView('c', run)
+    expect(view.messages.map((m) => m.id)).toEqual(['u-old', 'a-old', 'u-now'])
+    expect(view.run).toEqual(run)
+  })
+
+  it('空闲视图明确标记 run 为 null，保留已完成的助手消息', () => {
+    setAcpTranscript('c-idle', [msg('u-replay-0', 'user'), msg('a-replay-1', 'assistant')])
+    const view = acpTranscriptView('c-idle', null)
+    expect(view.messages.map((m) => m.id)).toEqual(['u-replay-0', 'a-replay-1'])
+    expect(view.run).toBeNull()
   })
 })

@@ -57,6 +57,7 @@ import type {
   AcpAgentInput,
   AcpAgentView,
   AcpProcessInfo,
+  AcpTranscriptResult,
   AgentChatMessage,
   AgentConversation,
   AgentFsFile,
@@ -1343,7 +1344,7 @@ export function createApi(
       sessionId: string,
       cwd: string,
     ) =>
-      request<{ messages: AgentChatMessage[] }>(
+      request<AcpTranscriptResult>(
         `${API_ROUTES.acpAgentTranscript.replace(":id", encodeURIComponent(id))}` +
           `?conversationId=${encodeURIComponent(conversationId)}&sessionId=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(cwd)}`,
       ),

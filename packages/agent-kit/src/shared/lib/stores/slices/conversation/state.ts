@@ -35,6 +35,8 @@ export const emptySlice = (): ConvSlice => ({
   deleting: false,
   error: null,
   queuePausedReason: null,
+  // 新 slice 一律「未暂停」；真正打开会话时由 loadConversation 从 localStorage 覆盖
+  queuePaused: false,
   pendingSteers: [],
   retryNotice: null,
   reconnectNotice: null,
