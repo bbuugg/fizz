@@ -34,6 +34,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import { getAgentHost } from '@fizz/agent-client/host'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { settingsTabKey } from '@fizz/agent-kit/shared/lib/panel-tabs'
+import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import {
   getToolTab,
   getToolTabsVersion,
@@ -110,7 +111,18 @@ export function SettingsTabContent() {
   useEffect(() => () => setShortcutRecording(false), [])
 
   return (
-    <div ref={rootRef} className="flex h-full min-h-0 flex-col">
+    /*
+     * 两级（窄屏）形态要**自己补横向内边距**：`MobileSettingsPanel` 的两块（菜单 / 详情）
+     * 里，详情页自己只带 `p-2`、菜单整条铺满，横向留白统一由宿主出（手机整页设置那边是
+     * `p-2 pt-0`）。以前这里没补 —— 窄窗口下菜单行贴着标签左右边缘，详情页只剩 8px，
+     * 与手机版摆在一起看就是「少了一圈边距」（用户报的）。
+     *
+     * 两栏形态不补：`DesktopSettingsPanel` 自己带 `pr-2` / 菜单列内边距 / 内容卡 `px-4`。
+     */
+    <div
+      ref={rootRef}
+      className={cn('flex h-full min-h-0 flex-col', form === 'two-level' && 'px-2')}
+    >
       <SettingsShell
         // 显式请求要重挂外壳：`MobileSettingsPanel` 的「直接进二级页」只在挂载时决定
         // （同分组连点两次也靠 seq 区分）。

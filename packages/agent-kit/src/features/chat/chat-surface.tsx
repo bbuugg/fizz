@@ -246,28 +246,34 @@ export function MessageList({
   /**
    * 重拉这条会话（与标签右键的「刷新」同一个 action）。
    *
-   * 两条触发路径：空态里那颗「重新加载会话」按钮，以及空态出现时的**自动补拉**
+   * 触发路径：最新错误旁 / 空态里的「重新加载会话」，以及空态出现时的**自动补拉**
    * （一条消息都没有常常是历史没拉回来；自动拉一次能救回来就别先让用户自己点）。
    * 自动那一趟静默成功，不从 toast 里冒出来。
    */
   const [reloading, setReloading] = useState(false)
+  const reloadPending = useRef(false)
   const refreshConversation = useCallback(
     async (silent = false) => {
-      if (!conversationId || reloading) return
-      // 正在生成时 store 会拒绝（权威历史会把流式现场整段盖掉）—— 先说清为什么没反应
+      if (!conversationId || reloadPending.current) return
+      // 本入口在生成期间禁用，避免用户把恢复现场误当成重试生成。
       if (streaming) {
         if (!silent) toast(tr('这一轮还在生成，先停止再重新加载'))
         return
       }
+      reloadPending.current = true
       setReloading(true)
       try {
         const ok = await useAgentStore.getState().reloadConversation(conversationId)
         if (ok && !silent) toast.success(tr('已重新加载会话'))
+        else if (!ok && !silent) toast.error(tr('重新加载会话失败'))
+      } catch {
+        if (!silent) toast.error(tr('重新加载会话失败'))
       } finally {
+        reloadPending.current = false
         setReloading(false)
       }
     },
-    [conversationId, streaming, tr, reloading]
+    [conversationId, streaming, tr]
   )
   /**
    * 消息区根节点，给右侧「消息目录」定位用。
@@ -622,6 +628,8 @@ export function MessageList({
                           streaming={streaming}
                           followup={followup}
                           compaction={messageCompaction}
+                          onReload={conversationId ? refreshConversation : undefined}
+                          reloading={reloading}
                           onContinue={
                             onContinueMessage ? () => onContinueMessage(message) : undefined
                           }

@@ -16,7 +16,7 @@
  * ai-elements 期望的形状（`ToolUIPart['type']` / `['state']`）。
  */
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
-import { CheckCircle2, Circle, CircleQuestionMark, FileText, ImageOff, ListTree, Loader2 } from 'lucide-react'
+import { CheckCircle2, Circle, CircleQuestionMark, FileText, ImageOff, ListTree, Loader2, RotateCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@fizz/ui/button'
 import { ImageViewer } from '@fizz/ui/image-viewer'
@@ -728,28 +728,49 @@ function isToolResultEmpty(output: unknown): boolean {
 }
 
 /**
- * 一条**错误**（`⚠️ ` 前缀的文本 part，见 `ERROR_TEXT_PREFIX`）：只渲染正文，不挂任何按钮。
- *
- * ## 这里原来挂着一颗「重新加载」
- *
- * 一轮失败时（断线、模型配置不对、ACP 建连失败……）客户端 / 服务端都把错误写成一条
- * 文本 part 落进历史，那颗按钮做的是 `reloadConversation`（等价于「刷新页面 → 点开它」）。
- * 挪走的理由：错误只是该重拉的一种时机 —— 「一条消息都没有」往往才是**没加载成功**，
- * 那种状态下正文里根本没有这条错误 part，按钮无从出现，可用户恰恰最需要重拉。
- *
- * ⚠️ 别把按钮加回来。重拉这条会话的入口统一放在消息区空态（「历史消息没有显示？」），
- * 多一个入口只会让「为什么这里还是旧的」这类问题更难解释。
+ * 错误正文旁的恢复入口由会话宿主提供：只重拉历史 / 续接运行，不重发问题。
+ * 历史错误与没有会话恢复通道的宿主只显示正文；消息区空态仍保留独立入口。
  */
-function ErrorTextBlock({ text }: { text: string }) {
+function ErrorTextBlock({ text, onReload, reloading, reloadDisabled }: {
+  text: string
+  onReload?: () => void
+  reloading?: boolean
+  reloadDisabled?: boolean
+}) {
+  const tr = useT()
   return (
-    <div className="flex flex-col items-start gap-1.5">
-      <MessageResponse className="tracking-[0.02em]">{text}</MessageResponse>
+    <div className="flex flex-wrap items-center gap-1.5">
+      <div className="min-w-0 flex-1">
+        <MessageResponse className="tracking-[0.02em]">{text}</MessageResponse>
+      </div>
+      {onReload ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 gap-1.5 px-2 text-xs"
+          disabled={reloading || reloadDisabled}
+          aria-busy={reloading}
+          onClick={() => onReload()}
+        >
+          {reloading ? (
+            <Loader2 aria-hidden="true" className="size-3.5 motion-safe:animate-spin" />
+          ) : (
+            <RotateCw aria-hidden="true" className="size-3.5" />
+          )}
+          {reloading ? tr('正在重新加载…') : tr('重新加载会话')}
+        </Button>
+      ) : null}
     </div>
   )
 }
 
 export interface PartViewProps {
   part: AgentMessagePart
+  /** 由会话宿主绑定目标会话；不从全局焦点推断。 */
+  onReload?: () => void
+  reloading?: boolean
+  reloadDisabled?: boolean
   streaming?: boolean
   /**
    * 整轮是不是正处在**这一条消息**的流式里（= 这条是最后一条消息且在跑）。
@@ -776,6 +797,9 @@ export interface PartViewProps {
 
 function PartViewInner({
   part,
+  onReload,
+  reloading,
+  reloadDisabled,
   streaming,
   turnLive,
   followupPending,
@@ -839,9 +863,9 @@ function PartViewInner({
      * 盒子，gap 也就不会为它留空。
      */
     if (!part.text.trim()) return null
-    // 错误（`⚠️ ` 前缀，见 `ERROR_TEXT_PREFIX`）：正文照原样渲染（重拉走消息区下拉刷新手势）
+    // 最新错误可由宿主提供重拉通道，历史错误保持只读。
     if (isErrorText(part.text)) {
-      return <ErrorTextBlock text={part.text} />
+      return <ErrorTextBlock text={part.text} onReload={onReload} reloading={reloading} reloadDisabled={reloadDisabled} />
     }
     // tracking 只加在正文上（思考 / 工具横条是 text-sm 的紧凑行，隔着 MessageContent 一起加会显得散）
     return <MessageResponse className="tracking-[0.02em]">{part.text}</MessageResponse>
@@ -1231,6 +1255,9 @@ export const PartView = memo(
   PartViewInner,
   (prev, next) =>
     prev.part === next.part &&
+    prev.onReload === next.onReload &&
+    prev.reloading === next.reloading &&
+    prev.reloadDisabled === next.reloadDisabled &&
     prev.streaming === next.streaming &&
     prev.turnLive === next.turnLive &&
     prev.followupPending === next.followupPending &&

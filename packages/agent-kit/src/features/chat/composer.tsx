@@ -36,7 +36,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from '@fizz/ui/dropdown-menu'
-import { LiquidGlassButton } from '@fizz/ui/liquid-glass'
+import { LiquidGlassButton, LiquidGlassSurface } from '@fizz/ui/liquid-glass'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@fizz/ui/select'
 import type { AiPermissionMode } from '@fizz/contracts/types'
 import {
@@ -100,6 +100,16 @@ export const CHAT_PILL =
  */
 export const CHAT_ICON_PILL =
   'flex size-8! shrink-0 items-center justify-center rounded-full! border-none bg-transparent p-0! text-foreground shadow-none! outline-none transition-all hover:bg-transparent! hover:text-primary focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:bg-transparent! dark:hover:bg-transparent! [&_svg]:transition-colors hover:[&_svg]:text-primary'
+
+/**
+ * 「发送 + 下拉」里右半（分隔线 + 箭头）的宽度。
+ *
+ * 收起时这半截要能到 0，所以宽度必须是个**已知长度**（`auto` 不参与 `width` 过渡）。
+ * 拆开算：分隔线 `w-px`（1px）+ 箭头按钮 `pl-0.5` + `pr-1.5` + 图标 `size-3.5`
+ * = `0.125rem + 0.375rem + 0.875rem` + 1px。全用 rem 是为了跟手机版 18px 的根字号一起长。
+ * 改那几处 padding / 图标尺寸时这里要跟着改。
+ */
+const SPLIT_HALF_WIDTH = 'calc(1.375rem + 1px)'
 
 interface ComposerProps {
   value: string
@@ -430,6 +440,34 @@ export function Composer({
     : tr('存进待发送队列，可调整顺序、可暂停')
   const sendTitle = streaming ? tr('发送（本轮结束后自动执行）') : tr('发送')
 
+  /**
+   * 最右那颗动作钮（整颗药丸）此刻代表什么：**四种状态共用同一颗钮**，只换图标 / 底色 /
+   * 动作。宽度从 32 长到 ~54 的那一下由 grid 列宽补间（纯 CSS，见下面那颗
+   * `LiquidGlassSurface` 的注释）。
+   *
+   * 文案 / 禁用分开算：停止、创建中、发送三种语义各一套，别在下标里塞三元。
+   */
+  const primaryTip = showStop
+    ? tr('停止本轮')
+    : showSending
+      ? tr('正在创建会话…')
+      : sendDisabled
+        ? (sendDisabledHint ?? tr('上下文压缩中，稍后再发'))
+        : sendTitle
+  const primaryLabel = showStop
+    ? tr('停止')
+    : showSending
+      ? tr('正在创建会话')
+      : tr('发送')
+  const primaryDisabled = showStop
+    ? disabled
+    : showSending
+      ? true
+      : showChooser
+        ? disabled || sendDisabled
+        : // 单颗发送：空草稿禁用（空草稿 + 跑着时这个位置是停止钮，见 showStop）
+          disabled || sendDisabled || !hasContent
+
   // ---------- 粘贴 / 拖拽上传附件 ----------
   /**
    * 只在调用方给了 `onAttachFiles`（= 这个输入框有附件区）时才接管粘贴与拖放：
@@ -652,8 +690,16 @@ export function Composer({
             <div className="px-3 pb-1 text-xs text-muted-foreground italic">{voice.interim}</div>
           )}
 
-          {/* 操作行：左 `leading`、右 `trailing`（模型）+ 语音 + 发送 / 停止 */}
-          <div className="flex items-center justify-between gap-2 px-2 pb-2">
+          {/*
+            操作行：左 `leading`、右 `trailing`（模型）+ 语音 + 发送 / 停止。
+
+            ⚠️ 两组之间的 `gap-8`（2rem = **一颗图标的宽度**）是「窄屏时的最小间距」：
+            `justify-between` 只会在它之上补剩余空间，宽屏照旧被两侧撑开；窄到要挤压时，
+            这 32px 是硬底 —— 宁可让中间那颗模型 pill 多截几个字，也不让左边那颗权限图标和
+            右边的上下文圆环挤在一起（之前是 `gap-2`，窄屏下这两颗 32px 的圆钮只隔 8px，
+            看着像粘成一组）。
+          */}
+          <div className="flex items-center justify-between gap-8 px-2 pb-2">
             <div className="flex min-w-0 items-center gap-1">{leading}</div>
             {/* ⚠️ 右侧这组也必须 `min-w-0`：Flex 项默认 `min-width:auto`，不给就会按内容
             撑开、拒绝收缩 —— 窄面板下模型 pill（`CHAT_PILL` 的 `max-w-56`）把整组顶宽，
@@ -685,108 +731,112 @@ export function Composer({
                 </IconTip>
               )}
               {/*
-            停止：危险色玻璃圆钮 + 白色方块。跑着且草稿为空时占最右那颗钮的位置；一旦输入了新内容，
-            这个位置让给发送 / 发送方式选择器（同一位置只保留一颗钮）。
-          */}
-              {showStop && (
-                <IconTip label={tr('停止本轮')}>
-                  <LiquidGlassButton
-                    tone="danger"
-                    aria-label={tr('停止')}
-                    disabled={disabled}
-                    onClick={onCancel}
-                    className="inline-flex size-8 shrink-0 items-center justify-center rounded-full p-0"
+                最右那颗动作钮：**一颗常驻的玻璃药丸**，宽度由右半的 `width` 过渡带出来
+                —— 纯 CSS，不量宽、不换容器。
+
+                为什么这样才纯 CSS：原先「单颗圆钮」与「发送 + 下拉」换的是两个不同节点，
+                没有同一个可补间的 `width`。现在药丸恒在，主按钮恒占左侧 2rem，右半
+                （分隔线 + chevron）收起时 `width: 0`、展开时是它自己的固定宽度，药丸是
+                flex、宽度随子项走，于是整颗自己长出来 / 收回去。
+
+                ⚠️ `overflow-hidden` 只能加在右半，不能加在药丸上 —— 加在药丸上会连景深投影
+                和光圈描边一起裁掉（玻璃会变成一块硬边）。
+
+                四种状态共用这颗钮，只换主按钮的图标 / 底色 / 动作：
+                停止（危险色，方块）/ 创建中（转圈）/ 发送（箭头）/ 发送 + 下拉（箭头 + chevron）。
+              */}
+              <LiquidGlassSurface
+                // 停止是破坏性动作，跟危险钮同一档；其余都是主操作
+                tone={showStop ? 'danger' : 'accent'}
+                className={cn(
+                  'flex h-8 shrink-0 items-stretch rounded-full',
+                  // 按下时整颗轻微内缩，替代原来 `LiquidGlassButton` 的按下反馈
+                  'transition-[scale,opacity] duration-150 ease-out motion-reduce:transition-none',
+                  'active:scale-95',
+                  // 不可用时整颗压暗（与单颗玻璃钮同一档）；「创建中」那颗必须亮着，
+                  // 「发送 + 下拉」则是两半各管各的（见下面按钮上的 disabled:opacity-40）
+                  !showChooser && !showSending && primaryDisabled && 'opacity-50'
+                )}
+              >
+                <IconTip label={primaryTip}>
+                  <button
+                    type="button"
+                    aria-label={primaryLabel}
+                    aria-busy={showSending || undefined}
+                    disabled={primaryDisabled}
+                    onClick={showStop ? onCancel : onSubmit}
+                    className={cn(
+                      'flex h-8 w-8 items-center justify-center transition-colors hover:bg-white/15 disabled:cursor-not-allowed',
+                      // 展开时右半那截会把圆角切成「左半」，收起时是整圆
+                      showChooser ? 'rounded-l-full' : 'rounded-full',
+                      // 单颗状态整颗由外层压暗（见上面），这里只在两半并排时各自压暗自己
+                      showChooser && 'disabled:opacity-40'
+                    )}
                   >
-                    <Square className="size-4 fill-current" />
-                  </LiquidGlassButton>
-                </IconTip>
-              )}
-              {showSending ? (
-                /*
-                  提交后到开跑前的空窗（见 `sending` 的说明）：**同一位置、同一尺寸**的转圈钮。
-                  做成 disabled 的按钮而不是纯 div —— 尺寸 / 底色 / 圆角与发送钮逐像素一致，
-                  空窗结束切回来时这颗位置不会跳。`aria-busy` 让读屏也知道「正在提交」。
-                */
-                <IconTip label={tr('正在创建会话…')}>
-                  <LiquidGlassButton
-                    tone="accent"
-                    aria-label={tr('正在创建会话')}
-                    aria-busy
-                    disabled
-                    className="inline-flex size-8 shrink-0 cursor-default items-center justify-center rounded-full p-0 disabled:opacity-100"
-                  >
-                    <Loader2 className="size-4 animate-spin" />
-                  </LiquidGlassButton>
-                </IconTip>
-              ) : showChooser ? (
-                /*
-                  发送方式选择器（split）：左半 = 直接发送，右半 chevron 展开两项。
-                  只做成「整颗点开再选」不够用 —— 用户心里的主路径是「回车 / 点发送就走」，
-                  把发送动作藏进二级菜单等于每次多一次点击。所以左半就是发送，右半才是选择。
-                  左窄右窄共用一条 `bg-primary` 药丸底，中间一道半透明分隔线。
-                */
-                <div className="flex h-8 shrink-0 items-stretch overflow-hidden rounded-full bg-primary text-primary-foreground">
-                  <IconTip label={sendDisabled ? (sendDisabledHint ?? tr('上下文压缩中，稍后再发')) : sendTitle}>
-                    <button
-                      type="button"
-                      aria-label={tr('发送')}
-                      disabled={disabled || sendDisabled}
-                      onClick={onSubmit}
-                      className="flex items-center pl-2.5 pr-1.5 transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
+                    {showStop ? (
+                      <Square className="size-4 fill-current" />
+                    ) : showSending ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
                       <Send className="size-4" />
-                    </button>
-                  </IconTip>
-                  {/* 分隔线用 foreground 半透明而不是 border 变量：药丸底是 primary，描边色在暗色下几乎看不见 */}
-                  <span className="my-1.5 w-px shrink-0 bg-primary-foreground/25" aria-hidden />
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
-                        aria-label={tr('选择发送方式：直接发送 / 放入队列')}
-                        disabled={disabled || sendDisabled}
-                        className="flex items-center pl-0.5 pr-1.5 transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        <ChevronDown className="size-3.5 opacity-80" />
-                      </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent side="top" align="end" sideOffset={6} className="min-w-64">
-                      <DropdownMenuItem onSelect={onSubmit}>
-                        <Send className="size-3.5" />
-                        <span className="flex min-w-0 flex-col gap-0.5">
-                          <span>{tr('直接发送')}</span>
-                          {/* 选择器只在空闲时出现（跑着时不摆选项），所以这里是确定的「立刻」 */}
-                          <span className="text-xs text-muted-foreground">{tr('立刻发出')}</span>
-                        </span>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onSelect={() => onEnqueue?.()}
-                        disabled={enqueueDisabled}
-                      >
-                        <Clock className="size-3.5" />
-                        <span className="flex min-w-0 flex-col gap-0.5">
-                          <span>{tr('放入队列')}</span>
-                          <span className="text-xs text-muted-foreground">{enqueueHint}</span>
-                        </span>
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              ) : showSend ? (
-                // 发送：主色玻璃圆钮，空草稿禁用（空草稿 + 跑着时这个位置是停止钮，见 showStop）；
-                // sendDisabled（压缩进行中）只灰发送钮，不影响打字
-                <IconTip label={sendDisabled ? (sendDisabledHint ?? tr('上下文压缩中，稍后再发')) : sendTitle}>
-                  <LiquidGlassButton
-                    tone="accent"
-                    aria-label={tr('发送')}
-                    disabled={disabled || sendDisabled || (!hasDraft && !allowEmptySend)}
-                    onClick={onSubmit}
-                    className="inline-flex size-8 shrink-0 items-center justify-center rounded-full p-0"
-                  >
-                    <Send className="size-4" />
-                  </LiquidGlassButton>
+                    )}
+                  </button>
                 </IconTip>
-              ) : null}
+                {/*
+                  右半：只在「发送 + 下拉」时展开。**宽度从 0 过渡到自身宽度**（纯 CSS），
+                  整颗药丸是 flex、宽度随子项走，于是药丸自己就补间长出来了。
+
+                  宽度写成一个常量而不是靠内容撑：这一半在收起时必须能到 0，而「按内容自适应」
+                  的宽度没法参与过渡（`auto` 不做补间）。尺寸 = 分隔线 1px + 箭头按钮的
+                  `pl-0.5 + pr-1.5` + 图标 `size-3.5`（都是 rem，跟着根字号走，所以用 calc）。
+
+                  收起时按钮仍在 DOM 里，`inert` + `aria-hidden` 一起退场 ——
+                  否则 Tab 还会停在那颗看不见的箭头上。
+                */}
+                <span
+                  aria-hidden={!showChooser || undefined}
+                  inert={!showChooser || undefined}
+                  className="flex min-w-0 overflow-hidden transition-[width] duration-200 ease-out motion-reduce:transition-none"
+                  style={{ width: showChooser ? SPLIT_HALF_WIDTH : 0 }}
+                >
+                  <span className="flex shrink-0 items-stretch" style={{ width: SPLIT_HALF_WIDTH }}>
+                    {/* 分隔线用前景半透明而不是 border 变量：药丸底是主色，描边色在暗色下几乎看不见 */}
+                    <span className="my-1.5 w-px shrink-0 bg-primary-foreground/25" aria-hidden />
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label={tr('选择发送方式：直接发送 / 放入队列')}
+                          disabled={disabled || sendDisabled}
+                          className="flex items-center rounded-r-full pl-0.5 pr-1.5 transition-colors hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <ChevronDown className="size-3.5 opacity-80" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent side="top" align="end" sideOffset={6} className="min-w-64">
+                        <DropdownMenuItem onSelect={onSubmit}>
+                          <Send className="size-3.5" />
+                          <span className="flex min-w-0 flex-col gap-0.5">
+                            <span>{tr('直接发送')}</span>
+                            {/* 选择器只在空闲时出现（跑着时不摆选项），所以这里是确定的「立刻」 */}
+                            <span className="text-xs text-muted-foreground">{tr('立刻发出')}</span>
+                          </span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={() => onEnqueue?.()}
+                          disabled={enqueueDisabled}
+                        >
+                          <Clock className="size-3.5" />
+                          <span className="flex min-w-0 flex-col gap-0.5">
+                            <span>{tr('放入队列')}</span>
+                            <span className="text-xs text-muted-foreground">{enqueueHint}</span>
+                          </span>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </span>
+                </span>
+              </LiquidGlassSurface>
             </div>
           </div>
         </div>
@@ -893,18 +943,27 @@ export function PermissionPill({
       {/* 触发器只放图标：图标本身编码档位（只读 = 眼睛、确认 = 盾、完全访问 = 琥珀警示盾），
           档名进 tooltip 与下拉（选中项打勾）。SelectValue 换成手绘图标 —— 值是受控的，
           图标跟 `value` prop 走，不吃 Select 的自动展示。 */}
-      <SelectTrigger
-        className={CHAT_ICON_PILL}
-        // 一排 pill 都不露右侧箭头（见 CHAT_PILL 的说明）：这颗是 Select，箭头由
-        // SelectTrigger 自己渲染，所以关掉它的
-        icon={false}
-        aria-label={tr('工具权限：{label}', { label: permissionOption(value).label })}
-      >
-        {/* mx-auto 居中：SelectTrigger 自带 justify-between，单个子元素会被顶到左边 */}
-        <span className="mx-auto flex items-center">
-          <PermissionIcon mode={value} />
+      {/*
+        悬停只报**档位名字**（图标本身编码了档位，没有文字，光看图标认不全）。
+        提示挂外层 span、不套 SelectTrigger：触发器自带 `data-state`，Tooltip 注进去的
+        状态会把它盖掉（见 IconTip 文件头那条）。
+      */}
+      <IconTip label={permissionOption(value).label}>
+        <span className="inline-flex">
+          <SelectTrigger
+            className={CHAT_ICON_PILL}
+            // 一排 pill 都不露右侧箭头（见 CHAT_PILL 的说明）：这颗是 Select，箭头由
+            // SelectTrigger 自己渲染，所以关掉它的
+            icon={false}
+            aria-label={tr('工具权限：{label}', { label: permissionOption(value).label })}
+          >
+            {/* mx-auto 居中：SelectTrigger 自带 justify-between，单个子元素会被顶到左边 */}
+            <span className="mx-auto flex items-center">
+              <PermissionIcon mode={value} />
+            </span>
+          </SelectTrigger>
         </span>
-      </SelectTrigger>
+      </IconTip>
       {/* 几个 pill 的下拉表现必须一致：都是 popper + side="top" + sideOffset={6}。
           shadcn 的 Select 默认 position="item-aligned"（把选中项铺在触发器上、往下摊），
           而这些触发器都贴在窗口底部 —— 不改成 popper 就会跟模型那个浮层长得不一样。

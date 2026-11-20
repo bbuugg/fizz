@@ -329,7 +329,8 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
                         max: SUBAGENT_MAX_STEPS
                       })}
                       onValueChange={(next) => void saveSubagentMaxSteps(id, meta.name, next)}
-                      className="h-7 w-20 font-mono text-xs"
+                      // w-24：占位文案「默认 12」加三位数步数要放得下，w-20 下会顶到边上
+                      className="h-7 w-24 font-mono text-xs"
                     />
                   </div>
                 </div>
@@ -445,8 +446,10 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
 
         <div className="space-y-1.5">
           <div className="text-xs font-medium">{tr('子任务模型')}</div>
+          {/* 固定宽度、不铺满：「子任务模型」是下拉选项，不是正文；全宽在宽屏设置页里
+              会拉成一条几百像素的空框，和下面那行说明的层次也对不上 */}
           <Select value={subagentModelValue} onValueChange={(value) => void saveSubagentModel(value)}>
-            <SelectTrigger className="h-9 w-full text-sm">
+            <SelectTrigger className="h-9 w-64 max-w-full text-sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

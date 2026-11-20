@@ -989,6 +989,13 @@ export interface TurnUsage {
    * 拿不到上游 usage（一个 finish chunk 都没收到）时才退回本地估算（±20%）。
    */
   contextTokens?: number
+  /** 真实单步用量的适用范围；不匹配时必须重新估算，不能借用旧请求的测量。 */
+  contextMeasurement?: {
+    environment: string
+    messages: string
+    /** 请求 + 输出之后的完整消息占用；包含最后一批工具结果的增量估算。 */
+    usedTokens: number
+  }
   /** 整轮耗时（毫秒）：从发起到结束 */
   durationMs: number
   /**
@@ -1086,6 +1093,10 @@ export interface ConversationAutoSummary {
   /** 完整的摘要消息正文（已含「以下为先前 N 轮…」前缀）。原样复用，请求前缀才稳定 */
   text: string
   createdAt: number
+  /** 轮中检查点：同一助手消息内，此工具调用及结果之前（含自身）已被摘要。 */
+  afterToolCallId?: string
+  /** 被覆盖原文的摘要指纹；编辑历史后禁止复用陈旧检查点。 */
+  sourceDigest?: string
 }
 
 /** 待办条目的状态（Agent 的 todo 清单用，见 @fizz/tools 的 todo） */

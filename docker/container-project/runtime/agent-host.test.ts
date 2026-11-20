@@ -148,4 +148,17 @@ describe('容器 Agent 装配', () => {
     expect(res.write).toHaveBeenCalledWith(expect.stringContaining('缺少白名单工具'))
     expect(res.end).toHaveBeenCalledOnce()
   })
+
+  it('完整证据与请求历史分离，轮中检查点通过专用帧交回宿主', async () => {
+    const evidenceHistory = [{ id: 'old', role: 'user', createdAt: 1, parts: [{ type: 'text', text: '原始验收条件' }] }]
+    mocks.runAgent.mockImplementation(async (options) => {
+      expect(options.history).toEqual([])
+      expect(options.evidenceHistory).toEqual(evidenceHistory)
+      options.onMidTurnSummary?.({ text: '检查点', afterToolCallId: 'c1' })
+      return { finishReason: 'done' }
+    })
+    const res = await post('/runs', { ...body, evidenceHistory })
+    expect(res.write).toHaveBeenCalledWith(expect.stringContaining('"type":"mid-turn-summary"'))
+    expect(res.write).toHaveBeenCalledWith(expect.stringContaining('"afterToolCallId":"c1"'))
+  })
 })

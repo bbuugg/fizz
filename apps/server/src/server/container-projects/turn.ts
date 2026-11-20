@@ -17,7 +17,7 @@
  * ⚠️ 明文模型 `apiKey` 只经这条 `127.0.0.1` 回环请求进容器、只活在容器进程的内存里：
  * 不写进容器环境变量、不落容器磁盘、不进镜像（容器内不持久化任何密钥）。
  */
-import { buildAgentSystemPrompt, readProjectDoc, type RunAgentResult } from '@fizz/agent'
+import { checkpointSourceDigest, buildAgentSystemPrompt, readProjectDoc, type RunAgentResult } from '@fizz/agent'
 import { CONTAINER_ENV_IMAGES, CONTAINER_PROTOCOL_VERSION } from '@fizz/contracts/types'
 import type {
   AgentChatMessage,
@@ -69,6 +69,7 @@ interface ContainerRunBody {
   conversationId: string
   model: AiModelConfig
   history: AgentChatMessage[]
+  evidenceHistory?: AgentChatMessage[]
   /** 宿主组装好的系统提示词（容器不重新拼：提示词是「服务端口径」，只有一份） */
   systemPrompt: string
   /** 容器视角的技能清单（`path` 已是容器内路径，容器据此建 `skill`） */
@@ -84,7 +85,7 @@ interface ContainerRunBody {
    * `keepFromMessageId` 指向的 id 来自宿主上一轮发过去的 `history`（宿主原样带 id，
    * 不会重编），所以跨轮、跨进程都认得出是哪条消息。
    */
-  autoSummarySeed?: { keepFromMessageId: string; text: string }
+  autoSummarySeed?: { keepFromMessageId: string; text: string; at?: number; afterToolCallId?: string; sourceDigest?: string }
 }
 
 /** 容器内的一帧（容器 → 宿主，SSE 的 `data:` 行） */
@@ -98,7 +99,8 @@ type ContainerFrame =
    * 容器碰不到宿主的存储，所以只能把它交回来 —— 宿主落盘后，下一轮再当
    * `autoSummarySeed` 送回去。没有这条，容器重启一次检查点就丢，整段历史重新摘要。
    */
-  | { type: 'auto-summary'; entry: { keepFromMessageId: string; text: string } }
+  | { type: 'auto-summary'; entry: { keepFromMessageId: string; text: string; sourceDigest?: string } }
+  | { type: 'mid-turn-summary'; entry: { text: string; afterToolCallId: string } }
   | { type: 'done'; result: RunAgentResult }
 
 /** 宿主回给容器的答复（`POST /runs/:id/answer`） */
@@ -189,6 +191,7 @@ interface ContainerPumpContext {
   run: ChatRun
   body: ContainerRunBody
   onEvent: (event: AgentStreamEvent) => void
+  onMidTurnSummary?: (entry: { text: string; afterToolCallId: string }) => void
   /** 容器发来的审批请求：宿主弹卡并答复（返回是否允许） */
   confirm: (req: AgentConfirmInput) => Promise<boolean>
   /** 容器发来的追问请求：宿主弹卡并答复（跳过 = `null`） */
@@ -257,6 +260,10 @@ async function pumpContainerRun(ctx: ContainerPumpContext): Promise<RunAgentResu
     }
     if (frame.type === 'done') {
       finished = frame.result
+      return
+    }
+    if (frame.type === 'mid-turn-summary') {
+      ctx.onMidTurnSummary?.(frame.entry)
       return
     }
     if (frame.type === 'auto-summary') {
@@ -478,6 +485,7 @@ export async function startContainerTurn(
   })
 
   const assistantParts: AgentChatMessage['parts'] = []
+  let midTurnSummary: { text: string; afterToolCallId: string } | undefined
   let turnUsage: TurnUsage | undefined
   /** 没有 `usage` 时 finish 帧单独给的耗时（中止 / 出错的轮次）—— 见 onEvent */
   let turnDurationMs: number | undefined
@@ -686,6 +694,7 @@ export async function startContainerTurn(
             historyForTurn(conversation, userMessage),
             opts?.origin ?? ''
           ),
+          evidenceHistory: conversation.messages,
           systemPrompt,
           skills,
           permissionMode,
@@ -697,12 +706,16 @@ export async function startContainerTurn(
             ? {
                 autoSummarySeed: {
                   keepFromMessageId: conversation.autoSummary.keepFromMessageId,
-                  text: conversation.autoSummary.text
+                  text: conversation.autoSummary.text,
+                  at: conversation.autoSummary.createdAt,
+                  afterToolCallId: conversation.autoSummary.afterToolCallId,
+                  sourceDigest: conversation.autoSummary.sourceDigest
                 }
               }
             : {})
         },
         onEvent,
+        onMidTurnSummary: (entry) => { midTurnSummary = entry },
         confirm: confirmFromContainer,
         followup: followupGate.requestFollowup
       })
@@ -714,6 +727,16 @@ export async function startContainerTurn(
         input.assistantMessageId,
         turnDurationMs
       )
+      if (midTurnSummary) {
+        const entry = midTurnSummary
+        const messages = domain.getConversation(conversation.id)?.messages ?? []
+        const message = messages.find((m) => m.parts.some((p) =>
+          p.type === 'tool-call' && p.toolCallId === entry.afterToolCallId))
+        if (message) domain.setAutoSummary(conversation.id, {
+          ...entry, keepFromMessageId: message.id, createdAt: Date.now(),
+          sourceDigest: checkpointSourceDigest(messages, message.id, entry.afterToolCallId)
+        })
+      }
       if (result.finishReason === 'error' && result.error) {
         console.error('[server] 容器里这一轮出错：', result.error)
       }

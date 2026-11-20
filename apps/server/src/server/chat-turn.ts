@@ -20,7 +20,7 @@
  */
 import { loadPlugins } from '@fizz/plugin/loader'
 import { assistantSliceId, buildUserParts, resolveMaxSteps, resolveToolCallConcurrency, type ChatRequest, type UploadFileRef } from '@fizz/contracts/agent-api'
-import { CollabRuntime, defaultContextWindowFromEnv, rawToolsPlugin, readProjectDoc, runAgent, type AgentConfirmInput, type CollabTurnResult, type MountedPlugin, type RunAgentResult } from '@fizz/agent'
+import { checkpointSourceDigest, CollabRuntime, defaultContextWindowFromEnv, rawToolsPlugin, readProjectDoc, runAgent, type AgentConfirmInput, type CollabTurnResult, type MountedPlugin, type RunAgentResult } from '@fizz/agent'
 import {
   isRemoteWorkspace,
   normalizeReasoningEffort,
@@ -576,6 +576,7 @@ async function startTurnReserved(
   const requestFollowup = followupGate.requestFollowup
 
   const assistantParts: AgentChatMessage['parts'] = []
+  let midTurnSummary: { text: string; afterToolCallId: string } | undefined
   let turnUsage: TurnUsage | undefined
   /** 协作会话本轮的结果：多条 Agent 回复 + 跳过 / 失败统计，收尾时按 Agent 归属落盘 */
   let collabTurnResult: CollabTurnResult | undefined
@@ -938,13 +939,18 @@ async function startTurnReserved(
         ? {
             autoSummarySeed: {
               keepFromMessageId: conversation.autoSummary.keepFromMessageId,
-              text: conversation.autoSummary.text
+              text: conversation.autoSummary.text,
+              at: conversation.autoSummary.createdAt,
+              afterToolCallId: conversation.autoSummary.afterToolCallId,
+              sourceDigest: conversation.autoSummary.sourceDigest
             }
           }
         : {}),
       onAutoSummary: (entry) =>
         domain.setAutoSummary(conversation.id, { ...entry, createdAt: Date.now() }),
+      onMidTurnSummary: (entry) => { midTurnSummary = entry },
       history: historyForTurn(conversation, userMessage),
+      evidenceHistory: conversation.messages,
       model: modelConfig!,
       skills,
       projectDoc,
@@ -1280,6 +1286,19 @@ async function startTurnReserved(
   void runner
     .then((result) => {
       persistAssistant(assistantParts)
+      if (midTurnSummary) {
+        const entry = midTurnSummary
+        const message = domain.getConversation(conversation.id)?.messages.find((m) => m.parts.some((p) =>
+          p.type === 'tool-call' && p.toolCallId === entry.afterToolCallId))
+        if (message) {
+          domain.setAutoSummary(conversation.id, {
+            ...entry, keepFromMessageId: message.id, createdAt: Date.now(),
+            sourceDigest: checkpointSourceDigest(
+              domain.getConversation(conversation.id)!.messages, message.id, entry.afterToolCallId
+            )
+          })
+        }
+      }
       if (result.finishReason === 'error' && result.error) {
         console.error('[server] 这一轮出错：', result.error)
       }

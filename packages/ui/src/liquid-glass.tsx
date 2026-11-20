@@ -63,8 +63,15 @@ const GLASS_RIM = `border border-white/70 dark:border-white/20 ${GLASS_SHADOW}`
 /** 浅色背景用的描边：白边在白底上同样会消失，改用前景色的一层淡描边 */
 const GLASS_RIM_CONTRAST = `border border-foreground/15 dark:border-white/20 ${GLASS_SHADOW}`
 
-/** 主操作色块上的描边：用主色前景的淡描边，避免白边压不出边界 */
-const GLASS_RIM_ACCENT = `border border-primary-foreground/30 dark:border-primary-foreground/25 ${GLASS_SHADOW}`
+/**
+ * 主操作色块上的描边：**白色淡描边**，与危险色那条同款。
+ *
+ * ⚠️ 别改回 `border-primary-foreground/30`：暗色主题里 `--primary-foreground` 是近黑色
+ * （primary 本身就是浅色，见 themes.css），那条描边于是变成一圈黑边、跟景深投影糊在一起 ——
+ * 观感就是「这颗按钮没有边框」，和用白边的停止钮摆在一起明显不是一套材质（用户报过：
+ * 「停止按钮有边框，发送没有」）。玻璃的亮边本来就该是白的，与底色深浅无关。
+ */
+const GLASS_RIM_ACCENT = `border border-white/35 dark:border-white/25 ${GLASS_SHADOW}`
 
 /** 危险色块上的描边：白色淡描边，与红色底拉开边界 */
 const GLASS_RIM_DANGER = `border border-white/35 dark:border-white/25 ${GLASS_SHADOW}`
@@ -227,11 +234,15 @@ export function LiquidGlassButton({
 }
 
 /**
- * 液态玻璃表面（非 button 用）：滑条这类「整块玻璃 + 跟随指针光圈」的容器。
+ * 液态玻璃表面（非 button 用）：滑条、「发送 + 下拉」这类整块玻璃的容器。
  *
- * 与 `LiquidGlassButton` 共用同一份材质和光圈配方（`GLASS_*` / `LIQUID_LENS_*`），
- * 差别只在外层是 `div`、按 `className` 决定圆角。内容放 `children`，
- * 两层扫光 / 光圈由本组件追加，消费方不要重复画。
+ * 与 `LiquidGlassButton` 共用**同一份材质** —— 斜向玻璃色、1px 亮边 + 镜面高光、
+ * 景深投影、132° 扫光、跟随指针的边缘光圈，逐层对齐（差别只在外层是 `div`、没有
+ * 按下缩放）。所以同一行里一颗玻璃圆钮和一块玻璃药丸摆在一起不会「一个像玻璃、
+ * 一个像实心色块」（用户报过：带下拉的发送钮和单颗发送钮看着不是一回事）。
+ *
+ * 内容放 `children`，材质与光圈由本组件铺在下面，消费方不要重复画。
+ * 圆角由 `className` 决定（默认 `rounded-full`，材质层用 `rounded-[inherit]` 跟着走）。
  */
 export function LiquidGlassSurface({
   className,
@@ -240,21 +251,35 @@ export function LiquidGlassSurface({
 }: {
   className?: string
   children: React.ReactNode
-  /** 底色档位：白色 popover / 顶栏上用 `contrast`，主操作上用 `accent` */
-  tone?: "default" | "contrast" | "accent"
+  /**
+   * 底色档位：白色 popover / 顶栏上用 `contrast`，主操作上用 `accent`，
+   * 破坏性动作（停止 / 删除）用 `danger` —— 与 `LiquidGlassButton` 的四档一一对应。
+   */
+  tone?: "default" | "contrast" | "accent" | "danger"
 }) {
   const tint =
-    tone === "contrast" ? GLASS_TINT_CONTRAST : tone === "accent" ? GLASS_TINT_ACCENT : GLASS_TINT
+    tone === "contrast"
+      ? GLASS_TINT_CONTRAST
+      : tone === "accent"
+        ? GLASS_TINT_ACCENT
+        : tone === "danger"
+          ? GLASS_TINT_DANGER
+          : GLASS_TINT
   const rim =
-    tone === "contrast" ? GLASS_RIM_CONTRAST : tone === "accent" ? GLASS_RIM_ACCENT : GLASS_RIM
+    tone === "contrast"
+      ? GLASS_RIM_CONTRAST
+      : tone === "accent"
+        ? GLASS_RIM_ACCENT
+        : tone === "danger"
+          ? GLASS_RIM_DANGER
+          : GLASS_RIM
   return (
     <div
       className={cn(
         "relative isolate rounded-full text-foreground/90",
         tone === "accent" && "text-primary-foreground",
-        tint,
+        tone === "danger" && "text-white",
         rim,
-        GLASS_BLUR,
         className
       )}
       onPointerMove={(event) => {
@@ -275,17 +300,34 @@ export function LiquidGlassSurface({
       }}
       onPointerLeave={(event) => event.currentTarget.style.setProperty("--lens-opacity", "0")}
     >
+      {/*
+        材质层：与 `LiquidGlassButton` 的内层逐行一致（`-z-10` + `overflow-hidden`，
+        扫光与光圈都在里面，`-inset-px` 的描边环跟着裁）。children 在上面 → 里面的
+        按钮只要给透明底 + 半透明 hover 就能保留玻璃质感。
+      */}
+      <span
+        aria-hidden
+        className={cn(
+          "-z-10 absolute inset-0 overflow-hidden rounded-[inherit]",
+          tint,
+          GLASS_BLUR
+        )}
+        // Safari / Electron 的 WebKit 前缀 Tailwind 不自动补，显式给一份
+        style={{ WebkitBackdropFilter: "blur(22px) saturate(180%)" }}
+      >
+        {/* 132° 斜向高光：玻璃的「厚度」全靠这层（普通渐变，不吃 backdrop-filter） */}
+        <span className="absolute inset-0 bg-[linear-gradient(132deg,rgba(255,255,255,0.5),rgba(255,255,255,0.14)_26%,rgba(255,255,255,0)_52%)] dark:bg-[linear-gradient(132deg,rgba(255,255,255,0.16),rgba(255,255,255,0.05)_30%,rgba(255,255,255,0)_56%)]" />
+        {/* 指针下方的柔和扫光 + 1.5px 边缘光圈 */}
+        <span
+          className="pointer-events-none absolute inset-0 rounded-[inherit] transition-opacity duration-200 ease-out"
+          style={LIQUID_LENS_SHEEN_STYLE}
+        />
+        <span
+          className="pointer-events-none absolute -inset-px rounded-[inherit] transition-opacity duration-200 ease-out"
+          style={LIQUID_LENS_RIM_STYLE}
+        />
+      </span>
       {children}
-      <span
-        aria-hidden
-        className="pointer-events-none absolute inset-0 rounded-[inherit] transition-opacity duration-200 ease-out"
-        style={LIQUID_LENS_SHEEN_STYLE}
-      />
-      <span
-        aria-hidden
-        className="pointer-events-none absolute -inset-px rounded-[inherit] transition-opacity duration-200 ease-out"
-        style={LIQUID_LENS_RIM_STYLE}
-      />
     </div>
   )
 }

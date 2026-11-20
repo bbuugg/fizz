@@ -272,7 +272,11 @@ function normalizeAutoSummary(raw: unknown): ConversationAutoSummary | undefined
   if (typeof v.text !== 'string' || !v.text) return undefined
   return {
     keepFromMessageId: v.keepFromMessageId,
+    ...(typeof v.afterToolCallId === 'string' && v.afterToolCallId
+      ? { afterToolCallId: v.afterToolCallId }
+      : {}),
     text: v.text,
+    ...(typeof v.sourceDigest === 'string' ? { sourceDigest: v.sourceDigest } : {}),
     createdAt: typeof v.createdAt === 'number' ? v.createdAt : Date.now()
   }
 }

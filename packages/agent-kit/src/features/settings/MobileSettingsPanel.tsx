@@ -274,7 +274,7 @@ export function MobileSettingsPanel({
       >
         {/* 宿主没接管标题栏时（窄屏 web 的弹窗）才画在这里 */}
         {!onDetailChange && (
-          <div className="mb-1 flex shrink-0 items-center gap-1">
+          <div className="mb-2 flex shrink-0 items-center gap-1">
             <button
               type="button"
               aria-label={tr('返回设置')}

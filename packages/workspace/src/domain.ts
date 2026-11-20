@@ -1494,6 +1494,8 @@ export class AgentDomain {
       entry &&
       prev &&
       prev.keepFromMessageId === entry.keepFromMessageId &&
+      prev.afterToolCallId === entry.afterToolCallId &&
+      prev.sourceDigest === entry.sourceDigest &&
       prev.text === entry.text
     ) {
       return

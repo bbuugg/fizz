@@ -28,6 +28,7 @@
  *   chromium（`extraResources` 拷进来的 headless shell），dev / server / cli 不受影响。
  */
 export * from './tools'
+export * from './history'
 export * from './acp-tools'
 export * from './ripgrep'
 export * from './backend'

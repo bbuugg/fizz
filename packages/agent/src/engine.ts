@@ -29,6 +29,15 @@ export interface EngineStepBoundary {
   messages: ModelMessage[]
   /** 已经跑完的步数（0 = 第一次请求之前） */
   stepNumber: number
+  /** 上一步请求 + 输出的原始测量，含工具结果；与当前消息版本显式关联。 */
+  measurement?: EngineContextMeasurement
+}
+
+export interface EngineContextMeasurement {
+  messages: ModelMessage[]
+  usage: unknown
+  /** 工具结果不在 input+output 内，需要单独计新增。 */
+  toolMessages: ModelMessage[]
 }
 
 /**
@@ -89,6 +98,7 @@ export interface AgentEngineResult {
   totalUsage?: unknown
   /** **最后一步**的 usage —— 它才是「当前上下文有多大」 */
   lastStepUsage?: unknown
+  contextMeasurement?: EngineContextMeasurement
   error?: unknown
 }
 
@@ -332,6 +342,8 @@ function errorText(err: unknown): string {
  */
 export function runEngine(opts: AgentEngineOptions): AgentEngine {
   const tools = limitToolConcurrency(opts.tools, opts.toolCallConcurrency ?? 0)
+  let requestMessages = opts.messages
+  let contextMeasurement: EngineContextMeasurement | undefined
 
   const result = streamText({
     model: opts.model,
@@ -368,8 +380,16 @@ export function runEngine(opts: AgentEngineOptions): AgentEngine {
             : {})
         }
       : {}),
+    onStepEnd: (step) => {
+      contextMeasurement = {
+        messages: [...requestMessages, ...step.response.messages],
+        usage: step.usage,
+        toolMessages: step.response.messages.filter((message) => message.role === 'tool')
+      }
+    },
     prepareStep: async ({ messages, stepNumber }) => {
-      const next = await opts.onStepBoundary?.({ messages, stepNumber })
+      const next = await opts.onStepBoundary?.({ messages, stepNumber, measurement: contextMeasurement })
+      requestMessages = next?.messages ?? messages
       if (!next) return undefined
       return {
         ...(next.messages ? { messages: next.messages } : {}),
@@ -441,7 +461,7 @@ export function runEngine(opts: AgentEngineOptions): AgentEngine {
       throw err
     } finally {
       if (opts.abortSignal?.aborted && finishReason === 'other') finishReason = 'aborted'
-      settle({ finishReason, steps, totalUsage, lastStepUsage, error })
+      settle({ finishReason, steps, totalUsage, lastStepUsage, contextMeasurement, error })
     }
   }
 

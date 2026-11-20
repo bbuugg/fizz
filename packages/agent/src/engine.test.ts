@@ -8,6 +8,7 @@
  * 详见 `engine.ts` 里 `maxRetries: 0` 的那段注释。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ModelMessage } from 'ai'
 
 const { streamText } = vi.hoisted(() => ({ streamText: vi.fn() }))
 
@@ -52,6 +53,30 @@ describe('runEngine 交给 streamText 的参数', () => {
 
     const firstCall = streamText.mock.calls[0] as unknown as [Record<string, unknown>]
     expect(firstCall[0].maxRetries).toBe(0)
+  })
+
+  // 防止把压缩前的测量贴到压缩后请求，以及漏计最后一步工具结果。
+  it('单步测量绑定实际改写后的请求，并独立携带工具结果增量', async () => {
+    const original: ModelMessage[] = [{ role: 'user', content: 'old' }]
+    const compacted: ModelMessage[] = [{ role: 'user', content: 'checkpoint' }]
+    const response: ModelMessage[] = [
+      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'c', toolName: 'read', input: {} }] },
+      { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'c', toolName: 'read', output: { type: 'text', value: 'evidence' } }] }
+    ]
+    streamText.mockImplementation((options) => ({
+      fullStream: (async function* () {
+        await options.prepareStep({ messages: original, stepNumber: 0 })
+        await options.onStepEnd({ response: { messages: response }, usage: { inputTokens: 10, outputTokens: 2 } })
+        yield { type: 'finish', finishReason: 'stop' }
+      })()
+    }))
+    const engine = runEngine({ model: {} as never, system: 'SYS', messages: original, tools: {}, maxSteps: 1,
+      onStepBoundary: () => ({ messages: compacted }) })
+    for await (const _event of engine.events) { /* consume */ }
+    const result = await engine.done
+    expect(result.contextMeasurement?.messages).toEqual([...compacted, ...response])
+    expect(result.contextMeasurement?.toolMessages).toEqual([response[1]])
+    expect(result.contextMeasurement?.usage).toEqual({ inputTokens: 10, outputTokens: 2 })
   })
 
   it('工具调用并发不超过配置上限', async () => {

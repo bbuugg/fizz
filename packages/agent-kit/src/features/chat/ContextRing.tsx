@@ -4,6 +4,7 @@ import { useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import { Button } from "@fizz/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@fizz/ui/popover";
+import { IconTip } from "@fizz/agent-kit/shared/components/IconTip";
 import { CHAT_ICON_PILL } from "@fizz/agent-kit/features/chat/composer";
 import type { AgentApp } from "@fizz/agent-kit/shared/hooks/useAgentApp";
 import { useT } from "@fizz/agent-kit/shared/lib/language";
@@ -246,55 +247,77 @@ export function ContextRing({ app }: { app: AgentApp }) {
   const R = 7;
   const CIRC = 2 * Math.PI * R;
 
+  /**
+   * 悬停提示：**只放占用本身**（`已用 / 窗口 · 百分比`）—— 详情与手动压缩仍在点击后的
+   * 卡片里，提示贴着输入行，写多了会盖住正文。数字用 `tabular-nums`，鼠标扫过时不抖。
+   *
+   * 以前这里挂的是原生 `title`（只有「点击看详情」一句话，没有数字），鼠标停下要等系统
+   * 的延迟才出来、样式也跟全站气泡不一套；换成 `IconTip` 后与一排图标钮一致。
+   * `used` 还没拿到（上游不报 / 刚开新会话）时把分子写成 `—`，分母照给 —— 比整句
+   * 「暂无数据」更能说明「差的是分子」。
+   */
+  const usageTip = (
+    <span className="tabular-nums">
+      {used !== null ? used.toLocaleString() : "—"}
+      {" / "}
+      {contextWindow.toLocaleString()}
+      {percentText !== null ? ` · ${percentText}%` : ""}
+    </span>
+  );
+
   return (
     <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          /*
-                      ⚠️ **悬停不改圆环颜色**（用户要求）：这颗的「图标」是手绘 SVG，圆环用
-                      `stroke-*` 上色、本来就不吃 `CHAT_ICON_PILL` 里那条 `hover:[&_svg]:text-primary`；
-                      曾经另补过一条 `hover:[&_circle]:stroke-primary` 让整排 pill 的 hover 手感一致，
-                      但圆环的颜色本身是**用量告警语义**（灰 / 琥珀 / 红），hover 一变就会被误读成
-                      「占用变了」—— 去掉它，hover 不留卡片（详情改成点击弹出）。
-                    */
-          className={CHAT_ICON_PILL}
-          aria-label={t("上下文用量")}
-          title={
-            isAcp
-              ? t("上下文用量（agent 上报，点击看详情）")
-              : t("上下文用量（点击看详情，可手动压缩）")
-          }
-        >
-          {compressing ? (
-            <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
-          ) : (
-            <svg viewBox="0 0 18 18" className="size-4 shrink-0" aria-hidden>
-              <circle
-                cx="9"
-                cy="9"
-                r={R}
-                fill="none"
-                strokeWidth="2.5"
-                className="stroke-muted-foreground/25"
-              />
-              {ratio !== null && ratio > 0 && (
-                <circle
-                  cx="9"
-                  cy="9"
-                  r={R}
-                  fill="none"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeDasharray={`${(ratio * CIRC).toFixed(2)} ${CIRC.toFixed(2)}`}
-                  transform="rotate(-90 9 9)"
-                  className={tone}
-                />
+      {/*
+        提示挂在**外层 span** 上，不套 PopoverTrigger：触发器自带 `data-state`，
+        `TooltipTrigger asChild` 注进去的状态会把它盖掉（见 IconTip 文件头的说明）。
+        span 与按钮等大（inline-flex 包着 32px 的钮），悬停区域不变。
+      */}
+      <IconTip label={usageTip}>
+        <span className="inline-flex">
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              /*
+                ⚠️ **悬停不改圆环颜色**（用户要求）：这颗的「图标」是手绘 SVG，圆环用
+                `stroke-*` 上色、本来就不吃 `CHAT_ICON_PILL` 里那条 `hover:[&_svg]:text-primary`；
+                曾经另补过一条 `hover:[&_circle]:stroke-primary` 让整排 pill 的 hover 手感一致，
+                但圆环的颜色本身是**用量告警语义**（灰 / 琥珀 / 红），hover 一变就会被误读成
+                「占用变了」—— 去掉它。hover 只出上面那条占用提示，详情仍然点击才弹。
+              */
+              className={CHAT_ICON_PILL}
+              aria-label={t("上下文用量")}
+            >
+              {compressing ? (
+                <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
+              ) : (
+                <svg viewBox="0 0 18 18" className="size-4 shrink-0" aria-hidden>
+                  <circle
+                    cx="9"
+                    cy="9"
+                    r={R}
+                    fill="none"
+                    strokeWidth="2.5"
+                    className="stroke-muted-foreground/25"
+                  />
+                  {ratio !== null && ratio > 0 && (
+                    <circle
+                      cx="9"
+                      cy="9"
+                      r={R}
+                      fill="none"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeDasharray={`${(ratio * CIRC).toFixed(2)} ${CIRC.toFixed(2)}`}
+                      transform="rotate(-90 9 9)"
+                      className={tone}
+                    />
+                  )}
+                </svg>
               )}
-            </svg>
-          )}
-        </button>
-      </PopoverTrigger>
+            </button>
+          </PopoverTrigger>
+        </span>
+      </IconTip>
       {/*
         与「模型 / 权限」那几个下拉保持一套外观：圆角、实边框、离视口边缘留白。
         ⚠️ `PopoverContent` 默认只有 `ring-foreground/5`，在 `contrast` 主题下

@@ -16,6 +16,8 @@ import {
   estimateBaseTokens,
   estimateMessagesTokens,
   contextUsed,
+  contextEnvironmentDigest,
+  contextMessagesDigest,
   rememberBaseTokens,
   defaultContextWindowFromEnv,
   isContextOverflowError,
@@ -81,11 +83,14 @@ import type {
   TurnUsage
 } from '@fizz/contracts/types'
 import type { SkillInfo } from '@fizz/skills'
+import { buildHistoryTools } from '@fizz/tools'
 
 // 这两个形状下沉到了 contracts（@fizz/acp 的 acp.ts 也要用），这里转出保持原公开 API 不变
 export type { AgentConfirmInput, RunAgentResult } from '@fizz/contracts/types'
 
 export interface RunAgentOptions {
+  /** 同会话完整原文，只供证据回溯；模型请求仍使用 history 的压缩视图。 */
+  evidenceHistory?: AgentChatMessage[]
   /**
    * 这一轮的作用域：绑定工作区的会话，或跨项目的全局会话（助手）。
    *
@@ -239,13 +244,15 @@ export interface RunAgentOptions {
    * 进程重启后内存缓存是空的，用它接上 —— 否则重启后第一轮又要摘要一次。
    * 与内存缓存同一条判定：起点消息还在 + 后续原文没超预算才复用。
    */
-  autoSummarySeed?: { keepFromMessageId: string; text: string }
+  autoSummarySeed?: { keepFromMessageId: string; text: string; at?: number; afterToolCallId?: string; sourceDigest?: string }
+  /** 完整工具边界上的轮中检查点；宿主须先持久化工具历史，再提交此检查点。 */
+  onMidTurnSummary?: (entry: { text: string; afterToolCallId: string }) => void
   /**
    * 摘要**真的重算**时回调（供调用方落盘）。
    *
    * 复用缓存 / 没到阈值 / 摘要失败都不调（那三种情况下落盘内容没有变化）。
    */
-  onAutoSummary?: (entry: { keepFromMessageId: string; text: string }) => void
+  onAutoSummary?: (entry: { keepFromMessageId: string; text: string; sourceDigest?: string }) => void
   /**
    * 这个模型的**上下文窗口**（token，见 `AiModelEntry.contextWindow`）。
    *
@@ -1041,6 +1048,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
    * `stats` 是**这一轮**的派活统计（不是模块级）：轮次之间可能重叠（队列里排着下一轮 +
    * steer 插话），模块级会把 A 轮的用量与错误记到 B 轮头上。
    */
+  let contextMeasurement: TurnUsage['contextMeasurement']
   const finish = async (
     finishReason: RunAgentResult['finishReason'],
     usage?: TurnUsage,
@@ -1048,6 +1056,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
     /** 被预算截断时补的两个字段（见 `AgentStopReason`）：只有「正常跑完但用满步数」那条路给 */
     stop?: { stopReason: AgentStopReason; steps: number }
   ): Promise<RunAgentResult> => {
+    if (usage && contextMeasurement) usage.contextMeasurement = contextMeasurement
     opts.signal?.removeEventListener('abort', forwardAbort)
     if (stats.hookErrors.length > 0) {
       const detail = stats.hookErrors.map((e) => '  ' + e.where + ': ' + e.message).join('\n')
@@ -1091,7 +1100,22 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
    * / `tool-result` 之前，否则前端会把「已经收口的 input」又用旧增量盖回去。
    * finish / error / retry 同样走这里，所以不存在「攒着没发出去」的尾巴。
    */
+  const liveEvidence: AgentChatMessage = {
+    id: `live-${turnId}`, role: 'assistant', createdAt: Date.now(), parts: []
+  }
+  const evidenceCalls = new Map<string, Extract<AgentChatMessage['parts'][number], { type: 'tool-call' }>>()
   const emitEvent = (event: AgentStreamEvent): void => {
+    // 工具在本轮被摘要移出请求后仍能回溯；原始结果只在会话内存中保留引用。
+    if (event.type === 'tool-call') {
+      const part: Extract<AgentChatMessage['parts'][number], { type: 'tool-call' }> = {
+        type: 'tool-call', toolCallId: event.toolCallId, toolName: event.toolName, input: event.input
+      }
+      evidenceCalls.set(event.toolCallId, part)
+      liveEvidence.parts.push(part)
+    } else if (event.type === 'tool-result') {
+      const part = evidenceCalls.get(event.toolCallId)
+      if (part) { part.output = event.output; part.isError = event.isError }
+    }
     /**
      * 模型设置里关掉「思考」= 思考内容**不往客户端发**（因此也不会被落进历史）。
      * 上游照常生成（不碰 provider 参数：各家关闭思考的字段各不相同，写错就是静默失效），
@@ -1132,7 +1156,8 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
   const finishTiming = (
     usage?: TurnUsage
   ): { usage?: TurnUsage; durationMs?: number } =>
-    usage ? { usage } : { durationMs: Math.max(0, Date.now() - startedAt) }
+    usage ? { usage: { ...usage, ...(contextMeasurement ? { contextMeasurement } : {}) } }
+      : { durationMs: Math.max(0, Date.now() - startedAt) }
 
   /**
    * 静态部分（系统提示词 + 工具集）整轮只建一次：它们同时是**上下文估算**的输入
@@ -1170,6 +1195,13 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
     maxSteps: opts.maxSteps ?? MAX_STEPS
   }
   const assembly = opts.assemble ? await opts.assemble(assemblyDeps) : assembleStandard(assemblyDeps)
+  assembly.plugins = [...(assembly.plugins ?? []), {
+    plugin: rawToolsPlugin('conversation-history', buildHistoryTools(() => [
+      ...(opts.evidenceHistory ?? opts.history), liveEvidence
+    ]), {
+      origin: 'builtin', source: 'conversation-history'
+    })
+  }]
   /** 挂载后的静态部分：`hooks` / `ctx` 恒存在（由本轮自建，收尾统一卸载） */
   const agentSetup = await mountAssembly(assembly, assemblyDeps)
   /** 这一轮声明的子任务能力（没有 = 一个派活工具都不挂） */
@@ -1199,6 +1231,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
         tools: toolsForModel
       }
   const baseTokens = await estimateBaseTokens(setupForModel.instructions, toolsForModel)
+  const environmentDigest = await contextEnvironmentDigest(effectiveModel, setupForModel.instructions, toolsForModel)
   // 记下来给手动压缩那条路兜底（它不建 agent，算不出 base —— 不补就差一整个 base）
   if (opts.conversationId) rememberBaseTokens(opts.conversationId, baseTokens)
 
@@ -1223,6 +1256,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
   // 重来条件：可重试的这一次请求（网络中断 / 上游空响应 / context overflow）、未到次数上限，
   // 并且 —— 要么有断点（续跑不重跑工具），要么压根没执行过工具（整轮重来才不会重复副作用）。
   for (;;) {
+    contextMeasurement = undefined
     /**
      * 这次尝试**首个内容事件**的时刻（判「上游回了个空响应」还是「吐了半截才失败」用）、
      * 模型上报的原始用量、本轮上下文估算。
@@ -1319,6 +1353,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
             : {}),
           contextWindow,
           baseTokens,
+          environmentDigest,
           ...(forceCompact ? { force: true } : {}),
           model: effectiveModel,
           signal: runSignal
@@ -1421,8 +1456,6 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
 
       type EngineInput = Parameters<typeof runEngine>[0]
       const engineTools = { ...toolsForModel, ...(delegation?.tools ?? {}) } as EngineInput['tools']
-      /** 上一次边界时 messages 的长度：只用来估「这一步新增的那部分」 */
-      let boundaryCount = messages.length
       /** 进入本次尝试时整轮已完成的步数（续跑时非 0）：checkpoint 的基数，见那里 */
       const stepsAtAttemptStart = resumeSteps
       /** 本次尝试的步数预算（续跑会扣掉已跑的，见下面的 `maxSteps`） */
@@ -1472,7 +1505,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
          * ⚠️ 不再需要 `isFinal` 判断 —— `prepareStep` 只在「还有下一步」时被调用，
          * 天然不会出现「最后一步之后再压一次」。
          */
-        onStepBoundary: async ({ messages: current, stepNumber }) => {
+        onStepBoundary: async ({ messages: current, stepNumber, measurement }) => {
           let next = current
           /**
            * 记下断点：这一步已经跑完（`current` 里含它的 assistant 消息与工具结果），
@@ -1513,10 +1546,11 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
            * 两条腿互相兜底 —— 估算漏了某种 part 形状时真实值兜住，真实值过期时
            * （刚压缩完 / 第一步）估算兜住。
            */
-          const tailTokens = estimateMessagesTokens(next.slice(boundaryCount))
           const estimatedAll = baseTokens + estimateMessagesTokens(next)
-          const realWithTail = lastStepUsage
-            ? calculateContextTokens(lastStepUsage) + tailTokens
+          const measuredUsage = normalizeUsage(measurement?.usage)
+          const realWithTail = measuredUsage && measurement &&
+            contextMessagesDigest(measurement.messages) === contextMessagesDigest(next)
+            ? calculateContextTokens(measuredUsage) + estimateMessagesTokens(measurement.toolMessages)
             : 0
           const observedContextTokens = contextUsed(realWithTail, estimatedAll)
           emitEvent({
@@ -1552,6 +1586,12 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
                       : {})
                   })
               if (compactedMid?.compressed) {
+                if (compactedMid.summary && compactedMid.afterToolCallId) {
+                  opts.onMidTurnSummary?.({
+                    text: compactedMid.summary,
+                    afterToolCallId: compactedMid.afterToolCallId
+                  })
+                }
                 next = compactedMid.messages
                 midTurnCompactAfter = compactedMid.compressed.afterTokens
                 /**
@@ -1575,7 +1615,6 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
               console.error('[compaction] 轮中压缩失败：' + describeError(err))
             }
           }
-          boundaryCount = next.length
           /**
            * 步数预算提醒：进了提醒区就在**消息尾部**放一条（并原地更新上一条）。
            *
@@ -1593,7 +1632,6 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
               stepBudgetReminder({ maxSteps: attemptBudget, used: stepNumber })
             )
             // 提醒也算「这一步之前就有的」：下一步的「新增尾巴」估算从它之后算起
-            boundaryCount = next.length
           }
 
           const steer = (await opts.pollSteer?.()) ?? null
@@ -1668,7 +1706,6 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
             ...next,
             { role: 'user', content: steerContent } as unknown as EngineInput['messages'][number]
           ]
-          boundaryCount = next.length
           // 插话后的上下文也记下来（`steered` 会让这一轮不再自动重试，这里是防御性的）
           return checkpoint(next)
         }
@@ -1815,6 +1852,15 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
       await Promise.resolve(streamIterator.return?.()).catch(() => undefined)
       // 收尾：流跑完 / 被中止都会 resolve（引擎在 finally 里收尾，不会悬挂）
       const finished = await engine.done
+      const measured = finished.contextMeasurement
+      const measuredUsage = normalizeUsage(measured?.usage)
+      contextMeasurement = measured && measuredUsage
+        ? {
+            environment: await contextEnvironmentDigest(effectiveModel, setupForModel.instructions, engineTools),
+            messages: contextMessagesDigest(measured.messages),
+            usedTokens: calculateContextTokens(measuredUsage) + estimateMessagesTokens(measured.toolMessages)
+          }
+        : undefined
       /**
        * 流结束 = 不会再有下一步，后台还跑着的派活已经没人领结论了：先收尾（它会发
        * `subagent-end`，派活卡才落得下来）。已经领过的是空操作；这一步放在拼收尾

@@ -112,7 +112,7 @@ export interface MessageFollowupBridge {
  * 「这一段过程整体露不露」，细看哪一步交给用户自己点（不做嵌套自动展开）。
  *
  * 「最后一段正文」由 `lastTextIndex` 认定（最后一个有内容的 text part）。错误块（`⚠️ ` 前缀）
- * **永不折叠** —— 它带着「重新加载」按钮。用户消息整条原样铺开，不参与折叠。
+ * **永不折叠** —— 最新错误可带「重新加载」按钮。用户消息整条原样铺开，不参与折叠。
  *
  * 整轮只有一段正文、没有任何思考 / 工具时没有折叠条（就是一条普通回复）；只调了工具
  * 就收尾时，折叠条就是这条消息的全部内容。
@@ -140,6 +140,9 @@ export interface MessagePartsProps {
    * 新消息把任务续下去。不传 = 只显示提示、不给按钮（容器工作台没有「发消息」的语义）。
    */
   onContinue?: () => void
+  /** 会话宿主提供的恢复入口，仅最后一条助手消息的最后一个错误使用。 */
+  onReload?: () => void
+  reloading?: boolean
 }
 
 /**
@@ -181,7 +184,9 @@ function MessagePartsInner({
   streaming,
   followup,
   compaction,
-  onContinue
+  onContinue,
+  onReload,
+  reloading
 }: MessagePartsProps) {
   // 订阅语言：折叠条摘要（思考 ×N / 工具调用 ×N）在渲染期用 `t()` 算，切语言要跟着变
   const tr = useT()
@@ -234,6 +239,16 @@ function MessagePartsInner({
    */
   const display = useMemo(() => coalescePartFragments(message.parts), [message.parts])
   const parts = display.parts
+  let reloadErrorIndex = -1
+  if (onReload && message.role === 'assistant' && index === total - 1) {
+    for (let i = parts.length - 1; i >= 0; i -= 1) {
+      const part = parts[i]
+      if (part.type === 'text' && isErrorText(part.text)) {
+        reloadErrorIndex = i
+        break
+      }
+    }
+  }
   /**
    * 交接文档卡要插在**原下标** `afterPartIndex` 之前。合并会改变下标，所以按
    * `originIndex`（新 → 原）换算：范围内第一个还存在的 part 之前就是卡的位置。
@@ -271,6 +286,9 @@ function MessagePartsInner({
       <PartView
         key={`${message.id}-${partIndex}`}
         part={part}
+        onReload={partIndex === reloadErrorIndex ? onReload : undefined}
+        reloading={reloading}
+        reloadDisabled={streaming}
         // 流式 = 整轮在跑 + 这条是最后一条消息 + 这个 part 是消息的最后一个。
         // 只有 reasoning 消费它（「思考中」的判断依据）。
         streaming={isStreamingLast && partIndex === parts.length - 1}
@@ -595,6 +613,8 @@ export const MessageParts = memo(
   MessagePartsInner,
   (prev, next) =>
     prev.message === next.message &&
+    prev.onReload === next.onReload &&
+    prev.reloading === next.reloading &&
     prev.index === next.index &&
     prev.total === next.total &&
     prev.streaming === next.streaming &&

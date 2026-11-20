@@ -284,6 +284,7 @@ async function handleRuns(req, res) {
     // 容器里的会话恒定绑定 `/workspace`（global 作用域没有意义：容器本来就是一个工作区）
     scope: { kind: 'workspace', workspace: { id: runId, name: ENV_ID, path: WORKSPACE } },
     history: Array.isArray(body.history) ? body.history : [],
+    evidenceHistory: Array.isArray(body.evidenceHistory) ? body.evidenceHistory : undefined,
     // 压缩检查点的复用键（宿主每轮传同一个会话 id）：不传就每轮重摘要一次
     conversationId: typeof body.conversationId === 'string' ? body.conversationId : undefined,
     /**
@@ -319,7 +320,8 @@ async function handleRuns(req, res) {
      * 所以这条帧丢了只会让下一轮多一次摘要调用，不会影响正确性 —— 但仍要发：
      * 「容器重启一次就整段重摘要」正是缺了它。
      */
-    onAutoSummary: (entry) => writeFrame(run, { type: 'auto-summary', entry })
+    onAutoSummary: (entry) => writeFrame(run, { type: 'auto-summary', entry }),
+    onMidTurnSummary: (entry) => writeFrame(run, { type: 'mid-turn-summary', entry })
   }).catch((err) => ({ finishReason: 'error', error: describeError(err) }))
 
   const aborted = new Promise((resolve) => {

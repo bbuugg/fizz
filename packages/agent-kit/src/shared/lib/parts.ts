@@ -13,7 +13,7 @@ import { t } from '@fizz/i18n'
  * 这条文本 part 是不是**一条错误**（见 `ERROR_TEXT_PREFIX` 的注释）。
  *
  * 错误在历史里就是一段以 `⚠️ ` 开头的纯文本（服务端落盘时也这么写），所以只能按前缀认。
- * 渲染层用它决定要不要在错误后面挂「重新加载」按钮。
+ * 渲染层用它保持错误可见，并在最新错误旁提供「重新加载」入口。
  */
 export function isErrorText(text: string): boolean {
   return text.trimStart().startsWith(ERROR_TEXT_PREFIX)

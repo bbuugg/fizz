@@ -128,6 +128,46 @@ describe('compactModelMessages（轮中压缩）', () => {
     expect(gen).not.toHaveBeenCalled()
   })
 
+  // 防止摘要生成成功却仍超窗，以及长日志尾部的失败证据在摘要前消失。
+  it('候选摘要超出请求预算时保留原消息', async () => {
+    gen.mockImplementation(() => fakeStream(['中'.repeat(5000)]))
+    const input = history(8)
+    const result = await compactModelMessages(input, {
+      contextWindow: 4000, model: MODEL, settings: { keepRecentTokens: 1024 }
+    })
+    expect(result.compressed).toBeNull()
+    expect(result.messages).toBe(input)
+  })
+
+  it('长工具结果保留调用标识和尾部错误', async () => {
+    const input = history(8)
+    const tool = input[2] as Extract<ModelMessage, { role: 'tool' }>
+    tool.content = [{ type: 'tool-result', toolCallId: 'c1', toolName: 'read',
+      output: { type: 'text', value: `${'x'.repeat(8000)}\nFINAL_ERROR_TS2322` } }]
+    await compactModelMessages(input, {
+      contextWindow: 4000, model: MODEL, settings: { keepRecentTokens: 1024 }
+    })
+    const prompt = (gen.mock.calls[0]?.[0] as unknown as {
+      messages: Array<{ content: string }>
+    }).messages[0]!.content
+    expect(prompt).toContain('FINAL_ERROR_TS2322')
+    expect(prompt).toContain('c1')
+  })
+
+  it('超大写入入参只在摘要输入中缩略，保留路径和可回溯调用 id', async () => {
+    const input = history(8)
+    input[1] = { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'write',
+      input: { file_path: 'src/important.ts', content: 'x'.repeat(50000) } }] }
+    await compactModelMessages(input, {
+      contextWindow: 4000, model: MODEL, settings: { keepRecentTokens: 1024 }
+    })
+    const prompt = (gen.mock.calls[0]![0] as unknown as { messages: Array<{ content: string }> }).messages[0]!.content
+    expect(prompt).toContain('src/important.ts')
+    expect(prompt).toContain('toolCallId=c1')
+    expect(prompt).not.toContain('x'.repeat(10000))
+    expect(JSON.stringify(input)).toContain('x'.repeat(50000))
+  })
+
   it('越过阈值时摘要旧消息、保留近期原文', async () => {
     const r = await compactModelMessages(history(8), {
       contextWindow: 4000,
@@ -151,6 +191,44 @@ describe('compactModelMessages（轮中压缩）', () => {
     expect(r.compressed).not.toBeNull()
     expect(r.messages[0]?.role).toBe('user')
     expectToolPairing(r.messages)
+  })
+
+  it('并行工具结果乱序返回时持久化到最后一个调用，而不是最后一个结果', async () => {
+    const input: ModelMessage[] = [
+      { role: 'user', content: '开始任务' },
+      { role: 'assistant', content: [
+        { type: 'tool-call', toolCallId: 'first', toolName: 'read', input: {} },
+        { type: 'tool-call', toolCallId: 'last', toolName: 'read', input: {} }
+      ] },
+      { role: 'tool', content: [
+        { type: 'tool-result', toolCallId: 'last', toolName: 'read', output: { type: 'text', value: LONG.repeat(3) } },
+        { type: 'tool-result', toolCallId: 'first', toolName: 'read', output: { type: 'text', value: LONG.repeat(3) } }
+      ] },
+      { role: 'assistant', content: '继续分析' },
+      ...history(2)
+    ]
+    const r = await compactModelMessages(input, {
+      contextWindow: 4000, model: MODEL, settings: { keepRecentTokens: 1024 }
+    })
+    expect(r.compressed).not.toBeNull()
+    expect(r.afterToolCallId).toBe('last')
+  })
+
+  it('二次压缩时仍把与旧摘要合并的用户原文作为新证据', async () => {
+    const first = await compactModelMessages(history(8), {
+      contextWindow: 4000, model: MODEL, settings: { keepRecentTokens: 1024 }
+    })
+    // 用明确的合并消息模拟保留区首条 user，避免依赖当前切点正好落在 user。
+    const merged: ModelMessage = { role: 'user', content: [
+      { type: 'text', text: first.summary! }, { type: 'text', text: '必须保留的新验收条件' }
+    ] }
+    gen.mockClear()
+    await compactModelMessages([merged, ...history(8)], {
+      contextWindow: 4000, model: MODEL, settings: { keepRecentTokens: 1024 }
+    })
+    const prompt = (gen.mock.calls[0]![0] as unknown as { messages: Array<{ content: string }> }).messages[0]!.content
+    const conversation = prompt.slice(prompt.indexOf('<conversation>'), prompt.indexOf('</conversation>'))
+    expect(conversation).toContain('必须保留的新验收条件')
   })
 
   it('切点前面只剩上一份摘要 → 不压、不调模型', async () => {

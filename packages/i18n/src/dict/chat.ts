@@ -127,8 +127,6 @@ export const CHAT: Record<string, string> = {
   '思考档': 'Thinking level',
   '手动压缩失败：{error}': 'Manual compaction failed: {error}',
   '上下文用量': 'Context usage',
-  '上下文用量（agent 上报，点击看详情）': 'Context usage (reported by the agent; click for details)',
-  '上下文用量（点击看详情，可手动压缩）': 'Context usage (click for details; manual compaction available)',
   '本轮累计输入': 'Input this turn',
   '（压缩后估算，下一轮起按上游实测值）': '(post-compaction estimate; upstream usage takes over next turn)',
   '其中系统提示词 + 工具': 'of which system prompt + tools',

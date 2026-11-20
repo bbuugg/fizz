@@ -15,6 +15,8 @@ import {
   compactHistory,
   resolveCompactionSettings
 } from './context'
+import { contextEnvironmentDigest, contextMessagesDigest } from './context'
+import { toModelMessages } from './model-messages'
 import { compactionKeepRecentTokens } from '@fizz/contracts/types'
 import type { AgentChatMessage, AiModelConfig } from '@fizz/contracts/types'
 
@@ -127,6 +129,130 @@ describe('compactHistory（pi 的 compaction）', () => {
     expect(gen).toHaveBeenCalledTimes(1)
     // 摘要并进保留区第一条，原始保留区原样跟在后面
     expect(firstText(r.history[0])).toContain('摘要正文')
+  })
+
+  it('真实测量仅适用于相同请求环境及消息前缀，模型或历史改变后退回估算', async () => {
+    const history = chatHistory(8)
+    const environment = await contextEnvironmentDigest(MODEL, 'system', {})
+    history.at(-1)!.usage = {
+      inputTokens: 900, outputTokens: 100, totalTokens: 1000, contextTokens: 1000,
+      durationMs: 1, tps: 1,
+      contextMeasurement: { environment, messages: contextMessagesDigest(await toModelMessages(history)), usedTokens: 1000 }
+    }
+    const same = await compactHistory(history, { ...OPTS, environmentDigest: environment })
+    expect(same.compressed).toBeNull()
+    expect(gen).not.toHaveBeenCalled()
+    const changed = await compactHistory(history, { ...OPTS, environmentDigest: 'different-model' })
+    expect(changed.compressed).not.toBeNull()
+    clearAutoSummaryCache()
+    gen.mockClear()
+    history[0]!.parts = [{ type: 'text', text: `新约束${LONG}` }]
+    await compactHistory(history, { ...OPTS, environmentDigest: environment })
+    expect(gen).toHaveBeenCalled()
+  })
+
+  it('真实测量失效且尾部有新用户消息时，不把尾部 token 冒充整个上下文', async () => {
+    const history = [...chatHistory(8), { id: 'new', role: 'user' as const,
+      createdAt: 99, parts: [{ type: 'text' as const, text: '继续' }] }]
+    const result = await compactHistory(history, { ...OPTS, environmentDigest: 'new-environment' })
+    expect(result.compressed).not.toBeNull()
+    expect(gen).toHaveBeenCalled()
+  })
+
+  it('请求环境指纹覆盖工具、系统提示词及模型，不依赖凭据', async () => {
+    const model = { ...MODEL, id: 'gateway', model: 'model-a', apiKey: 'secret-a' }
+    const baseline = await contextEnvironmentDigest(model, 'system', {})
+    expect(await contextEnvironmentDigest({ ...model, apiKey: 'secret-b' }, 'system', {})).toBe(baseline)
+    expect(await contextEnvironmentDigest({ ...model, model: 'model-b' }, 'system', {})).not.toBe(baseline)
+    expect(await contextEnvironmentDigest(model, 'new system', {})).not.toBe(baseline)
+    expect(await contextEnvironmentDigest(model, 'system', { read: { description: 'read' } })).not.toBe(baseline)
+    expect(contextMessagesDigest([{ role: 'user', content: 'hi' }])).toBe(
+      contextMessagesDigest([{ role: 'user', content: [{ type: 'text', text: 'hi' }] }])
+    )
+  })
+
+  it('轮中检查点跨轮复用，覆盖的巨型工具结果不重新进入请求', async () => {
+    const history = toolHistory(2)
+    const assistant = history[1]!
+    const call = assistant.parts[0]!
+    if (call.type !== 'tool-call') throw new Error('missing call')
+    call.output = '中'.repeat(10000)
+    assistant.parts.push({ type: 'text', text: '修改完成但尚未验证' })
+    const original = JSON.stringify(history)
+    const result = await compactHistory(history, {
+      ...OPTS,
+      seed: { keepFromMessageId: assistant.id, afterToolCallId: 'c1', text: '工具已完成', at: 3 }
+    })
+    expect(result.reused).toBe(true)
+    expect(gen).not.toHaveBeenCalled()
+    expect(JSON.stringify(result.history)).not.toContain('中'.repeat(100))
+    expect(JSON.stringify(result.history)).toContain('修改完成但尚未验证')
+    expect(JSON.stringify(history)).toBe(original)
+  })
+
+  it('轮中检查点边界被编辑删除后不把旧摘要拼进完整历史', async () => {
+    const history = toolHistory(2)
+    const result = await compactHistory(history, {
+      ...OPTS, seed: { keepFromMessageId: 'ta1', afterToolCallId: 'deleted', text: '不应复用的旧摘要' }
+    })
+    expect(result.reused).toBe(false)
+    expect(result.history).toBe(history)
+    expect(JSON.stringify(result.history)).not.toContain('不应复用的旧摘要')
+  })
+
+  it('轮中检查点同时识别独立 tool-result，保留后续文字且不留下孤儿结果', async () => {
+    const history = toolHistory(2)
+    const assistant = history[1]!
+    const call = assistant.parts[0]!
+    if (call.type !== 'tool-call') throw new Error('missing call')
+    call.output = undefined
+    assistant.parts.push(
+      { type: 'tool-result', toolCallId: 'c1', toolName: 'read', output: '中'.repeat(10000) },
+      { type: 'text', text: '后续分析' }
+    )
+    const result = await compactHistory(history, {
+      ...OPTS, seed: { keepFromMessageId: assistant.id, afterToolCallId: 'c1', text: '完成读取' }
+    })
+    expect(result.reused).toBe(true)
+    expect(JSON.stringify(result.history)).not.toContain('中'.repeat(100))
+    expect(JSON.stringify(result.history)).toContain('后续分析')
+  })
+
+  it('预算验收失败不提交检查点', async () => {
+    gen.mockImplementation(() => fakeStream(['中'.repeat(5000)]))
+    const onAutoSummary = vi.fn()
+    const history = chatHistory(8)
+    const result = await compactHistory(history, { ...OPTS, onAutoSummary })
+    expect(result.compressed).toBeNull()
+    expect(result.history).toBe(history)
+    expect(onAutoSummary).not.toHaveBeenCalled()
+  })
+
+  it('持久化失败不把候选检查点提前发布到内存缓存', async () => {
+    const history = chatHistory(8)
+    await expect(compactHistory(history, {
+      ...OPTS, onAutoSummary: () => { throw new Error('disk failure') }
+    })).rejects.toThrow('disk failure')
+    gen.mockClear()
+    const next = await compactHistory(history, OPTS)
+    expect(next.reused).toBe(false)
+    expect(gen).toHaveBeenCalled()
+  })
+
+  it('重启后复用落盘检查点，编辑覆盖区后使其失效', async () => {
+    const history = chatHistory(8)
+    let saved: { keepFromMessageId: string; text: string; sourceDigest?: string } | undefined
+    await compactHistory(history, { ...OPTS, onAutoSummary: (entry) => { saved = entry } })
+    expect(saved?.sourceDigest).toBeTruthy()
+    clearAutoSummaryCache()
+    gen.mockClear()
+    const reused = await compactHistory(history, { ...OPTS, seed: saved })
+    expect(reused.reused).toBe(true)
+    expect(gen).not.toHaveBeenCalled()
+    history[0]!.parts = [{ type: 'text', text: `用户更正要求：${LONG}` }]
+    const updated = await compactHistory(history, { ...OPTS, seed: saved })
+    expect(updated.compressed).not.toBeNull()
+    expect(gen).toHaveBeenCalled()
   })
 
   it('切点落在回合中间时，额外生成 turn-prefix 摘要并合并', async () => {
