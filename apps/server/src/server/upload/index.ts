@@ -15,6 +15,8 @@ export type { UploadAdapter } from './types'
 export { adapterFor, resolveUploadAdapter } from './adapters'
 /** 附件「URL 直传 还是 内联字节」的判据（见 `attachments.ts` 文件头） */
 export { createAttachmentResolver, isPubliclyFetchable } from './attachments'
+/** 无条件读回附件字节（读图子任务用，见 `attachments.ts`） */
+export { readAttachmentBytes } from './attachments'
 export {
   BUILTIN_UPLOAD_PROVIDER_ID,
   getUploadProviders,

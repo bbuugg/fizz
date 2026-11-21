@@ -643,12 +643,14 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     /** 保存技能页「额外发现目录」（全量清单；技能页的添加 / 移除目录走这里） */
     setSkillDirs: s.setSkillDirs,
     /**
-     * 启 / 停一个子任务（subagent）。内置两个的定义在服务端代码里，自定义的随设置落盘
+     * 启 / 停一个子任务（subagent）。内置三个的定义在服务端代码里，自定义的随设置落盘
      * （`subagentSettings.definitions`）—— 见 `AiPreferencesTab` 的「子任务」区。
      */
     toggleSubagent: s.toggleSubagent,
-    /** 设置子任务专用模型（`null` = 沿用父会话模型） */
+    /** 设置子任务**兜底**模型（`null` = 沿用父会话模型） */
     setSubagentModel: s.setSubagentModel,
+    /** 设置**某个**子智能体自己的模型（`null` = 回兜底模型） */
+    setSubagentModelFor: s.setSubagentModelFor,
     /** 设置某个子任务的步数上限（`null` = 回到规格默认值） */
     setSubagentMaxSteps: s.setSubagentMaxSteps,
     /** 保存自定义子智能体的整份清单（新建 / 编辑 / 删除都走它） */

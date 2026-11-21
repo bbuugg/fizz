@@ -2689,6 +2689,8 @@ export class AgentDomain {
         modelId: patch.modelId !== undefined ? patch.modelId : prev.modelId,
         // 步数整体替换：调用方（设置页）先合并好要留的 id 再传，缺 id = 该子任务回默认
         maxSteps: patch.maxSteps !== undefined ? patch.maxSteps : prev.maxSteps,
+        // 每个子智能体自己的模型也是整体替换：缺 id = 这个子智能体回到兜底模型
+        models: patch.models !== undefined ? patch.models : prev.models,
         // 定义也整体替换：新建 / 编辑 / 删除都是前端算好整份再传
         definitions: patch.definitions !== undefined ? patch.definitions : prev.definitions
       })

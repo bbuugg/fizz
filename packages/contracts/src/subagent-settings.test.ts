@@ -3,6 +3,9 @@
  *
  * 防的是三件事：手改坏的数据文件让读接口抛错；越界值被悄悄夹到边界，用户看不出
  * 「我填的 500 变成了 128」；未知 id 混进 maxSteps 让设置页渲染出一个不存在的子任务。
+ *
+ * `models`（每个子智能体自己的模型）还有一条自己的规矩：只有 `modelConfigId` + `modelId`
+ * **成对**才生效 —— 只有一半时拼不出一个能用的模型，猜一半等于替用户换网关。
  */
 import { describe, expect, it } from 'vitest'
 import {
@@ -59,6 +62,56 @@ describe('normalizeSubagentSettings · 步数上限', () => {
 
   it('没设步数时结果里不出现这个字段（老数据不受影响）', () => {
     expect('maxSteps' in normalizeSubagentSettings({ enabled: ['explorer'] })).toBe(false)
+  })
+})
+
+describe('normalizeSubagentSettings · 每个子智能体自己的模型', () => {
+  const ref = { modelConfigId: 'cfg-1', modelId: 'fast' }
+
+  it('成对的合法引用原样保留（内置也能配）', () => {
+    const settings = normalizeSubagentSettings({ models: { image_reader: ref, explorer: ref } })
+
+    expect(settings.models).toEqual({ image_reader: ref, explorer: ref })
+  })
+
+  it('只有一半 / 空串一律丢掉（服务端不猜，让它退回兜底模型）', () => {
+    const settings = normalizeSubagentSettings({
+      models: {
+        image_reader: { modelConfigId: 'cfg-1' },
+        explorer: { modelConfigId: '', modelId: 'fast' },
+        reviewer: { modelConfigId: 'cfg-1', modelId: '  ' }
+      }
+    })
+
+    expect(settings.models).toBeUndefined()
+  })
+
+  it('未知 id / 非对象项丢掉；全丢掉时不留下空对象', () => {
+    const bogus = normalizeSubagentSettings({
+      models: { coder: ref, explorer: 'cfg::fast', image_reader: ref } as never
+    })
+    expect(bogus.models).toEqual({ image_reader: ref })
+
+    expect(normalizeSubagentSettings({ models: {} }).models).toBeUndefined()
+  })
+
+  it('自定义 id 也认（定义那边的模型字段才是老路径）', () => {
+    const settings = normalizeSubagentSettings({
+      definitions: [
+        { id: 'custom-ab12cd34', name: '核对', description: '核对文档', instructions: '', tools: ['read'] }
+      ],
+      models: { 'custom-ab12cd34': ref }
+    })
+    expect(settings.models).toEqual({ 'custom-ab12cd34': ref })
+  })
+
+  it('引用指向已删除的自定义子智能体时跟着丢掉', () => {
+    const settings = normalizeSubagentSettings({ models: { 'custom-ab12cd34': ref } })
+    expect(settings.models).toBeUndefined()
+  })
+
+  it('没配模型时结果里不出现这个字段（老数据不受影响）', () => {
+    expect('models' in normalizeSubagentSettings({ enabled: ['explorer'] })).toBe(false)
   })
 })
 

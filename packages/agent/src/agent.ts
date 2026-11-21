@@ -57,7 +57,12 @@ import {
   wrapToolsWithHooks,
   type MountedPlugin
 } from './plugins'
-import { buildDelegationTools, makeDelegationStats, type SubagentId } from './subagents'
+import {
+  buildDelegationTools,
+  makeDelegationStats,
+  type SubagentId,
+  type SubagentImageSources
+} from './subagents'
 import { runEngine, withToolIntent } from './engine'
 import { resolveModel } from './resolve-model'
 import { isEmptyStreamOutputError, isRetryableNetworkError, retryDelayMs, sleepWithSignal } from './retry'
@@ -587,14 +592,20 @@ export function resolveScopeWorkspace(scope: AgentScope): AgentWorkspace {
  */
 export interface AgentSubagentOptions {
   ids: SubagentId[]
-  /** 用户自定义的子智能体（内置两个在代码里，不在这里） */
+  /** 用户自定义的子智能体（内置三个在代码里，不在这里） */
   defs?: SubagentDefinition[]
-  /** 自定义子智能体各自的模型（调用方已按定义里的 modelConfigId/modelId 解析好） */
-  definitionModels?: Record<string, AiModelConfig>
+  /**
+   * **每个**子智能体各自的模型（调用方已解析好：内置的来自
+   * `SubagentSettings.models[id]`，自定义的来自定义里的 `modelConfigId/modelId`）。
+   * 缺省 = 全局 `model` → 父会话模型。
+   */
+  perIdModels?: Record<string, AiModelConfig>
   /** 子任务专用模型（完整配置：含明文 key / baseURL）。缺省 = 沿用父会话模型 */
   model?: AiModelConfig
   /** 设置页给的子任务步数上限（按 id）。缺省 = 各子任务的规格默认值 */
   maxSteps?: Partial<Record<SubagentId, number>>
+  /** 本轮用户消息里的图片附件（读图子任务的输入；缺省 = 只能读工作区里的图片） */
+  images?: SubagentImageSources
 }
 
 /**
@@ -1412,16 +1423,17 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
                 : {}),
               ...(subagentCaps.maxSteps ? { maxSteps: subagentCaps.maxSteps } : {}),
               ...(subagentCaps.defs ? { definitions: subagentCaps.defs } : {}),
-              ...(subagentCaps.definitionModels
+              ...(subagentCaps.perIdModels
                 ? {
-                    definitionModels: Object.fromEntries(
-                      Object.entries(subagentCaps.definitionModels).map(([id, config]) => [
+                    perIdModels: Object.fromEntries(
+                      Object.entries(subagentCaps.perIdModels).map(([id, config]) => [
                         id,
                         withModelApiStyle(config)
                       ])
                     )
                   }
                 : {}),
+              ...(subagentCaps.images ? { images: subagentCaps.images } : {}),
               /**
                * 子 run 的事件**不经过父流**（它是工具里自己起的流），所以看门狗的心跳
                * 必须在这里刷新 —— 否则一个跑了 3 分钟但一直在吐字的子任务会被当成卡死。

@@ -23,9 +23,16 @@
  */
 import { stepCountIs, streamText, type ToolSet } from 'ai'
 import { z } from 'zod'
-import { buildAgentTools, buildWebFetchTool, buildGitReadTool, filterToolSet } from '@fizz/tools'
+import {
+  buildAgentTools,
+  buildWebFetchTool,
+  buildGitReadTool,
+  createLocalBackend,
+  filterToolSet
+} from '@fizz/tools'
 import {
   DELEGATION_HANDLE_PREFIX,
+  resolveModelSettings,
   SUBAGENT_MAX_STEPS,
   SUBAGENT_META,
   SUBAGENT_MIN_STEPS,
@@ -50,6 +57,8 @@ import { stepBudgetHint } from './prompt'
  * （窄接口 + 输出预算），见 tools/src/git-read.ts。
  *
  * ⚠️ 刻意**不含**技能工具：技能可能在别的工作区路径上，派出去反而读错东西；侦察只看代码。
+ *
+ * 读图子任务（`image_reader`）**一个工具都不用**：图片是首条消息里的输入，不是靠工具取的。
  */
 export const READONLY_TOOLS = ['glob', 'grep', 'read', 'git_read'] as const
 
@@ -67,6 +76,19 @@ export interface SubagentSpec {
   includeTools: readonly string[]
   /** 子 agent 自己的最大步数（派活只算父的 1 步，这是子 agent 的预算） */
   maxSteps: number
+  /**
+   * 内置子任务**默认**带 `web_fetch`（它们的活经常要查文档）；不需要联网的（读图）显式写
+   * `false`。自定义子智能体不受这个字段影响，严格按用户勾的白名单来。
+   */
+  webFetch?: boolean
+  /**
+   * 这个子任务要读图片：派活工具多一个 `images` 入参，图片作为子 run **首条消息**的
+   * `ImagePart` 传进去。
+   *
+   * ⚠️ 刻意不做成「`read_image` 工具返回图片」：工具结果里带图各家网关支持不一致，
+   * 会出现「本地能跑、换个 provider 静默失效」。图片当输入则与主对话同一条路径。
+   */
+  readsImages?: boolean
   /**
    * 想用的便宜模型 id（必须在父配置的 `models` 里才生效，否则沿用父模型）。
    * 见设计文档 §3.2：`AiModelConfig` 只有 `models[]` + `model`，所以「克隆配置换个 model」
@@ -113,6 +135,18 @@ const RESULT_TEXT_FAILED = '子任务执行失败。不要重试同一个派活�
 const RESULT_TEXT_ABORTED =
   '用户中止了这个子任务。不要重试同一个派活，除非用户明确要求；需要的话你自己完成。'
 const RESULT_TEXT_BAIL = '子任务连续失败，已停止本轮。'
+/**
+ * 读图子任务的「起跑前拒绝」：没有图 / 模型不吃图。
+ *
+ * 必须在**起跑前**返回，不能先塞图片再让 provider 400 —— 那既不告诉父模型原因，
+ * 又白烧一次调用。这两句都要能让父模型直接转述给用户。
+ */
+const RESULT_TEXT_NO_IMAGE =
+  '读图子任务没有拿到可读的图片。请传工作区里的图片路径（png/jpeg/webp/gif，单张 ≤5MB），' +
+  '或让用户把图片直接发在这条消息里。'
+const RESULT_TEXT_NO_VISION =
+  '读图子任务所配的模型没有开启图片输入，看不了图。请到设置把「读图」子智能体单独指定一个' +
+  '支持图片输入的模型（或换掉兜底模型），再派活。'
 
 /** 子任务终态的人话（`task_list` 用；`running` 在调用处单独拼时长） */
 const STATUS_TEXT: Record<Exclude<SubagentRunStatus, 'running'>, string> = {
@@ -311,6 +345,25 @@ export const SUBAGENT_SPECS: Record<string, SubagentSpec> = {
     // 同上：默认值真源在 SUBAGENT_META
     maxSteps: SUBAGENT_META.reviewer.defaultMaxSteps,
     preferredModelId: undefined
+  },
+  image_reader: {
+    id: 'image_reader',
+    name: SUBAGENT_META.image_reader.name,
+    description:
+      '只读读图：把图片交给视觉模型，换回文字结论。图片可以是本轮用户上传的图片，' +
+      '也可以是工作区里的图片文件（截图 / 设计稿 / 报错截图 / 图表）。适合"这张图里写了什么 / ' +
+      '这个报错是什么原因 / 设计稿有哪些区块"；主模型自己看不了图时，也可以让它代看工作区里的图片。不能改文件。',
+    instructions:
+      '你是 Fizz 的读图子任务（image_reader）。父任务会在同一条消息里给你图片和问题。' +
+      '只看图回答：只描述图中真实可见的内容，不要按文件名或上下文猜测；图中有文字时按原样引用关键片段；' +
+      '看不清 / 被裁掉的部分直接写"看不清"，不要编。不要向用户提问。',
+    // 读图不需要任何工具（图片随消息进来，答案就是文本）
+    includeTools: [],
+    maxSteps: SUBAGENT_META.image_reader.defaultMaxSteps,
+    // 内置默认带 web_fetch，这里必须关掉：读图的活不联网，多一个工具只会诱使它去抓网页
+    webFetch: false,
+    readsImages: true,
+    preferredModelId: undefined
   }
 }
 
@@ -362,6 +415,169 @@ export function subagentModel(parent: AiModelConfig, preferred?: string): AiMode
   return preferred && parent.models.some((m) => m.id === preferred)
     ? { ...parent, model: preferred }
     : parent
+}
+
+// ---------- 读图 ----------
+
+/** 读图子任务单次最多带几张：再多模型也答不细，请求体积却成倍涨 */
+const IMAGE_MAX_COUNT = 4
+/** 单张图片上限（与上传口径一致） */
+const IMAGE_MAX_BYTES = 5 * 1024 * 1024
+/** 一次读图的总字节预算（base64 之后还要再涨约 1/3） */
+const IMAGE_MAX_TOTAL_BYTES = 15 * 1024 * 1024
+
+/**
+ * 本轮用户消息里的图片附件（服务端注入）。
+ *
+ * 父模型虽然能看到图片本身，但 `ImagePart` **不带文件名** —— 它想让子任务「再看一遍刚才
+ * 那张图」时手里没有句柄，所以工具那边的默认值是「不传 images 就取本轮全部附件」。
+ * 字节一律由服务端读回来**内联**，不套用主对话那套 url / inline 的交付判据：子任务的模型
+ * 可能连的是另一个网关，回连不到本机的 `/api/uploads/...`。
+ */
+export interface SubagentImageSources {
+  /** 本轮随用户消息发来的图片附件（`name` 与 `url` 都能当引用） */
+  attachments?: Array<{ name: string; url: string; mediaType: string }>
+  /** 按 url 读回字节（读不回来返回 null，不抛） */
+  read?: (url: string) => Promise<{ mediaType: string; bytes: Uint8Array } | null>
+}
+
+/** 塞进子 run 首条消息的图片块（与 AI SDK 的 `ImagePart` 同形，只保留必要字段） */
+interface SubagentImagePart {
+  type: 'image'
+  image: Uint8Array
+  mediaType: string
+}
+
+/**
+ * 从字节头认图片格式。
+ *
+ * 不认扩展名：`.png` 里装着 webp 的情况真实存在（截图改名 / 导出工具），而 provider 只认
+ * mediaType —— 报错信息还会把用户引去改文件名。认不出来就不送，让父模型知道「这张读不了」。
+ */
+function sniffImageType(bytes: Uint8Array): string | null {
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47
+  ) {
+    return 'image/png'
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return 'image/jpeg'
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) {
+    return 'image/gif'
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return 'image/webp'
+  }
+  return null
+}
+
+/**
+ * 把「图片来源」解析成可以直接塞进消息的图片块。
+ *
+ * 两类来源（同一个字符串里不做前缀区分，按「先本轮附件、后工作区」的顺序试）：
+ * - 本轮用户上传的图片：文件名或 `/api/uploads/xxx`（服务端注入的 `read` 读字节）；
+ * - 工作区里的图片文件：相对 / 绝对路径，经 `backend.resolve` 的越界校验。
+ *
+ * `skipped` 回的是「为什么没带这张」：静默丢掉会让父模型误以为图片已经在子任务上下文里，
+ * 于是把「没看到」编成结论。这份说明会拼在任务描述后面一起下发。
+ */
+async function collectImages(
+  refs: readonly string[],
+  // 传的是**取值函数**：全是附件引用时不需要后端，不该为了它去 new 一个（远端还要建连接）
+  backend: () => WorkspaceBackend,
+  sources?: SubagentImageSources
+): Promise<{ images: SubagentImagePart[]; skipped: string[] }> {
+  const images: SubagentImagePart[] = []
+  const skipped: string[] = []
+  const seen = new Set<string>()
+  let total = 0
+  for (const raw of refs) {
+    const ref = raw.trim()
+    if (!ref || seen.has(ref)) continue
+    seen.add(ref)
+    if (images.length >= IMAGE_MAX_COUNT) {
+      skipped.push(`${ref}（一次最多 ${IMAGE_MAX_COUNT} 张）`)
+      continue
+    }
+    const attachment = sources?.attachments?.find((a) => a.url === ref || a.name === ref)
+    if (attachment) {
+      const got = sources?.read ? await sources.read(attachment.url).catch(() => null) : null
+      if (!got || got.bytes.byteLength === 0) {
+        skipped.push(`${ref}（附件读不回来）`)
+        continue
+      }
+      if (got.bytes.byteLength > IMAGE_MAX_BYTES) {
+        skipped.push(`${ref}（超过 5MB）`)
+        continue
+      }
+      const mediaType = sniffImageType(got.bytes)
+      if (!mediaType) {
+        skipped.push(`${ref}（不是支持的图片格式，只认 png/jpeg/webp/gif）`)
+        continue
+      }
+      if (total + got.bytes.byteLength > IMAGE_MAX_TOTAL_BYTES) {
+        skipped.push(`${ref}（本次图片总量超预算）`)
+        continue
+      }
+      total += got.bytes.byteLength
+      images.push({ type: 'image', image: got.bytes, mediaType })
+      continue
+    }
+    // 远端地址不下载：只认「工作区里的文件」和「本轮自己上传的附件」
+    if (/^[a-z][a-z0-9+.-]*:/i.test(ref)) {
+      skipped.push(`${ref}（只支持工作区路径或本轮上传的图片）`)
+      continue
+    }
+    const workspace = backend()
+    let abs: string
+    try {
+      abs = workspace.resolve(ref)
+    } catch {
+      skipped.push(`${ref}（路径在工作区之外）`)
+      continue
+    }
+    const stat = await workspace.stat(abs).catch(() => null)
+    if (!stat || stat.type !== 'file') {
+      skipped.push(`${ref}（工作区里没有这个文件）`)
+      continue
+    }
+    if (stat.size > IMAGE_MAX_BYTES) {
+      skipped.push(`${ref}（超过 5MB）`)
+      continue
+    }
+    if (total + stat.size > IMAGE_MAX_TOTAL_BYTES) {
+      skipped.push(`${ref}（本次图片总量超预算）`)
+      continue
+    }
+    const bytes = await workspace.readFile(abs, { maxBytes: IMAGE_MAX_BYTES }).catch(() => null)
+    if (!bytes || bytes.byteLength === 0) {
+      skipped.push(`${ref}（读不出来）`)
+      continue
+    }
+    const mediaType = sniffImageType(bytes)
+    if (!mediaType) {
+      skipped.push(`${ref}（不是支持的图片格式，只认 png/jpeg/webp/gif）`)
+      continue
+    }
+    total += bytes.byteLength
+    images.push({ type: 'image', image: bytes, mediaType })
+  }
+  return { images, skipped }
 }
 
 // ---------- 派活的可观测 ----------
@@ -432,13 +648,20 @@ export interface BuildDelegationToolsOptions {
    * 设置页给的步数上限（按 id）。缺省 = 用规格默认值，见 `resolveMaxSteps`。
    */
   maxSteps?: Partial<Record<SubagentId, number>>
-  /** 用户自定义的子智能体（内置两个不在这里） */
+  /** 用户自定义的子智能体（内置三个不在这里） */
   definitions?: SubagentDefinition[]
   /**
-   * 自定义子智能体各自的模型（服务端已解析成完整配置）。
+   * **每个**子智能体各自的模型（服务端已解析成完整配置）。内置的来自
+   * `SubagentSettings.models[id]`，自定义的来自定义里的 `modelConfigId/modelId` ——
+   * 服务端把两处并进同一张表，引擎只认这张表。
    * 缺省 = 全局 `subagentModel` → 父模型。
    */
-  definitionModels?: Record<string, AiModelConfig>
+  perIdModels?: Record<string, AiModelConfig>
+  /**
+   * 本轮用户消息里的图片附件（读图子任务的输入来源）。
+   * 缺省 = 读图子任务只能读工作区里的图片文件。
+   */
+  images?: SubagentImageSources
   /** 子 run 的进度事件出口（父流的同一通道） */
   emit: (event: AgentStreamEvent) => void
   /** 父轮的 signal：父被中止时子 run 也要停 */
@@ -510,6 +733,14 @@ export function buildDelegationTools(
   const specs = new Map<string, SubagentSpec>(Object.entries(SUBAGENT_SPECS))
   for (const def of opts.definitions ?? []) specs.set(def.id, specFromDefinition(def))
 
+  /**
+   * 读图取字节用的后端：与工具走同一份（远端工作区也成立）。
+   * **惰性**创建：没开读图子任务时不该为它 new 一个后端出来。
+   */
+  let imageBackendCache: WorkspaceBackend | undefined
+  const imageBackend = (): WorkspaceBackend =>
+    (imageBackendCache ??= opts.backend ?? createLocalBackend(opts.workspacePath))
+
   for (const id of ids) {
     const spec = specs.get(id)
     // 定义被删掉 / 老配置里留了个不存在的 id：**跳过**而不是抛错 ——
@@ -522,22 +753,29 @@ export function buildDelegationTools(
     const include = remote
       ? spec.includeTools.filter((name) => name !== 'git_read')
       : [...spec.includeTools]
-    // 内置两个始终带 web_fetch（它们的活经常要查文档）；自定义严格按用户勾的来
-    const wanted = builtin ? [...include, 'web_fetch'] : include
+    // 内置子任务默认带 web_fetch（它们的活经常要查文档），读图这类显式关掉；
+    // 自定义严格按用户勾的来
+    const wanted = builtin && spec.webFetch !== false ? [...include, 'web_fetch'] : include
     const tools = filterToolSet(allTools, [...new Set(wanted)])
     /** 这一轮这个子任务的步数上限（设置页可覆盖，其次才是规格 / 定义里的值） */
     const maxSteps = resolveMaxSteps(id, opts.maxSteps, spec.maxSteps)
     /**
-     * 模型优先级：定义里给这个子智能体单独配的模型 > 规格里的 preferredModelId
+     * 模型优先级：每个子智能体自己的模型（`perIdModels[id]`，服务端已把内置的
+     * `models[id]` 与自定义定义里的模型并进来）> 规格里的 preferredModelId
      * （父配置内的便宜档）> 设置页的全局子任务模型 > 父模型。
      */
-    const definitionModel = opts.definitionModels?.[id]
-    const model = resolveModel(
-      definitionModel ??
-        (spec.preferredModelId
-          ? subagentModel(opts.model, spec.preferredModelId)
-          : (opts.subagentModel ?? opts.model))
-    )
+    const modelConfig =
+      opts.perIdModels?.[id] ??
+      (spec.preferredModelId
+        ? subagentModel(opts.model, spec.preferredModelId)
+        : (opts.subagentModel ?? opts.model))
+    const model = resolveModel(modelConfig)
+    /**
+     * 读图子任务要在**起跑前**知道模型吃不吃图：塞进去被 provider 400 回来，父模型只看到
+     * 「子任务执行失败」，既修不了也不知道该去改设置。
+     */
+    const supportsImages =
+      resolveModelSettings(modelConfig.models, modelConfig.model).imageInput !== false
 
     out[`agent-${id}`] = {
       // 规格自带的能力说明 + 派活的公共契约（立即返回 / 结论靠 task_wait 领）
@@ -546,6 +784,19 @@ export function buildDelegationTools(
         task: z
           .string()
           .describe('要交给这个子任务的具体问题 / 目标。写清楚要找什么、要看哪里。'),
+        // 只有读图类子任务有这个入参：别的子任务拿到图片路径也读不了
+        ...(spec.readsImages
+          ? {
+              images: z
+                .array(z.string())
+                .optional()
+                .describe(
+                  '要读的图片：本轮用户上传的文件名 / `/api/uploads/...` 地址，' +
+                    '或工作区里的图片路径（相对 / 绝对）。png/jpeg/webp/gif，单张 ≤5MB，' +
+                    `一次最多 ${IMAGE_MAX_COUNT} 张。不传 = 这条消息里用户发的全部图片。`
+                )
+            }
+          : {}),
         summary: z
           .string()
           .optional()
@@ -555,7 +806,7 @@ export function buildDelegationTools(
           )
       }),
       execute: async (
-        input: { task?: string; summary?: string },
+        input: { task?: string; summary?: string; images?: string[] },
         options: { toolCallId?: string; abortSignal?: AbortSignal }
       ): Promise<string> => {
         const toolCallId = options?.toolCallId ?? ''
@@ -570,6 +821,36 @@ export function buildDelegationTools(
         if ((failures.get(id) ?? 0) >= MAX_CONSECUTIVE_FAILURES) {
           failures.delete(id)
           return RESULT_TEXT_BAIL
+        }
+        /**
+         * 读图子任务的图片准备（起跑前完成）。
+         *
+         * `images` 缺省 = 本轮用户消息里的全部图片附件：父模型手里没有文件名（`ImagePart`
+         * 不带名字），只有这个默认值能让它一句「看看刚才那张图」就派得出活。
+         */
+        const imageParts: SubagentImagePart[] = []
+        let taskForRun = task
+        if (spec.readsImages) {
+          if (!supportsImages) return RESULT_TEXT_NO_VISION
+          const explicit = (Array.isArray(input?.images) ? input.images : []).filter(
+            (v): v is string => typeof v === 'string'
+          )
+          const refs =
+            explicit.length > 0
+              ? explicit
+              : (opts.images?.attachments ?? []).map((a) => a.name || a.url)
+          const picked = await collectImages(refs, imageBackend, opts.images)
+          // 一张都没拿到就别空跑：父模型拿到原因才能换来源或去问用户
+          if (picked.images.length === 0) {
+            return picked.skipped.length > 0
+              ? `${RESULT_TEXT_NO_IMAGE}\n没能读取的：${picked.skipped.join('；')}`
+              : RESULT_TEXT_NO_IMAGE
+          }
+          imageParts.push(...picked.images)
+          // 没带上的要告诉子任务：不然它会把「第二张没看到」编成结论
+          if (picked.skipped.length > 0) {
+            taskForRun = `${task}\n\n（以下图片没能附上，需要的话在结论里说明：${picked.skipped.join('；')}）`
+          }
         }
         /**
          * 这一条子 run 自己的中止开关（派活卡上的停止钮 / 父轮收尾命中它）。
@@ -644,8 +925,19 @@ export function buildDelegationTools(
                * 结论排进前 N 步。
                */
               system: spec.instructions + DELEGATION_PROMPT_SUFFIX + stepBudgetHint(maxSteps),
-              // 只给子 agent 这一条任务：父的完整历史既费 token，也容易把敏感内容带出去
-              messages: [{ role: 'user', content: task }],
+              /**
+               * 只给子 agent 这一条任务：父的完整历史既费 token，也容易把敏感内容带出去。
+               * 读图子任务的图片就挂在同一条消息里（ImagePart 在前、问题在后）——
+               * 与主对话的多模态消息同一形状，子模型无需任何「读图工具」。
+               */
+              messages: [
+                {
+                  role: 'user',
+                  content: (imageParts.length > 0
+                    ? [...imageParts, { type: 'text', text: taskForRun }]
+                    : taskForRun) as never
+                }
+              ],
               tools: tools as ToolSet,
               stopWhen: stepCountIs(maxSteps),
               abortSignal: signal

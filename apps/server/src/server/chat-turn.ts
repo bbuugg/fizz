@@ -41,7 +41,12 @@ import { getAcpImageSupport, runAcpAgent } from '@fizz/acp'
 import { discoverServerPlugins, withRuntimeConfig } from './plugin-roots'
 import { refreshPluginModels } from './plugin-models'
 import { serverSkillsForAgent } from './skill-roots'
-import { createAttachmentResolver, resolveUploadModelUrl, validateUploadFiles } from './upload/index'
+import {
+  createAttachmentResolver,
+  readAttachmentBytes,
+  resolveUploadModelUrl,
+  validateUploadFiles
+} from './upload/index'
 import { acpPromptAttachments } from './acp-attachments'
 import type {
   AgentChatMessage,
@@ -837,15 +842,36 @@ async function startTurnReserved(
      */
     const subagentDefinitions =
       backend === 'builtin' && !isCollab ? (subagentSettings.definitions ?? []) : []
-    const subagentDefinitionModels: Record<string, AiModelConfig> = {}
+    /** 每个子智能体各自的模型：先并自定义定义里的，再并内置那份（同一个 id 上后者优先） */
+    const subagentPerIdModels: Record<string, AiModelConfig> = {}
     for (const def of subagentDefinitions) {
       if (!def.modelConfigId || !def.modelId) continue
       try {
-        subagentDefinitionModels[def.id] = domain.resolveModelConfig(def.modelConfigId, def.modelId)
+        subagentPerIdModels[def.id] = domain.resolveModelConfig(def.modelConfigId, def.modelId)
       } catch (err) {
         console.warn(`[subagent] 子智能体「${def.name}」的模型不可用，沿用父会话模型：`, err)
       }
     }
+    for (const [id, ref] of Object.entries(subagentSettings.models ?? {})) {
+      // 归一化已经保证成对非空；这里再挡一次，免得手改的数据文件让整轮对话起不来
+      if (!ref?.modelConfigId || !ref.modelId) continue
+      try {
+        subagentPerIdModels[id] = domain.resolveModelConfig(ref.modelConfigId, ref.modelId)
+      } catch (err) {
+        // 解析失败**不动**已有那份：降级链（全局 → 父模型）比「悄悄换个网关」可预测
+        console.warn(`[subagent] 子智能体「${id}」的模型不可用，沿用兜底模型：`, err)
+      }
+    }
+
+    /**
+     * 读图子任务的图片来源：本轮用户消息里的图片附件 + 读字节的回调。
+     *
+     * 只在这一轮真的带了图片时注入。父模型虽然能看到图片本身，但 `ImagePart` 不带文件名 ——
+     * 「看看刚才那张图」要派得出去，靠的是引擎那边「不传 images 就取全部附件」的默认值。
+     */
+    const turnImages = files
+      .filter((f) => f.mediaType?.startsWith('image/'))
+      .map((f) => ({ name: f.name, url: f.url, mediaType: f.mediaType }))
 
     /**
      * 多智能体协作：运行时编排器（@ 点名 / 广播判定 / SendMessage 投递）。
@@ -1033,11 +1059,14 @@ async function startTurnReserved(
                 subagents: {
                   ids: subagentSettings.enabled,
                   ...(subagentDefinitions.length > 0 ? { defs: subagentDefinitions } : {}),
-                  ...(Object.keys(subagentDefinitionModels).length > 0
-                    ? { definitionModels: subagentDefinitionModels }
+                  ...(Object.keys(subagentPerIdModels).length > 0
+                    ? { perIdModels: subagentPerIdModels }
                     : {}),
                   ...(subagentModel ? { model: subagentModel } : {}),
-                  ...(subagentSettings.maxSteps ? { maxSteps: subagentSettings.maxSteps } : {})
+                  ...(subagentSettings.maxSteps ? { maxSteps: subagentSettings.maxSteps } : {}),
+                  ...(turnImages.length > 0
+                    ? { images: { attachments: turnImages, read: readAttachmentBytes } }
+                    : {})
                 }
               }
             : {})

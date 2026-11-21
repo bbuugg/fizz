@@ -7,7 +7,8 @@
  * - `prompt.ts` —— 系统提示词组装、历史消息转换（toModelMessages）、流事件适配；
  * - `project-doc.ts` —— 工作区根目录项目约束文档（AGENTS.md / CLAUDE.md）读盘与提示词段落；
  * - `models-probe.ts` —— 上游 provider 模型清单探测（设置页用）。
- * - `subagents.ts` —— 子任务（supervisor 模式）：只读 explorer / reviewer 与派活工具。
+ * - `subagents.ts` —— 子任务（supervisor 模式）：只读 explorer / reviewer / image_reader
+ *   与派活工具（image_reader 收图片，一个工具都不带）。
  * - `collab.ts` —— 多智能体协作编排器：@ 点名 / 广播判定、SendMessage 投递、状态快照。
  */
 export * from './agent'

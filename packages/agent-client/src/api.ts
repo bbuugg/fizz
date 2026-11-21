@@ -155,6 +155,7 @@ import type {
   SshTunnelsSnapshot,
   SubagentDefinition,
   SubagentId,
+  SubagentModelRef,
   TaskTrigger,
   TaskTriggerInput,
 } from "@fizz/contracts/types";
@@ -2025,7 +2026,7 @@ export function createApi(
      * 保存子任务偏好。`enabled` 是全量清单（传 `[]` = 全关）；模型两项缺省 =
      * **保留原值**（`null` 才是清空），所以启停开关不会顺手把模型设置抹掉。
      *
-     * `maxSteps` 也是整体替换（传 `{}` = 全部回默认），缺省 = 保留。
+     * `models` / `maxSteps` 都是整体替换（传 `{}` = 全部回兜底 / 默认），缺省 = 保留。
      */
     saveSubagents: (patch: {
       enabled?: SubagentId[];
@@ -2033,6 +2034,8 @@ export function createApi(
       definitions?: SubagentDefinition[];
       modelConfigId?: string | null;
       modelId?: string | null;
+      /** 每个子智能体自己的模型：**整份替换**，缺 id = 回兜底模型 */
+      models?: Partial<Record<SubagentId, SubagentModelRef>>;
       maxSteps?: Partial<Record<SubagentId, number>>;
     }) =>
       request<SubagentsResponse>(API_ROUTES.subagents, {

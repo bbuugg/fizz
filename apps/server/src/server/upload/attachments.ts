@@ -121,3 +121,25 @@ export function createAttachmentResolver(
     return { kind: 'inline', bytes: got.bytes }
   }
 }
+
+/**
+ * 读回附件的原始字节（读图子任务用）。
+ *
+ * 与 `createAttachmentResolver` 的**唯一差别是不吃交付判据**：这里永远要字节。
+ * 读图子任务的模型可能是另一个网关，`/api/uploads/...` 这种相对地址它未必回连得到；
+ * 换成公网 URL 又会把用户的截图暴露在一个不需要的公开地址上。
+ *
+ * 读不回来 / 太大 / 不是内置存储一律返回 null，由调用方决定怎么告诉模型 ——
+ * 这里不抛，是因为「某张图没带上」不该让整个子任务起不来。
+ */
+export async function readAttachmentBytes(
+  url: string
+): Promise<{ mediaType: string; bytes: Uint8Array } | null> {
+  if (!url) return null
+  const adapter = adapterFor(url)
+  if (!adapter?.get) return null
+  const got = await adapter.get(url).catch(() => null)
+  if (!got || got.bytes.byteLength === 0) return null
+  if (got.bytes.byteLength > MAX_INLINE_FILE_BYTES) return null
+  return { mediaType: got.mediaType, bytes: got.bytes }
+}

@@ -14,7 +14,8 @@ import { parseJsonBody } from '@/app/api/_lib/auth'
 import {
   normalizeSubagentSettings,
   type SubagentDefinition,
-  type SubagentId
+  type SubagentId,
+  type SubagentModelRef
 } from '@fizz/contracts/types'
 
 export async function GET() {
@@ -28,6 +29,8 @@ export async function POST(request: Request) {
     definitions?: SubagentDefinition[]
     modelConfigId?: string | null
     modelId?: string | null
+    /** 每个子智能体自己的模型：**整份替换**（缺 id = 该子任务回到兜底模型） */
+    models?: Partial<Record<SubagentId, SubagentModelRef>>
     maxSteps?: Partial<Record<SubagentId, number>>
   }>(request)
   // 归一化在这里也过一次：HTTP 请求体是不可信输入，非法 id / 空串 / 越界步数直接收敛。
@@ -39,6 +42,8 @@ export async function POST(request: Request) {
     ...('modelId' in (body ?? {}) ? { modelId: normalized.modelId ?? null } : {}),
     // 步数**整体替换**（与 enabled 同口径）：传 `{}` 就是全部回到默认值。
     // 这里给原值而不是 normalized：`{}` 经归一化会变成 undefined，会被下游当成「保留」。
+    // 每个子智能体的模型同样整份替换（同上：给原值，`{}` 才能清空）
+    ...(body?.models !== undefined ? { models: body.models } : {}),
     ...(body?.maxSteps !== undefined ? { maxSteps: body.maxSteps } : {}),
     // 定义同样整份替换；归一化里的 id / 工具 / 长度校验不通过时那一条会被丢掉
     ...(body?.definitions !== undefined ? { definitions: body.definitions } : {})

@@ -3033,8 +3033,9 @@ export interface SshTunnelInput {
 /**
  * 可派活的子智能体 id。
  *
- * 内置两个（`explorer` / `reviewer`，定义在 `packages/agent` 的 `SUBAGENT_SPECS`），
- * 其余是用户在设置页自建的（`custom-<8hex>`，定义随设置落盘，见 `SubagentDefinition`）。
+ * 内置三个（`explorer` / `reviewer` / `image_reader`，定义在 `packages/agent` 的
+ * `SUBAGENT_SPECS`），其余是用户在设置页自建的（`custom-<8hex>`，定义随设置落盘，
+ * 见 `SubagentDefinition`）。
  *
  * ⚠️ 刻意放在 `contracts`：这个类型被渲染端（展示清单 / 开关）与主进程（建 subagent）
  * 共用，而 `contracts` 必须保持**零引擎依赖**——从 `@fizz/agent` import 会把整条
@@ -3043,7 +3044,7 @@ export interface SshTunnelInput {
 export type SubagentId = string
 
 /** 内置子智能体 id（它们的指令 / 工具白名单在代码里，不随设置落盘） */
-export const BUILTIN_SUBAGENT_IDS: readonly string[] = ['explorer', 'reviewer']
+export const BUILTIN_SUBAGENT_IDS: readonly string[] = ['explorer', 'reviewer', 'image_reader']
 
 /**
  * 子智能体可以使用的**只读**工具。
@@ -3098,6 +3099,19 @@ export const SUBAGENT_MIN_STEPS = 1
 export const SUBAGENT_MAX_STEPS = 128
 
 /**
+ * 某个子智能体的专用模型引用。
+ *
+ * 两个字段必须**同时**存在才生效（只有一半时按「没配」处理，见
+ * `normalizeSubagentModels`）：`modelConfigId` 指一份模型配置，`modelId` 是这份配置
+ * 的 `models[]` 里的条目 id。语义与 `SubagentDefinition.modelConfigId/modelId` 一致，
+ * 区别只是这里按 id 索引，免得为「内置子智能体也能单独配模型」再动定义清单。
+ */
+export interface SubagentModelRef {
+  modelConfigId: string
+  modelId: string
+}
+
+/**
  * 子任务偏好：**默认关闭**。
  *
  * 为什么默认关：这改变的是**模型的行为**（父 agent 会多几个 `agent-*` 工具，
@@ -3109,18 +3123,29 @@ export const SUBAGENT_MAX_STEPS = 128
 export interface SubagentSettings {
   /** 启用的子任务 id（内置 ∪ 自定义）；空 = 一个都不派（缺省） */
   enabled: SubagentId[]
-  /** 用户自建的子智能体（内置两个不在这里） */
+  /** 用户自建的子智能体（内置三个不在这里） */
   definitions?: SubagentDefinition[]
   /**
    * 子任务专用模型（可选）：某个模型配置下的某个模型。
    *
    * `null` / 缺省 = 沿用父会话模型。两个字段必须同时存在才生效；配置被删 / 模型被移除时
    * 服务端**退回父模型**并记一条日志（不因为子任务的偏好不可用而拖垮整轮）。
-   * 自定义子智能体自己有模型时，以它为准，这里的值只作兜底。
+   * 某个子智能体在 `models[id]` / 定义里另有模型时以它为准，这里的值只作兜底。
    */
   modelConfigId?: string | null
   /** 见 `modelConfigId`；两者成对使用 */
   modelId?: string | null
+  /**
+   * 每个子智能体**自己**的模型（按 id）。内置与自定义都认。
+   *
+   * 优先级：`models[id]` > 自定义定义里的 `modelConfigId/modelId` > 上面的全局
+   * `modelConfigId/modelId`（兜底）> 父会话模型。
+   *
+   * 为什么要两张表：自定义子智能体的模型跟定义一起落盘（弹窗里配），内置的模型没有
+   * 「定义」可挂，只能挂在这里 —— 而老数据里没有这个字段，读不到就一路退回父模型，
+   * 所以是纯增量、不需要 `DATA_VERSION` 迁移。
+   */
+  models?: Partial<Record<SubagentId, SubagentModelRef>>
   /**
    * 每个子任务自己的步数上限（搜索 / 读文件 / 每次工具调用各算一步）。
    *
@@ -3138,7 +3163,7 @@ export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = { enabled: [] }
  * `@fizz/agent-kit`）不能依赖 `@fizz/agent` —— 那会把引擎 + 整条 provider
  * 依赖链进浏览器产物。agent 侧的真源是 `SUBAGENT_SPECS`，两边新增时同步改。
  *
- * 只含**内置**两项；自定义子智能体的名称在 `SubagentSettings.definitions` 里。
+ * 只含**内置**三项；自定义子智能体的名称在 `SubagentSettings.definitions` 里。
  */
 export const SUBAGENT_META: Record<
   string,
@@ -3165,6 +3190,15 @@ export const SUBAGENT_META: Record<
     // 审查要「读改动 + 读被调用方」两遍，还要顺着调用链看几层；与小步数不同，
     // 审查的价值恰恰在于看完，宁可多给。
     defaultMaxSteps: 80
+  },
+  image_reader: {
+    name: '读图',
+    // 设置页与派活卡都会显示这句：把「需要视觉模型」和「不必自己开图片输入」讲清楚
+    hint: '只读：把图片交给视觉模型，换回图中信息。需要能读图的模型。',
+    // 读图子任务**没有任何工具**（图片是首条消息里的 ImagePart，不是靠工具取的），
+    // 正常一次就答完；留 4 步只是给个别模型的自我修正余量，不设 1 是怕它第一步只写了
+    // 半句就交出话轮。步数在这里仍然有意义：`stopWhen` 是硬闸。
+    defaultMaxSteps: 4
   }
 }
 
@@ -3254,6 +3288,32 @@ function normalizeMaxSteps(
   return Object.keys(out).length > 0 ? out : undefined
 }
 
+/**
+ * 每个子智能体专用模型的收敛。
+ *
+ * 与 `normalizeMaxSteps` 同口径：只留合法 id；**成对且非空**才留下（只有一半 = 没配）。
+ * 与步数不同的是这里不能「回默认值」—— 模型指向另一份配置，猜一个等于替用户换网关，
+ * 所以坏数据直接丢掉、让它退回兜底链。
+ */
+function normalizeSubagentModels(
+  value: unknown,
+  validIds: ReadonlySet<string>
+): Partial<Record<SubagentId, SubagentModelRef>> | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const input = value as Record<string, unknown>
+  const out: Partial<Record<SubagentId, SubagentModelRef>> = {}
+  for (const id of validIds) {
+    const raw = input[id]
+    if (!raw || typeof raw !== 'object') continue
+    const item = raw as Partial<SubagentModelRef>
+    const modelConfigId = typeof item.modelConfigId === 'string' ? item.modelConfigId.trim() : ''
+    const modelId = typeof item.modelId === 'string' ? item.modelId.trim() : ''
+    if (!modelConfigId || !modelId) continue
+    out[id] = { modelConfigId, modelId }
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 /** 收敛：手改坏的数据文件 / 老版本缺字段都不该让读接口抛错 */
 export function normalizeSubagentSettings(value: unknown): SubagentSettings {
   const input = (value ?? {}) as SubagentSettings
@@ -3273,12 +3333,14 @@ export function normalizeSubagentSettings(value: unknown): SubagentSettings {
   const modelId =
     typeof input.modelId === 'string' && input.modelId.trim() ? input.modelId.trim() : null
   const maxSteps = normalizeMaxSteps(input.maxSteps, validIds)
+  const models = normalizeSubagentModels(input.models, validIds)
   return {
     enabled,
     ...(definitions.length > 0 ? { definitions } : {}),
     // 成对才生效：只有一半时服务端会退回父模型，这里也直接收敛成「没配」
     ...(modelConfigId && modelId ? { modelConfigId, modelId } : {}),
-    ...(maxSteps ? { maxSteps } : {})
+    ...(maxSteps ? { maxSteps } : {}),
+    ...(models ? { models } : {})
   }
 }
 

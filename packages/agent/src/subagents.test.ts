@@ -26,28 +26,37 @@ import { describe, expect, it, vi } from 'vitest'
 import { asSchema, streamText, type FlexibleSchema } from 'ai'
 import { SUBAGENT_MAX_STEPS, SUBAGENT_META } from '@fizz/contracts/types'
 import type { AgentStreamEvent, AiModelConfig, SubagentId } from '@fizz/contracts/types'
-import { buildDelegationTools, makeDelegationStats, resolveMaxSteps } from './subagents'
+import type { WorkspaceBackend } from '@fizz/contracts/workspace'
+import { buildDelegationTools, makeDelegationStats, resolveMaxSteps, SUBAGENT_SPECS } from './subagents'
 
 vi.mock('ai', async (importOriginal) => ({
   ...(await importOriginal<typeof import('ai')>()),
   streamText: vi.fn()
 }))
 
-// 子 agent 的工具集在这里不参与断言：只要 `execute` 里那条流的行为，工具全替成空对象
+/**
+ * 工具集按「点名的键」造：白名单是契约的一部分，用例要能看出到底挂了哪些
+ * （例如读图子任务不该带 `web_fetch`）。真实白名单过滤在 `@fizz/tools` 里另有测试。
+ */
 vi.mock('@fizz/tools', () => ({
   buildAgentTools: () => ({}),
   buildWebFetchTool: () => ({}),
   buildGitReadTool: () => ({}),
-  filterToolSet: (all: Record<string, unknown>) => all
+  filterToolSet: (_all: Record<string, unknown>, names: readonly string[]) =>
+    Object.fromEntries(names.map((name) => [name, {}])),
+  createLocalBackend: () => {
+    throw new Error('用例必须显式给 backend，别在这里落盘')
+  }
 }))
 
-vi.mock('./resolve-model', () => ({ resolveModel: () => ({}) }))
+// 原样返回配置：用例靠「传进 streamText 的 model 是哪个对象」判断模型选择
+vi.mock('./resolve-model', () => ({ resolveModel: (config: unknown) => config }))
 
 type DelegationTool = {
   description: string
-  inputSchema: FlexibleSchema<{ task: string; summary?: string }>
+  inputSchema: FlexibleSchema<{ task: string; summary?: string; images?: string[] }>
   execute: (
-    input: { task: string; summary?: string },
+    input: { task: string; summary?: string; images?: string[] },
     options: { toolCallId: string }
   ) => Promise<string>
 }
@@ -157,6 +166,14 @@ function build(
       maxSteps: number
     }>
     parent?: AbortController
+    /** 每个子智能体自己的模型（断言对象身份用） */
+    perIdModels?: Record<string, AiModelConfig>
+    /** 本轮用户消息里的图片附件 + 读字节的回调 */
+    images?: {
+      attachments?: Array<{ name: string; url: string; mediaType: string }>
+      read?: (url: string) => Promise<{ mediaType: string; bytes: Uint8Array } | null>
+    }
+    backend?: WorkspaceBackend
   } = {}
 ): Built {
   const events: AgentStreamEvent[] = []
@@ -167,12 +184,50 @@ function build(
     model: {} as AiModelConfig,
     ...(extra.maxSteps ? { maxSteps: extra.maxSteps } : {}),
     ...(extra.definitions ? { definitions: extra.definitions } : {}),
+    ...(extra.perIdModels ? { perIdModels: extra.perIdModels } : {}),
+    ...(extra.images ? { images: extra.images } : {}),
+    ...(extra.backend ? { backend: extra.backend } : {}),
     emit: (event) => events.push(event),
     ...(extra.parent ? { signal: extra.parent.signal } : {}),
     commandStops,
     stats: makeDelegationStats()
   })
   return { tools: set.tools, events, settle: set.settle, commandStops }
+}
+
+/** 最小的假后端：只实现读图实际用到的 resolve / stat / readFile */
+function fakeBackend(files: Record<string, Uint8Array>): WorkspaceBackend {
+  return {
+    resolve: (p: string) => {
+      // 与真实后端同款：越界直接抛，读图那边应当把它变成「跳过」而不是崩掉
+      if (p.includes('..')) throw new Error('outside workspace')
+      return `/ws/${p.replace(/^\/+/, '')}`
+    },
+    stat: async (abs: string) => {
+      const bytes = files[abs.slice('/ws/'.length)]
+      return bytes ? { type: 'file', size: bytes.byteLength } : null
+    },
+    readFile: async (abs: string) => {
+      const bytes = files[abs.slice('/ws/'.length)]
+      if (!bytes) throw new Error('ENOENT')
+      return bytes
+    }
+  } as unknown as WorkspaceBackend
+}
+
+/** 一张合法 PNG 的头几个字节（格式靠头认，不靠扩展名） */
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01])
+/** 不是图片（zip 头）：应当被挡在「送进模型」之前 */
+const NOT_IMAGE = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x00])
+
+/** 最后一次子 run 的入参（`streamText` 已被 mock） */
+function lastRunArgs(): {
+  messages: Array<{ role: string; content: unknown }>
+  tools: Record<string, unknown>
+  model: unknown
+} {
+  const calls = vi.mocked(streamText).mock.calls
+  return calls[calls.length - 1]?.[0] as never
 }
 
 /** 派活：立即返回句柄（子任务还在后台跑） */
@@ -708,5 +763,139 @@ describe('自定义子智能体', () => {
     expect(resolveMaxSteps(def.id, { [def.id]: 30 }, 12)).toBe(30)
     expect(resolveMaxSteps(def.id, undefined, 12)).toBe(12)
     expect(resolveMaxSteps('custom-unknown', undefined)).toBe(SUBAGENT_META.explorer.defaultMaxSteps)
+  })
+})
+
+describe('读图子任务（image_reader）', () => {
+  /** 本轮用户上传的一张图（读字节永远内联，不吃 url 交付判据） */
+  const shot = { name: 'shot.png', url: '/api/uploads/shot.png', mediaType: 'image/png' }
+
+  it('规格自己就是「不带工具、不联网、认图片」——这三条错一个都会悄悄跑偏', () => {
+    expect(SUBAGENT_SPECS.image_reader.readsImages).toBe(true)
+    // 内置默认追加 web_fetch，读图必须显式关掉
+    expect(SUBAGENT_SPECS.image_reader.webFetch).toBe(false)
+    expect(SUBAGENT_SPECS.image_reader.includeTools).toEqual([])
+    expect(SUBAGENT_SPECS.image_reader.maxSteps).toBe(SUBAGENT_META.image_reader.defaultMaxSteps)
+  })
+
+  it('挂出来的工具集是空的：图片靠消息进，不挂任何 read* 工具', () => {
+    const built = build({ ids: ['image_reader'] })
+    expect(Object.keys(built.tools)).toEqual([
+      'agent-image_reader',
+      'task_wait',
+      'task_cancel',
+      'task_list'
+    ])
+  })
+
+  it('内置 agent 仍带 web_fetch（关掉读图那一行不能顺手把所有内置都关掉）', async () => {
+    const built = build({ ids: ['explorer'] })
+    vi.mocked(streamText).mockClear()
+    vi.mocked(streamText).mockReturnValue(fakeStream('ok') as never)
+    await delegate(built)
+    await wait(built)
+
+    expect(Object.keys(lastRunArgs().tools)).toContain('web_fetch')
+  })
+
+  it('不传 images 时取本轮附件，图片作为首条消息的 ImagePart 排在问题之前', async () => {
+    const built = build({
+      ids: ['image_reader'],
+      images: { attachments: [shot], read: async () => ({ mediaType: 'image/png', bytes: PNG }) }
+    })
+    vi.mocked(streamText).mockClear()
+    vi.mocked(streamText).mockReturnValue(fakeStream('报错是 EACCES，权限不够。') as never)
+    await (built.tools['agent-image_reader'] as DelegationTool).execute(
+      { task: '这张图里的报错是什么原因' },
+      { toolCallId: 'p1' }
+    )
+    const out = await wait(built, 'p1')
+
+    const args = lastRunArgs()
+    const content = args.messages[0].content as Array<{ type: string; mediaType?: string; text?: string }>
+    expect(Array.isArray(content)).toBe(true)
+    expect(content[0]).toMatchObject({ type: 'image', mediaType: 'image/png' })
+    expect(content[content.length - 1]?.type).toBe('text')
+    // 图片是输入、不是工具结果；工具集为空也确认了这一点
+    expect(args.tools).toEqual({})
+    expect(out).toContain('EACCES')
+  })
+
+  it('显式给工作区路径也能读；越界 / 非图片被跳过并写进任务说明', async () => {
+    const built = build({
+      ids: ['image_reader'],
+      backend: fakeBackend({ 'shots/ui.png': PNG, 'notes.txt': NOT_IMAGE })
+    })
+    vi.mocked(streamText).mockClear()
+    vi.mocked(streamText).mockReturnValue(fakeStream('两栏布局。') as never)
+    await (built.tools['agent-image_reader'] as DelegationTool).execute(
+      { task: '设计稿有几个区块', images: ['shots/ui.png', '../secret.png', 'notes.txt'] },
+      { toolCallId: 'p1' }
+    )
+    await wait(built, 'p1')
+
+    const content = lastRunArgs().messages[0].content as Array<{ type: string; text?: string }>
+    // 只有一张真的进了消息
+    expect(content.filter((part) => part.type === 'image')).toHaveLength(1)
+    const text = content[content.length - 1]?.text ?? ''
+    expect(text).toContain('设计稿有几个区块')
+    // 没带上的必须说出来：静默丢掉会让它把「没看到」编成结论
+    expect(text).toContain('../secret.png')
+    expect(text).toContain('notes.txt')
+  })
+
+  it('一张都没拿到就当场拒绝，不空跑一次子 run', async () => {
+    const built = build({ ids: ['image_reader'] })
+    vi.mocked(streamText).mockClear()
+    const out = await (built.tools['agent-image_reader'] as DelegationTool).execute(
+      { task: '图里写了什么' },
+      { toolCallId: 'p1' }
+    )
+
+    expect(out).toContain('没有拿到可读的图片')
+    expect(streamText).not.toHaveBeenCalled()
+  })
+
+  it('所配模型没开图片输入就当场拒绝：不能让 provider 400 顶掉原因', async () => {
+    const noVision = {
+      id: 'cfg-1',
+      models: [{ id: 'text-only', settings: { imageInput: false } }],
+      model: 'text-only'
+    } as unknown as AiModelConfig
+    const built = build({
+      ids: ['image_reader'],
+      perIdModels: { image_reader: noVision },
+      images: { attachments: [shot], read: async () => ({ mediaType: 'image/png', bytes: PNG }) }
+    })
+    vi.mocked(streamText).mockClear()
+    const out = await (built.tools['agent-image_reader'] as DelegationTool).execute(
+      { task: '图里写了什么' },
+      { toolCallId: 'p1' }
+    )
+
+    expect(out).toContain('没有开启图片输入')
+    expect(streamText).not.toHaveBeenCalled()
+  })
+
+  it('每个子智能体自己的模型优先于兜底 / 父模型', async () => {
+    const own = { id: 'cfg-own', model: 'm' } as unknown as AiModelConfig
+    const built = build({ ids: ['explorer'], perIdModels: { explorer: own } })
+    vi.mocked(streamText).mockClear()
+    vi.mocked(streamText).mockReturnValue(fakeStream('ok') as never)
+    await delegate(built)
+    await wait(built)
+
+    expect(lastRunArgs().model).toBe(own)
+  })
+
+  it('没配专用模型时沿用传入的父模型', async () => {
+    const built = build({ ids: ['explorer'] })
+    vi.mocked(streamText).mockClear()
+    vi.mocked(streamText).mockReturnValue(fakeStream('ok') as never)
+    await delegate(built)
+    await wait(built)
+
+    // build() 里的父模型是空对象：没配 perIdModels 时必须原样传下去
+    expect(lastRunArgs().model).toEqual({})
   })
 })

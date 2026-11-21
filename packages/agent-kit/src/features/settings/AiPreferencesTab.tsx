@@ -132,6 +132,52 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
   }
 
   /**
+   * 某个子智能体自己那份模型的下拉值（`inherit` = 用兜底模型）。
+   *
+   * 配置被删掉时**回落到 inherit**，不把过期值当有效选项显示 —— 否则用户会以为「还配着」，
+   * 而实际派活已经落到兜底模型上了。
+   */
+  const modelValueOf = (id: SubagentId): string => {
+    const ref = app.subagentSettings?.models?.[id]
+    if (!ref) return 'inherit'
+    const value = `${ref.modelConfigId}::${ref.modelId}`
+    return subagentModelChoices.some((choice) => choice.value === value) ? value : 'inherit'
+  }
+
+  /** 保存某个子智能体自己的模型（`inherit` = 回兜底模型） */
+  const saveSubagentModelFor = async (id: SubagentId, name: string, value: string): Promise<void> => {
+    let next: { configId: string; modelId: string } | null = null
+    if (value !== 'inherit') {
+      const separator = value.indexOf('::')
+      if (separator > 0) {
+        next = { configId: value.slice(0, separator), modelId: value.slice(separator + 2) }
+      }
+    }
+    const ok = await app.setSubagentModelFor(id, next)
+    if (!ok) {
+      toast.error(tr('保存失败：{error}', { error: useAgentStore.getState().error ?? tr('未知原因') }))
+      return
+    }
+    toast.success(
+      next ? tr('「{name}」已单独指定模型', { name }) : tr('「{name}」已改为沿用兜底模型', { name })
+    )
+  }
+
+  /**
+   * 读图子任务选中的模型如果**明确**关了图片输入就当场提醒。
+   *
+   * 只在这个子智能体自己配了模型时才有结论：没配时它落到的可能是兜底 / 父模型，
+   * 设置页此刻算不出来，硬猜会误报。真正的闸在引擎里（起跑前就拒绝）。
+   */
+  const imageReaderHasNoVision = (() => {
+    const ref = app.subagentSettings?.models?.image_reader
+    if (!ref) return false
+    const config = (app.models ?? []).find((c) => c.id === ref.modelConfigId)
+    const entry = config?.models?.find((m) => m.id === ref.modelId)
+    return entry?.settings?.imageInput === false
+  })()
+
+  /**
    * 提交一个子任务的步数上限（空 = 回到默认值）。
    *
    * 越界**不静默夹到边界**：夹了之后界面上看不出「我填的 200 变成了 64」，
@@ -333,6 +379,34 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
                       className="h-7 w-24 font-mono text-xs"
                     />
                   </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                    <span className="text-[0.625rem] text-muted-foreground">{tr('模型')}</span>
+                    {/* 每个子智能体自己的模型；不选就落兜底 → 父会话，手机（<640px）可换行 */}
+                    <Select
+                      value={modelValueOf(id)}
+                      onValueChange={(value) => void saveSubagentModelFor(id, meta.name, value)}
+                    >
+                      <SelectTrigger
+                        className="h-7 w-52 max-w-full text-xs"
+                        aria-label={tr('「{name}」模型', { name: meta.name })}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="inherit">{tr('沿用兜底模型')}</SelectItem>
+                        {subagentModelChoices.map((choice) => (
+                          <SelectItem key={choice.value} value={choice.value}>
+                            {choice.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {id === 'image_reader' && imageReaderHasNoVision && (
+                      <span className="text-[0.6875rem] leading-4 text-destructive">
+                        {tr('这个模型没有开启图片输入，读图会直接失败。')}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             )
@@ -445,8 +519,8 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
         </div>
 
         <div className="space-y-1.5">
-          <div className="text-xs font-medium">{tr('子任务模型')}</div>
-          {/* 固定宽度、不铺满：「子任务模型」是下拉选项，不是正文；全宽在宽屏设置页里
+          <div className="text-xs font-medium">{tr('子任务兜底模型')}</div>
+          {/* 固定宽度、不铺满：这是个下拉选项，不是正文；全宽在宽屏设置页里
               会拉成一条几百像素的空框，和下面那行说明的层次也对不上 */}
           <Select value={subagentModelValue} onValueChange={(value) => void saveSubagentModel(value)}>
             <SelectTrigger className="h-9 w-64 max-w-full text-sm">
@@ -464,6 +538,11 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
           <p className="text-xs leading-4 text-muted-foreground">
             {tr('子任务通常只读文件并汇总，选快 / 便宜的模型即可；模型不可用时自动退回父会话模型。')}
             {savedSubagentModelUnavailable ? tr(' 原模型已不可用。') : ''}
+          </p>
+          <p className="text-xs leading-4 text-muted-foreground">
+            {tr(
+              '每个子智能体可以在自己那一行单独指定模型；没指定就用这里的兜底模型，兜底也没配则沿用父会话模型。'
+            )}
           </p>
         </div>
         <p className="text-xs leading-4 text-muted-foreground">

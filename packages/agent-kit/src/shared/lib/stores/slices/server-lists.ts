@@ -346,11 +346,22 @@ export interface ServerListsSlice {
    */
   toggleSubagent: (id: SubagentId, enabled: boolean) => Promise<boolean>
   /**
-   * 保存子任务专用模型（`null` = 沿用父会话模型）。
+   * 保存**兜底**子任务模型（`null` = 沿用父会话模型）。
    *
    * 只传模型两项；服务端「缺 `enabled` = 保留」，所以不会把启停状态改掉。
+   * 某个子智能体自己那份模型走 `setSubagentModelFor`。
    */
   setSubagentModel: (model: { configId: string; modelId: string } | null) => Promise<boolean>
+  /**
+   * 保存**某个**子智能体自己的模型（`null` = 回兜底模型）。
+   *
+   * 与 `setSubagentMaxSteps` 同款：先读当前这份 → 改一个 id → 整体写回（服务端是全量替换）。
+   * 只传 `models`，服务端「缺字段 = 保留」，所以不会把启停 / 兜底模型 / 步数改掉。
+   */
+  setSubagentModelFor: (
+    id: SubagentId,
+    model: { configId: string; modelId: string } | null
+  ) => Promise<boolean>
   /**
    * 保存某个子任务的步数上限（`null` = 回到规格默认值）。
    *
@@ -1101,6 +1112,13 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
             : { modelConfigId: null, modelId: null }
         )
       ),
+    setSubagentModelFor: (id, model) => {
+      const next = { ...(get().subagentSettings?.models ?? {}) }
+      // null = 回兜底：**删掉这个 key** 而不是写一对 null（服务端只认成对的非空字符串）
+      if (model === null) delete next[id]
+      else next[id] = { modelConfigId: model.configId, modelId: model.modelId }
+      return withRefresh(() => requireApi().saveSubagents({ models: next }))
+    },
     setSubagentMaxSteps: (id, steps) => {
       const next = { ...(get().subagentSettings?.maxSteps ?? {}) }
       // null = 恢复默认：**删掉这个 key** 而不是写 null（服务端只认数字）
