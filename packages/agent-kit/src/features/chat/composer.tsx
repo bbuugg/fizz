@@ -18,9 +18,11 @@
  */
 import { getAgentHost } from '@fizz/agent-client/host'
 import { toast } from 'sonner'
+import { BorderBeam } from 'border-beam'
 import { WorkBars } from '@fizz/agent-kit/shared/ai-elements/work-bars'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { useVoiceInput } from '@fizz/agent-kit/shared/hooks/useVoiceInput'
+import { useTheme } from '@fizz/agent-kit/shared/hooks/useTheme'
 import { APP_EVENTS } from '@fizz/agent-kit/shared/lib/app-events'
 import { permissionOption, permissionOptions } from '@fizz/agent-kit/shared/lib/permission'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
@@ -54,7 +56,7 @@ import {
   Terminal
 } from 'lucide-react'
 import type { DragEvent as ReactDragEvent, ReactNode, RefObject } from 'react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 
 /**
  * 输入行里的 pill 样式（工作区 / 权限 / 模型三个共用一份）。
@@ -110,6 +112,25 @@ export const CHAT_ICON_PILL =
  * 改那几处 padding / 图标尺寸时这里要跟着改。
  */
 const SPLIT_HALF_WIDTH = 'calc(1.375rem + 1px)'
+
+/**
+ * 系统「减少动态效果」。
+ *
+ * 流光是一条持续旋转的动画，在 `prefers-reduced-motion: reduce` 下应当停掉 —— 但别把
+ * 状态也一起藏了：收音 / 拖拽仍然需要可见反馈，所以那边退回一圈静态内描边。
+ * 用订阅而不是渲染时读一次：系统设置可以随时改，改完界面要跟上。
+ */
+function usePrefersReducedMotion(): boolean {
+  return useSyncExternalStore(
+    (onChange) => {
+      const media = window.matchMedia('(prefers-reduced-motion: reduce)')
+      media.addEventListener('change', onChange)
+      return () => media.removeEventListener('change', onChange)
+    },
+    () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    () => false
+  )
+}
 
 interface ComposerProps {
   value: string
@@ -237,6 +258,9 @@ export function Composer({
 }: ComposerProps) {
   // 订阅语言：下面这些文案都在渲染期求值（`t()`）
   const tr = useT()
+  /** 流光按当前实际亮暗调色（库自带 dark / light 两套透明度，不能用系统偏好猜） */
+  const { theme } = useTheme()
+  const reducedMotion = usePrefersReducedMotion()
   // ---------- 斜线命令 ----------
   /**
    * 浮层只在「前缀输入阶段」打开（`/` 或 `/st`）：一旦带了参数（空格后还有正文）
@@ -564,283 +588,309 @@ export function Composer({
   // ——「被消息列表挡住」就是这条裁剪。Portal + side="top" 与别处「向上弹」的
   // 下拉同一套模式；焦点必须留在 textarea（onOpenAutoFocus 阻止），打字才不中断。
   const paletteVisible = paletteOpen && candidates.length > 0
+
+  /**
+   * 边框流光：**正在收音**或**文件悬停在输入框上还没松手**时点亮。
+   *
+   * 两种状态都是「现在这个输入框正在接收东西」，用一条沿边框跑的流光比改边框色更醒目。
+   * 文件拖进 / 离开由 `dragActive` 表达（`dragDepth` 已抵消子元素抖动），收音看
+   * `voice.listening`。减少动态效果时不开流光，退回一圈静态内描边（见卡片 class）。
+   */
+  const beamRequested = voice.listening || dragActive
+  const beamActive = beamRequested && !reducedMotion
   return (
     <Popover open={paletteVisible}>
-      <PopoverAnchor asChild>
-        <div
-          // 整张卡片是拖放区（不只 textarea）：拖到卡片任何位置都算「要加进这个输入框」；
-          // `relative` 供拖拽高亮浮层定位
-          className={cn(
-            'relative rounded-xl border border-border bg-card/70 transition-colors',
-            dragActive && 'border-primary ring-2 ring-primary/25'
-          )}
-          onDragEnter={handleDragEnter}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-        >
-          {/* 拖拽高亮：`pointer-events-none` 必须——浮层不能挡住 drop 的命中目标 */}
-          {dragActive && (
-            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-primary/5">
-              <span className="flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs text-foreground shadow-sm">
-                <ImagePlus className="size-3.5 text-muted-foreground" />
-                {tr('松开以添加附件')}
-              </span>
-            </div>
-          )}
-          {header}
-          <textarea
-            ref={textareaRef}
-            value={value}
-            onChange={(e) => {
-              onChange(e.target.value)
-              setCaret(e.target.selectionStart)
-            }}
-            onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
-            onPaste={handlePaste}
-            onKeyDown={(e) => {
-              // @ 点名浮层打开时先接管导航键（与斜线命令同一套交互）
-              if (mentionVisible) {
-                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                  e.preventDefault()
-                  setMentionHighlight((h) =>
-                    e.key === 'ArrowDown'
-                      ? (h + 1) % mentionMatches.length
-                      : (h - 1 + mentionMatches.length) % mentionMatches.length
-                  )
-                  return
-                }
-                if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing)) {
-                  e.preventDefault()
-                  const agent = mentionMatches[mentionHighlight]
-                  if (agent) completeMention(agent)
-                  return
-                }
-                if (e.key === 'Escape') {
-                  e.preventDefault()
-                  setMentionDismissed(true)
-                  return
-                }
-              }
-              // 斜线命令浮层打开时先接管导航键：↑↓ 选择、Tab 补全、Enter 执行/补全、
-              // Esc 只关浮层（不触发「停止本轮」——用户是在选命令，不是要刹车）
-              if (paletteOpen && candidates.length > 0 && slashContext) {
-                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                  e.preventDefault()
-                  setHighlight((h) => (e.key === 'ArrowDown' ? (h + 1) % candidates.length : (h - 1 + candidates.length) % candidates.length))
-                  return
-                }
-                if (e.key === 'Tab') {
-                  e.preventDefault()
-                  const command = candidates[highlight]
-                  if (command) completeCommand(command)
-                  return
-                }
-                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault()
-                  runHighlighted()
-                  return
-                }
-                if (e.key === 'Escape') {
-                  // 只关浮层，草稿保留（换行 / 改一个字符都会重新浮出来）
-                  e.preventDefault()
-                  setDismissed(true)
-                  return
-                }
-              }
-              // Enter 发送、Shift+Enter 换行（输入法组合中的 Enter 不抢）
-              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                // 压缩进行中禁发（sendDisabled）：Enter 出不了手，草稿照常编辑；
-                // 建会话途中（sending）同理 —— 草稿还在，不拦就是重复提交
-                if (!sendDisabled && !sending) {
-                  e.preventDefault()
-                  onSubmit()
-                }
-                return
-              }
-              // Esc = 停止本轮（键盘党的快捷方式）。草稿非空时最右那颗钮是发送，
-              // 这时 Esc 是中止本轮的入口（见 showStop / 上面的按钮分配说明）。
-              // 弹窗开着时焦点被 Radix 锁在弹窗里、走不到这里，所以不会和「Esc 关弹窗」打架。
-              if (e.key === 'Escape' && streaming) {
-                e.preventDefault()
-                onCancel()
-              }
-            }}
-            rows={compact ? 1 : 3}
-            placeholder={placeholder}
-            disabled={disabled}
+      {/*
+        流光包在卡片外面（库自带 `position:relative; overflow:hidden`，并按第一个子元素的
+        圆角自动定半径）。⚠️ 因此卡片上的外扩 ring 会被裁掉 —— 高亮一律用内描边 / 底色表达。
+      */}
+      <BorderBeam
+        size="md"
+        colorVariant="colorful"
+        theme={theme}
+        active={beamActive}
+        strength={0.9}
+      >
+        <PopoverAnchor asChild>
+          <div
+            // 整张卡片是拖放区（不只 textarea）：拖到卡片任何位置都算「要加进这个输入框」；
+            // `relative` 供拖拽高亮浮层定位
             className={cn(
-              'block max-h-40 w-full resize-none bg-transparent px-3 text-sm leading-relaxed outline-none [scrollbar-width:none] placeholder:text-muted-foreground field-sizing-content disabled:opacity-50 [&::-webkit-scrollbar]:hidden',
-              // 紧凑态：初始一行高（约 43px）+ 略宽的纵向内边距（py-2.5）；默认仍是三行 / 72px。
-              //
-              // 为什么 `min-h` 和 `placeholder-shown:h-*` 必须是**同一个算式**：
-              // `field-sizing-content` 把 placeholder 也算进固有尺寸，所以空态得把高度钉死
-              // （`placeholder-shown:` 那半），否则窄窗口 / 手机端（根字号 18px）里长 placeholder
-              // 折行会把框撑高、敲一个字又缩回去。但钉的值若和「一行正文」的实际高度不一致，
-              // 就变成空态一个高度、输入第一个字又跳一下 —— 早上那版 `h-9`(36px) vs 正文 38.75px
-              // 就是这个残留。用 `1lh + 上下内边距` 写，两边天然相等，也不受根字号影响（不写死 px）。
-              compact
-                ? 'min-h-[calc(1lh_+_1.25rem)] py-2.5 placeholder-shown:h-[calc(1lh_+_1.25rem)]'
-                : 'min-h-[72px] py-2.5 placeholder-shown:h-[72px]'
+              'relative rounded-xl border border-border bg-card/70 transition-colors',
+              // 拖拽 / 收音的提示交给流光，不再额外改边框色
+              // 减少动态效果时的静态替代：`inset` 描边不会被流光容器的 overflow 裁掉
+              reducedMotion &&
+                beamRequested &&
+                'shadow-[inset_0_0_0_2px_var(--primary)]'
             )}
-          />
-
-          {/* 语音识别临时文本：边说边显，停止后消失。放在卡片内、操作行上方，与输入框浑然一体 */}
-          {voice.interim && (
-            <div className="px-3 pb-1 text-xs text-muted-foreground italic">{voice.interim}</div>
-          )}
-
-          {/*
-            操作行：左 `leading`、右 `trailing`（模型）+ 语音 + 发送 / 停止。
-
-            ⚠️ 两组之间的 `gap-8`（2rem = **一颗图标的宽度**）是「窄屏时的最小间距」：
-            `justify-between` 只会在它之上补剩余空间，宽屏照旧被两侧撑开；窄到要挤压时，
-            这 32px 是硬底 —— 宁可让中间那颗模型 pill 多截几个字，也不让左边那颗权限图标和
-            右边的上下文圆环挤在一起（之前是 `gap-2`，窄屏下这两颗 32px 的圆钮只隔 8px，
-            看着像粘成一组）。
-          */}
-          <div className="flex items-center justify-between gap-8 px-2 pb-2">
-            <div className="flex min-w-0 items-center gap-1">{leading}</div>
-            {/* ⚠️ 右侧这组也必须 `min-w-0`：Flex 项默认 `min-width:auto`，不给就会按内容
-            撑开、拒绝收缩 —— 窄面板下模型 pill（`CHAT_PILL` 的 `max-w-56`）把整组顶宽，
-            连语音 / 发送钮一起挤出卡片（`justify-between` 撑不住溢出的内容）。
-            给了之后 pill 才能随行宽收缩、内部文字按 `truncate` 截断，圆钮因为 `shrink-0` 原地不动。 */}
-            <div className="flex min-w-0 items-center gap-2">
-              {trailing}
-              {!isDesktopHost && voice.supported && (
-                <IconTip label={voice.listening ? tr('停止录音') : tr('语音输入（也可按住 Alt+V 说话）')}>
-                  {/*
-                    与停止 / 发送同一套材质（`LiquidGlassButton`），开没开都是玻璃：
-                    - 没开：`contrast` 档 —— 这颗压在 `bg-card/70` 的卡片里，纯白玻璃在浅色主题
-                      下等于隐形（和白色 popover / 顶栏一个道理，见 liquid-glass.tsx）。
-                    - 录音中：`accent` 档（主色底 + 玻璃高光）继续当「状态」用；里面换成
-                      `WorkBars` 那三根竖条，和消息流里「正在工作」同一个记号 —— 比一颗
-                      `Mic` 加整颗按钮 `animate-pulse` 更能说明「正在收声音」。
-                      竖条自己就在跳，按钮就不再叠一层呼吸动画。
-                  */}
-                  <LiquidGlassButton
-                    tone={voice.listening ? 'accent' : 'contrast'}
-                    aria-label={voice.listening ? tr('停止录音') : tr('语音输入')}
-                    aria-pressed={voice.listening}
-                    disabled={disabled}
-                    onClick={voice.listening ? voice.stop : voice.start}
-                    className="inline-flex size-8 shrink-0 items-center justify-center rounded-full p-0"
-                  >
-                    {voice.listening ? <WorkBars className="size-4" /> : <Mic className="size-4" />}
-                  </LiquidGlassButton>
-                </IconTip>
-              )}
-              {/*
-                最右那颗动作钮：**一颗常驻的玻璃药丸**，宽度由右半的 `width` 过渡带出来
-                —— 纯 CSS，不量宽、不换容器。
-
-                为什么这样才纯 CSS：原先「单颗圆钮」与「发送 + 下拉」换的是两个不同节点，
-                没有同一个可补间的 `width`。现在药丸恒在，主按钮恒占左侧 2rem，右半
-                （分隔线 + chevron）收起时 `width: 0`、展开时是它自己的固定宽度，药丸是
-                flex、宽度随子项走，于是整颗自己长出来 / 收回去。
-
-                ⚠️ `overflow-hidden` 只能加在右半，不能加在药丸上 —— 加在药丸上会连景深投影
-                和光圈描边一起裁掉（玻璃会变成一块硬边）。
-
-                四种状态共用这颗钮，只换主按钮的图标 / 底色 / 动作：
-                停止（危险色，方块）/ 创建中（转圈）/ 发送（箭头）/ 发送 + 下拉（箭头 + chevron）。
-              */}
-              <LiquidGlassSurface
-                // 停止是破坏性动作，跟危险钮同一档；其余都是主操作
-                tone={showStop ? 'danger' : 'accent'}
-                className={cn(
-                  'flex h-8 shrink-0 items-stretch rounded-full',
-                  // 按下时整颗轻微内缩，替代原来 `LiquidGlassButton` 的按下反馈
-                  'transition-[scale,opacity] duration-150 ease-out motion-reduce:transition-none',
-                  'active:scale-95',
-                  // 不可用时整颗压暗（与单颗玻璃钮同一档）；「创建中」那颗必须亮着，
-                  // 「发送 + 下拉」则是两半各管各的（见下面按钮上的 disabled:opacity-40）
-                  !showChooser && !showSending && primaryDisabled && 'opacity-50'
-                )}
-              >
-                <IconTip label={primaryTip}>
-                  <button
-                    type="button"
-                    aria-label={primaryLabel}
-                    aria-busy={showSending || undefined}
-                    disabled={primaryDisabled}
-                    onClick={showStop ? onCancel : onSubmit}
-                    className={cn(
-                      'flex h-8 w-8 items-center justify-center transition-colors hover:bg-white/15 disabled:cursor-not-allowed',
-                      // 展开时右半那截会把圆角切成「左半」，收起时是整圆
-                      showChooser ? 'rounded-l-full' : 'rounded-full',
-                      // 单颗状态整颗由外层压暗（见上面），这里只在两半并排时各自压暗自己
-                      showChooser && 'disabled:opacity-40'
-                    )}
-                  >
-                    {showStop ? (
-                      <Square className="size-4 fill-current" />
-                    ) : showSending ? (
-                      <Loader2 className="size-4 animate-spin" />
-                    ) : (
-                      <Send className="size-4" />
-                    )}
-                  </button>
-                </IconTip>
-                {/*
-                  右半：只在「发送 + 下拉」时展开。**宽度从 0 过渡到自身宽度**（纯 CSS），
-                  整颗药丸是 flex、宽度随子项走，于是药丸自己就补间长出来了。
-
-                  宽度写成一个常量而不是靠内容撑：这一半在收起时必须能到 0，而「按内容自适应」
-                  的宽度没法参与过渡（`auto` 不做补间）。尺寸 = 分隔线 1px + 箭头按钮的
-                  `pl-0.5 + pr-1.5` + 图标 `size-3.5`（都是 rem，跟着根字号走，所以用 calc）。
-
-                  收起时按钮仍在 DOM 里，`inert` + `aria-hidden` 一起退场 ——
-                  否则 Tab 还会停在那颗看不见的箭头上。
-                */}
-                <span
-                  aria-hidden={!showChooser || undefined}
-                  inert={!showChooser || undefined}
-                  className="flex min-w-0 overflow-hidden transition-[width] duration-200 ease-out motion-reduce:transition-none"
-                  style={{ width: showChooser ? SPLIT_HALF_WIDTH : 0 }}
-                >
-                  <span className="flex shrink-0 items-stretch" style={{ width: SPLIT_HALF_WIDTH }}>
-                    {/* 分隔线用前景半透明而不是 border 变量：药丸底是主色，描边色在暗色下几乎看不见 */}
-                    <span className="my-1.5 w-px shrink-0 bg-primary-foreground/25" aria-hidden />
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button
-                          type="button"
-                          aria-label={tr('选择发送方式：直接发送 / 放入队列')}
-                          disabled={disabled || sendDisabled}
-                          className="flex items-center rounded-r-full pl-0.5 pr-1.5 transition-colors hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          <ChevronDown className="size-3.5 opacity-80" />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent side="top" align="end" sideOffset={6} className="min-w-64">
-                        <DropdownMenuItem onSelect={onSubmit}>
-                          <Send className="size-3.5" />
-                          <span className="flex min-w-0 flex-col gap-0.5">
-                            <span>{tr('直接发送')}</span>
-                            {/* 选择器只在空闲时出现（跑着时不摆选项），所以这里是确定的「立刻」 */}
-                            <span className="text-xs text-muted-foreground">{tr('立刻发出')}</span>
-                          </span>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onSelect={() => onEnqueue?.()}
-                          disabled={enqueueDisabled}
-                        >
-                          <Clock className="size-3.5" />
-                          <span className="flex min-w-0 flex-col gap-0.5">
-                            <span>{tr('放入队列')}</span>
-                            <span className="text-xs text-muted-foreground">{enqueueHint}</span>
-                          </span>
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </span>
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            {/* 拖拽高亮：`pointer-events-none` 必须——浮层不能挡住 drop 的命中目标 */}
+            {dragActive && (
+              <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-primary/5">
+                <span className="flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs text-foreground shadow-sm">
+                  <ImagePlus className="size-3.5 text-muted-foreground" />
+                  {tr('松开以添加附件')}
                 </span>
-              </LiquidGlassSurface>
+              </div>
+            )}
+            {header}
+            <textarea
+              ref={textareaRef}
+              value={value}
+              onChange={(e) => {
+                onChange(e.target.value)
+                setCaret(e.target.selectionStart)
+              }}
+              onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+              onPaste={handlePaste}
+              onKeyDown={(e) => {
+                // @ 点名浮层打开时先接管导航键（与斜线命令同一套交互）
+                if (mentionVisible) {
+                  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                    e.preventDefault()
+                    setMentionHighlight((h) =>
+                      e.key === 'ArrowDown'
+                        ? (h + 1) % mentionMatches.length
+                        : (h - 1 + mentionMatches.length) % mentionMatches.length
+                    )
+                    return
+                  }
+                  if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing)) {
+                    e.preventDefault()
+                    const agent = mentionMatches[mentionHighlight]
+                    if (agent) completeMention(agent)
+                    return
+                  }
+                  if (e.key === 'Escape') {
+                    e.preventDefault()
+                    setMentionDismissed(true)
+                    return
+                  }
+                }
+                // 斜线命令浮层打开时先接管导航键：↑↓ 选择、Tab 补全、Enter 执行/补全、
+                // Esc 只关浮层（不触发「停止本轮」——用户是在选命令，不是要刹车）
+                if (paletteOpen && candidates.length > 0 && slashContext) {
+                  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                    e.preventDefault()
+                    setHighlight((h) => (e.key === 'ArrowDown' ? (h + 1) % candidates.length : (h - 1 + candidates.length) % candidates.length))
+                    return
+                  }
+                  if (e.key === 'Tab') {
+                    e.preventDefault()
+                    const command = candidates[highlight]
+                    if (command) completeCommand(command)
+                    return
+                  }
+                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault()
+                    runHighlighted()
+                    return
+                  }
+                  if (e.key === 'Escape') {
+                    // 只关浮层，草稿保留（换行 / 改一个字符都会重新浮出来）
+                    e.preventDefault()
+                    setDismissed(true)
+                    return
+                  }
+                }
+                // Enter 发送、Shift+Enter 换行（输入法组合中的 Enter 不抢）
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  // 压缩进行中禁发（sendDisabled）：Enter 出不了手，草稿照常编辑；
+                  // 建会话途中（sending）同理 —— 草稿还在，不拦就是重复提交
+                  if (!sendDisabled && !sending) {
+                    e.preventDefault()
+                    onSubmit()
+                  }
+                  return
+                }
+                // Esc = 停止本轮（键盘党的快捷方式）。草稿非空时最右那颗钮是发送，
+                // 这时 Esc 是中止本轮的入口（见 showStop / 上面的按钮分配说明）。
+                // 弹窗开着时焦点被 Radix 锁在弹窗里、走不到这里，所以不会和「Esc 关弹窗」打架。
+                if (e.key === 'Escape' && streaming) {
+                  e.preventDefault()
+                  onCancel()
+                }
+              }}
+              rows={compact ? 1 : 3}
+              placeholder={placeholder}
+              disabled={disabled}
+              className={cn(
+                'block max-h-40 w-full resize-none bg-transparent px-3 text-sm leading-relaxed outline-none [scrollbar-width:none] placeholder:text-muted-foreground field-sizing-content disabled:opacity-50 [&::-webkit-scrollbar]:hidden',
+                // 紧凑态：初始一行高（约 43px）+ 略宽的纵向内边距（py-2.5）；默认仍是三行 / 72px。
+                //
+                // 为什么 `min-h` 和 `placeholder-shown:h-*` 必须是**同一个算式**：
+                // `field-sizing-content` 把 placeholder 也算进固有尺寸，所以空态得把高度钉死
+                // （`placeholder-shown:` 那半），否则窄窗口 / 手机端（根字号 18px）里长 placeholder
+                // 折行会把框撑高、敲一个字又缩回去。但钉的值若和「一行正文」的实际高度不一致，
+                // 就变成空态一个高度、输入第一个字又跳一下 —— 早上那版 `h-9`(36px) vs 正文 38.75px
+                // 就是这个残留。用 `1lh + 上下内边距` 写，两边天然相等，也不受根字号影响（不写死 px）。
+                compact
+                  ? 'min-h-[calc(1lh_+_1.25rem)] py-2.5 placeholder-shown:h-[calc(1lh_+_1.25rem)]'
+                  : 'min-h-[72px] py-2.5 placeholder-shown:h-[72px]'
+              )}
+            />
+
+            {/* 语音识别临时文本：边说边显，停止后消失。放在卡片内、操作行上方，与输入框浑然一体 */}
+            {voice.interim && (
+              <div className="px-3 pb-1 text-xs text-muted-foreground italic">{voice.interim}</div>
+            )}
+
+            {/*
+              操作行：左 `leading`、右 `trailing`（模型）+ 语音 + 发送 / 停止。
+
+              ⚠️ 两组之间的 `gap-8`（2rem = **一颗图标的宽度**）是「窄屏时的最小间距」：
+              `justify-between` 只会在它之上补剩余空间，宽屏照旧被两侧撑开；窄到要挤压时，
+              这 32px 是硬底 —— 宁可让中间那颗模型 pill 多截几个字，也不让左边那颗权限图标和
+              右边的上下文圆环挤在一起（之前是 `gap-2`，窄屏下这两颗 32px 的圆钮只隔 8px，
+              看着像粘成一组）。
+            */}
+            <div className="flex items-center justify-between gap-8 px-2 pb-2">
+              <div className="flex min-w-0 items-center gap-1">{leading}</div>
+              {/* ⚠️ 右侧这组也必须 `min-w-0`：Flex 项默认 `min-width:auto`，不给就会按内容
+              撑开、拒绝收缩 —— 窄面板下模型 pill（`CHAT_PILL` 的 `max-w-56`）把整组顶宽，
+              连语音 / 发送钮一起挤出卡片（`justify-between` 撑不住溢出的内容）。
+              给了之后 pill 才能随行宽收缩、内部文字按 `truncate` 截断，圆钮因为 `shrink-0` 原地不动。 */}
+              <div className="flex min-w-0 items-center gap-2">
+                {trailing}
+                {!isDesktopHost && voice.supported && (
+                  <IconTip label={voice.listening ? tr('停止录音') : tr('语音输入（也可按住 Alt+V 说话）')}>
+                    {/*
+                      与停止 / 发送同一套材质（`LiquidGlassButton`），开没开都是玻璃：
+                      - 没开：`contrast` 档 —— 这颗压在 `bg-card/70` 的卡片里，纯白玻璃在浅色主题
+                        下等于隐形（和白色 popover / 顶栏一个道理，见 liquid-glass.tsx）。
+                      - 录音中：`accent` 档（主色底 + 玻璃高光）继续当「状态」用；里面换成
+                        `WorkBars` 那三根竖条，和消息流里「正在工作」同一个记号 —— 比一颗
+                        `Mic` 加整颗按钮 `animate-pulse` 更能说明「正在收声音」。
+                        竖条自己就在跳，按钮就不再叠一层呼吸动画。
+                    */}
+                    <LiquidGlassButton
+                      tone={voice.listening ? 'accent' : 'contrast'}
+                      aria-label={voice.listening ? tr('停止录音') : tr('语音输入')}
+                      aria-pressed={voice.listening}
+                      disabled={disabled}
+                      onClick={voice.listening ? voice.stop : voice.start}
+                      className="inline-flex size-8 shrink-0 items-center justify-center rounded-full p-0"
+                    >
+                      {voice.listening ? <WorkBars className="size-4" /> : <Mic className="size-4" />}
+                    </LiquidGlassButton>
+                  </IconTip>
+                )}
+                {/*
+                  最右那颗动作钮：**一颗常驻的玻璃药丸**，宽度由右半的 `width` 过渡带出来
+                  —— 纯 CSS，不量宽、不换容器。
+
+                  为什么这样才纯 CSS：原先「单颗圆钮」与「发送 + 下拉」换的是两个不同节点，
+                  没有同一个可补间的 `width`。现在药丸恒在，主按钮恒占左侧 2rem，右半
+                  （分隔线 + chevron）收起时 `width: 0`、展开时是它自己的固定宽度，药丸是
+                  flex、宽度随子项走，于是整颗自己长出来 / 收回去。
+
+                  ⚠️ `overflow-hidden` 只能加在右半，不能加在药丸上 —— 加在药丸上会连景深投影
+                  和光圈描边一起裁掉（玻璃会变成一块硬边）。
+
+                  四种状态共用这颗钮，只换主按钮的图标 / 底色 / 动作：
+                  停止（危险色，方块）/ 创建中（转圈）/ 发送（箭头）/ 发送 + 下拉（箭头 + chevron）。
+                */}
+                <LiquidGlassSurface
+                  // 停止是破坏性动作，跟危险钮同一档；其余都是主操作
+                  tone={showStop ? 'danger' : 'accent'}
+                  className={cn(
+                    'flex h-8 shrink-0 items-stretch rounded-full',
+                    // 按下时整颗轻微内缩，替代原来 `LiquidGlassButton` 的按下反馈
+                    'transition-[scale,opacity] duration-150 ease-out motion-reduce:transition-none',
+                    'active:scale-95',
+                    // 不可用时整颗压暗（与单颗玻璃钮同一档）；「创建中」那颗必须亮着，
+                    // 「发送 + 下拉」则是两半各管各的（见下面按钮上的 disabled:opacity-40）
+                    !showChooser && !showSending && primaryDisabled && 'opacity-50'
+                  )}
+                >
+                  <IconTip label={primaryTip}>
+                    <button
+                      type="button"
+                      aria-label={primaryLabel}
+                      aria-busy={showSending || undefined}
+                      disabled={primaryDisabled}
+                      onClick={showStop ? onCancel : onSubmit}
+                      className={cn(
+                        'flex h-8 w-8 items-center justify-center transition-colors hover:bg-white/15 disabled:cursor-not-allowed',
+                        // 展开时右半那截会把圆角切成「左半」，收起时是整圆
+                        showChooser ? 'rounded-l-full' : 'rounded-full',
+                        // 单颗状态整颗由外层压暗（见上面），这里只在两半并排时各自压暗自己
+                        showChooser && 'disabled:opacity-40'
+                      )}
+                    >
+                      {showStop ? (
+                        <Square className="size-4 fill-current" />
+                      ) : showSending ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <Send className="size-4" />
+                      )}
+                    </button>
+                  </IconTip>
+                  {/*
+                    右半：只在「发送 + 下拉」时展开。**宽度从 0 过渡到自身宽度**（纯 CSS），
+                    整颗药丸是 flex、宽度随子项走，于是药丸自己就补间长出来了。
+
+                    宽度写成一个常量而不是靠内容撑：这一半在收起时必须能到 0，而「按内容自适应」
+                    的宽度没法参与过渡（`auto` 不做补间）。尺寸 = 分隔线 1px + 箭头按钮的
+                    `pl-0.5 + pr-1.5` + 图标 `size-3.5`（都是 rem，跟着根字号走，所以用 calc）。
+
+                    收起时按钮仍在 DOM 里，`inert` + `aria-hidden` 一起退场 ——
+                    否则 Tab 还会停在那颗看不见的箭头上。
+                  */}
+                  <span
+                    aria-hidden={!showChooser || undefined}
+                    inert={!showChooser || undefined}
+                    className="flex min-w-0 overflow-hidden transition-[width] duration-200 ease-out motion-reduce:transition-none"
+                    style={{ width: showChooser ? SPLIT_HALF_WIDTH : 0 }}
+                  >
+                    <span className="flex shrink-0 items-stretch" style={{ width: SPLIT_HALF_WIDTH }}>
+                      {/* 分隔线用前景半透明而不是 border 变量：药丸底是主色，描边色在暗色下几乎看不见 */}
+                      <span className="my-1.5 w-px shrink-0 bg-primary-foreground/25" aria-hidden />
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label={tr('选择发送方式：直接发送 / 放入队列')}
+                            disabled={disabled || sendDisabled}
+                            className="flex items-center rounded-r-full pl-0.5 pr-1.5 transition-colors hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            <ChevronDown className="size-3.5 opacity-80" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent side="top" align="end" sideOffset={6} className="min-w-64">
+                          <DropdownMenuItem onSelect={onSubmit}>
+                            <Send className="size-3.5" />
+                            <span className="flex min-w-0 flex-col gap-0.5">
+                              <span>{tr('直接发送')}</span>
+                              {/* 选择器只在空闲时出现（跑着时不摆选项），所以这里是确定的「立刻」 */}
+                              <span className="text-xs text-muted-foreground">{tr('立刻发出')}</span>
+                            </span>
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onSelect={() => onEnqueue?.()}
+                            disabled={enqueueDisabled}
+                          >
+                            <Clock className="size-3.5" />
+                            <span className="flex min-w-0 flex-col gap-0.5">
+                              <span>{tr('放入队列')}</span>
+                              <span className="text-xs text-muted-foreground">{enqueueHint}</span>
+                            </span>
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </span>
+                  </span>
+                </LiquidGlassSurface>
+              </div>
             </div>
           </div>
-        </div>
-      </PopoverAnchor>
+        </PopoverAnchor>
+      </BorderBeam>
       {(paletteVisible || mentionVisible) && (
         <PopoverContent
           side="top"
