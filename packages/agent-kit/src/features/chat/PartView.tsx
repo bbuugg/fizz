@@ -56,6 +56,7 @@ import {
   toolState
 } from '@fizz/agent-kit/shared/lib/parts'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { todoItemsOf, todoProgress } from '@fizz/agent-kit/shared/lib/todo-list'
 import { diffLines } from '@fizz/agent-kit/shared/lib/diff'
 import {
   isTerminalTool,
@@ -137,6 +138,7 @@ function ToolCallCard({
   title,
   type,
   state,
+  acpKind,
   detail,
   detailAction,
   detailExtra,
@@ -148,6 +150,8 @@ function ToolCallCard({
   title: string
   type: ToolUIPart['type']
   state: ToolUIPart['state']
+  /** ACP 工具类别：工具名认不出时给头部兜底那颗图标（见 `ToolHeaderProps.acpKind`） */
+  acpKind?: string
   /** 头部明细（命令 / 主入参）：截断显示在工具名后面，悬停出 Tooltip 看全文 */
   detail?: string
   /** 明细可点时的动作（文件类工具：点开那个文件）；透传给头部，见 `ToolHeaderProps.detailAction` */
@@ -202,6 +206,7 @@ function ToolCallCard({
         title={title}
         type={type}
         state={state}
+        acpKind={acpKind}
         detail={detail}
         detailAction={detailAction}
         detailExtra={detailExtra}
@@ -434,55 +439,45 @@ function LiveOutputBlock({ live }: { live: { stdout: string; stderr: string } })
 }
 
 /**
- * 从 `todo` 的入参 / 结果里抠出清单条目。
+ * 从 `todowrite` 的数组结果或当前入参中恢复清单条目。
  *
  * 优先用**结果**（收口后的规范形态），结果还没到时退回到**入参**（模型刚提交的那份）——
  * 两者形状相同（都是 `{ todos: [{content, status}] }`），只是一个来自模型、一个来自工具返回。
  * 形状不对一律当空清单，不抛错（坏数据不该把整条消息渲染炸掉）。
  */
-function todoItemsOf(input: unknown, output: unknown): TodoItem[] {
-  const fromOutput = (output as { todos?: unknown } | null | undefined)?.todos
-  const fromInput = (input as { todos?: unknown } | null | undefined)?.todos
-  const src = Array.isArray(fromOutput) ? fromOutput : fromInput
-  if (!Array.isArray(src)) return []
-  return src
-    .map((t) => {
-      const item = t as { content?: unknown; status?: unknown }
-      const content = typeof item?.content === 'string' ? item.content.trim() : ''
-      const status: TodoItem['status'] =
-        item?.status === 'in_progress' || item?.status === 'completed' ? item.status : 'pending'
-      return { content, status }
-    })
-    .filter((t) => t.content)
-}
-
 /**
- * 待办清单（`todo` 的结果视图）：一行一项，勾选 / 进行中 / 待办三种图标。
+ * 待办清单结果视图：一行一项，状态、优先级和取消状态均可见。
  *
  * 与命令卡同样的直显外壳（`border + 圆角`），不铺「输入 / 输出 JSON」——
  * 清单本来就是给人看的进度，JSON 化等于白建。
  */
 function TodoChecklist({ items }: { items: TodoItem[] }) {
+  const t = useT()
+  const priorityLabels: Record<string, string> = { high: t('高优先级'), medium: t('中优先级'), low: t('低优先级') }
+  const statusLabels: Record<string, string> = { pending: t('待办'), in_progress: t('进行中'), completed: t('已完成'), cancelled: t('已取消') }
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border mt-2 p-2">
       <ul className="flex flex-col gap-1.5">
         {items.map((t, i) => (
-          <li key={i} className="flex items-start gap-2 text-sm">
+          <li key={i} className="flex items-start gap-2 text-sm" aria-label={`${statusLabels[t.status] ?? t.status}：${t.content}`}>
             {t.status === 'completed' ? (
               <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
             ) : t.status === 'in_progress' ? (
               <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-primary" />
+            ) : t.status === 'cancelled' ? (
+              <span className="shrink-0 text-muted-foreground" aria-hidden="true">×</span>
             ) : (
-              <Circle className="mt-0.5 size-4 shrink-0 text-muted-foreground/40" />
+              <Circle className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
             )}
             <span
               className={cn(
                 'min-w-0',
-                t.status === 'completed' ? 'text-muted-foreground line-through' : 'text-foreground'
+                t.status === 'completed' || t.status === 'cancelled' ? 'text-muted-foreground line-through' : 'text-foreground'
               )}
             >
               {t.content}
             </span>
+            {t.priority && <span className="ml-auto shrink-0 text-xs text-muted-foreground">{priorityLabels[t.priority] ?? t.priority}</span>}
           </li>
         ))}
       </ul>
@@ -875,7 +870,10 @@ function PartViewInner({
     return <ReasoningView text={part.text} streaming={!!streaming} />
   }
 
-  // 单独出现的 tool-result（正常流里会被回填到 tool-call 上，这里兜底渲染）
+  // 单独出现的 tool-result（正常流里会被回填到 tool-call 上，这里兜底渲染）。
+  // 这里**不传 acpKind**：`tool-result` 这个 part 本身不带类别（见 contracts 的
+  // AgentMessagePart），类型信息只活在配对的 `tool-call` 上。名字认不出时保留默认扳手
+  // 就是诚实的结果 —— 别为了「看起来对」去猜。
   if (part.type === 'tool-result') {
     return (
       <ToolCallCard
@@ -951,15 +949,22 @@ function PartViewInner({
         }
       : undefined
 
-  // 待办清单（todo）：入参 / 结果都是结构化的 `{ todos: [...] }`，画成勾选清单，
+  // 待办清单（todowrite；保留 todo 历史别名）：入参 / 结果都是任务数组，画成清单，
   // 不铺「输入 / 输出 JSON」。这是「动态规划」在界面上的落点 —— 模型每改写一次清单，
   // 就多一张卡，用户能看到计划是怎么随执行推进而演变的。
   //
   // `!streamingInput`：入参还在流式生成时 `part.input` 还是 undefined（只有 inputText），
   // 这时抠不出条目，交给下面的流式预览分支；否则会闪一下「清单已清空」。
-  if (part.toolName === 'todo' && !streamingInput) {
+  // ⚠️ 两个名字都要认：工具在 2026-11 由 `todo` 改名 `todowrite`（见 tools/todowrite.ts），
+  // 老会话历史里落的还是 `todo` —— 只认新名的话，翻旧对话时清单会掉进「入参 / 结果 JSON」
+  // 的兜底卡（用户报过：之前的清单现在变成 JSON 了）。
+  if (
+    (part.toolName === 'todowrite' || part.toolName === 'todo') &&
+    !streamingInput &&
+    !part.isError
+  ) {
     const items = todoItemsOf(part.input, output)
-    const done = items.filter((t) => t.status === 'completed').length
+    const done = todoProgress(items).completed
     return (
       <ToolCallCard
         type={`tool-${part.toolName}` as ToolUIPart['type']}
@@ -967,7 +972,7 @@ function PartViewInner({
         live={turnLive}
         {...cardHead(
           part,
-          items.length ? t('{done}/{total} 已完成', { done, total: items.length }) : undefined
+          items.length ? `${done}/${items.length} · ${t('任务')}` : undefined
         )}
       >
         {items.length ? (

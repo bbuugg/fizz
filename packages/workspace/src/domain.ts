@@ -1594,11 +1594,28 @@ export class AgentDomain {
     const existing = this.getConversation(id)
     if (!existing) throw new Error('会话不存在')
     if (existing.backend !== 'acp') return existing
+    /**
+     * ⚠️ 值没变就**什么都不写**，而且**绝不刷 `updatedAt`**。
+     *
+     * 这两个字段是「agent 广告的清单 + 用户选的档」，**打开会话就会同步一次**
+     * （`session/load` 回放后的 `refreshAcpSessionState`）。这里要是顺手把
+     * `updatedAt` 刷成现在，侧栏（按 `updatedAt` 倒序）就会把这条会话顶到最上面 ——
+     * 用户只是点开看了一眼、一条消息都没发，列表却变了位置。
+     *
+     * 与 `setAcpContextUsage` 同一条道理：agent 侧遥测 / 清单同步不是**用户活动**。
+     * 真的产出了内容时 `appendMessages` 会自己更新 `updatedAt`，不靠这里补。
+     */
+    const modesSame =
+      patch.acpModes === undefined ||
+      JSON.stringify(patch.acpModes) === JSON.stringify(existing.acpModes)
+    const thoughtSame =
+      patch.acpThoughtLevel === undefined ||
+      JSON.stringify(patch.acpThoughtLevel) === JSON.stringify(existing.acpThoughtLevel)
+    if (modesSame && thoughtSame) return existing
     const next: AgentConversation = {
       ...existing,
       ...(patch.acpModes !== undefined ? { acpModes: patch.acpModes } : {}),
-      ...(patch.acpThoughtLevel !== undefined ? { acpThoughtLevel: patch.acpThoughtLevel } : {}),
-      updatedAt: Date.now()
+      ...(patch.acpThoughtLevel !== undefined ? { acpThoughtLevel: patch.acpThoughtLevel } : {})
     }
     return this.commitConversation(next)
   }

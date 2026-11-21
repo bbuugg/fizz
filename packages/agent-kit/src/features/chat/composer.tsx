@@ -943,27 +943,31 @@ export function PermissionPill({
       {/* 触发器只放图标：图标本身编码档位（只读 = 眼睛、确认 = 盾、完全访问 = 琥珀警示盾），
           档名进 tooltip 与下拉（选中项打勾）。SelectValue 换成手绘图标 —— 值是受控的，
           图标跟 `value` prop 走，不吃 Select 的自动展示。 */}
-      {/*
-        悬停只报**档位名字**（图标本身编码了档位，没有文字，光看图标认不全）。
-        提示挂外层 span、不套 SelectTrigger：触发器自带 `data-state`，Tooltip 注进去的
-        状态会把它盖掉（见 IconTip 文件头那条）。
-      */}
-      <IconTip label={permissionOption(value).label}>
-        <span className="inline-flex">
-          <SelectTrigger
-            className={CHAT_ICON_PILL}
-            // 一排 pill 都不露右侧箭头（见 CHAT_PILL 的说明）：这颗是 Select，箭头由
-            // SelectTrigger 自己渲染，所以关掉它的
-            icon={false}
-            aria-label={tr('工具权限：{label}', { label: permissionOption(value).label })}
-          >
-            {/* mx-auto 居中：SelectTrigger 自带 justify-between，单个子元素会被顶到左边 */}
-            <span className="mx-auto flex items-center">
-              <PermissionIcon mode={value} />
-            </span>
-          </SelectTrigger>
-        </span>
-      </IconTip>
+      <SelectTrigger
+        className={CHAT_ICON_PILL}
+        // 一排 pill 都不露右侧箭头（见 CHAT_PILL 的说明）：这颗是 Select，箭头由
+        // SelectTrigger 自己渲染，所以关掉它的
+        icon={false}
+        aria-label={tr('工具权限：{label}', { label: permissionOption(value).label })}
+      >
+        {/*
+          悬停只报**档位名字**（图标本身编码了档位，没有文字，光看图标认不全）。
+
+          ⚠️ 提示必须挂在触发器**内部**（包住图标那颗 span），不能把 SelectTrigger 整个包起来：
+          1. 触发器自带 `data-state`，`TooltipTrigger asChild` 注进去的状态会把它盖掉
+             （见 IconTip 文件头）；
+          2. 更要紧的是**回焦**：Radix 的 Select 关闭时会把焦点还给它自己的触发器，而
+             `focusin` 会**冒泡**到外层 span —— 外面的 Tooltip 于是又按焦点弹一次，表现就是
+             「再点一下菜单关掉了、马上又冒出来一条」（上游 radix-ui/primitives#2248）。
+             span 放进按钮里、自己不可聚焦，就没有这条路径了（焦点落在按钮上，不经过它）。
+        */}
+        <IconTip label={permissionOption(value).label}>
+          {/* `size-8`：与按钮等大（按钮 `p-0`），悬停整个可点区域都能出提示 */}
+          <span className="flex size-8 items-center justify-center">
+            <PermissionIcon mode={value} />
+          </span>
+        </IconTip>
+      </SelectTrigger>
       {/* 几个 pill 的下拉表现必须一致：都是 popper + side="top" + sideOffset={6}。
           shadcn 的 Select 默认 position="item-aligned"（把选中项铺在触发器上、往下摊），
           而这些触发器都贴在窗口底部 —— 不改成 popper 就会跟模型那个浮层长得不一样。

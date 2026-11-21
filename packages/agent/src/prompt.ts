@@ -368,7 +368,7 @@ function buildContainerStartSection(previewPort?: number, autoStart?: string): s
 /**
  * 任务规划与动态重规划。
  *
- * `todo` 的 schema 里已经写了怎么用它；这里补的是**跨工具的行为约定**：
+ * `todowrite` 的 schema 里已经写了怎么用它；这里补的是跨轮的规划习惯：
  * 什么时候该建清单、**做到一半发现计划不对时要主动改**（这才是「动态规划」的关键，
  * 光给工具不说这句，模型会倾向于把最初那份清单当成不可改的合同一路跑到底）、
  * 以及「清单是给自己对进度用的、不是给用户看的交付物」这个边界。
@@ -377,19 +377,21 @@ function buildPlanningSection(): string {
   if (getLanguage() === 'en') {
     return [
       'Task planning (multi-step tasks):',
-      '- For tasks with **three or more steps**, or that need repeated verification, first list the work in a todo list with `todo`, then proceed step by step;',
+      '- Use `todowrite` proactively for 3+ distinct steps, non-trivial work that benefits from planning, multiple user tasks, or an explicit todo request. Set content, priority (high/medium/low), and status for every item;',
       '- **Planning is dynamic, not fixed upfront**: maintain the list as you go — mark finished items and set the next one in progress. More importantly, if later arrangements turn out wrong, drift from the user’s goal, or new needs appear, rewrite the remaining items (add/remove/edit/reorder) instead of blindly finishing the original list;',
       '- Keep exactly one item in progress at a time; make items specific (“one sentence, one action”), not vague phases;',
+      '- Update status in real time, never batch completions. Mark completed only after required work and verification actually finish. If blocked, keep in_progress and add a blocker follow-up. Capture new instructions, preserve user commands verbatim, and use cancelled for work no longer needed;',
       '- Do not use a todo list for simple or single-step tasks. The list is for your own tracking; do not repeat it in the reply.'
     ].join('\n')
   }
   return [
     '任务规划（多步骤任务）：',
-    '- 遇到**三步以上**、或需要来回验证的任务，先用 `todo` 把要做的事列成待办清单，再逐步推进；',
+    '- 对三步以上、值得规划的非琐碎任务、用户提出的多项任务或明确的待办请求，主动使用 `todowrite`。每项都填写 content、priority（high/medium/low）、status；',
     '- **规划是动态的，不是一次定死**：边做边维护清单 —— 完成一项就更新它的状态、把下一项设为进行中。' +
       '更关键的是，做到某一步时如果发现**后面的安排不对 / 偏离了用户目标 / 冒出了新需求**，' +
       '要主动回头改写后续条目（增、删、改、换序都行），而不是硬按最初的清单跑完；',
     '- 同一时刻只留一条进行中；清单要具体到「一句话一个动作」，不要写成泛泛的大阶段；',
+    '- 实时更新状态，不要集中批量标完成。只有实际工作与必要验证均完成后才标 completed；阻塞或部分完成时保持 in_progress 并添加阻塞跟进项。新指令纳入清单，用户命令（参数和顺序）原样保留，不再需要的任务标 cancelled；',
     '- 简单任务、单步操作不要用清单；清单是给你自己对进度用的，不必在正文里复述一遍它。'
   ].join('\n')
 }

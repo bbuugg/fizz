@@ -203,7 +203,7 @@ function intentProperty(): JSONSchema7 {
 export async function withToolIntent(tools: ToolSet): Promise<ToolSet> {
   const out: ToolSet = {}
   for (const [name, entry] of Object.entries(tools)) {
-    out[name] = await injectIntent(entry as ToolSet[string])
+    out[name] = name === 'todowrite' ? entry as ToolSet[string] : await injectIntent(entry as ToolSet[string])
   }
   return out
 }

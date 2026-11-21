@@ -65,6 +65,11 @@ async function run(tools: ReturnType<typeof toolsWith>, name: string, input: unk
 }
 
 describe('buildAgentTools · 全部经后端路由', () => {
+  it('工作区工具集不包含独立的任务清单工具', async () => {
+    const tools = toolsWith(fakeBackend())
+    expect(tools).not.toHaveProperty('todo')
+  })
+
   it('read 走 stat / readFile，返回固定信封与行号', async () => {
     const backend = fakeBackend()
     const out = await run(toolsWith(backend), 'read', { file_path: 'a.txt' })

@@ -73,6 +73,7 @@ function Tooltip({
 function TooltipTrigger({
   asChild,
   children,
+  onFocus,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
   const touch = useTouchUi()
@@ -86,7 +87,28 @@ function TooltipTrigger({
     )
   }
   return (
-    <TooltipPrimitive.Trigger data-slot="tooltip-trigger" asChild={asChild} {...props}>
+    <TooltipPrimitive.Trigger
+      data-slot="tooltip-trigger"
+      asChild={asChild}
+      /*
+       * 只有**键盘**（`:focus-visible`）才按焦点弹提示。
+       *
+       * Radix 的 Tooltip 既认 hover 也认 focus；而 Select / DropdownMenu / Popover 关闭时
+       * 会把焦点还给自己的触发器 —— 指针关闭那一下是**程序化回焦**，不该再弹一条提示，
+       * 否则表现就是「菜单关掉了、提示又冒出来」（上游 radix-ui/primitives#2248）。
+       *
+       * 这个 handler 走的是 Radix 的 `composeEventHandlers(props.onFocus, …)` 语义：
+       * 我们排在「原始 handler」那一侧，先 `preventDefault()` 就能让 Radix 内部的
+       * 打开逻辑整段跳过。Tab 到控件上仍然照常出提示。
+       */
+      onFocus={(event) => {
+        onFocus?.(event)
+        if (!event.defaultPrevented && !event.currentTarget.matches(':focus-visible')) {
+          event.preventDefault()
+        }
+      }}
+      {...props}
+    >
       {children}
     </TooltipPrimitive.Trigger>
   )

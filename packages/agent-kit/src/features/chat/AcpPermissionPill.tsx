@@ -49,30 +49,32 @@ export function AcpPermissionPill({ app }: { app: AgentApp }) {
       value={mode}
       onValueChange={(v) => app.setAcpPermissionMode(v as "confirm" | "allow")}
     >
-      {/* 悬停只报档位名字；提示挂外层 span，避免 Tooltip 的 `data-state` 盖掉 Select 的 */}
-      <IconTip label={t(ACP_PERMISSION_LABELS[mode])}>
-        <span className="inline-flex">
-          <SelectTrigger
-            className={CHAT_ICON_PILL}
-            icon={false}
-            aria-label={t("权限答复：{label}", { label: t(ACP_PERMISSION_LABELS[mode]) })}
-          >
-            {/* mx-auto 居中：SelectTrigger 自带 justify-between，单个子元素会被顶到左边 */}
+      <SelectTrigger
+        className={CHAT_ICON_PILL}
+        icon={false}
+        aria-label={t("权限答复：{label}", { label: t(ACP_PERMISSION_LABELS[mode]) })}
+      >
+        {/*
+          悬停只报档位名字。提示挂在触发器**内部**（不是把 SelectTrigger 包起来）：
+          一是避免 Tooltip 的 `data-state` 盖掉 Select 的；二是 Select 关闭会把焦点还回
+          触发器，包在外层的话提示会跟着那次回焦再弹一次（同 composer 的 PermissionPill）。
+          `size-8` 与按钮等大：按钮本身 `p-0`，悬停整个可点区域都出提示。
+        */}
+        <IconTip label={t(ACP_PERMISSION_LABELS[mode])}>
+          <span className="flex size-8 items-center justify-center">
             {/*
               图标上的 `!` 与内置权限 pill（composer.tsx 的 PermissionIcon）同一处理：
               压掉 `CHAT_ICON_PILL` 的 `hover:[&_svg]:text-primary`，让档位语义色
               （琥珀 = 完全放行）在 hover 时保持不变。
             */}
-            <span className="mx-auto flex items-center">
-              {mode === "allow" ? (
-                <ShieldAlert className="size-3.5 text-amber-600! dark:text-amber-500!" />
-              ) : (
-                <ShieldCheck className="size-3.5 text-muted-foreground!" />
-              )}
-            </span>
-          </SelectTrigger>
-        </span>
-      </IconTip>
+            {mode === "allow" ? (
+              <ShieldAlert className="size-3.5 text-amber-600! dark:text-amber-500!" />
+            ) : (
+              <ShieldCheck className="size-3.5 text-muted-foreground!" />
+            )}
+          </span>
+        </IconTip>
+      </SelectTrigger>
       {/* 与内置权限 pill 同一个**富面板**形状（header + 两行选项，见 packages/ui 的
           `SelectItem`）：两颗 pill 表达的是同一件事（放得多宽），长得不一样会让人以为是两套机制 */}
       <SelectContent

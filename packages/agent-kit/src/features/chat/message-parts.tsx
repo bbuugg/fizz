@@ -424,6 +424,8 @@ function MessagePartsInner({
     kind: 'tool' | 'reasoning' | 'compaction'
     /** 尾 part 是工具时给工具名：抬头那颗图标要靠它认出「执行命令 → 终端」 */
     toolName?: string
+    /** 尾 part 是工具时给 ACP 类别：工具名认不出时（外部 Agent 的占位名）按它兜底图标 */
+    acpKind?: string
     preview?: { text: string; lineKey: number }
     /**
      * 这一段「此刻能就地停掉」时给那一步的 `toolCallId`（`undefined` = 不给停止钮）。
@@ -449,8 +451,11 @@ function MessagePartsInner({
     // 与 `turnStepActivity` 同一个分支：只有尾 part 是 tool-call 才走「工具」那一档，
     // 其余（思考 / 空组）按思考算 —— 否则图标会和那行文案对不上
     const kind: 'tool' | 'reasoning' = tail.part.type === 'tool-call' ? 'tool' : 'reasoning'
-    // 抬头图标与组内那张卡同源：命令类是终端、文件类是文件（`toolHeadIcon`）
+    // 抬头图标与组内那张卡同源：命令类是终端、文件类是文件（`toolHeadIcon`）。
+    // `acpKind` 要一起给：外部 Agent 常常只有类别、没有工具名（占位名 `"tool"`），
+    // 只传名字的话收起的组抬头会是一排扳手，点开才发现里面是读文件 / 跑命令。
     const toolName = tail.part.type === 'tool-call' ? tail.part.toolName : undefined
+    const acpKind = tail.part.type === 'tool-call' ? tail.part.acpKind : undefined
     /*
      * 「这一组现在能不能停」的唯一判据，与工具卡头部那颗钮同源（`isStoppableToolRunning`：
      * bash / web_fetch / 派活工具 `agent-*`，且已拿到完整入参、还没出结果）。
@@ -525,7 +530,7 @@ function MessagePartsInner({
     run = []
     /** 卡落在组尾（后面没有步骤了）→ 抬头报「压缩上下文」；卡在中间就照常报最后一步 */
     const tailIsCompaction = insertAt !== null && insertAt >= current.length
-    const { label, active, live, kind, toolName, preview, stopToolCallId } = groupHead(
+    const { label, active, live, kind, toolName, acpKind, preview, stopToolCallId } = groupHead(
       current,
       tailIsCompaction && ownCompaction ? ownCompaction : null
     )
@@ -537,6 +542,7 @@ function MessagePartsInner({
         active={active}
         live={live}
         kind={kind}
+        acpKind={acpKind}
         toolName={toolName}
         // 只停这一段里正在跑的那一步（判据在 `groupHead`），整轮继续
         onStop={stopToolCallId ? () => void stopCommand(stopToolCallId) : undefined}

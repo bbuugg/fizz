@@ -884,66 +884,6 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
       }
     }),
 
-    /**
-     * 待办清单（todo list）：把一个**多步骤**任务拆成可勾选条目，边做边维护进度。
-     *
-     * 为什么是「每次整份重发」而不是 add / update / remove 三个粒度工具：
-     * 动态重规划天然就是整份重写 —— 做到一半发现后面的安排不对 / 偏离目标 / 冒出新
-     * 需求时，模型需要能自由改写任意条目（增、删、改、换序）。粒度工具反而逼它先算
-     * 清「该动哪条」，把一件本来简单的事变成对账。（Claude Code 的 TodoWrite 同此取舍。）
-     *
-     * 不写盘、不改动任何东西 → 不走 guardWrite（只读模式下也允许）。清单本身随工具
-     * 结果进消息历史（见 model-messages 的 toToolOutput），刷新 / 切会话后由渲染端从
-     * part 里重建 —— 不需要另立一份服务端存储。
-     */
-    todo: tool({
-      description:
-        tr(
-          '创建 / 更新本次任务的**待办清单**（todo list）。把多步骤任务拆成「一句话一个动作」的' +
-            '条目，边做边维护：完成一项就把它的 status 改成 completed、把下一项改成 in_progress。\n' +
-            '用法要点：\n' +
-            '- 每次调用都要传**当前完整的清单**（整份重发，不是增量 / 不是补丁）；顺序即执行顺序。\n' +
-            '- **规划是动态的**：做到某一步发现后面的安排不对、偏离目标、或冒出新需求时，直接改写' +
-            '后续条目（增 / 删 / 改 / 换序都行），让清单始终反映真实的下一步，而不是被最初的计划绑死。\n' +
-            '- 同一时刻最多保留一条 in_progress（手上正在做的那件）。\n' +
-            '- 单步骤 / 琐碎任务不要用这个工具；只在确实有三步以上、值得跟踪时才建清单。\n' +
-            '- 任务全部结束后，可以再调用一次传空数组把清单清掉（或全部标 completed 留作记录）。',
-          'Create/update the **todo list** for this task. Break a multi-step task into one-action items and maintain progress as you go: mark finished items completed and the next one in_progress.\n' +
-            'Usage:\n' +
-            '- Every call must send the **current complete list** (full replacement, not a patch); order is execution order.\n' +
-            '- **Planning is dynamic**: when later steps no longer fit, the goal shifts, or new requirements appear, rewrite the remaining items (add/remove/edit/reorder) so the list always reflects the real next steps instead of being locked to the original plan.\n' +
-            '- Keep at most one in_progress item at a time.\n' +
-            '- Do not use this for single-step or trivial tasks; create a list only when there are genuinely 3+ steps worth tracking.\n' +
-            '- When everything is done, call once more with an empty array to clear it (or mark all completed to keep a record).'
-        ),
-      inputSchema: z.object({
-        todos: z
-          .array(
-            z.object({
-              content: z.string().describe(tr('这一项要做的事：一句话、具体、可执行（顺序即执行顺序）', 'What to do for this item: one concrete, actionable sentence (order is execution order)')),
-              status: z
-                .enum(['pending', 'in_progress', 'completed'])
-                .describe(tr('pending 待办 / in_progress 进行中 / completed 已完成', 'pending / in_progress / completed'))
-            })
-          )
-          .describe(tr('当前**完整**的任务清单（每次整份重发；空数组 = 清空清单）', 'Current **complete** todo list (resend the whole list each time; empty array clears it)'))
-      }),
-      execute: async ({ todos }) => {
-        // 收口：去掉纯空白条目（模型偶尔会留一条空的占位），其余原样
-        const clean = todos
-          .map((t) => ({ content: t.content.trim(), status: t.status }))
-          .filter((t) => t.content)
-        const counts = {
-          total: clean.length,
-          completed: clean.filter((t) => t.status === 'completed').length,
-          inProgress: clean.filter((t) => t.status === 'in_progress').length,
-          pending: clean.filter((t) => t.status === 'pending').length
-        }
-        // 结构化结果：渲染端据此画勾选清单，模型读到的则是紧凑 JSON
-        return { ok: true, kind: 'todo', todos: clean, counts }
-      }
-    }),
-
     // 技能说明通常在**工作区之外**（用户级 / Claude 兼容目录），read 的
     // resolveInside 够不着，所以单独给一个只读工具（范围限制在已发现的技能目录内）。
     // 没有可用技能时干脆不暴露这个工具，免得模型拿着空清单乱试。

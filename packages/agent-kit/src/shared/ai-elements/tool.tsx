@@ -10,6 +10,8 @@ import { REVEAL_ON_HOVER_ARROW } from "@fizz/agent-kit/shared/lib/hover-reveal-a
 import { useT } from "@fizz/agent-kit/shared/lib/language";
 import type { ToolUIPart } from "ai";
 import {
+  ArrowRightLeftIcon,
+  BrainIcon,
   CheckCircleIcon,
   CheckIcon,
   ChevronRightIcon,
@@ -19,8 +21,11 @@ import {
   FilePenIcon,
   FilePlusIcon,
   FileSearchIcon,
+  FileSymlinkIcon,
   FileTextIcon,
+  FileXIcon,
   FolderTreeIcon,
+  GlobeIcon,
   SearchIcon,
   Square,
   SquareTerminalIcon,
@@ -57,26 +62,26 @@ export type ToolHeaderProps = {
   type: ToolUIPart["type"];
   state: ToolUIPart["state"];
   /**
-   * 明细（命令 / 主入参 / 读写的文件）：单行截断着排在标题右侧，**卡片收起时也看得见**。
+   * ACP 工具类别（`toolCall.kind`：read / edit / execute …）。
    *
-   * 为什么值得占这一行的宽度：工具名本身（`read` / `bash`）几乎不携带信息，
-   * 「读的是哪个文件、跑的是哪条命令」才是扫一眼对话流时真正要确认的东西。
+   * 只用来在**工具名认不出**时兜底那颗图标（见 `toolHeadIcon`）：外部 Agent 常常不报
+   * 工具名（落成占位名 `"tool"`），这时图标必须跟标题一样按类别走，否则会出现
+   * 「文字写『读取』、图标是扳手」。内置工具不传。
+   */
+  acpKind?: string;
+  /**
+    * 明细（命令 / 主入参 / 读写的文件）：在标题后显示，宽度不足时视觉截断。
+   *
+    * 宽度优先保住工具名 / 意图，命令与路径是次级信息。
    *
    * 宽度：**不给固定上限**，按内容宽铺开（有位置就完整显示），只有真的超出行宽才由
-   * flex 收缩让位 —— 顺序是 运行态文案 → 明细 → 标题（`shrink` 权重 99 → 99 → 1，
-   * 见 `STATUS_SHRINK`）。**压缩先压右侧**：明细先被压掉，标题只在明细压完还不够时才
-   * 单行截断（`…`，不折行）；最右侧的状态图标 / 停止钮 / 箭头 `shrink-0`，不会被挤出去。
+    * flex 收缩让位；标题保持单行，右侧状态图标 / 停止钮 / 展开按钮固定不收缩。
    *
-   * ⚠️ 别给明细加 `max-w-[55%]` 这类百分比：外层那一行是 `inline-flex`（宽度由内容撑），
-   * 百分比基数跟着内容变，会出现「整行右边还空着、明细已被砍半」；也别加 `min-w-*`，
-   * 短明细会被撑宽，文本后面凭空多一段空白。
+    * 内容和按钮采用独立弹性区域，窄屏时只收缩文本区。
    *
    * 被截断的全文：桌面悬停名字（或明细）出 Tooltip，触屏点名字开全文弹窗；
    * 命令类工具的内容区还会再回声一份（见 PartView）。
    *
-   * ⚠️ 别给标题 `shrink-0` 换「明细不被压缩」：那会让这一行的 min-content 等于整句意图，
-   * 窄屏上把右侧的状态图标 / 停止钮顶出容器（用户报过）。标题保宽度靠的是「权重最低」，
-   * 不是「不参与收缩」。
    */
   detail?: string;
   /**
@@ -299,26 +304,15 @@ function DetailDialog({
 /**
  * 触发行里的「标题 + 明细」两段文本（图标与状态图标之外的所有文字）。
  *
- * 两段**都是单行截断**，但让位顺序相反：先压明细，标题最后才出省略号。
+ * 工具名 / 意图优先保留，明细作为补充内容在空间不足时视觉截断。
  *
- * - 标题是「这一步在干什么」，是扫对话流时唯一必须读懂的那句 —— 所以给它的收缩权重
- *   最低（默认 `shrink`，即 1）：有位置就完整显示，真的放不下才 `truncate` 出 `…`
- *   （全文在 Tooltip / 触屏弹窗里）。
- * - 明细（命令 / 路径）是补充信息：`shrink-[99]`，一挤就先被压掉。它有三处回声
+ * - 标题保持单行，全文保留在 DOM 与 Tooltip 中。
+ * - 明细（命令 / 路径）是补充信息，空间不足时视觉截断。它有多处回声
  *   （Tooltip / 全文弹窗 / 内容区），截断不丢信息。
  *
- * ⚠️ 标题**不要改回 `break-words` 折行**：折行会让这一行高度随内容变，而右侧那组
- * 图标（状态 / 停止 / 箭头）是按首行 `h-5` 对齐的 —— 一行变两行就错位；长 prompt
- * 折成三四行还会把整条对话流撑散（用户报过「工具名换行了」）。行高恒定 = 扫读节奏恒定。
+ * 标题区使用 flex-1/min-w-0；状态、停止和展开按钮不收缩，始终留在卡片内。
  *
- * ⚠️ 也**不要**给标题 `shrink-0` 换「明细不被压缩」：那会让这一行的 min-content 等于
- * 整句意图，窄屏上把右侧图标顶出容器（用户报过）。标题保宽度靠的是「权重最低」，
- * 不是「不参与收缩」。
- *
- * 明细前面那截 `max-w-*` **不要加**：外层那一行是 `inline-flex`（宽度由内容撑到
- * shrink-to-fit，好让状态图标紧跟文字），百分比基数跟着内容变 —— 于是整行右边还空着一大片，
- * 明细已经被砍到一半（用户原话：「明明有位置可以正常显示」）。同理别加 `min-w-*`：短明细
- * （`$ ls`、`.`）会被撑得比文本还宽，文本后面凭空多一段空白，状态图标被推远。
+ * 文本区域可收缩且不设百分比宽度，右侧按钮作为独立固定区。
  *
  * 抽成组件是因为触屏与桌面两条分支渲染的是同一对文本，只是外层交互不同
  * （点开弹窗 / 悬停 Tooltip）。
@@ -342,7 +336,9 @@ function ToolHeadLabel({
 }) {
   return (
     <>
-      <span className="min-w-0 truncate text-sm">{titleText}</span>
+      <span className="min-w-0 max-w-full shrink-0 overflow-x-auto no-scrollbar whitespace-nowrap text-sm leading-5" title={titleText}>
+        {titleText}
+      </span>
       {detail ? (
         detailAction ? (
           /*
@@ -368,12 +364,12 @@ function ToolHeadLabel({
               detailAction.run();
             }}
             // 悬停才出下划线：路径满屏都是，常态带下划线会把这一行读成一排链接
-            className="min-w-0 shrink-[99] cursor-pointer truncate font-mono text-xs transition-colors hover:text-foreground hover:underline focus-visible:text-foreground focus-visible:underline focus-visible:outline-none"
+             className="min-w-0 flex-1 cursor-pointer overflow-x-auto no-scrollbar whitespace-nowrap font-mono text-xs transition-colors hover:text-foreground hover:underline focus-visible:text-foreground focus-visible:underline focus-visible:outline-none"
           >
             {detail}
           </span>
         ) : (
-          <span className="min-w-0 shrink-[99] truncate font-mono text-xs">{detail}</span>
+           <span className="min-w-0 flex-1 overflow-x-auto no-scrollbar whitespace-nowrap font-mono text-xs">{detail}</span>
         )
       ) : null}
       {/* 增删行数这类「小结论」跟在明细后面：它不带截断、也不参与让位（`shrink-0` 由渲染方给） */}
@@ -421,18 +417,55 @@ const TOOL_HEAD_ICONS: Record<string, LucideIcon> = {
 };
 
 /**
- * 工具名 → 头部图标；认不出的一律扳手。
+ * ACP 的 `kind` → 头部图标（**只在工具名认不出时兜底**）。
  *
- * 导出给过程分组的抬头用（`TurnStepGroup` 的 `kind + toolName`）：那里与这里必须是**同一颗**，
- * 否则展开前后（组抬头 / 组内的卡）同一步会换图标。
+ * 外部 Agent（ACP）经常**只报类别、不报工具名**：`acp.ts` 那边拿不到 `name` 时就落成占位名
+ * `"tool"`，真正的信息全在 `kind` 里（`read` / `edit` / `execute` …，协议字段名
+ * `toolCall.kind`，前端叫 `acpKind`）。
+ *
+ * 文案早就按它兜底了（`parts.ts` 的 `toolCardTitle`：`"tool" + read` → 「读取」），
+ * 但图标只看工具名 —— 于是出现过「文字写着『读取』、图标却是扳手」。这里补上同一条
+ * 兜底链：**工具名 → ACP 类别 → 扳手**，两边口径一致。
+ *
+ * 与 `TOOL_HEAD_ICONS` 用同一套字形：`read` 就是内置 `read` 的那份文件、`execute` 就是
+ * 终端，扫对话流时内置工具与外部 Agent 的同一种动作长得一样。
  */
-export function toolHeadIcon(toolName: string): LucideIcon {
-  return TOOL_HEAD_ICONS[toolName] ?? WrenchIcon;
+const ACP_KIND_ICONS: Record<string, LucideIcon> = {
+  read: FileTextIcon,
+  edit: FilePenIcon,
+  delete: FileXIcon,
+  move: FileSymlinkIcon,
+  search: SearchIcon,
+  execute: SquareTerminalIcon,
+  fetch: GlobeIcon,
+  think: BrainIcon,
+  switch_mode: ArrowRightLeftIcon,
+};
+
+/**
+ * 工具名 + ACP 类别 → 头部图标；认不出的一律扳手。
+ *
+ * 顺序是**工具名优先、类别兜底**：
+ * - 内置工具（`bash` / `read` / 派活 `agent-*` …）只靠名字，图标一个都不变；
+ * - 外部 Agent 报了 `name` 且命中表时照名字走（不同 agent 可能复用 `read` 之类的名字）；
+ * - 名字认不出（多半是占位名 `"tool"` 或各家自己的命名）再看 `acpKind`，最后才扳手。
+ *   ⚠️ 别把顺序倒过来：`kind` 是粗类别，命中它会把 `bash`、派活卡这些各有专门字形的
+ *   工具压成「一类一个图标」。
+ *
+ * 导出给过程分组的抬头用（`TurnStepGroup` 的 `kind + toolName + acpKind`）：那里与这里
+ * 必须是**同一颗**，否则展开前后（组抬头 / 组内的卡）同一步会换图标。
+ */
+export function toolHeadIcon(toolName: string, acpKind?: string | null): LucideIcon {
+  return (
+    TOOL_HEAD_ICONS[toolName] ??
+    (acpKind ? ACP_KIND_ICONS[acpKind] : undefined) ??
+    WrenchIcon
+  );
 }
 
 /** `tool-<工具名>` → 头部图标；不是工具类型（`dynamic-tool` 之类）也退到扳手 */
-function toolTypeIcon(type: string): LucideIcon {
-  return toolHeadIcon(type.startsWith("tool-") ? type.slice("tool-".length) : type);
+function toolTypeIcon(type: string, acpKind?: string | null): LucideIcon {
+  return toolHeadIcon(type.startsWith("tool-") ? type.slice("tool-".length) : type, acpKind);
 }
 
 export const ToolHeader = ({
@@ -440,6 +473,7 @@ export const ToolHeader = ({
   title,
   type,
   state,
+  acpKind,
   detail,
   detailAction,
   detailExtra,
@@ -463,8 +497,7 @@ export const ToolHeader = ({
   // 常规字重，hover 整体提亮 —— 图标和标题都不带自己的颜色类，靠继承跟随 hover 变化。
   //
   // 标题 + **明细**同排：「这一步干什么」（意图 / 工具名）后面紧跟「对谁干的」（命令 / 文件）。
-  // 两段都单行截断、**不设宽度上限**（行是 shrink-to-fit，百分比会误伤，见 `ToolHeadLabel`）：
-  // 先压明细、标题最后才省略，让位顺序与理由见 `STATUS_SHRINK`。
+  // 标题保持单行，优先收缩明细；右侧操作区独立保留。
   // 明细全文在 Tooltip（桌面）/ 全文弹窗（触屏）里；命令类工具的内容区还会再回声一份
   // （见 PartView 的 `renderBuiltinDirect` / `renderAcpDirect`）。
   // 头部外壳：触发行 + 可选的停止钮（平级，见 ToolHeaderProps.onStop 的说明）。
@@ -478,8 +511,8 @@ export const ToolHeader = ({
    * click —— 触屏上「点标题看完整命令」会连带失效。
    */
   const titleText = title ?? type.split("-").slice(1).join("-");
-  /** 头部那颗图标：命令类工具是终端，其余是扳手（见 `TOOL_HEAD_ICONS`） */
-  const HeadIcon = toolTypeIcon(type);
+  /** 头部那颗图标：工具名优先、ACP 类别兜底、认不出才扳手（见 `toolHeadIcon`） */
+  const HeadIcon = toolTypeIcon(type, acpKind);
   /**
    * 标题能不能点开全文弹窗。
    *
@@ -497,21 +530,29 @@ export const ToolHeader = ({
   const trigger = (
     <CollapsibleTrigger
       className={cn(
-        "flex min-w-0 max-w-full flex-col items-start gap-1 rounded-md text-left text-muted-foreground transition-colors hover:text-foreground",
+        // ⚠️ 这里是 `flex-initial`（**不**伸满剩余宽度）而不是 `flex-1 basis-0`：
+        // 伸满的话，头部的「调用中 / 停止 / 展开」永远被顶到卡片最右边，中间空出一大片 ——
+        // 用户的要求是「没有明细（命令 / 路径）时就紧跟着工具名」。明细很长时它照旧
+        // 靠 `min-w-0` + 内层 `max-w-full` 收缩截断，右侧那组不会被挤出卡片。
+        "flex min-w-0 flex-initial flex-col items-start gap-1 rounded-md text-left text-muted-foreground transition-colors hover:text-foreground",
         className
       )}
       {...props}
     >
-      <span className="inline-flex min-w-0 max-w-full items-center gap-2">
+      {/*
+       * `items-center`：图标（16px）、标题（`text-sm` / 20px 行高）、状态图标都按**同一
+       * 条中线**排。用 `items-start` 时 16px 的图标会比文字高 2px，右侧那组按钮居中在
+       * 24px 的盒子里又低 4px，整行看着「左边偏高、右边偏低」。
+       */}
+      {/*
+       * ⚠️ `w-full` 不能去掉：触发器是 `items-start`（不拉伸子项），少了它这一行会按
+       * **max-content** 铺开 —— 长标题 / 长命令下比触发器还宽，整条消息横向出现滚动
+       * （用户报的「工具调用组内开始横向滚动」）。
+       */}
+      <span className="flex w-full min-w-0 items-center gap-2">
         <HeadIcon className="size-4 shrink-0" />
         {/*
-         * 标题**不截断**（宽度不够就折行），明细**单行截断** —— 两段的待遇与理由见
-         * `ToolHeadLabel`。核心是：「这一步干什么」是扫对话流时唯一必须读懂的那句，
-         * 宁可这一行高一点，也不出省略号。
-         *
-         * ⚠️ 也**不要**给标题 `shrink-0` 换「一定不被压缩」：那会让这一行的 min-content
-         * 等于整句意图，手机窄屏下整行比容器还宽、右侧状态图标 / 停止钮被顶到外面（用户报过）。
-         * 标题要的是「不被省略」，靠折行做到，不靠「不被压缩」。
+           * 标题保持单行；明细独立横向滚动，不用省略号。
          */}
         {titleOpenable ? (
           // 触屏：没有 hover，点名字（或明细）开全文弹窗 —— 弹窗里标题与明细都在。
@@ -533,7 +574,7 @@ export const ToolHeader = ({
               event.stopPropagation();
               openDetail();
             }}
-            className="flex min-w-0 max-w-full cursor-pointer items-center gap-2 transition-colors hover:text-foreground"
+             className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 transition-colors hover:text-foreground"
           >
             <ToolHeadLabel
               titleText={titleText}
@@ -546,7 +587,7 @@ export const ToolHeader = ({
           <Tooltip delayDuration={100}>
             <TooltipTrigger asChild>
               {/* 名字与明细一起做触发区：被截断的往往是明细，悬停它同样该出全文 */}
-              <span className="flex min-w-0 max-w-full items-center gap-2">
+               <span className="flex min-w-0 flex-1 items-center gap-2">
                 <ToolHeadLabel
                   titleText={titleText}
                   detail={detail}
@@ -603,13 +644,16 @@ export const ToolHeader = ({
    * （见 REVEAL_ON_HOVER_ARROW）。`min-w-0` 留给触发器：长标题 / 长明细自己折行、
    * 截断，不把右侧那组顶出容器（手机窄屏踩过）。
    *
-   * 右侧那组 `h-5`：与首行（`text-sm` 的 20px 行高）等高居中 —— 标题折成多行时，
-   * 停止钮和箭头仍贴着第一行，不会漂到整块中间去。停止钮自己 `h-6` 会溢出这 20px
-   * 上下各 2px，但那只影响绘制、不撑高布局（`overflow` 默认可见）。
+   * 右侧那组 `h-5`：与首行（`text-sm` 的 20px 行高）等高居中（见下面那处 className）。
    */
   const head = (
     <div className="group/row flex min-w-0 max-w-full items-start gap-2">
       {trigger}
+      {/*
+       * `h-5`（20px = 首行行高）+ `items-center`：停止钮 / 箭头与左边文字**同一中线**。
+       * 曾经是 `pt-0.5` 又没有固定高度 —— 24px 的按钮在 20px 的行里被往下推了 4px，
+       * 看着「右侧整组偏低」。按钮比 20px 高出的那 2px 只影响绘制（不裁、不撑高布局）。
+       */}
       <div className="flex h-5 shrink-0 items-center gap-2">
         {onStop ? (
           <Tooltip delayDuration={100}>
@@ -668,7 +712,7 @@ export type ToolContentProps = ComponentProps<typeof CollapsibleContent>;
 export const ToolContent = ({ className, ...props }: ToolContentProps) => (
   <CollapsibleContent
     className={cn(
-      "data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 text-popover-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
+      "min-w-0 max-w-full overflow-hidden data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 text-popover-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
       className
     )}
     {...props}
@@ -745,14 +789,14 @@ export const ToolOutput = ({
   }
 
   return (
-    <div className={cn("space-y-2 p-4", className)} {...props}>
+    <div className={cn("min-w-0 max-w-full space-y-2 overflow-hidden p-4", className)} {...props}>
       <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
         {errorText ? "Error" : "Result"}
       </h4>
       <div
         className={cn(
           // 横向内容（长命令 / 宽表格）本来就要滚：滚条藏掉，手势与滚轮照常
-          "overflow-x-auto no-scrollbar rounded-md text-xs [&_table]:w-full",
+          "min-w-0 max-w-full overflow-x-auto no-scrollbar rounded-md text-xs [&_table]:w-full",
           errorText
             ? "bg-destructive/10 text-destructive"
             : "bg-muted/50 text-foreground"

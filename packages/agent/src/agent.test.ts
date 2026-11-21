@@ -355,7 +355,65 @@ describe('runAgent 的失败提示', () => {
    *
    * 这里走真实链路（`runAgent` + 假时钟），钉住「工具执行的 30 秒不进分母」。
    */
-   describe('TurnUsage.tps · 端到端', () => {
+describe('上下文圆环 · 收尾回归', () => {
+  it('自定义 profile 也装配 todowrite，而不是只在文件工具 profile 中出现', async () => {
+    streamText.mockImplementation((options) => {
+      expect(options.tools).toHaveProperty('todowrite')
+      return fakeStream([{ type: 'text-delta', text: 'done' },
+        { type: 'finish-step', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+        { type: 'finish', finishReason: 'stop', totalUsage: { inputTokens: 1, outputTokens: 1 } }])
+    })
+    await runAgent(baseOptions(() => {}))
+  })
+
+  it('再次发送时沿用上轮匹配的测量，只增加新消息而不切回偏小的全量估算', async () => {
+    streamText.mockImplementation((options) => ({
+      fullStream: (async function* () {
+        await options.prepareStep({ messages: options.messages, stepNumber: 0 })
+        const usage = { inputTokens: 50000, outputTokens: 20 }
+        await options.onStepEnd({ response: { messages: [{ role: 'assistant', content: [{ type: 'text', text: 'done' }] }] }, usage })
+        yield { type: 'text-delta', text: 'done' }
+        yield { type: 'finish-step', finishReason: 'stop', usage }
+        yield { type: 'finish', finishReason: 'stop', totalUsage: usage }
+      })()
+    }))
+    const first = await runAgent(baseOptions(() => {}))
+    const events: AgentStreamEvent[] = []
+    await runAgent({ ...baseOptions((event) => events.push(event)), history: [
+      { id: 'a', role: 'assistant', createdAt: 1, parts: [{ type: 'text', text: 'done' }], usage: first.usage },
+      { id: 'u', role: 'user', createdAt: 2, parts: [{ type: 'text', text: '继续' }] }
+    ] })
+    const usage = events.find((event) => event.type === 'context-usage')
+    expect(usage).toMatchObject({ used: 50022 })
+  })
+  for (const complete of [true, false]) {
+    it(`最后一步${complete ? '完整' : '缺输入'} usage 不丢工具结果或骤降到输出量`, async () => {
+      streamText.mockImplementation((options) => ({
+        fullStream: (async function* () {
+          await options.prepareStep({ messages: options.messages, stepNumber: 0 })
+          const response = [
+            { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'c', toolName: 'read', input: {} }] },
+            { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'c', toolName: 'read', output: { type: 'text', value: '中'.repeat(4000) } }] }
+          ]
+          const usage = complete ? { inputTokens: 10000, outputTokens: 20 } : { outputTokens: 20 }
+          await options.onStepEnd({ response: { messages: response }, usage })
+          yield { type: 'text-delta', text: 'done' }
+          yield { type: 'finish-step', finishReason: 'stop', usage }
+          yield { type: 'finish', finishReason: 'stop', totalUsage: usage }
+        })()
+      }))
+      const events: AgentStreamEvent[] = []
+      const result = await runAgent(baseOptions((event) => events.push(event)))
+      expect(result.usage?.contextTokens).toBeGreaterThanOrEqual(4000)
+      if (complete) expect(result.usage?.contextTokens).toBe(14020)
+      const finish = events.findLast((event) => event.type === 'finish')
+      if (finish?.type !== 'finish') throw new Error('missing finish')
+      expect(finish.usage?.contextTokens).toBe(result.usage?.contextTokens)
+    })
+  }
+})
+
+describe('TurnUsage.tps · 端到端', () => {
     it('工具执行的 30 秒空窗不计入 TPS 分母，整轮耗时仍按墙钟报', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(0)

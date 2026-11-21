@@ -10,7 +10,6 @@
  * - 事件仍产出桌面端同款的 `AgentStreamEvent`，所以三个端的消息渲染逻辑可以一致。
  */
 import {
-  calculateContextTokens,
   compactHistory,
   compactModelMessages,
   estimateBaseTokens,
@@ -18,6 +17,8 @@ import {
   contextUsed,
   contextEnvironmentDigest,
   contextMessagesDigest,
+  measuredContextTokens,
+  reuseContextMeasurement,
   rememberBaseTokens,
   defaultContextWindowFromEnv,
   isContextOverflowError,
@@ -83,7 +84,7 @@ import type {
   TurnUsage
 } from '@fizz/contracts/types'
 import type { SkillInfo } from '@fizz/skills'
-import { buildHistoryTools } from '@fizz/tools'
+import { buildHistoryTools, buildTodoWriteTool } from '@fizz/tools'
 
 // 这两个形状下沉到了 contracts（@fizz/acp 的 acp.ts 也要用），这里转出保持原公开 API 不变
 export type { AgentConfirmInput, RunAgentResult } from '@fizz/contracts/types'
@@ -1201,6 +1202,11 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
     ]), {
       origin: 'builtin', source: 'conversation-history'
     })
+  }, {
+    // Session task tracking is available in every profile, including custom assemblies.
+    plugin: rawToolsPlugin('opencode-todowrite', { todowrite: buildTodoWriteTool() }, {
+      origin: 'builtin', source: 'opencode-todowrite'
+    })
   }]
   /** 挂载后的静态部分：`hooks` / `ctx` 恒存在（由本轮自建，收尾统一卸载） */
   const agentSetup = await mountAssembly(assembly, assemblyDeps)
@@ -1231,7 +1237,11 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
         tools: toolsForModel
       }
   const baseTokens = await estimateBaseTokens(setupForModel.instructions, toolsForModel)
-  const environmentDigest = await contextEnvironmentDigest(effectiveModel, setupForModel.instructions, toolsForModel)
+  const environmentDigest = await contextEnvironmentDigest(
+    effectiveModel,
+    `${setupForModel.instructions}\n${JSON.stringify(subagentCaps ?? null)}`,
+    toolsForModel
+  )
   // 记下来给手动压缩那条路兜底（它不建 agent，算不出 base —— 不补就差一整个 base）
   if (opts.conversationId) rememberBaseTokens(opts.conversationId, baseTokens)
 
@@ -1292,23 +1302,14 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
     let errorSent = false
     let rawUsage: RawUsage | null = null
     /**
-     * **最后一次请求**的 usage（不是整轮累计）。
-     *
-     * pi 的 `calculateContextTokens` 取「最后一条助手消息的 usage」—— 消息上的 usage 就是
-     * 那次请求的 input + output。多步循环里只有最后一步的 input 才是「当前上下文有多大」，
-     * 累计值会把每一步都加一遍。
-     */
-    let lastStepUsage: RawUsage | null = null
-    /**
      * 上一次**轮中压缩**之后的大小（`afterTokens`）。只用于冷却：见
      * `onIterationComplete` 里那段注释。每次「尝试」各一份 —— 重试是从全量历史
      * 重新起跑，上一份压缩结果已经不在了。
      */
     let midTurnCompactAfter: number | null = null
-    /** 收到几个带 usage 的 finish chunk：只有一个时才敢把「整轮累计」当单步用 */
-    let finishChunks = 0
     /** 本轮**最后一次请求**的上下文大小（见 `TurnUsage.contextTokens`） */
     let contextTokens: number | undefined
+    let requestContext: { messages: EngineMessages; used: number } | undefined
     try {
       // ⚠️ 构造 Agent 也要放进 try：`resolveModel` 会因为「模型配置不对」这类问题抛错，
       // 放在外面会让整轮**一个事件都不发**（前端只能干等，日志里也看不到原因）
@@ -1520,6 +1521,14 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
            * 「工具跑完但没下文」的空回复），不如强制它把结论写出来。
            */
           const checkpoint = (value: EngineMessages) => {
+            // 只在前缀未改写时保留上次测量的校准差额；压缩后用新数组重新估算。
+            const old = requestContext
+            const retained = old && value.length >= old.messages.length &&
+              contextMessagesDigest(value.slice(0, old.messages.length)) === contextMessagesDigest(old.messages)
+            const used = retained
+              ? old.used + estimateMessagesTokens(value.slice(old.messages.length))
+              : baseTokens + estimateMessagesTokens(value)
+            requestContext = { messages: [...value], used }
             // `prepareStep` 也会在首个请求前以 stepNumber=0 调用；只有已完成至少一步时，
             // 当前消息才是可安全续跑的检查点，原始输入不能让半截首轮输出误标为 resume。
             if (stepNumber > 0) {
@@ -1547,12 +1556,21 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
            * （刚压缩完 / 第一步）估算兜住。
            */
           const estimatedAll = baseTokens + estimateMessagesTokens(next)
-          const measuredUsage = normalizeUsage(measurement?.usage)
-          const realWithTail = measuredUsage && measurement &&
+          const measuredTokens = measuredContextTokens(measurement?.usage)
+          const priorMeasurement = opts.history.findLast((m) => m.role === 'assistant' && m.usage?.contextMeasurement)?.usage?.contextMeasurement
+          const priorTokens = stepNumber === 0
+            ? reuseContextMeasurement(next, environmentDigest, priorMeasurement) : undefined
+          const realWithTail = measuredTokens !== undefined && measurement &&
             contextMessagesDigest(measurement.messages) === contextMessagesDigest(next)
-            ? calculateContextTokens(measuredUsage) + estimateMessagesTokens(measurement.toolMessages)
-            : 0
-          const observedContextTokens = contextUsed(realWithTail, estimatedAll)
+            ? measuredTokens + estimateMessagesTokens(measurement.toolMessages)
+            : priorTokens ?? 0
+          const baseline = requestContext
+          const calibrated = baseline && next.length >= baseline.messages.length &&
+            contextMessagesDigest(next.slice(0, baseline.messages.length)) === contextMessagesDigest(baseline.messages)
+            ? baseline.used + estimateMessagesTokens(next.slice(baseline.messages.length)) : estimatedAll
+          const observedContextTokens = contextUsed(realWithTail, calibrated)
+          requestContext = { messages: [...next], used: observedContextTokens }
+          contextTokens = observedContextTokens
           emitEvent({
             type: 'context-usage',
             used: observedContextTokens,
@@ -1594,11 +1612,6 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
                 }
                 next = compactedMid.messages
                 midTurnCompactAfter = compactedMid.compressed.afterTokens
-                /**
-                 * `lastStepUsage` 是**压缩前**那一步的真实 usage，压缩后已经不代表当前
-                 * 上下文了。作废它，让下一个边界退回逐条估算，直到拿到新的真实值。
-                 */
-                lastStepUsage = null
                 opts.onContextCompressed?.({
                   ...compactedMid.compressed,
                   ...(compactedMid.summary ? { summary: compactedMid.summary } : {})
@@ -1853,12 +1866,12 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
       // 收尾：流跑完 / 被中止都会 resolve（引擎在 finally 里收尾，不会悬挂）
       const finished = await engine.done
       const measured = finished.contextMeasurement
-      const measuredUsage = normalizeUsage(measured?.usage)
-      contextMeasurement = measured && measuredUsage
+      const measuredTokens = measuredContextTokens(measured?.usage)
+      contextMeasurement = measured && measuredTokens !== undefined
         ? {
-            environment: await contextEnvironmentDigest(effectiveModel, setupForModel.instructions, engineTools),
+            environment: environmentDigest,
             messages: contextMessagesDigest(measured.messages),
-            usedTokens: calculateContextTokens(measuredUsage) + estimateMessagesTokens(measured.toolMessages)
+            usedTokens: measuredTokens + estimateMessagesTokens(measured.toolMessages)
           }
         : undefined
       /**
@@ -1886,7 +1899,6 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
        */
       if (!rawUsage) {
         rawUsage = normalizeUsage(finished.totalUsage)
-        if (rawUsage) finishChunks = Math.max(finishChunks, 1)
       }
       if (
         !runSignal.aborted &&
@@ -1898,25 +1910,21 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
       }
       // 续跑前那几段白烧的 token 一并计入（finish 帧只报最后一段的话，用户看到的数会少一截）
       rawUsage = mergeRawUsage(carriedUsage, rawUsage)
-      if (!lastStepUsage) {
-        const stepUsage = normalizeUsage(finished.lastStepUsage)
-        if (stepUsage) lastStepUsage = stepUsage
-      }
-      /**
-       * 上下文大小 = **最后一次请求上游真实上报的 input + output**（pi 的
-       * `calculateContextTokens`，见 `context.ts`）。一轮结束时最后一条消息就是助手回复，
-       * 「其后消息」为空，所以不需要再估 tail。
-       *
-       * 不再用 `baseTokens + estimateMessagesTokens` 当显示值：那是本地估的（CJK 加权后
-       * 已经贴近真实，但仍拿不到「上游到底发了多少」），而上游上报的 input 已经把
-       * 系统提示词、工具 schema、缓存命中的部分全算在内了。
-       * 只在拿不到 usage 时才退回估算（上面那个兜底值）。
-       */
-      if (lastStepUsage) {
-        contextTokens = calculateContextTokens(lastStepUsage)
-      } else if (finishChunks === 1 && rawUsage) {
-        // 只有一步 = 累计值就是那一步的值（这一步兜住「只报 totalUsage 的上游」）
-        contextTokens = calculateContextTokens(rawUsage)
+      // 与步骤边界完全同口径。部分 usage 只用于计费，不得把圆环覆盖成输出 token 数。
+      const finalMeasuredTokens = measuredContextTokens(finished.lastStepUsage)
+      const baseline = requestContext
+      const finalEstimate = measured && baseline && measured.messages.length >= baseline.messages.length &&
+        contextMessagesDigest(measured.messages.slice(0, baseline.messages.length)) === contextMessagesDigest(baseline.messages)
+        ? baseline.used + estimateMessagesTokens(measured.messages.slice(baseline.messages.length))
+        : measured ? baseTokens + estimateMessagesTokens(measured.messages) : contextTokens
+      contextTokens = contextMeasurement?.usedTokens ?? (measured ? finalEstimate : finalMeasuredTokens ?? finalEstimate)
+      if (!contextMeasurement && measured && contextTokens !== undefined) {
+        contextMeasurement = {
+          environment: environmentDigest,
+          messages: contextMessagesDigest(measured.messages),
+          usedTokens: contextTokens,
+          estimated: true
+        }
       }
       // 看门狗中止：不是用户主动停止，必须明确告诉用户原因，不能走 aborted 静默收场。
       if (watchdogFired) {

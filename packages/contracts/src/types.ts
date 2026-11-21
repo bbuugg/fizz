@@ -717,7 +717,7 @@ export const CONTAINER_AGENT_TOOL_KEYS: readonly string[] = [
   'glob',
   'grep',
   'bash',
-  'todo',
+  'todowrite',
   'skill',
   'web_fetch',
   'ask'
@@ -977,16 +977,15 @@ export interface TurnUsage {
   /** 命中缓存的输入 tokens */
   cachedInputTokens?: number
   /**
-   * 本轮**最后一次请求**的上下文大小（pi 的 `calculateContextTokens`）。
+    * 本轮结束时的上下文占用：最后一次完整单步 input + output，加其工具结果增量估算。
    *
    * 为什么要跟 `inputTokens` 分开：
    * - `inputTokens` 是上游上报的**整轮累计** —— 多步工具循环里每个 step 都把上下文重发一遍，
    *   累加起来能有真实上下文的好几倍，拿它当「上下文大小」会虚高得离谱；
-   * - `contextTokens` 取的是**最后一次请求**的 `input + output`（上游真实上报，含系统提示词、
-   *   工具 schema 与缓存命中部分），就是输入框圆环显示的数。与 pi 的
-   *   `estimateContextTokens` 同义：后者 = 最后一条带 usage 的助手消息的 usage + 其后消息的估算。
+    * - `contextTokens` 以最后一次完整单步 `input + output`（含系统提示词、工具 schema、
+    *   缓存命中）为基线，再加请求后新增的工具结果；轮中与收尾采用同一口径。
    *
-   * 拿不到上游 usage（一个 finish chunk 都没收到）时才退回本地估算（±20%）。
+    * 缺失输入/输出计数时不视为真值，沿同版本请求基线估算新增量；无基线时全量估算。
    */
   contextTokens?: number
   /** 真实单步用量的适用范围；不匹配时必须重新估算，不能借用旧请求的测量。 */
@@ -995,6 +994,8 @@ export interface TurnUsage {
     messages: string
     /** 请求 + 输出之后的完整消息占用；包含最后一批工具结果的增量估算。 */
     usedTokens: number
+    /** 上游未给完整 usage 时，沿同版本请求基线加新增消息估算。 */
+    estimated?: boolean
   }
   /** 整轮耗时（毫秒）：从发起到结束 */
   durationMs: number
@@ -1099,19 +1100,20 @@ export interface ConversationAutoSummary {
   sourceDigest?: string
 }
 
-/** 待办条目的状态（Agent 的 todo 清单用，见 @fizz/tools 的 todo） */
-export type TodoStatus = 'pending' | 'in_progress' | 'completed'
+/** 任务状态字符串；已知状态由 UI 提供语义展示。 */
+export type TodoStatus = string
 
 /**
  * 待办清单里的一条（Agent 自己维护、边做边更新的任务项）。
  *
  * 它是**工具结果的形状**、会随消息历史一起落盘（渲染端据此画勾选清单），
- * 不是独立存储 —— 见 `todo` 与 `PartView` 的 todo 分支。
+ * 不是独立存储 —— 见 `todowrite` 与 PartView 的任务清单分支。
  */
 export interface TodoItem {
   /** 要做的事（一句话、可执行；顺序即执行顺序） */
   content: string
   status: TodoStatus
+  priority?: string
 }
 
 /**

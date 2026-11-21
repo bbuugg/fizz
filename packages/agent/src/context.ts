@@ -147,6 +147,36 @@ export function calculateContextTokens(usage: {
   return usage.totalTokens || usage.inputTokens + usage.outputTokens
 }
 
+/** 计费可保留部分 usage，但上下文真值必须包含完整输入/输出，不能把缺失当 0。 */
+export function measuredContextTokens(usage: unknown): number | undefined {
+  if (!usage || typeof usage !== 'object') return undefined
+  const u = usage as Record<string, unknown>
+  const input = u.inputTokens ?? u.promptTokens
+  const output = u.outputTokens ?? u.completionTokens
+  if (typeof input !== 'number' || !Number.isFinite(input) || input <= 0 ||
+      typeof output !== 'number' || !Number.isFinite(output) || output < 0) return undefined
+  return input + output
+}
+
+/** 首步只复用实际相同的历史前缀；压缩、编辑、切模型后自然失效，允许真实下降。 */
+export function reuseContextMeasurement(
+  messages: ModelMessage[], environment: string,
+  measurement: import('@fizz/contracts/types').TurnUsage['contextMeasurement']
+): number | undefined {
+  if (!measurement || measurement.environment !== environment ||
+      !Number.isFinite(measurement.usedTokens) || measurement.usedTokens <= 0) return undefined
+  // 新请求的尾部可以有连续用户消息，只在用户边界尝试，不拆工具调用组。
+  let cut = messages.length
+  while (cut > 0) {
+    if (contextMessagesDigest(messages.slice(0, cut)) === measurement.messages) {
+      return measurement.usedTokens + estimateMessagesTokens(messages.slice(cut))
+    }
+    if (messages[cut - 1]?.role !== 'user') break
+    cut -= 1
+  }
+  return undefined
+}
+
 /**
  * 一条助手消息代表的上下文大小（pi 的 `getAssistantUsage` + `calculateContextTokens`）。
  *

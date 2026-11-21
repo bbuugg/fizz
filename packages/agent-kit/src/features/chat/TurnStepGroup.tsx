@@ -55,11 +55,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@fizz/ui/tooltip'
 import { ShimmerLabel } from '@fizz/agent-kit/shared/ai-elements/shimmer-label'
 import { WorkBars } from '@fizz/agent-kit/shared/ai-elements/work-bars'
 import { ReasoningPreview } from '@fizz/agent-kit/shared/ai-elements/reasoning'
-import { toolHeadIcon } from '@fizz/agent-kit/shared/ai-elements/tool'
+import { ToolContent, toolHeadIcon } from '@fizz/agent-kit/shared/ai-elements/tool'
 import { useConversationOptional } from '@fizz/agent-kit/shared/ai-elements/conversation'
 import {
   Collapsible,
-  CollapsibleContent,
   CollapsibleTrigger
 } from '@fizz/ui/collapsible'
 import { REVEAL_ON_HOVER_ARROW } from '@fizz/agent-kit/shared/lib/hover-reveal-arrow'
@@ -73,6 +72,7 @@ export function TurnStepGroup({
   live = false,
   kind,
   toolName,
+  acpKind,
   onStop,
   children
 }: {
@@ -95,6 +95,12 @@ export function TurnStepGroup({
    * （`toolHeadIcon`），展开 / 收起同一步不换字形；不给就退回扳手。
    */
   toolName?: string
+  /**
+   * 尾 part 的 ACP 工具类别（`toolCall.kind`）。外部 Agent 常常不报工具名（占位名
+   * `"tool"`），抬头要跟组内那张卡一样按类别取图标 —— 否则收起的小组是一排扳手，
+   * 点开才发现里面有读文件 / 跑命令（用户报过）。
+   */
+  acpKind?: string
   /**
    * 抬头右格的内容预览（思考最后一行 / 命令 / 路径）。`undefined` = 只显示名字。
    * 展开状态下同样不显示（内容已经在下面展开，见 `showPreview`）。
@@ -199,7 +205,7 @@ export function TurnStepGroup({
    */
   const KindIcon =
     kind === 'tool'
-      ? (toolName ? toolHeadIcon(toolName) : Wrench)
+      ? (toolName ? toolHeadIcon(toolName, acpKind) : Wrench)
       : kind === 'reasoning'
         ? Brain
         : kind === 'compaction'
@@ -325,7 +331,7 @@ export function TurnStepGroup({
           </CollapsibleTrigger>
         </div>
       </div>
-      <CollapsibleContent className="pt-2">
+      <ToolContent className="pt-2">
         {/* 限高 + 内部滚动（口径与 `ReasoningContent` 一致，但高度再矮一档 `max-h-64`）：
             折叠组里可能有十几张工具卡，全铺开会把抬头顶出视野；限高后抬头恒在组顶，
             内容在框内自己滚。
@@ -345,7 +351,7 @@ export function TurnStepGroup({
         >
           <div ref={contentRef} className="flex flex-col gap-2">{children}</div>
         </div>
-      </CollapsibleContent>
+      </ToolContent>
     </Collapsible>
   )
 }

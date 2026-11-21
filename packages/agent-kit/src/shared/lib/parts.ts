@@ -517,7 +517,8 @@ export const TOOL_LABELS: Record<string, string> = {
   read_terminal_output: '读取终端输出',
   send_keys: '发送按键',
   list_terminal_sessions: '列出终端会话',
-  // Agent 自己维护的待办清单（每次整份重发；渲染端画成勾选清单）
+  // Agent 维护的任务清单（`todo` 是 2026-11 之前的旧名，老会话历史里还在用，别删）
+  todowrite: '更新待办清单',
   todo: '更新待办清单',
   // 全局只读工具：不依赖工作区，任何会话（含未绑定目录的「任务」会话）都可用
   web_fetch: '抓取网页',
@@ -695,7 +696,13 @@ export function toolCardHead(
    * 不只是「让模型填」，否则关掉开关后老会话还是满屏意图，看起来像没生效。
    */
   showIntent = true
-): { title: string; detail?: string } {
+): { title: string; detail?: string; acpKind?: string } {
+  /**
+   * 类别一并带出去：卡片头部用它兜底图标（工具名认不出时按 `read` / `edit` … 取字形）。
+   * 放在这个返回值里而不是让每个调用点自己传 —— 卡片的标题与图标必须同一来源，
+   * 漏一个就会出现「文字写『读取』、图标是扳手」（用户报过）。
+   */
+  const acpKind = part.acpKind
   // 派活卡：用「子任务 · <显示名>」。自定义子智能体的名字随 delegation 落盘，
   // 所以定义被删掉之后历史卡片仍显示当时的名字，而不是 `agent-custom-1a2b3c4d`。
   const delegationName = part.toolName.startsWith('agent-') ? part.delegation?.name : undefined
@@ -703,22 +710,24 @@ export function toolCardHead(
     ? t('子任务 · {name}', { name: delegationName })
     : toolCardTitle(part.toolName, part.acpKind)
   const intent = showIntent ? toolIntentOf(part) : ''
-  if (!intent) return detail ? { title: label, detail } : { title: label }
+  const kind = acpKind ? { acpKind } : {}
+  if (!intent) return detail ? { title: label, detail, ...kind } : { title: label, ...kind }
   const extra = detail?.trim()
-  return extra ? { title: intent, detail: `${label} · ${extra}` } : { title: intent, detail: label }
+  return extra
+    ? { title: intent, detail: `${label} · ${extra}`, ...kind }
+    : { title: intent, detail: label, ...kind }
 }
 
 /** 把多行入参（命令 / 脚本 / prompt）压成一行：抬头右侧只有一行的高度 */
-function oneLine(text: string, max = 160): string {
-  const line = text.replace(/\s+/g, ' ').trim()
-  return line.length > max ? `${line.slice(0, max)}…` : line
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
 }
 
 /**
  * 工具调用的**主入参明细**：命令 / 路径 / 搜索词 / 派活 prompt（一行）。
  *
  * 与 `ToolHeader` 的 `detail` 是两个用途：那个是卡片自己的明细位，由 `PartView` 按分支
- * 各算各的（todo 是「3/5 已完成」这种摘要）；这里只服务**过程分组抬头右侧那一行**——
+ * 各算各的（todowrite 是「1/5 tasks」这种摘要）；这里只服务过程分组抬头右侧——
  * 要求各工具口径一致，而且**入参还在流式生成时也认得**（`input` 还没收口，只能从
  * `inputText` 的半截 JSON 里抠）。
  *
@@ -745,6 +754,13 @@ export function toolDetailOf(part: ToolCallPart): string | undefined {
     return undefined
   }
   const pick = (keys: string[]): string | undefined => fromInput(keys) ?? fromPartial(keys)
+
+  if (part.toolName === 'todowrite' || part.toolName === 'todo') {
+    const todos = Array.isArray(input.todos) ? input.todos : []
+    const done = todos.filter((item) => item && typeof item === 'object' &&
+      (item as { status?: unknown }).status === 'completed').length
+    return todos.length ? `${done}/${todos.length} tasks` : undefined
+  }
 
   const command = pick(['command', 'cmd'])
   if (command) return oneLine(`$ ${command}`)

@@ -346,3 +346,58 @@ describe('MCP server 保存', () => {
     expect(cleared.env).toBeUndefined()
   })
 })
+/**
+ * 打开会话不该让它在侧栏里换位置（回归测试）。
+ *
+ * ## 防的是什么
+ *
+ * 用 ACP 会话时，点开侧栏里的某一条（一条消息都没发）它就跳到列表最上面。
+ *
+ * 链路：打开 ACP 会话会走 `session/load` 回放，回放后的 `refreshAcpSessionState`
+ * 把 agent 广告的 Session Modes / 思考档合并回会话配置 —— `setAcpSessionState` 里
+ * 顺手写了 `updatedAt: Date.now()`，而侧栏按 `updatedAt` 倒序排。于是「看一眼」
+ * 等于「活跃了一次」。
+ *
+ * 这里钉住：同步运行态不改 `updatedAt`，且值没变时连落盘都不做。
+ */
+describe('ACP 运行态同步 · 不动 updatedAt', () => {
+  const modes = (current: string) => ({
+    available: [
+      { id: 'build', name: 'Build' },
+      { id: 'plan', name: 'Plan' }
+    ],
+    current
+  })
+
+  async function acpConversation(): Promise<string> {
+    const ws = await domain.addWorkspace({ path: dataDir })
+    const conv = domain.saveConversation({
+      workspaceId: ws.id,
+      title: 'acp 会话',
+      backend: 'acp',
+      configId: 'cfg-1',
+      acpSessionId: 'sess-1'
+    })
+    return conv.id
+  }
+
+  it('写入新的档位：acpModes 生效，但 updatedAt 原样不动', async () => {
+    const id = await acpConversation()
+    const before = domain.getConversation(id)!
+
+    const next = domain.setAcpSessionState(id, { acpModes: modes('plan') })
+
+    expect(next.acpModes?.current).toBe('plan')
+    expect(next.updatedAt).toBe(before.updatedAt)
+  })
+
+  it('值没变：直接返回原对象（不落盘、不标脏）', async () => {
+    const id = await acpConversation()
+    domain.setAcpSessionState(id, { acpModes: modes('plan') })
+    const before = domain.getConversation(id)!
+
+    const next = domain.setAcpSessionState(id, { acpModes: modes('plan') })
+
+    expect(next).toBe(before)
+  })
+})

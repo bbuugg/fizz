@@ -29,6 +29,7 @@
  */
 export * from './tools'
 export * from './history'
+export * from './todowrite'
 export * from './acp-tools'
 export * from './ripgrep'
 export * from './backend'

@@ -175,7 +175,13 @@ describe('turnStepPreview（右格：这一步的内容）', () => {
   it('没有可看的内容就是 undefined（抬头只留名字）', () => {
     expect(turnStepPreview([])).toBeUndefined()
     expect(turnStepPreview([reasoning('   ')])).toBeUndefined()
-    expect(turnStepPreview([call('todo', { input: { todos: [] } })])).toBeUndefined()
+    expect(turnStepPreview([call('todowrite', { input: { todos: [] } })])).toBeUndefined()
+  })
+
+  it('长命令保留完整文本以支持横向滚动查看', () => {
+    const command = `node ${'long-file-name'.repeat(30)}.js`
+    expect(turnStepPreview([call('bash', { input: { command } })]))
+      .toEqual({ text: `$ ${command}`, lineKey: -1 })
   })
 })
 

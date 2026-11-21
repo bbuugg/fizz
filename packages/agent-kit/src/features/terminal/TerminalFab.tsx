@@ -21,12 +21,19 @@
  * - **触摸手势必须就地截断**：终端容器上挂着自实现的单指滚动
  *   （`shared/lib/terminal-touch-scroll.ts`），拖球时若不拦，终端会跟着一起滚，指针还会被
  *   它 `preventDefault` 掉的 touchmove 变成 `pointercancel`。React 合成事件挂在根节点上，
- *   挡不住容器上的原生监听 —— 所以用**原生监听**（见下面的 effect）。
+ *   挡不住容器上的原生监听 —— 所以用**原生监听**，挂在球的回调 ref 上（见 `setBallNode`）。
  * - **位置记在本机**（`fizz.web.terminalFabPos`，沿用 `fizz.web.*` 约定）：全局一份，
  *   所有终端标签共用；容器尺寸变了就按当前方向重新贴边。
  * - **测量层必须无条件渲染**（见下面 `pos` 那段注释里的死锁）—— 否则球根本不出现。
  */
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent
+} from 'react'
 import { Ellipsis } from 'lucide-react'
 import { LiquidGlassButton } from '@fizz/ui/liquid-glass'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
@@ -177,7 +184,6 @@ function boxFits(point: Point, width: number, height: number): boolean {
 export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
   /** 铺满终端的测量 / 定位层（`pointer-events-none`，只有球与动作托盘可点） */
   const hostRef = useRef<HTMLDivElement>(null)
-  const ballRef = useRef<HTMLButtonElement>(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
   /** 球的左上角（相对容器）；null = 还没量到尺寸 */
   const [pos, setPos] = useState<Point | null>(null)
@@ -203,8 +209,8 @@ export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
     moved: boolean
   } | null>(null)
   /**
-   * 有没有动作可放。没有时整层不渲染（`hostRef` / `ballRef` 都是 null），所以下面两个
-   * effect 必须跟着它重新跑 —— 动作可能是后到的（历史作用域随数据加载才成立）。
+   * 有没有动作可放。没有时整层不渲染（`hostRef` 是 null），所以量尺寸的 effect 必须
+   * 跟着它重新跑 —— 动作可能是后到的（历史作用域随数据加载才成立）。
    */
   const enabled = actions.length > 0
 
@@ -234,21 +240,37 @@ export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
     return () => observer.disconnect()
   }, [enabled])
 
-  // 拖动期间别让容器上的触摸手势（单指翻 scrollback）跟着接手，见文件头。
-  useEffect(() => {
-    const el = ballRef.current
+  /**
+   * 球一挂上就把触摸手势**就地截断**（见文件头「触摸手势必须就地截断」）。
+   *
+   * ⚠️ 这段**不能写成 `useEffect` 里读球的 ref**：球是「量出 `pos` 之后」才渲染的，
+   * 首次挂载那一刻 ref 还是 null，而 effect 的依赖只有 `enabled` —— 动作一开始就有的话
+   * 它不会再跑，监听于是永远挂不上：手机上一拖球，`touchmove` 就冒泡到终端容器的单指
+   * 滚动（`attachTerminalTouchScroll`），终端跟着上下翻（用户报的）。
+   * 改成**回调 ref**：节点一挂上就绑，卸载 / 换节点时解。
+   *
+   * 只 `stopPropagation` 就够：终端的滚动监听挂在祖先容器上、走冒泡；球自己已经有
+   * `touch-action: none`（见球的内联 style），浏览器也不会再去滚页面。
+   */
+  const detachBallTouch = useRef<(() => void) | null>(null)
+  const setBallNode = useCallback((el: HTMLButtonElement | null) => {
+    detachBallTouch.current?.()
+    detachBallTouch.current = null
     if (!el) return
     const stop = (e: Event): void => e.stopPropagation()
+    // passive 只让 preventDefault 失效，stopPropagation 照常生效 —— 这里不需要拦默认行为
     const options = { passive: true } as const
     el.addEventListener('touchstart', stop, options)
     el.addEventListener('touchmove', stop, options)
     el.addEventListener('touchend', stop, options)
-    return () => {
+    el.addEventListener('touchcancel', stop, options)
+    detachBallTouch.current = () => {
       el.removeEventListener('touchstart', stop)
       el.removeEventListener('touchmove', stop)
       el.removeEventListener('touchend', stop)
+      el.removeEventListener('touchcancel', stop)
     }
-  }, [enabled])
+  }, [])
 
   // 卸载时别留着一帧没提交的位置
   useEffect(() => {
@@ -453,7 +475,7 @@ export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
               （拖动 / 贴边），玻璃层的缩放与描边、投影、图标都归内层管。 */}
           <LiquidGlassButton
             tone="contrast"
-            ref={ballRef}
+            ref={setBallNode}
             aria-label="终端操作"
             aria-expanded={open}
             title="点击展开 · 拖动后自动贴边"
