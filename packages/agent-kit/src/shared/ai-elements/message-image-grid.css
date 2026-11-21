@@ -1,3 +1,21 @@
+[data-message-image] {
+  position: relative;
+  display: inline-block;
+  block-size: 15rem;
+  min-block-size: 15rem;
+  flex-shrink: 0;
+  vertical-align: top;
+}
+
+[data-message-image] > img {
+  position: absolute;
+  inset: 0;
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: contain;
+}
+
 .message-image-grid {
   display: grid;
   inline-size: 36rem;

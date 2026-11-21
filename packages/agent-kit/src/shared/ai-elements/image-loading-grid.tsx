@@ -19,6 +19,8 @@ export function ImageLoadingGrid() {
     const motion = window.matchMedia('(prefers-reduced-motion: no-preference)')
     let frame = 0
     let start: number | undefined
+    let visible = false
+    let lastPaint = -Infinity
 
     const draw = (time: number) => {
       const focuses = ORBS.map(({ rx, ry, sx, sy, px, py, pulse }) => ({
@@ -46,20 +48,29 @@ export function ImageLoadingGrid() {
 
     const tick = (now: number) => {
       start ??= now
-      draw((now - start) * 0.0012)
+      if (now - lastPaint >= 32) {
+        draw((now - start) * 0.0012)
+        lastPaint = now
+      }
       // Keep the loading state visible for slow images without perpetual motion.
       if (now - start < 4800) frame = requestAnimationFrame(tick)
     }
     const syncMotion = () => {
       cancelAnimationFrame(frame)
       draw(0)
-      if (motion.matches && !document.hidden) frame = requestAnimationFrame(tick)
+      if (visible && motion.matches && !document.hidden) frame = requestAnimationFrame(tick)
     }
+    const observer = typeof IntersectionObserver === 'undefined' ? null : new IntersectionObserver(([entry]) => {
+      visible = entry.isIntersecting
+      syncMotion()
+    })
+    observer?.observe(element)
     syncMotion()
     motion.addEventListener('change', syncMotion)
     document.addEventListener('visibilitychange', syncMotion)
     return () => {
       cancelAnimationFrame(frame)
+      observer?.disconnect()
       motion.removeEventListener('change', syncMotion)
       document.removeEventListener('visibilitychange', syncMotion)
     }
@@ -68,7 +79,7 @@ export function ImageLoadingGrid() {
   return (
     <span role="status" className="pointer-events-none absolute inset-0 grid place-items-center rounded-lg bg-muted text-muted-foreground">
       <span className="sr-only">{tr('加载中…')}</span>
-      <canvas ref={canvas} aria-hidden="true" width={SIZE} height={SIZE} className="aspect-square w-full max-w-60" />
+      <canvas ref={canvas} aria-hidden="true" width={SIZE} height={SIZE} className="block aspect-square h-auto w-full max-w-60" />
     </span>
   )
 }
