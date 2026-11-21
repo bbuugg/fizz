@@ -22,7 +22,7 @@ import { ImageViewer } from '@fizz/ui/image-viewer'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { getAgentHostOrNull } from '@fizz/agent-client/host'
 import { saveImageLocally } from '@fizz/agent-kit/shared/lib/image-download'
-import { fetchServerScreenshot, isServerScreenshotUrl } from '@fizz/agent-kit/shared/lib/media-url'
+import { fetchServerScreenshot, isServerScreenshotUrl, resolveServerMediaUrl } from '@fizz/agent-kit/shared/lib/media-url'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 
 /**
@@ -93,7 +93,8 @@ export function MarkdownImage({ src, alt, className }: ComponentProps<'img'>) {
   }
   const status = load.src === source && load.nonce === nonce ? load.status : 'loading'
   const currentScreenshot = screenshot?.src === source && screenshot.nonce === nonce ? screenshot : null
-  const displayedSrc = desktopScreenshot ? currentScreenshot?.url : source
+  const mediaUrl = resolveServerMediaUrl(source)
+  const displayedSrc = desktopScreenshot ? currentScreenshot?.url : mediaUrl
   const retry = (): void => {
     setLoad({ src: source, nonce: nonce + 1, status: 'loading' })
     setNonce((n) => n + 1)
@@ -101,7 +102,7 @@ export function MarkdownImage({ src, alt, className }: ComponentProps<'img'>) {
   const download = (): void => {
     if (desktopScreenshot && !currentScreenshot) return
     setDownloading(true)
-    void downloadImage(source, alt, currentScreenshot?.blob).finally(() => setDownloading(false))
+    void downloadImage(mediaUrl, alt, currentScreenshot?.blob).finally(() => setDownloading(false))
   }
 
   return (
@@ -159,7 +160,7 @@ export function MarkdownImage({ src, alt, className }: ComponentProps<'img'>) {
         }}
         className={cn(
           className,
-          'absolute inset-0 block h-full max-h-full w-full max-w-full rounded-lg object-contain transition-opacity duration-200',
+          'absolute inset-0 block h-full max-h-full w-full max-w-full rounded-lg object-contain',
           // 图片始终留在固定框内，加载 / 失败时只隐藏绘制。
           status === 'loaded'
             ? 'cursor-zoom-in opacity-100'
