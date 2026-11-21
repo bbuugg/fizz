@@ -683,6 +683,7 @@ export function NotesSidebar({
             </DialogDescription>
           </DialogHeader>
           <Input
+            variant="muted"
             autoFocus
             value={renameDraft}
             onChange={(event) => setRenameDraft(event.target.value)}

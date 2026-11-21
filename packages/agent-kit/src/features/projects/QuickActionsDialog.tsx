@@ -56,6 +56,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@f
 import { Input } from '@fizz/ui/input'
 import { Button } from '@fizz/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@fizz/ui/tabs'
+import { Textarea } from '@fizz/ui/textarea'
 import {
   QUICK_ACTION_ICONS,
   QUICK_ACTION_KIND_LABELS,
@@ -300,9 +301,6 @@ export function QuickActionsDialog({
                     <Zap />
                   </EmptyMedia>
                   <EmptyTitle>{tr('还没有快捷功能')}</EmptyTitle>
-                  <EmptyDescription>
-                    {tr('添加后会出现在工作区工具条的 ⚡ 下拉里，点一下即可执行。')}
-                  </EmptyDescription>
                 </EmptyHeader>
               </Empty>
             ) : (
@@ -381,7 +379,6 @@ export function QuickActionsDialog({
           <DialogTitle>
             {actions.some((a) => a.id === draft?.id) ? tr('编辑快捷功能') : tr('添加快捷功能')}
           </DialogTitle>
-          <DialogDescription>{tr('快捷功能绑定当前工作区，点击工作区工具条上的 ⚡ 即可执行。')}</DialogDescription>
 
           {draft && (
             <>
@@ -392,8 +389,13 @@ export function QuickActionsDialog({
                 <div>
                   <div className="mb-1 text-xs text-muted-foreground">{tr('类型')}</div>
                   {/* 类型用 shadcn 默认变体（灰底胶囊）。Tabs 不挂 TabsContent ——
-                      这里只是选值，内容区在下面。宽的时候横向滚，别让 4 个类型把弹窗撑破 */}
-                  <div className="min-w-0 overflow-x-auto">
+                      这里只是选值，内容区在下面。宽的时候横向滚，别让 4 个类型把弹窗撑破。
+
+                      `overflow-y-hidden` 不能省：只写 `overflow-x-auto` 时另一轴按规范被算成
+                      `auto`，而 `TabsTrigger` 的选中态指示条是 `after:bottom-[-5px]` 的绝对定位
+                      伪元素（default 变体里 `opacity-0`，但**照样占位**），它往容器外多探出
+                      2–5px，于是这行凭空长出一条纵向滚动条。纵向本来就不需要滚。 */}
+                  <div className="min-w-0 overflow-x-auto overflow-y-hidden">
                     <Tabs
                       value={draft.kind}
                       onValueChange={(value) => setDraft({ ...draft, kind: value as QuickActionKind })}
@@ -415,6 +417,7 @@ export function QuickActionsDialog({
                 <div>
                   <div className="mb-1 text-xs text-muted-foreground">{tr('名称')}</div>
                   <Input
+                    variant="muted"
                     placeholder={tr('按钮上的文字，例如「项目看板」')}
                     value={draft.label}
                     onChange={(e) => setDraft({ ...draft, label: e.target.value })}
@@ -427,17 +430,20 @@ export function QuickActionsDialog({
                   <div className="mb-1 text-xs text-muted-foreground">
                     {draft.kind === 'command' ? tr('命令') : draft.kind === 'link' ? tr('链接') : tr('路径')}
                   </div>
-                  <textarea
+                  <Textarea
+                    variant="muted"
                     rows={draft.kind === 'command' ? 2 : 1}
                     placeholder={tr(QUICK_ACTION_TARGET_HINTS[draft.kind])}
                     value={draft.target}
                     onChange={(e) => setDraft({ ...draft, target: e.target.value })}
-                    className="flex w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring"
+                    // `min-h-0`：这个框只有 1–2 行，Textarea 的默认最小高度会把它撑成一大块
+                    className="min-h-0 resize-none"
                   />
                 </div>
                 <div>
                   <div className="mb-1 text-xs text-muted-foreground">{tr('说明（可选）')}</div>
                   <Input
+                    variant="muted"
                     placeholder={tr('鼠标悬停在按钮上时的提示')}
                     value={draft.description ?? ''}
                     onChange={(e) => setDraft({ ...draft, description: e.target.value })}
@@ -456,7 +462,7 @@ export function QuickActionsDialog({
               {/* 按钮钉在底部、不进滚动区：表单再长也不用滚到底才能保存 */}
               <div
                 data-slot="dialog-footer"
-                className="flex shrink-0 justify-end gap-2 border-t pt-3"
+                className="flex shrink-0 justify-end gap-2 pt-3"
               >
                 <Button size="sm" disabled={busy} onClick={() => void submitDraft()}>
                   {tr('保存')}

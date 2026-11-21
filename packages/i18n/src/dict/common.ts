@@ -149,7 +149,7 @@ export const COMMON: Record<string, string> = {
   '加载失败，点右侧按钮重试': 'Failed to load, tap the button on the right to retry',
   '当前未启用验证码': 'Captcha is not enabled',
   '开始新对话': 'Start a new chat',
-  '交给 Agent 做点什么…（Enter 发送，Shift+Enter 换行）': 'Ask the agent to do something… (Enter to send, Shift+Enter for a new line)',
+  '想让我帮你做什么…（Enter 发送，Shift+Enter 换行）': 'Ask the agent to do something… (Enter to send, Shift+Enter for a new line)',
   '有什么想问的？…（不指定项目，会话存在服务端）': 'What would you like to ask?… (No project attached; the conversation is stored on the server)',
   '附件上传中，等上传完成后再发': 'Uploading attachments — please wait until they finish',
   '新对话（初始页）': 'New chat (start page)',

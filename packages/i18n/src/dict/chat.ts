@@ -364,7 +364,6 @@ export const CHAT: Record<string, string> = {
   '切换模型（下一轮生效）': 'Switch model (applies next turn)',
   '没有可选项': 'Nothing to choose',
   '还没有快捷功能': 'No quick actions yet',
-  '添加后会出现在工作区工具条的 ⚡ 下拉里，点一下即可执行。': 'Once added they appear in the ⚡ menu of the workspace toolbar — one click runs them.',
   '停止并关闭这个对话？': 'Stop and close this conversation?',
   '这条会话正在生成回复，关闭标签会先停止当前回合（已生成的内容保留）。': 'This conversation is still generating; closing the tab stops the current turn first (what has been generated is kept).',
   '停止并关闭': 'Stop and close',

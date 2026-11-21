@@ -311,13 +311,33 @@ function MessagePartsInner({
     )
   }
 
-  /** 原样铺开全部 parts（用户消息走这条；分组 / 折叠相关的一切都不参与） */
+  const isImage = (part: AgentMessagePart): boolean =>
+    part.type === 'file' && part.mediaType.startsWith('image/')
+
+  const imageRunEnd = (start: number): number => {
+    let end = start + 1
+    while (end < parts.length && isImage(parts[end]) && !(compactionNode && end === compactionIndex)) end++
+    return end
+  }
+
+  const renderImageRun = (start: number, end: number): ReactNode => (
+    <div key={`${message.id}-images-${start}`} className={end - start > 1 ? 'message-image-grid' : undefined}>
+      {parts.slice(start, end).map((part, offset) => renderPart(part, start + offset))}
+    </div>
+  )
+
+  /** 用户消息按原顺序铺开，连续的图片附件共用网格。 */
   const renderAll = (): ReactNode => {
     const out: ReactNode[] = []
-    parts.forEach((part, partIndex) => {
+    for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+      const part = parts[partIndex]
       if (compactionNode && partIndex === compactionIndex) out.push(compactionNode)
-      out.push(renderPart(part, partIndex))
-    })
+      if (isImage(part)) {
+        const end = imageRunEnd(partIndex)
+        out.push(renderImageRun(partIndex, end))
+        partIndex = end - 1
+      } else out.push(renderPart(part, partIndex))
+    }
     if (compactionNode && compactionIndex >= parts.length) out.push(compactionNode)
     return <>{out}</>
   }
@@ -558,17 +578,22 @@ function MessagePartsInner({
       </TurnStepGroup>
     )
   }
-  parts.forEach((part, partIndex) => {
+  for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+    const part = parts[partIndex]
     // 记下位置就走（不 flush）：`run.length` 就是「前面已经攒了几步」，卡落在这一步之前
     if (compactionNode && partIndex === compactionIndex) runInsertAt = run.length
-    if (isBlankText(part)) return
+    if (isBlankText(part)) continue
     if (foldable(part, partIndex)) {
       run.push({ part, partIndex })
-      return
+      continue
     }
     flushRun()
-    nodes.push(renderPart(part, partIndex))
-  })
+    if (isImage(part)) {
+      const end = imageRunEnd(partIndex)
+      nodes.push(renderImageRun(partIndex, end))
+      partIndex = end - 1
+    } else nodes.push(renderPart(part, partIndex))
+  }
   // 卡在整条消息末尾：落在最后一段过程的组尾（抬头这时报「压缩上下文」）
   if (compactionNode && compactionIndex >= parts.length) runInsertAt = run.length
   flushRun()

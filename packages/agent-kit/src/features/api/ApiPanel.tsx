@@ -87,6 +87,7 @@ import { toast } from 'sonner'
 import { Button } from '@fizz/ui/button'
 import { Input } from '@fizz/ui/input'
 import { Label } from '@fizz/ui/label'
+import { Textarea } from '@fizz/ui/textarea'
 import { Checkbox } from '@fizz/ui/checkbox'
 import {
   Dialog,
@@ -692,6 +693,7 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
           没有横向内边距：外框与行的高亮底色都从外层容器的 8px 起 */}
       <div className="shrink-0 pb-1.5">
         <Input
+          variant="muted"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="搜索请求…"
@@ -849,7 +851,7 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
                   setGroupEdit((g) => (g ? { ...g, parentId: v === TOP_GROUP ? undefined : v } : g))
                 }
               >
-                <SelectTrigger className="w-full">
+                <SelectTrigger variant="muted" className="w-full">
                   <SelectValue placeholder="父分组（缺省为顶级分组）" />
                 </SelectTrigger>
                 <SelectContent>
@@ -863,6 +865,7 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
               </Select>
             )}
             <Input
+              variant="muted"
               autoFocus
               value={groupEdit?.name ?? ''}
               placeholder="分组名称，如：用户服务"
@@ -897,7 +900,7 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
                 value={metaGroupId ?? NO_GROUP}
                 onValueChange={(v) => setMetaGroupId(v === NO_GROUP ? undefined : v)}
               >
-                <SelectTrigger id="api-req-group" className="w-full">
+                <SelectTrigger variant="muted" id="api-req-group" className="w-full">
                   <SelectValue placeholder="未分组" />
                 </SelectTrigger>
                 <SelectContent>
@@ -913,6 +916,7 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
             <div className="grid gap-1.5">
               <Label htmlFor="api-req-name">名称</Label>
               <Input
+                variant="muted"
                 id="api-req-name"
                 autoFocus
                 value={metaName}
@@ -943,7 +947,7 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
             </DialogDescription>
           </DialogHeader>
           <Select value={moveParent} onValueChange={setMoveParent}>
-            <SelectTrigger className="w-full">
+            <SelectTrigger variant="muted" className="w-full">
               <SelectValue placeholder="选择父分组" />
             </SelectTrigger>
             <SelectContent>
@@ -1038,12 +1042,13 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
                 : '粘贴 curl 命令，解析后保存为一条新的请求并打开'}
             </DialogDescription>
           </DialogHeader>
-          <textarea
+          <Textarea
+            variant="muted"
             value={curlText}
             onChange={(e) => setCurlText(e.target.value)}
             placeholder={'curl -X POST https://api.example.com/users \\\n  -H "Content-Type: application/json" \\\n  -d \'{"name":"foo"}\''}
             spellCheck={false}
-            className="h-48 w-full resize-none rounded-md border border-input bg-transparent p-2 font-mono text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="h-48 resize-none p-2 font-mono text-xs"
           />
           <DialogFooter>
             <Button data-dialog-dismiss=""

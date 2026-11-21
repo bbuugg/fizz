@@ -735,6 +735,7 @@ export function HostsSidebar({
           </DialogHeader>
           <div className="flex flex-col gap-3">
             <Input
+              variant="muted"
               autoFocus
               value={groupEdit?.name ?? ''}
               placeholder={t('分组名称')}
@@ -752,7 +753,7 @@ export function HostsSidebar({
                   setGroupEdit((s) => (s ? { ...s, parentId: v === TOP_GROUP ? undefined : v } : s))
                 }
               >
-                <SelectTrigger className="w-full">
+                <SelectTrigger variant="muted" className="w-full">
                   <SelectValue placeholder={t('顶级分组')} />
                 </SelectTrigger>
                 <SelectContent>

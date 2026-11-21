@@ -188,6 +188,7 @@ export function GitCloneDialog({
           <label className="flex flex-col gap-1.5 text-sm">
             <span className="text-muted-foreground">{tr('仓库地址')}</span>
             <Input
+              variant="muted"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder={tr('https://github.com/owner/repo.git 或 git@host:owner/repo.git')}
@@ -203,6 +204,7 @@ export function GitCloneDialog({
             <span className="text-muted-foreground">{tr('克隆到（父目录）')}</span>
             <div className="flex gap-2">
               <Input
+                variant="muted"
                 value={parentDir}
                 onChange={(e) => setParentDir(e.target.value)}
                 placeholder={tr('服务端上的绝对路径，如 /home/me/projects')}
@@ -223,6 +225,7 @@ export function GitCloneDialog({
           <label className="flex flex-col gap-1.5 text-sm">
             <span className="text-muted-foreground">{tr('目录名（可选，缺省取仓库名）')}</span>
             <Input
+              variant="muted"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder={repoNameFromUrl(trimmedUrl) || 'repo'}

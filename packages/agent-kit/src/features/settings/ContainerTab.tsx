@@ -377,6 +377,7 @@ function PublicAccessSection({ app }: { app: AgentApp }) {
         {draft.map((value, index) => (
           <div key={index} className="flex items-center gap-2">
             <Input
+              variant="muted"
               value={value}
               onChange={(event) => updateAt(index, event.target.value)}
               onKeyDown={(event) => {

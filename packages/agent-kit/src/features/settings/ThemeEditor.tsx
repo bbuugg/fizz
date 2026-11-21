@@ -152,6 +152,7 @@ export function ThemeEditor({
         <div className="space-y-4 px-5">
           <div className="flex items-center gap-3">
             <Input
+              variant="muted"
               value={name}
               onChange={(event) => setName(event.target.value)}
               aria-label={tr('主题名称')}
@@ -207,6 +208,7 @@ export function ThemeEditor({
                         </code>
                       </div>
                       <Input
+                        variant="muted"
                         value={vars[mode][spec.name] ?? ''}
                         placeholder={tr('留空 = 跟随默认字体')}
                         onChange={(event) => setVar(spec.name, event.target.value)}

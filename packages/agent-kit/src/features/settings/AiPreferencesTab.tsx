@@ -241,6 +241,7 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
         <div className="flex items-center gap-2">
           {/* 草稿态输入：删空不会回填，失焦才夹到 1–10（见 @fizz/ui/number-field） */}
           <NumberField
+            variant="muted"
             value={app.toolCallConcurrency}
             min={1}
             max={10}
@@ -265,6 +266,7 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
         </p>
         <div className="flex items-center gap-2">
           <NumberField
+            variant="muted"
             value={app.maxSteps}
             min={MIN_MAX_STEPS}
             max={MAX_MAX_STEPS}
@@ -363,6 +365,7 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
                     <span className="text-[0.625rem] text-muted-foreground">{tr('步数上限')}</span>
                     {/* 留空 = 用默认值；只在失焦时提交，越界交给 saveSubagentMaxSteps 拒绝 */}
                     <NumberField
+                      variant="muted"
                       value={savedSteps}
                       min={SUBAGENT_MIN_STEPS}
                       max={SUBAGENT_MAX_STEPS}
@@ -387,6 +390,7 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
                       onValueChange={(value) => void saveSubagentModelFor(id, meta.name, value)}
                     >
                       <SelectTrigger
+                        variant="muted"
                         className="h-7 w-52 max-w-full text-xs"
                         aria-label={tr('「{name}」模型', { name: meta.name })}
                       >
@@ -523,7 +527,7 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
           {/* 固定宽度、不铺满：这是个下拉选项，不是正文；全宽在宽屏设置页里
               会拉成一条几百像素的空框，和下面那行说明的层次也对不上 */}
           <Select value={subagentModelValue} onValueChange={(value) => void saveSubagentModel(value)}>
-            <SelectTrigger className="h-9 w-64 max-w-full text-sm">
+            <SelectTrigger variant="muted" className="h-9 w-64 max-w-full text-sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -608,6 +612,7 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
         </p>
         <div className="flex items-center gap-2">
           <NumberField
+            variant="muted"
             value={app.confirmTimeoutMin}
             min={0}
             onValueChange={(next) => app.setConfirmTimeoutMin(next ?? 0)}
@@ -631,6 +636,7 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
         </p>
         <div className="flex items-center gap-2">
           <NumberField
+            variant="muted"
             value={app.maxRetries}
             min={0}
             onValueChange={(next) => app.setMaxRetries(next ?? 0)}

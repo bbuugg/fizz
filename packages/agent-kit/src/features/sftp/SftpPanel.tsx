@@ -856,6 +856,7 @@ export function SftpPanel({ host }: { host: SshHostConfig }): React.JSX.Element 
             <DialogDescription>将创建在 {path}</DialogDescription>
           </DialogHeader>
           <Input
+            variant="muted"
             autoFocus
             placeholder="文件夹名称"
             value={mkdirName}
@@ -886,6 +887,7 @@ export function SftpPanel({ host }: { host: SshHostConfig }): React.JSX.Element 
             </DialogDescription>
           </DialogHeader>
           <Input
+            variant="muted"
             autoFocus
             placeholder="目标目录，如 /var/www"
             value={targetDir}
@@ -919,6 +921,7 @@ export function SftpPanel({ host }: { host: SshHostConfig }): React.JSX.Element 
             <DialogTitle>重命名</DialogTitle>
           </DialogHeader>
           <Input
+            variant="muted"
             autoFocus
             value={renameText}
             onChange={(e) => setRenameText(e.target.value)}

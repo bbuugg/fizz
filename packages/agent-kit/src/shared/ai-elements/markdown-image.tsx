@@ -6,9 +6,9 @@
  * 工具条，见 shared/ui/image-viewer）—— 与文件面板里的图片预览是同一个组件。
  *
  * 与本项目相关的几处取舍：
- * - **加载骨架**：聊天里的图大量是外链（有时几百 KB），不占位的话正文会先贴上去、
- *   图再「啪」地冒出来把下面一段话顶走。所以加载中用骨架撑住一个 min 尺寸的框，
- *   图片 `onLoad` 后撤掉占位、淡入到位 —— 下面那段正文最多被顶开一次。顺带处理 `onError`：
+ * - **加载点阵**：聊天里的图大量是外链（有时几百 KB），不占位的话正文会先贴上去、
+ *   图再「啪」地冒出来把下面一段话顶走。所有状态共用固定高度预览框，
+ *   图片等比完整显示，`onLoad` 只切换透明度、不改变布局。顺带处理 `onError`：
  *   显示失败占位 + 原地重试（自增 nonce 强制 `<img>` 重挂，浏览器重新发一次请求）。
  * - 下载按钮放在图片外层（`absolute` 右下角），点它不会触发查看器打开（查看器由 img 自己的
  *   onClick 打开，按钮不是 img 的一部分）。
@@ -17,7 +17,7 @@
  */
 import { useEffect, useState, type ComponentProps } from 'react'
 import { Download, ImageOff, RotateCw } from 'lucide-react'
-import { Skeleton } from '@fizz/ui/skeleton'
+import { ImageLoadingGrid } from '@fizz/agent-kit/shared/ai-elements/image-loading-grid'
 import { ImageViewer } from '@fizz/ui/image-viewer'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { getAgentHostOrNull } from '@fizz/agent-client/host'
@@ -108,28 +108,24 @@ export function MarkdownImage({ src, alt, className }: ComponentProps<'img'>) {
     // 外壳：group 给下载按钮做悬浮显隐，relative 是包里「幽灵图」的定位锚点
     // （它的 top/left 取自图片的 offsetTop/offsetLeft，两者必须落在同一个定位祖先上）。
     // inline-block 让点击热区贴着图片本身 —— 早先用 block 包裹，整段文字宽度都成了可点区。
-    // 未加载时给一个 min 尺寸把骨架撑起来（加载完成后撤掉，尺寸交回给图片自身）。
+    // 固定框不随图片固有尺寸 / 加载状态变化，避免消息列表重算高度而闪动。
     <span
+      data-message-image=""
       className={cn(
-        'group relative my-1 inline-block align-top',
-        status === 'loading' && 'min-h-40 min-w-64'
+        'group relative my-1 inline-block h-60 w-64 max-w-full align-top'
       )}
     >
-      {/* 骨架盖在图下面（absolute inset-0 填满上面撑出的 min 框）。必须 pointer-events-none：
-          否则它会挡住放大点击区；也不能靠条件渲染把 <img> 摘掉再挂回来 —— 那会让浏览器
-          重新发一次请求，永远等不到 loaded。 */}
-      {status === 'loading' && (
-        <Skeleton aria-hidden className="pointer-events-none absolute inset-0 rounded-lg" />
-      )}
+      {/* 点阵覆盖固定预览框；图片仍留在 DOM 中完成加载。 */}
+      {status === 'loading' && <ImageLoadingGrid />}
 
       {status === 'error' && (
         // 失败不留一块空白：说清是外链挂了，给一个原地重试
-        <span className="flex w-64 max-w-full flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border px-3 py-4 text-[0.6875rem] text-muted-foreground">
+         <span className="absolute inset-0 flex flex-col items-center justify-center gap-1 rounded-lg px-3 py-4 text-[0.6875rem] text-muted-foreground">
           <span className="flex items-center gap-1">
             <ImageOff className="size-3.5" />
             {tr('图片加载失败')}
           </span>
-          <span className="max-w-full truncate opacity-70">{source}</span>
+          <span className="max-w-full truncate">{source}</span>
           <button
             type="button"
             onClick={(e) => {
@@ -162,13 +158,12 @@ export function MarkdownImage({ src, alt, className }: ComponentProps<'img'>) {
           }
         }}
         className={cn(
-          'block max-w-full rounded-lg transition-opacity duration-200',
-          // 加载中藏起来（骨架在下面闪）并从流里摘掉（0 尺寸，免得和骨架一起撑出双份高度）；
-          // 失败时保持 0 尺寸，让失败占位块顶上。两者都不影响请求本身 —— <img> 一直在流里。
+          className,
+          'absolute inset-0 block h-full max-h-full w-full max-w-full rounded-lg object-contain transition-opacity duration-200',
+          // 图片始终留在固定框内，加载 / 失败时只隐藏绘制。
           status === 'loaded'
             ? 'cursor-zoom-in opacity-100'
-            : 'pointer-events-none absolute size-px opacity-0',
-          className
+            : 'pointer-events-none opacity-0'
         )}
       />
 

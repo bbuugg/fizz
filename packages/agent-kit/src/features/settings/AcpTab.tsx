@@ -693,16 +693,19 @@ export function AcpTab({ app }: { app: AgentApp }) {
             }}
           >
             <Input
+              variant="muted"
               placeholder={tr('名称，如 Codex CLI')}
               value={acpName}
               onChange={(e) => setAcpName(e.target.value)}
             />
             <Input
+              variant="muted"
               placeholder={tr('启动命令，如 codex-acp')}
               value={acpCommand}
               onChange={(e) => setAcpCommand(e.target.value)}
             />
             <Input
+              variant="muted"
               placeholder={tr('启动参数（空格分隔，可留空）')}
               value={acpArgs}
               onChange={(e) => setAcpArgs(e.target.value)}
@@ -712,7 +715,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
                 {tr('类型（决定会话里的模式 UI：opencode → 权限档，pi → 思考档，通用 → 不显示）')}
               </div>
               <Select value={acpType} onValueChange={(v) => setAcpType(v as AcpAgentType)}>
-                <SelectTrigger className="h-9 w-full min-w-0 overflow-hidden text-sm">
+                <SelectTrigger variant="muted" className="h-9 w-full min-w-0 overflow-hidden text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -727,7 +730,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
                 {tr('「完全放行」时的答复：缺省「仅允许一次」（下次仍会询问）；选「永久记住」后由 agent 自己记着不再问，届时切回「确认」也要不回询问')}
               </div>
               <Select value={acpAllow} onValueChange={(v) => setAcpAllow(v as AcpAllowStrategy)}>
-                <SelectTrigger className="h-9 w-full min-w-0 overflow-hidden text-sm">
+                <SelectTrigger variant="muted" className="h-9 w-full min-w-0 overflow-hidden text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -957,6 +960,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
           {probeOptions.length > 0 && (
             <div className="flex shrink-0 items-center gap-2">
               <Input
+                variant="muted"
                 placeholder={tr('搜索模型…')}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -1062,12 +1066,14 @@ export function AcpTab({ app }: { app: AgentApp }) {
             </div>
             <div className="flex items-center gap-2">
               <Input
+                variant="muted"
                 placeholder={tr('模型 id，如 anthropic/claude-sonnet-4')}
                 value={manualId}
                 onChange={(e) => setManualId(e.target.value)}
                 className="h-8 min-w-0 flex-1 font-mono text-xs"
               />
               <Input
+                variant="muted"
                 placeholder={tr('展示名（可选）')}
                 value={manualName}
                 onChange={(e) => setManualName(e.target.value)}

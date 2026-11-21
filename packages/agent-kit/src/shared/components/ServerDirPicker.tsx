@@ -197,6 +197,7 @@ export function ServerDirPicker({
             <ArrowUp className="size-4" />
           </Button>
           <Input
+            variant="muted"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -259,6 +260,7 @@ export function ServerDirPicker({
             <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border/60 bg-secondary/40 px-3 py-1.5 backdrop-blur-sm">
               <FolderPlus className="size-4 shrink-0 text-muted-foreground" />
               <Input
+                variant="muted"
                 autoFocus
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}

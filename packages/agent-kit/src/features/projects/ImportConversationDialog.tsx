@@ -190,7 +190,7 @@ export function ImportConversationDialog({
           <div className="flex flex-col gap-1.5">
             <span className="text-sm font-medium">{tr('ACP Agent')}</span>
             <Select value={agentId} onValueChange={(v) => void pickAgent(v)}>
-              <SelectTrigger className="w-full" aria-label={tr('选择 ACP Agent')}>
+              <SelectTrigger variant="muted" className="w-full" aria-label={tr('选择 ACP Agent')}>
                 <SelectValue
                   placeholder={app.acpAgents.length ? tr('选择 Agent…') : tr('还没有配置 ACP Agent')}
                 />

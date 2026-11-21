@@ -65,6 +65,7 @@ export function NameDialog({
         <div className="space-y-2">
           <Label htmlFor="fm-name">{label}</Label>
           <Input
+            variant="muted"
             id="fm-name"
             autoFocus
             value={value}
@@ -180,6 +181,7 @@ export function CompressDialog({
         <div className="space-y-2">
           <Label htmlFor="fm-zip-name">压缩包名</Label>
           <Input
+            variant="muted"
             id="fm-zip-name"
             autoFocus
             value={name}
@@ -245,6 +247,7 @@ export function ExtractDialog({
         <div className="space-y-2">
           <Label htmlFor="fm-extract-to">解压到</Label>
           <Input
+            variant="muted"
             id="fm-extract-to"
             autoFocus
             value={target}

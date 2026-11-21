@@ -9,6 +9,7 @@ import { Check, X } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
 import { Input } from '@fizz/ui/input'
 import { Label } from '@fizz/ui/label'
+import { Textarea } from '@fizz/ui/textarea'
 import {
   Dialog,
   DialogContent,
@@ -74,6 +75,7 @@ export function AgentConfigDialog({
             <div className="grid gap-1.5">
               <Label htmlFor="collab-name">名字</Label>
               <Input
+                variant="muted"
                 id="collab-name"
                 value={draft.name}
                 onChange={(event) => set({ name: event.target.value })}
@@ -83,6 +85,7 @@ export function AgentConfigDialog({
             <div className="grid gap-1.5">
               <Label htmlFor="collab-role">职责</Label>
               <Input
+                variant="muted"
                 id="collab-role"
                 value={draft.role}
                 onChange={(event) => set({ role: event.target.value })}
@@ -91,12 +94,13 @@ export function AgentConfigDialog({
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="collab-instructions">提示词（可选）</Label>
-              <textarea
+              <Textarea
+                variant="muted"
                 id="collab-instructions"
                 value={draft.instructions}
                 onChange={(event) => set({ instructions: event.target.value })}
                 rows={3}
-                className="min-h-16 w-full resize-y rounded-md border border-input bg-transparent px-2.5 py-2 text-sm outline-none focus-visible:border-ring"
+                className="resize-y"
                 placeholder="这个 Agent 的工作方式 / 输出格式 / 边界"
               />
             </div>
@@ -119,7 +123,7 @@ export function AgentConfigDialog({
                     set({ configId, modelId })
                   }}
                 >
-                  <SelectTrigger size="sm" className="w-full">
+                  <SelectTrigger variant="muted" size="sm" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -143,7 +147,7 @@ export function AgentConfigDialog({
                   value={draft.permissionMode}
                   onValueChange={(value) => set({ permissionMode: value as AiPermissionMode })}
                 >
-                  <SelectTrigger size="sm" className="w-full">
+                  <SelectTrigger variant="muted" size="sm" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>

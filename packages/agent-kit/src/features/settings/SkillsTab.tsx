@@ -157,6 +157,7 @@ export function SkillsTab({ app }: { app: AgentApp }) {
           <div className="relative min-w-0 flex-1">
             <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
+              variant="muted"
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
               placeholder={tr('搜索技能（名字 / 描述 / 路径）…')}

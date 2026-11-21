@@ -300,6 +300,7 @@ export function McpTab({ app }: { app: AgentApp }) {
             />
 
             <Input
+              variant="muted"
               placeholder={tr('名称，如 filesystem')}
               value={mcpName}
               onChange={(e) => setMcpName(e.target.value)}
@@ -308,16 +309,19 @@ export function McpTab({ app }: { app: AgentApp }) {
             {mcpTransport === 'stdio' ? (
               <>
                 <Input
+                  variant="muted"
                   placeholder={tr('启动命令，如 npx')}
                   value={mcpCommand}
                   onChange={(e) => setMcpCommand(e.target.value)}
                 />
                 <Input
+                  variant="muted"
                   placeholder={tr('启动参数（空格分隔，可留空）')}
                   value={mcpArgs}
                   onChange={(e) => setMcpArgs(e.target.value)}
                 />
                 <Textarea
+                  variant="muted"
                   rows={3}
                   placeholder={tr('环境变量（K=V 每行一个，可留空）') + '\nAPI_KEY=...'}
                   value={mcpEnv}
@@ -327,11 +331,13 @@ export function McpTab({ app }: { app: AgentApp }) {
             ) : (
               <>
                 <Input
+                  variant="muted"
                   placeholder={tr('服务地址，如 https://example.com/mcp')}
                   value={mcpUrl}
                   onChange={(e) => setMcpUrl(e.target.value)}
                 />
                 <Textarea
+                  variant="muted"
                   rows={3}
                   placeholder={tr('请求头（K=V 每行一个，可留空）') + '\nAuthorization=Bearer ...'}
                   value={mcpHeaders}

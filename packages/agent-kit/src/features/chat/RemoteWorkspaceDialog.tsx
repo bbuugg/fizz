@@ -145,7 +145,7 @@ export function RemoteWorkspaceDialog({
               <div className="flex flex-col gap-1.5">
                 <Label>{tr('SSH 主机')}</Label>
                 <Select value={hostId} onValueChange={setHostId} disabled={busy}>
-                  <SelectTrigger>
+                  <SelectTrigger variant="muted">
                     <SelectValue placeholder={tr('选择一台主机')} />
                   </SelectTrigger>
                   <SelectContent>
@@ -162,6 +162,7 @@ export function RemoteWorkspaceDialog({
                 <Label htmlFor="remote-workspace-path">{tr('远端目录（绝对路径）')}</Label>
                 <div className="flex gap-2">
                   <Input
+                    variant="muted"
                     id="remote-workspace-path"
                     value={path}
                     onChange={(e) => setPath(e.target.value)}
@@ -190,6 +191,7 @@ export function RemoteWorkspaceDialog({
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="remote-workspace-name">{tr('项目名（可选）')}</Label>
                 <Input
+                  variant="muted"
                   id="remote-workspace-name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}

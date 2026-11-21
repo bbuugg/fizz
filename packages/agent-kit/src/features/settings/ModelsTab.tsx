@@ -663,12 +663,13 @@ export function ModelsTab({ app }: { app: AgentApp }) {
           >
             <div className="grid gap-2 sm:grid-cols-2">
               <Input
+                variant="muted"
                 placeholder={tr('名称（可选）')}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
               />
               <Select value={kind} onValueChange={(v) => setKind(v as AiProviderKind)}>
-                <SelectTrigger>
+                <SelectTrigger variant="muted">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -681,11 +682,13 @@ export function ModelsTab({ app }: { app: AgentApp }) {
               </Select>
             </div>
             <Input
+              variant="muted"
               placeholder={tr('Base URL（OpenAI 兼容网关才需要），如 http://127.0.0.1:7919/v1')}
               value={baseURL}
               onChange={(e) => setBaseURL(e.target.value)}
             />
             <Input
+              variant="muted"
               type="password"
               placeholder={isEditing ? tr('API Key（留空保留原密钥）') : tr('API Key（服务端会加密存）')}
               value={apiKey}
@@ -742,6 +745,7 @@ export function ModelsTab({ app }: { app: AgentApp }) {
               <div className="space-y-1.5">
                 <span className="text-xs text-muted-foreground">{tr('模型 id')}</span>
                 <Input
+                  variant="muted"
                   value={modelId}
                   onChange={(e) => {
                     setModelId(e.target.value)
@@ -756,6 +760,7 @@ export function ModelsTab({ app }: { app: AgentApp }) {
                 {/* label 保持单行，括号里的解释挪到下面那段说明 —— 长 label 折成两行很挤 */}
                 <span className="text-xs text-muted-foreground">{tr('上下文窗口')}</span>
                 <NumberField
+                  variant="muted"
                   // 只标红不夹边界：token 数被悄悄改掉比报错更难发现（保存前还会再拦一次）
                   min={1}
                   clamp={false}
@@ -794,6 +799,7 @@ export function ModelsTab({ app }: { app: AgentApp }) {
               <div className="space-y-1.5">
                 <span className="text-xs text-muted-foreground">{tr('最大输出 token')}</span>
                 <NumberField
+                  variant="muted"
                   min={1}
                   clamp={false}
                   step="any"
@@ -888,7 +894,7 @@ export function ModelsTab({ app }: { app: AgentApp }) {
                     value={modelApiStyle}
                     onValueChange={(v) => setModelApiStyle(v as 'inherit' | AiApiStyle)}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger variant="muted">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -947,6 +953,7 @@ export function ModelsTab({ app }: { app: AgentApp }) {
             <div className="flex min-h-0 flex-1 flex-col gap-3">
               <div className="flex shrink-0 items-center gap-2">
                 <Input
+                  variant="muted"
                   placeholder={tr('筛选模型…')}
                   value={filter}
                   onChange={(e) => setFilter(e.target.value)}

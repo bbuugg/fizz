@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
 import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react"
 import { Select as SelectPrimitive } from "radix-ui"
@@ -25,9 +26,36 @@ function SelectValue({
   return <SelectPrimitive.Value data-slot="select-value" {...props} />
 }
 
+/**
+ * 触发器长相。
+ *
+ * `muted` 与 `Input` 的 `muted` 变体同款（见 `input.tsx`）：灰底、无可见描边、扁平、
+ * 聚焦不变色 —— 设置面板里输入框和下拉框常常上下叠着，一个描边一个不描边就成了两套控件。
+ *
+ * 边框同样用 `border-transparent` 而不是去掉边框：宽度保留着，切到 `aria-invalid`
+ * （红边）和默认变体时内容不会横向跳 1px。
+ */
+const selectTriggerVariants = cva(
+  "flex w-fit items-center justify-between gap-2 rounded-md px-3 py-2 text-sm whitespace-nowrap transition-[color,box-shadow] outline-none disabled:cursor-not-allowed disabled:opacity-50 data-[placeholder]:text-muted-foreground data-[size=default]:h-8 data-[size=sm]:h-8 *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-2 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 [&_svg:not([class*='text-'])]:text-muted-foreground",
+  {
+    variants: {
+      variant: {
+        default:
+          "border border-input bg-transparent shadow-xs focus-visible:border-ring aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:bg-input/30 dark:hover:bg-input/50 dark:aria-invalid:ring-destructive/40",
+        muted:
+          "rounded-lg border border-transparent bg-muted px-2.5 shadow-none focus-visible:border-transparent aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  }
+)
+
 function SelectTrigger({
   className,
   size = "default",
+  variant = "default",
   children,
   /**
    * 右侧那枚下拉箭头：默认渲染；`icon={false}` 时不渲染。
@@ -39,19 +67,18 @@ function SelectTrigger({
    */
   icon = true,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Trigger> & {
-  size?: "sm" | "default"
-  /** 是否渲染右侧的下拉箭头（见上面的说明） */
-  icon?: boolean
-}) {
+}: React.ComponentProps<typeof SelectPrimitive.Trigger> &
+  VariantProps<typeof selectTriggerVariants> & {
+    size?: "sm" | "default"
+    /** 是否渲染右侧的下拉箭头（见上面的说明） */
+    icon?: boolean
+  }) {
   return (
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
       data-size={size}
-      className={cn(
-        "flex w-fit items-center justify-between gap-2 rounded-md border border-input bg-transparent px-3 py-2 text-sm whitespace-nowrap shadow-xs transition-[color,box-shadow] outline-none focus-visible:border-ring disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 data-[placeholder]:text-muted-foreground data-[size=default]:h-8 data-[size=sm]:h-8 *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-2 dark:bg-input/30 dark:hover:bg-input/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 [&_svg:not([class*='text-'])]:text-muted-foreground",
-        className
-      )}
+      data-variant={variant}
+      className={cn(selectTriggerVariants({ variant, className }))}
       {...props}
     >
       {children}
@@ -295,4 +322,5 @@ export {
   SelectSeparator,
   SelectTrigger,
   SelectValue,
+  selectTriggerVariants,
 }

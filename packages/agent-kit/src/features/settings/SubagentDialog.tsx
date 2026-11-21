@@ -203,6 +203,7 @@ export function SubagentDialog({
           <div className="space-y-1.5">
             <div className="text-xs font-medium">{tr('名称')}</div>
             <Input
+              variant="muted"
               value={draft.name}
               maxLength={SUBAGENT_NAME_MAX}
               placeholder={tr('例如：文档核对')}
@@ -213,6 +214,7 @@ export function SubagentDialog({
           <div className="space-y-1.5">
             <div className="text-xs font-medium">{tr('用途')}</div>
             <Textarea
+              variant="muted"
               value={draft.description}
               maxLength={SUBAGENT_DESCRIPTION_MAX}
               rows={3}
@@ -224,6 +226,7 @@ export function SubagentDialog({
           <div className="space-y-1.5">
             <div className="text-xs font-medium">{tr('指令（可选）')}</div>
             <Textarea
+              variant="muted"
               value={draft.instructions}
               maxLength={SUBAGENT_INSTRUCTIONS_MAX}
               rows={3}
@@ -264,6 +267,7 @@ export function SubagentDialog({
             <div className="space-y-1.5">
               <div className="text-xs font-medium">{tr('步数上限')}</div>
               <Input
+                variant="muted"
                 value={draft.maxSteps}
                 inputMode="numeric"
                 placeholder={tr('默认 80')}
@@ -274,7 +278,7 @@ export function SubagentDialog({
             <div className="space-y-1.5">
               <div className="text-xs font-medium">{tr('模型')}</div>
               <Select value={draft.model} onValueChange={(value) => patch({ model: value })}>
-                <SelectTrigger className="h-9 w-full text-sm">
+                <SelectTrigger variant="muted" className="h-9 w-full text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

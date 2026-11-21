@@ -224,6 +224,7 @@ export function GeneralTab({ app }: { app: AgentApp }) {
           </p>
           <div className="flex items-center gap-2">
             <NumberField
+              variant="muted"
               value={silenceSec}
               min={0}
               max={3600}
@@ -523,6 +524,7 @@ function RemoteAccessSection({ app }: { app: AgentApp }) {
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           {tr('端口')}
           <NumberField
+            variant="muted"
             value={portDraft}
             min={1}
             max={65535}
@@ -586,6 +588,7 @@ function RemoteAccessSection({ app }: { app: AgentApp }) {
                 {tr('当前密码')}
               </label>
               <Input
+                variant="muted"
                 id="current-password"
                 type="password"
                 autoComplete="current-password"
@@ -598,6 +601,7 @@ function RemoteAccessSection({ app }: { app: AgentApp }) {
                 {tr('新密码')}
               </label>
               <Input
+                variant="muted"
                 id="new-password"
                 type="password"
                 autoComplete="new-password"
@@ -610,6 +614,7 @@ function RemoteAccessSection({ app }: { app: AgentApp }) {
                 {tr('确认新密码')}
               </label>
               <Input
+                variant="muted"
                 id="confirm-password"
                 type="password"
                 autoComplete="new-password"

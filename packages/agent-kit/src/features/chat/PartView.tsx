@@ -27,6 +27,7 @@ import { saveImageLocally } from '@fizz/agent-kit/shared/lib/image-download'
 import { AskFollowupCard } from '@fizz/agent-kit/shared/ai-elements/followup-card'
 import { useConversationOptional } from '@fizz/agent-kit/shared/ai-elements/conversation'
 import { MessageResponse } from '@fizz/agent-kit/shared/ai-elements/message'
+import { ImageLoadingGrid } from '@fizz/agent-kit/shared/ai-elements/image-loading-grid'
 import {
   Reasoning,
   ReasoningContent,
@@ -1285,6 +1286,7 @@ function FilePartView({ part }: { part: Extract<AgentMessagePart, { type: 'file'
   const tr = useT()
   const isImage = part.mediaType.startsWith('image/')
   const [src, setSrc] = useState('')
+  const [loadedSrc, setLoadedSrc] = useState('')
   const [failed, setFailed] = useState(false)
   /** 全屏查看器开关：点图打开 */
   const [zoomOpen, setZoomOpen] = useState(false)
@@ -1295,6 +1297,7 @@ function FilePartView({ part }: { part: Extract<AgentMessagePart, { type: 'file'
     if (!isImage) return
     let alive = true
     setSrc('')
+    setLoadedSrc('')
     setFailed(false)
     loadMediaObjectUrl(part.url)
       .then((resolved) => {
@@ -1316,11 +1319,11 @@ function FilePartView({ part }: { part: Extract<AgentMessagePart, { type: 'file'
       </span>
     )
   }
-  if (failed || !src) {
+  if (failed) {
     return (
-      <span className="flex h-16 w-24 items-center justify-center gap-1 rounded-lg border border-dashed border-border text-xs text-muted-foreground">
+      <span data-message-image="" className="flex h-60 w-64 max-w-full items-center justify-center gap-1 rounded-lg text-xs text-muted-foreground">
         <ImageOff className="size-3.5" />
-        {failed ? tr('图片加载失败') : tr('加载中…')}
+        {tr('图片加载失败')}
       </span>
     )
   }
@@ -1336,12 +1339,19 @@ function FilePartView({ part }: { part: Extract<AgentMessagePart, { type: 'file'
   }
   return (
     <>
-      <img
-        src={src}
-        alt={part.name}
-        onClick={() => setZoomOpen(true)}
-        className="max-h-60 max-w-64 cursor-zoom-in rounded-lg border border-border object-cover"
-      />
+      <span data-message-image="" className="relative block h-60 w-64 max-w-full overflow-hidden rounded-lg">
+        {(!src || loadedSrc !== src) && <ImageLoadingGrid />}
+        {src && (
+          <img
+            src={src}
+            alt={part.name}
+            onLoad={() => setLoadedSrc(src)}
+            onError={() => setFailed(true)}
+            onClick={() => setZoomOpen(true)}
+            className={cn('absolute inset-0 size-full cursor-zoom-in object-contain', loadedSrc !== src && 'invisible')}
+          />
+        )}
+      </span>
       <ImageViewer
         src={src}
         alt={part.name}

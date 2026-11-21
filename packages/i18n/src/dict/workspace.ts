@@ -386,7 +386,6 @@ export const WORKSPACE: Record<string, string> = {
   '命令会在工作区目录里新开一条内嵌终端执行；多条命令用换行分隔，按顺序逐行执行。': 'The command runs in a new embedded terminal inside the workspace; separate multiple commands with newlines to run them in order.',
   '相对路径按工作区根目录解析，用系统默认程序打开（仅桌面端支持）。': 'Relative paths resolve against the workspace root and open with the system default app (desktop only).',
   '用系统默认浏览器打开该链接。': 'Opens the link in the system default browser.',
-  '快捷功能绑定当前工作区，点击工作区工具条上的 ⚡ 即可执行。': 'Quick actions are bound to the current workspace; click ⚡ in the workspace toolbar to run them.',
   '导入': 'Import',
   '还没有工作区': 'No workspaces yet',
 
@@ -475,7 +474,7 @@ export const WORKSPACE: Record<string, string> = {
   '删除远端 {name}': 'Delete remote {name}',
   '删除远端 {name}…': 'Delete remote {name}…',
   '删除远端「{name}」？': 'Delete remote “{name}”?',
-  '还没有配置远端 —— 上面填一个地址点「添加」即可。': 'No remotes configured yet — enter a URL above and click “Add”.',
+  '还没有配置远端': 'No remotes configured yet.',
   '只会删掉「这个远端配在哪」，本地分支与提交不受影响，远端仓库本身也不会变。但它的远端跟踪分支（': 'Only the remote configuration is removed; local branches and commits are unaffected and the remote repository itself does not change. However its remote-tracking branches (',
   '）和当前分支对它的上游设置会一起消失，之后要推送得重新配置。': ') and the current branch’s upstream setting will also disappear; push again after reconfiguring.',
   '远端的 {branch} 会被删掉（=': 'Remote {branch} will be deleted (= ',

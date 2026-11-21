@@ -159,7 +159,13 @@ export function TriggerEditDialog({
           overflow-x-hidden + 各行的 min-w-0：长文本不再撑出横向滚动条 */}
       {/* `sm:max-w-2xl`（672px）：需求框里要横排「权限 … 模型」+ 下面那条工作区窄条，
           窄了模型 pill 只能截断、下方窄条也被挤成两行 —— 与聊天输入框的宽度感一致 */}
-      <DialogContent className="flex max-h-[85vh] flex-col gap-4 overflow-hidden sm:max-w-2xl">
+      {/* 打开时**不自动聚焦**输入框：Radix 默认把焦点丢给第一个可聚焦元素，光标会直接跳进
+          「名称」里 —— 想先扫一遍表单再决定填什么的人，会先看到一半文字已经被键盘输入吃掉。
+          `preventDefault` 后焦点留在触发它的那颗按钮上，Tab 进来照样能填。 */}
+      <DialogContent
+        className="flex max-h-[85vh] flex-col gap-4 overflow-hidden sm:max-w-2xl"
+        onOpenAutoFocus={(event) => event.preventDefault()}
+      >
         <DialogHeader className="shrink-0">
           <DialogTitle>{trigger ? t('编辑定时任务') : t('新建定时任务')}</DialogTitle>
           <DialogDescription>
@@ -423,6 +429,7 @@ function TriggerForm({
       <div className="space-y-1.5">
         <Label htmlFor="trigger-name">{t('名称')}</Label>
         <Input
+          variant="muted"
           id="trigger-name"
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -485,7 +492,10 @@ function TriggerForm({
               )}
             </div>
           )}
-          <div className="rounded-xl border border-border bg-card/70 transition-colors">
+          {/* 整卡吃 `bg-muted`（不再描边）：里面那颗 textarea 仍是 `bg-transparent`，
+              靠卡片露底色 —— 这样弹窗里的需求框与其它灰底输入框同一个色值，
+              底下那排权限 / 模型 pill 也落在同一块灰上（描边卡 + 透明框会和其余表单脱节） */}
+          <div className="rounded-xl bg-muted transition-colors">
             <textarea
               id="trigger-prompt"
               value={prompt}
@@ -600,6 +610,7 @@ function TriggerForm({
         <div className="space-y-1.5">
           <Label htmlFor="trigger-cron">{t('cron 表达式')}</Label>
           <Input
+            variant="muted"
             id="trigger-cron"
             value={cron}
             onChange={(e) => setCron(e.target.value)}

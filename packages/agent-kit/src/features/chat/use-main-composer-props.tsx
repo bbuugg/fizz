@@ -269,7 +269,7 @@ export function useMainComposerProps(
     sending: !app.activeConversationId && app.creatingConversation,
     // 提示语不按工作区分支：没选项目也能聊（发送时服务端建临时工作区），
     // 换一句「不指定项目」的文案只会让人以为这里少了什么。
-    placeholder: t("交给 Agent 做点什么…（Enter 发送，Shift+Enter 换行）"),
+    placeholder: t("想让我帮你做什么…（Enter 发送，Shift+Enter 换行）"),
     // 输入框卡片内（`header`）从上到下：引用 / 附件预览 / 编辑条（正在改哪条历史）/
     // 编辑插话条（正在改哪条未生效插话）/ 统一的待发送列表（插话 + 队列），都与输入框浑然一体
     //（各自自带底部分隔线）

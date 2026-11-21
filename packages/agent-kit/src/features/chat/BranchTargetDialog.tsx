@@ -139,6 +139,7 @@ export function BranchTargetDialog({
                       worktree 标识（目录 .worktree/标识，分支 worktree/标识）
                     </Label>
                     <Input
+                      variant="muted"
                       id="branch-worktree-identifier"
                       value={identifier}
                       onChange={(e) => setIdentifier(e.target.value)}
@@ -151,6 +152,7 @@ export function BranchTargetDialog({
                       项目名（选填，留空用标识）
                     </Label>
                     <Input
+                      variant="muted"
                       id="branch-worktree-name"
                       value={name}
                       onChange={(e) => setName(e.target.value)}

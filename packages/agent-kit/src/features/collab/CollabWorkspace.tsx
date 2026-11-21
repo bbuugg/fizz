@@ -22,7 +22,7 @@ import {
 } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
 import { Badge } from '@fizz/ui/badge'
-import { Input } from '@fizz/ui/input'
+import { NumberField } from '@fizz/ui/number-field'
 import { Label } from '@fizz/ui/label'
 import {
   Dialog,
@@ -282,33 +282,30 @@ export function CollabWorkspace({ app }: { app: AgentApp }) {
           <div className="grid gap-3">
             <div className="grid gap-1.5">
               <Label htmlFor="collab-max-parallel">{tr('并行上限')}</Label>
-              <Input
+              {/* 越界只标红、失焦才夹到 1–8（与设置里其余数字项同一套手感） */}
+              <NumberField
+                variant="muted"
                 id="collab-max-parallel"
-                type="number"
                 min={1}
                 max={8}
                 value={settingsDraft.maxParallel}
-                onChange={(event) =>
-                  setSettingsDraft((prev) => ({
-                    ...prev,
-                    maxParallel: Math.min(8, Math.max(1, Number(event.target.value) || 1))
-                  }))
+                invalidHint={tr('需为 1–8 的整数，离开输入框会夹到最近的边界')}
+                onValueChange={(next) =>
+                  setSettingsDraft((prev) => ({ ...prev, maxParallel: next ?? 1 }))
                 }
               />
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="collab-max-tasks">{tr('单轮运行上限')}</Label>
-              <Input
+              <NumberField
+                variant="muted"
                 id="collab-max-tasks"
-                type="number"
                 min={1}
                 max={64}
                 value={settingsDraft.maxTasksPerTurn}
-                onChange={(event) =>
-                  setSettingsDraft((prev) => ({
-                    ...prev,
-                    maxTasksPerTurn: Math.min(64, Math.max(1, Number(event.target.value) || 1))
-                  }))
+                invalidHint={tr('需为 1–64 的整数，离开输入框会夹到最近的边界')}
+                onValueChange={(next) =>
+                  setSettingsDraft((prev) => ({ ...prev, maxTasksPerTurn: next ?? 1 }))
                 }
               />
             </div>

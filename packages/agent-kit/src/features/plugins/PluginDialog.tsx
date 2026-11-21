@@ -83,6 +83,7 @@ export function PluginDialog({
               {/* 多行字段用 textarea（整段文本 / JSON），且回车是换行而不是提交 */}
               {field.multiline ? (
                 <Textarea
+                  variant="muted"
                   id={`plugin-dialog-${field.id}`}
                   value={values[field.id] ?? ''}
                   placeholder={field.placeholder}
@@ -94,6 +95,7 @@ export function PluginDialog({
                 />
               ) : (
                 <Input
+                  variant="muted"
                   id={`plugin-dialog-${field.id}`}
                   type={field.secret ? 'password' : 'text'}
                   value={values[field.id] ?? ''}

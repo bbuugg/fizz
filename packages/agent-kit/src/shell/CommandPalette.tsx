@@ -166,6 +166,8 @@ export function CommandPalette({
       onOpenChange={handleOpenChange}
       title={viewMeta.title}
       description={viewMeta.description}
+      // 面板里不摆关闭按钮：它紧贴搜索框右上角，既抢视觉焦点又和「Esc 关闭」重复
+      showCloseButton={false}
       className="h-[min(480px,85dvh)] sm:max-w-[480px]"
       commandProps={{
         // 二级搜索视图的命中来自服务端（含消息正文），不能再被 cmdk 按标题筛一遍

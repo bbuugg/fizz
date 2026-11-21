@@ -39,12 +39,13 @@
  * `PickerList`（见 `WorkspacePicker`）。
  */
 import * as React from 'react'
-import { CheckIcon, SearchIcon } from 'lucide-react'
+import { CheckIcon } from 'lucide-react'
 import { cn } from 'cn'
 
 import { Command, CommandItem } from './command'
 import { useHeightTransition } from './height-transition'
 import { PopoverContent } from './popover'
+import { SearchField } from './search-field'
 
 /**
  * 面板外壳：`PopoverContent` + 内部的 `Command` 根 + 底部固定槽。
@@ -103,8 +104,8 @@ function PickerPanel({
 /**
  * 顶部固定的搜索框：一颗带底色的圆角输入框，图标在左。
  *
- * 高度与列表行**一致**（`h-8` = 32px = `py-1.5` + 20px 行高）：它俩上下叠在一起，
- * 差一档就看得出是两套控件。
+ * 长相来自 `SearchField`（命令面板共用同一份）：`size="sm"` 让它与列表行**一致**
+ * （`h-8` = 32px = `py-1.5` + 20px 行高），差一档就看得出是两套控件。
  *
  * `autoFocus` 由调用方决定（手机不聚焦：软键盘会在面板定位之后才弹出，把面板顶到键盘下）。
  */
@@ -114,24 +115,17 @@ function PickerSearch({
   ...props
 }: React.ComponentProps<'input'>) {
   return (
-    <div className="shrink-0 p-2">
-      <div className="flex h-8 items-center gap-2 rounded-lg bg-muted px-2.5">
-        <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
-        <input
-          {...props}
-          onKeyDown={(event) => {
-            // `Command` 根节点把 Home / End 抢去当「选第一项 / 最后一项」，而这两个键在
-            // 输入框里是「光标到行首 / 行尾」—— 搜索词打到一半想回去改一个字都做不到
-            if (event.key === 'Home' || event.key === 'End') event.stopPropagation()
-            onKeyDown?.(event)
-          }}
-          className={cn(
-            'h-full w-full min-w-0 bg-transparent text-sm outline-none placeholder:text-muted-foreground',
-            className
-          )}
-        />
-      </div>
-    </div>
+    <SearchField size="sm" inputClassName={className}>
+      <input
+        {...props}
+        onKeyDown={(event) => {
+          // `Command` 根节点把 Home / End 抢去当「选第一项 / 最后一项」，而这两个键在
+          // 输入框里是「光标到行首 / 行尾」—— 搜索词打到一半想回去改一个字都做不到
+          if (event.key === 'Home' || event.key === 'End') event.stopPropagation()
+          onKeyDown?.(event)
+        }}
+      />
+    </SearchField>
   )
 }
 

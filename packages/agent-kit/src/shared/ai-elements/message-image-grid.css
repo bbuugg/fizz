@@ -1,0 +1,13 @@
+.message-image-grid {
+  display: grid;
+  inline-size: 36rem;
+  max-inline-size: 100%;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+  gap: 0.5rem;
+}
+
+.message-image-grid > [data-message-image] {
+  inline-size: 100%;
+  min-inline-size: 0;
+  margin-block: 0;
+}

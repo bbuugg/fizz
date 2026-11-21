@@ -1415,6 +1415,7 @@ export function GitPanel({
           {/* 提交区：一行贴在变更列表上方 —— 输入提交信息，点提交（或 Ctrl / ⌘ + Enter）；只提交已暂存的改动 */}
           <div className="flex shrink-0 items-center gap-1.5 p-2">
             <Input
+              variant="muted"
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               onKeyDown={(e) => {
@@ -1710,6 +1711,7 @@ export function GitPanel({
           </DialogHeader>
           <div className="space-y-2">
             <Input
+              variant="muted"
               value={stashMessage}
               onChange={(e) => setStashMessage(e.target.value)}
               onKeyDown={(e) => {
@@ -1789,6 +1791,7 @@ export function GitPanel({
 
           <div className="space-y-2">
             <Input
+              variant="muted"
               value={newBranchName}
               onChange={(e) => setNewBranchName(e.target.value)}
               onKeyDown={(e) => {
@@ -1801,7 +1804,7 @@ export function GitPanel({
               autoFocus
             />
             <Select value={newBranchFrom} onValueChange={setNewBranchFrom}>
-              <SelectTrigger className="w-full" title={t('从哪切出来')}>
+              <SelectTrigger variant="muted" className="w-full" title={t('从哪切出来')}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent position="popper" className="max-h-72">
@@ -1986,6 +1989,7 @@ export function GitPanel({
           {/* 表单：远端名 + 地址。改地址时名字锁死 —— git 改地址是 set-url，改名是另一回事 */}
           <div className="flex items-center gap-2">
             <Input
+              variant="muted"
               value={remoteDraft.name}
               onChange={(e) => setRemoteDraft((d) => ({ ...d, name: e.target.value }))}
               disabled={remoteDraft.editing}
@@ -1994,6 +1998,7 @@ export function GitPanel({
               className="w-28 shrink-0"
             />
             <Input
+              variant="muted"
               value={remoteDraft.url}
               onChange={(e) => setRemoteDraft((d) => ({ ...d, url: e.target.value }))}
               onKeyDown={(e) => {
@@ -2005,8 +2010,10 @@ export function GitPanel({
               placeholder="git@github.com:you/repo.git"
               autoFocus
             />
+            {/* 不要给这两颗写 `h-9!`：左边输入框是 `h-8`，按钮默认档也是 `h-8`，
+                多出来的那 4px 会让整行看着错位（`!important` 还会盖掉以后的统一调整） */}
             <SpinnerButton
-              className="h-9! shrink-0"
+              className="shrink-0"
               disabled={!canSaveRemote}
               loading={busyAction === 'save-remote'}
               onClick={() => void saveRemote()}
@@ -2016,7 +2023,7 @@ export function GitPanel({
             {remoteDraft.editing && (
               <Button
                 variant="outline"
-                className="h-9! shrink-0"
+                className="shrink-0"
                 onClick={() => setRemoteDraft({ name: '', url: '', editing: false })}
               >
                 {t('取消')}
@@ -2067,7 +2074,7 @@ export function GitPanel({
               })
             ) : (
               <p className="px-2 py-3 text-xs text-muted-foreground">
-                {t('还没有配置远端 —— 上面填一个地址点「添加」即可。')}
+                {t('还没有配置远端')}
               </p>
             )}
           </div>

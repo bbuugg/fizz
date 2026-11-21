@@ -466,6 +466,7 @@ export function ScriptsPanel() {
             <DialogTitle>{groupEdit?.id ? '重命名分组' : '新建分组'}</DialogTitle>
           </DialogHeader>
           <Input
+            variant="muted"
             autoFocus
             value={groupEdit?.name ?? ''}
             placeholder="分组名称，如：部署脚本"

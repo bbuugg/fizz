@@ -1,0 +1,325 @@
+# Dot Grid Loader — React
+
+A restrained 20-by-20 dot field pulses around two moving focal points while an image is generating.
+
+Source: User-provided original HTML
+Preserve embedded font and third-party license notices.
+
+## Install
+```sh
+npm install react react-dom
+```
+
+Keep all four files in one folder. The framework's normal build tool compiles TypeScript, Vue or Svelte.
+
+## AiImageGeneration.tsx
+```tsx
+"use client";
+import { useEffect, useRef } from "react";
+import { mountAiImageGeneration, type AiImageGenerationOptions } from "./AiImageGenerationEngine.js";
+import type { MotionController } from "./motion-runtime";
+
+export function AiImageGeneration({ options, className }: { options?: AiImageGenerationOptions; className?: string }) {
+  const host = useRef<HTMLDivElement>(null);
+  const controller = useRef<MotionController | null>(null);
+  useEffect(() => {
+    const instance = mountAiImageGeneration(host.current!, options);
+    controller.current = instance;
+    return () => { instance.destroy(); controller.current = null; };
+    // Options are updated below without remounting the state machine.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => { controller.current?.update(options ?? {}); }, [options]);
+  return <div ref={host} className={className} data-motion-component="ai-generating" />;
+}
+```
+
+## AiImageGenerationEngine.js
+```js
+// Native DOM port of the preserved reference HTML. No iframe or runtime eval.
+import { createSurface } from "./motion-runtime";
+export function mountAiImageGeneration(target, options = {}) {
+const scope = createSurface(target, {"markup":"\r\n    <div class=\"container\">\r\n        <div class=\"title\">AI is designing the poster</div>\r\n        <div class=\"card\" id=\"interactive-card\">\r\n            <div class=\"grid\" id=\"dot-grid\"></div>\r\n        </div>\r\n    </div>\r\n\r\n    \r\n","css":"\r\n        :root {\r\n            --bg-primary: #ffffff;\r\n            --text-secondary: #a1a1aa;\r\n            --surface-01: #f4f4f5;\r\n            \r\n            --dot-base: #e4e4e7; \r\n            --dot-active-rgb: 152, 152, 152; \r\n            --dot-base-rgb: 228, 228, 231;\r\n        }\r\n\r\n        body {\r\n            margin: 0;\r\n            padding: 0;\r\n            min-height: 100vh;\r\n            display: flex;\r\n            align-items: center;\r\n            justify-content: center;\r\n            background-color: var(--bg-primary);\r\n            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;\r\n            -webkit-font-smoothing: antialiased;\r\n            -moz-osx-font-smoothing: grayscale;\r\n        }\r\n\r\n        .container {\r\n            display: flex;\r\n            flex-direction: column;\r\n            gap: 20px;\r\n        }\r\n\r\n        .title {\r\n            color: var(--text-secondary);\r\n            font-size: 15px;\r\n            font-weight: 400;\r\n            padding-left: 4px;\r\n            letter-spacing: 0.3px;\r\n            display: flex;\r\n            align-items: center;\r\n            gap: 8px;\r\n        }\r\n\r\n        .title::after {\r\n            content: '';\r\n            display: inline-block;\r\n            width: 4px;\r\n            height: 4px;\r\n            background-color: var(--text-secondary);\r\n            border-radius: 50%;\r\n            animation: pulse 1.5s infinite opacity;\r\n        }\r\n\r\n        @keyframes pulse {\r\n            0%, 100% { opacity: 0.3; }\r\n            50% { opacity: 1; }\r\n        }\r\n\r\n        .card {\r\n            width: 420px;\r\n            height: 420px;\r\n            background-color: var(--surface-01);\r\n            border-radius: 24px;\r\n            position: relative;\r\n            display: flex;\r\n            align-items: center;\r\n            justify-content: center;\r\n            overflow: hidden;\r\n            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.01), 0 2px 4px -1px rgba(0, 0, 0, 0.01);\r\n        }\r\n\r\n        .grid {\r\n            display: grid;\r\n            grid-template-columns: repeat(20, 18px);\r\n            grid-template-rows: repeat(20, 18px);\r\n            place-items: center; \r\n        }\r\n\r\n        .dot {\r\n            width: 12px;\r\n            height: 12px;\r\n            background-color: var(--dot-base);\r\n            border-radius: 50%;\r\n            will-change: transform, background-color;\r\n            backface-visibility: hidden;\r\n            transform: translateZ(0) scale(0.333);\r\n        }\r\n    ","width":520,"height":560,"responsive":false}, options);
+const { document, window, requestAnimationFrame, cancelAnimationFrame, setTimeout, clearTimeout, setInterval, clearInterval, ResizeObserver, IntersectionObserver, matchMedia } = scope;
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const grid = document.getElementById('dot-grid');
+            
+            const cols = 20;
+            const rows = 20;
+            const dots = [];
+            
+            const effectRadius = 110; 
+            
+            const minScale = 0.333; 
+            // 【核心调整】：把最大缩放值从 1 降到了 0.65，让点变得更小、更克制
+            const maxScale = 0.65;     
+
+            const baseRGB = [228, 228, 231];
+            const activeRGB = [152, 152, 152]; 
+
+            for (let i = 0; i < rows * cols; i++) {
+                const dot = document.createElement('div');
+                dot.className = 'dot';
+                grid.appendChild(dot);
+                
+                dots.push({
+                    el: dot,
+                    x: (i % cols - cols / 2) * 18,     
+                    y: (Math.floor(i / cols) - rows / 2) * 18
+                });
+            }
+
+            const orbs = [
+                { rx: 90, ry: 70, sx: 0.7, sy: 1.1, px: 0, py: 0, pulseSpeed: 0 },
+                { rx: 70, ry: 95, sx: -1.2, sy: 0.8, px: 2, py: 1.5, pulseSpeed: 0.35 }
+            ];
+
+            const animateDots = (timestamp) => {
+                const time = timestamp * 0.0012;
+
+                const activeFocus = orbs.map(orb => {
+                    const weight = orb.pulseSpeed > 0 
+                        ? (Math.sin(time * orb.pulseSpeed) + 1) / 2 
+                        : 1;
+
+                    return {
+                        x: Math.sin(time * orb.sx + orb.px) * orb.rx,
+                        y: Math.cos(time * orb.sy + orb.py) * orb.ry,
+                        weight: weight
+                    };
+                });
+
+                dots.forEach((dot) => {
+                    let combinedIntensity = 0;
+
+                    activeFocus.forEach(focus => {
+                        const dx = focus.x - dot.x;
+                        const dy = focus.y - dot.y;
+                        const distance = Math.sqrt(dx * dx + dy * dy);
+
+                        if (distance < effectRadius) {
+                            let intensity = 1 - (distance / effectRadius);
+                            intensity = Math.pow(intensity, 1.4) * focus.weight; 
+                            
+                            combinedIntensity += intensity;
+                        }
+                    });
+
+                    combinedIntensity = Math.min(1.0, combinedIntensity);
+
+                    if (combinedIntensity > 0.01) {
+                        const scale = minScale + (maxScale - minScale) * combinedIntensity;
+
+                        const r = Math.round(baseRGB[0] + (activeRGB[0] - baseRGB[0]) * combinedIntensity);
+                        const g = Math.round(baseRGB[1] + (activeRGB[1] - baseRGB[1]) * combinedIntensity);
+                        const b = Math.round(baseRGB[2] + (activeRGB[2] - baseRGB[2]) * combinedIntensity);
+
+                        dot.el.style.transform = `translateZ(0) scale(${scale})`;
+                        dot.el.style.backgroundColor = `rgb(${r}, ${g}, ${b})`;
+                    } else {
+                        dot.el.style.transform = `translateZ(0) scale(${minScale})`;
+                        dot.el.style.backgroundColor = 'var(--dot-base)';
+                    }
+                });
+
+                requestAnimationFrame(animateDots);
+            };
+
+            requestAnimationFrame(animateDots);
+        });
+    
+
+scope.ready();
+return scope.controller;
+}
+```
+
+## motion-runtime.ts
+```ts
+/** Shared native DOM lifecycle. No iframe, global IDs, or executable HTML. */
+export interface MotionOptions { height?: number; reducedMotion?: boolean }
+export interface MotionController {
+  element: HTMLElement;
+  root: ShadowRoot;
+  update(options: MotionOptions): void;
+  destroy(): void;
+}
+export interface SurfaceConfig { markup: string; css: string; width: number; height: number; responsive?: boolean }
+const fonts = new Map<string, { face: FontFace; users: number }>();
+
+export function createSurface(target: HTMLElement, config: SurfaceConfig, initial: MotionOptions = {}) {
+  let options = { ...initial };
+  let destroyed = false;
+  let scale = 1;
+  const owner = target.ownerDocument;
+  const browser = owner.defaultView!;
+  const element = owner.createElement("div");
+  element.dataset.motionSurface = "";
+  element.style.cssText = "display:block;position:relative;width:100%;min-width:0;overflow:hidden;isolation:isolate;";
+  target.appendChild(element);
+  const root = element.attachShadow({ mode: "open" });
+  const style = owner.createElement("style");
+  style.textContent = `:host{display:block}[hidden]{display:none!important}*{box-sizing:border-box}.motion-frame{position:relative;transform-origin:top left;overflow:hidden}.motion-body{position:relative;width:100%;min-height:100%;margin:0}.motion-body>.leibox-otp.otp-stage{height:var(--motion-height)}.motion-body>.leibox-share.share-stage{min-height:var(--motion-height)}:host([data-reduced-motion=true]) *{animation-duration:0s!important;animation-iteration-count:1!important;transition-duration:0s!important}` + config.css
+    .replace(/(^|[,\s}>+~])(?:html|body)(?=[\s,{.#:[>])/g, "$1.motion-body")
+    .replace(/:root\b/g, ".motion-body")
+    .replace(/100(?:s|d|l)?vh/g, "var(--motion-height)")
+    .replace(/position\s*:\s*fixed/g, "position:absolute");
+  const frame = owner.createElement("div");
+  frame.className = "motion-frame";
+  const body = owner.createElement("div");
+  body.className = "motion-body";
+  body.innerHTML = config.markup;
+  frame.appendChild(body);
+  root.append(style, frame);
+  const frames = new Set<number>();
+  const deferredFrames = new Set<FrameRequestCallback>();
+  let painted = false;
+  const timeouts = new Set<number>();
+  const intervals = new Set<number>();
+  const observers = new Set<ResizeObserver | IntersectionObserver>();
+  const cleanups: (() => void)[] = [];
+  for (const rule of config.css.matchAll(/@font-face\s*\{([^}]+)\}/g)) {
+    const name = rule[1].match(/font-family:\s*["']?([^;"']+)/)?.[1]?.trim();
+    const source = rule[1].match(/src:\s*(url\([^)]*\))/)?.[1];
+    if (!name || !source) continue;
+    const key = `${name}:${source}`;
+    let cached = fonts.get(key);
+    if (!cached) { const face = new FontFace(name, source, { weight: "100 900" }); owner.fonts.add(face); void face.load().catch(() => {}); cached = { face, users: 0 }; fonts.set(key, cached); }
+    cached.users++;
+    cleanups.push(() => { const entry = fonts.get(key); if (entry && --entry.users === 0) { owner.fonts.delete(entry.face); fonts.delete(key); } });
+  }
+  const ready: EventListenerOrEventListenerObject[] = [];
+  const listeners: { target: EventTarget; type: string; listener: EventListenerOrEventListenerObject; options?: boolean | AddEventListenerOptions }[] = [];
+  const on = (target: EventTarget, type: string, listener: EventListenerOrEventListenerObject, settings?: boolean | AddEventListenerOptions) => {
+    target.addEventListener(type, listener, settings);
+    listeners.push({ target, type, listener, options: settings });
+  };
+  const requestFrame: typeof requestAnimationFrame = (callback) => {
+    if (destroyed) return 0;
+    if (owner.hidden || (painted && reduced())) { deferredFrames.add(callback); return 0; }
+    const id = browser.requestAnimationFrame(time => { frames.delete(id); painted = true; if (!destroyed) callback(time); });
+    frames.add(id); return id;
+  };
+  const cancelFrame = (id: number) => { browser.cancelAnimationFrame(id); frames.delete(id); };
+  const timeout = (callback: () => void, ms?: number) => {
+    const id = browser.setTimeout(() => { timeouts.delete(id); if (!destroyed) callback(); }, ms);
+    timeouts.add(id); return id;
+  };
+  const interval = (callback: () => void, ms?: number) => {
+    const id = browser.setInterval(() => { if (!destroyed) callback(); }, ms);
+    intervals.add(id); return id;
+  };
+  const clearTimeout = (id: number) => { browser.clearTimeout(id); timeouts.delete(id); };
+  const clearInterval = (id: number) => { browser.clearInterval(id); intervals.delete(id); };
+  const query = (selector: string) => selector === "body" || selector === "html" ? body : root.querySelector(selector);
+  const document = new Proxy(owner, {
+    get(original, key) {
+      if (key === "body" || key === "documentElement") return body;
+      if (key === "activeElement") return root.activeElement;
+      if (key === "getElementById") return (id: string) => root.getElementById(id);
+      if (key === "querySelector") return query;
+      if (key === "querySelectorAll") return (selector: string) => root.querySelectorAll(selector);
+      if (key === "addEventListener") return (type: string, listener: EventListenerOrEventListenerObject, settings?: AddEventListenerOptions) => {
+        if (type === "DOMContentLoaded") ready.push(listener);
+        else on(owner, type, listener, settings);
+      };
+      if (key === "removeEventListener") return owner.removeEventListener.bind(owner);
+      const value = Reflect.get(original, key, original);
+      return typeof value === "function" ? value.bind(original) : value;
+    },
+  });
+  const reduced = () => options.reducedMotion ?? browser.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const resume = () => { if (!owner.hidden && !reduced()) { const callbacks = [...deferredFrames]; deferredFrames.clear(); callbacks.forEach(requestFrame); } };
+  on(owner, "visibilitychange", resume);
+  const matchMedia = (query: string) => {
+    const media = browser.matchMedia(query);
+    return new Proxy(media, { get(original, key) {
+      if (key === "matches" && query.includes("prefers-reduced-motion")) return reduced();
+      if (key === "addEventListener") return (type: string, listener: EventListener) => on(media, type, listener);
+      const value = Reflect.get(original, key, original);
+      return typeof value === "function" ? value.bind(original) : value;
+    } });
+  };
+  const window = new Proxy(browser, { get(original, key) {
+    if (key === "document") return document;
+    if (key === "innerWidth") return frame.offsetWidth;
+    if (key === "innerHeight") return config.height;
+    if (key === "requestAnimationFrame") return requestFrame;
+    if (key === "cancelAnimationFrame") return cancelFrame;
+    if (key === "setTimeout") return timeout;
+    if (key === "clearTimeout") return clearTimeout;
+    if (key === "setInterval") return interval;
+    if (key === "clearInterval") return clearInterval;
+    if (key === "matchMedia") return matchMedia;
+    if (key === "addEventListener") return (type: string, listener: EventListener, settings?: AddEventListenerOptions) => on(browser, type, listener, settings);
+    const value = Reflect.get(original, key, original);
+    return typeof value === "function" ? value.bind(original) : value;
+  } });
+  const resize = () => {
+    const available = element.clientWidth || config.width;
+    scale = config.responsive ? 1 : Math.min(1, available / config.width);
+    const height = options.height ?? config.height;
+    element.style.setProperty("--motion-height", `${height}px`);
+    frame.style.width = `${config.responsive ? available : Math.max(config.width, available)}px`;
+    frame.style.height = config.responsive ? "auto" : `${height}px`;
+    frame.style.minHeight = config.responsive ? `${height}px` : "0";
+    frame.style.transform = `scale(${scale})`;
+    body.style.minHeight = `${height}px`;
+    element.style.height = config.responsive ? "auto" : `${height * scale}px`;
+    element.dataset.reducedMotion = String(reduced());
+  };
+  const resizeObserver = new browser.ResizeObserver(resize);
+  resizeObserver.observe(element);
+  resize();
+  const TrackedResizeObserver = class extends browser.ResizeObserver {
+    constructor(callback: ResizeObserverCallback) { super(callback); observers.add(this); }
+  };
+  const TrackedIntersectionObserver = class extends browser.IntersectionObserver {
+    constructor(callback: IntersectionObserverCallback, init?: IntersectionObserverInit) { super(callback, init); observers.add(this); }
+  };
+  const controller: MotionController = {
+    element, root,
+    update(next) { if (destroyed) return; options = { ...options, ...next }; resize(); resume(); },
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      frames.forEach(id => browser.cancelAnimationFrame(id));
+      timeouts.forEach(id => browser.clearTimeout(id));
+      intervals.forEach(id => browser.clearInterval(id));
+      resizeObserver.disconnect(); observers.forEach(observer => observer.disconnect());
+      listeners.forEach(({ target, type, listener, options }) => target.removeEventListener(type, listener, options));
+      cleanups.reverse().forEach(cleanup => cleanup());
+      root.querySelectorAll("dialog[open]").forEach(dialog => (dialog as HTMLDialogElement).close());
+      element.remove();
+      frames.clear(); deferredFrames.clear(); timeouts.clear(); intervals.clear();
+    },
+  };
+  return {
+    ...controller, controller, body, frame, document, window, on, reduced,
+    requestAnimationFrame: requestFrame, cancelAnimationFrame: cancelFrame,
+    setTimeout: timeout, clearTimeout, setInterval: interval, clearInterval,
+    ResizeObserver: TrackedResizeObserver, IntersectionObserver: TrackedIntersectionObserver, matchMedia,
+    addCleanup(cleanup: () => void) { cleanups.push(cleanup); },
+    ready() { ready.splice(0).forEach(listener => { const event = new Event("DOMContentLoaded"); if (typeof listener === "function") listener.call(document, event); else listener.handleEvent(event); }); },
+    point(event: { clientX: number; clientY: number }) { const rect = frame.getBoundingClientRect(); return { x: (event.clientX - rect.x) / scale, y: (event.clientY - rect.y) / scale }; },
+    rect(node: Element) { const rect = node.getBoundingClientRect(); const origin = frame.getBoundingClientRect(); return { x: (rect.x - origin.x) / scale, y: (rect.y - origin.y) / scale, left: (rect.left - origin.left) / scale, top: (rect.top - origin.top) / scale, right: (rect.right - origin.left) / scale, bottom: (rect.bottom - origin.top) / scale, width: rect.width / scale, height: rect.height / scale }; },
+  };
+}
+```
+
+## AiImageGenerationEngine.d.ts
+```ts
+import type { MotionOptions, MotionController } from "./motion-runtime";
+export type AiImageGenerationOptions = MotionOptions;
+export function mountAiImageGeneration(target: HTMLElement, options?: AiImageGenerationOptions): MotionController;
+```
+
+## Usage
+```tsx
+import { AiImageGeneration } from "./AiImageGeneration";
+
+export default function App() {
+  return <AiImageGeneration />;
+}
+```

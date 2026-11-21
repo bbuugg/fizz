@@ -266,6 +266,7 @@ export function OpenApiImportModal({
                 <Label htmlFor="openapi-url">规格地址</Label>
                 <div className="flex items-center gap-2">
                   <Input
+                    variant="muted"
                     id="openapi-url"
                     value={url}
                     onChange={(e) => setUrl(e.target.value)}

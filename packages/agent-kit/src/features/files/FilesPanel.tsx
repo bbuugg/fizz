@@ -3155,6 +3155,7 @@ export function FilesPanel({
           </DialogHeader>
           <div className="py-2">
             <Input
+              variant="muted"
               value={nameInput}
               onChange={(e) => setNameInput(e.target.value)}
               placeholder={nameDialogText?.placeholder}

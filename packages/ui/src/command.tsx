@@ -1,6 +1,5 @@
 import * as React from "react"
 import { Command as CommandPrimitive } from "cmdk"
-import { SearchIcon } from "lucide-react"
 import { cn } from "cn"
 
 import {
@@ -10,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./dialog"
+import { SearchField } from "./search-field"
 
 function Command({
   className,
@@ -77,13 +77,12 @@ function CommandDialog({
 /**
  * 面板顶部的搜索框。
  *
- * 长相与 `picker-panel.tsx` 的 `PickerSearch` **同一套**：一颗 `bg-muted` 的圆角底、
- * 图标在左、两侧留 `p-2`。命令面板 / 模型选择 / 工作区选择这几处的搜索框本来就该
- * 长一样 —— 之前这里是裸输入框 + 上下边框，和选择器那颗并排看就是两套控件。
+ * 外壳来自 `search-field.tsx` 的 `SearchField`（模型选择 / 工作区选择的 `PickerSearch`
+ * 共用同一份）：`p-2` 外边距 + `bg-muted` 圆角底 + 图标在左。命令面板 / 模型选择 /
+ * 工作区选择这几处的搜索框本来就该长一样，别再往这里单独写外壳。
  *
- * 高度比 `PickerSearch` 高两档（`h-10` = 40px，那边是 `h-8` = 32px，跟菜单行高对齐）：
- * 命令面板是一整块 480px 宽的大面板，搜索框是它唯一的主入口，压到 32px 会显得憋屈；
- * 而选择器那颗必须与列表行同高，否则两行叠在一起像两套控件。要改高度就改这一处。
+ * `size="md"`（40px）比选择器那档（`sm` = 32px，与列表行同高）高两档：命令面板是一整块
+ * 480px 宽的大面板，搜索框是它唯一的主入口，压到 32px 会显得憋屈。
  */
 function CommandInput({
   className,
@@ -97,20 +96,10 @@ function CommandInput({
   icon?: React.ReactNode
 }) {
   return (
-    <div data-slot="command-input-wrapper" className="shrink-0 p-2">
-      <div className="flex h-10 items-center gap-2 rounded-lg bg-muted px-3">
-        {leading}
-        {icon ?? <SearchIcon className="size-4 shrink-0 text-muted-foreground" />}
-        <CommandPrimitive.Input
-          data-slot="command-input"
-          className={cn(
-            "h-full w-full min-w-0 bg-transparent text-sm outline-hidden placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50",
-            className
-          )}
-          {...props}
-        />
-      </div>
-    </div>
+    <SearchField size="md" leading={leading} icon={icon} inputClassName={className}>
+      {/* 必须是 cmdk 自己的 Input：过滤值在 Command 的 store 里，原生 input 筛不动列表 */}
+      <CommandPrimitive.Input data-slot="command-input" {...props} />
+    </SearchField>
   )
 }
 

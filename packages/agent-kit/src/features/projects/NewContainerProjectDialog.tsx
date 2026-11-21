@@ -103,6 +103,7 @@ export function NewContainerProjectDialog({
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="container-project-name">名称（可选）</Label>
             <Input
+              variant="muted"
               id="container-project-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -122,7 +123,7 @@ export function NewContainerProjectDialog({
               onValueChange={(v) => setImage(v as ContainerEnvId)}
               disabled={busy}
             >
-              <SelectTrigger>
+              <SelectTrigger variant="muted">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -150,6 +151,7 @@ export function NewContainerProjectDialog({
               <Label htmlFor="container-project-memory">内存上限（MB，可选）</Label>
               {/* 不传 min/max：0 也算合法（= 不限制），边界由 `limitsError` 说人话 */}
               <NumberField
+                variant="muted"
                 id="container-project-memory"
                 step={64}
                 value={memory}
@@ -161,6 +163,7 @@ export function NewContainerProjectDialog({
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="container-project-cpus">CPU 上限（核，可选）</Label>
               <NumberField
+                variant="muted"
                 id="container-project-cpus"
                 integer={false}
                 step={0.1}
@@ -176,6 +179,7 @@ export function NewContainerProjectDialog({
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="container-project-git">Git 地址（可选）</Label>
             <Input
+              variant="muted"
               id="container-project-git"
               value={gitUrl}
               onChange={(e) => setGitUrl(e.target.value)}

@@ -162,7 +162,7 @@ export function RunScriptDialog({
               <p className="text-xs text-muted-foreground">还没有脚本，请先在主机侧栏新建。</p>
             ) : (
               <Select value={selectedScript} onValueChange={setSelectedScript}>
-                <SelectTrigger className="w-full">
+                <SelectTrigger variant="muted" className="w-full">
                   <SelectValue placeholder="选择脚本" />
                 </SelectTrigger>
                 <SelectContent>
@@ -185,7 +185,7 @@ export function RunScriptDialog({
               </div>
             ) : (
               <Select value={selectedHost} onValueChange={setSelectedHost}>
-                <SelectTrigger className="w-full">
+                <SelectTrigger variant="muted" className="w-full">
                   <SelectValue placeholder="选择主机" />
                 </SelectTrigger>
                 <SelectContent>

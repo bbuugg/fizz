@@ -182,6 +182,7 @@ export function ScriptEditDialog({
           <div>
             <div className="mb-1 text-xs text-muted-foreground">名称</div>
             <Input
+              variant="muted"
               autoFocus
               value={name}
               placeholder="脚本名称，如：重启服务"
@@ -194,6 +195,7 @@ export function ScriptEditDialog({
           <div>
             <div className="mb-1 text-xs text-muted-foreground">描述（可选）</div>
             <Input
+              variant="muted"
               value={description}
               placeholder="一句话说明它做什么"
               onChange={(e) => setDescription(e.target.value)}

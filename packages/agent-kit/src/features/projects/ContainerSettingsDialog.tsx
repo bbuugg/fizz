@@ -209,6 +209,7 @@ export function ContainerSettingsDialog({
                 传 min 会把 0 标红，跟底下的提示自相矛盾。
               */}
               <NumberField
+                variant="muted"
                 id="container-memory-limit"
                 step={64}
                 value={memory}
@@ -221,6 +222,7 @@ export function ContainerSettingsDialog({
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="container-cpu-limit">CPU 上限（核）</Label>
               <NumberField
+                variant="muted"
                 id="container-cpu-limit"
                 integer={false}
                 step={0.1}
@@ -245,6 +247,7 @@ export function ContainerSettingsDialog({
             <Label htmlFor="container-preview-key">预览 key</Label>
             <div className="flex items-center gap-2">
               <Input
+                variant="muted"
                 id="container-preview-key"
                 value={previewKey}
                 readOnly

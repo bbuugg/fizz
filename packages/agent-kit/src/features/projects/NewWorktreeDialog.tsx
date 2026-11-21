@@ -128,6 +128,7 @@ export function NewWorktreeDialog({
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="new-worktree-id">{tr('worktree 标识')}</Label>
             <Input
+              variant="muted"
               id="new-worktree-id"
               autoFocus
               value={identifier}
@@ -145,6 +146,7 @@ export function NewWorktreeDialog({
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="new-worktree-name">{tr('项目名（可选）')}</Label>
             <Input
+              variant="muted"
               id="new-worktree-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -164,7 +166,7 @@ export function NewWorktreeDialog({
               value={baseBranch || HEAD_SENTINEL}
               onValueChange={(v) => setBaseBranch(v === HEAD_SENTINEL ? '' : v)}
             >
-              <SelectTrigger>
+              <SelectTrigger variant="muted">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

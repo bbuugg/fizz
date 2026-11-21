@@ -198,6 +198,7 @@ export function ApiSaveDialog({
             <div className="space-y-1.5">
               <div className="text-xs font-medium text-muted-foreground">名称</div>
               <Input
+                variant="muted"
                 autoFocus
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -240,6 +241,7 @@ export function ApiSaveDialog({
             <div className="text-xs font-medium text-muted-foreground">新建分组</div>
             <div className="flex items-center gap-2">
               <Input
+                variant="muted"
                 value={newGroupName}
                 onChange={(e) => setNewGroupName(e.target.value)}
                 placeholder="新分组名称，如：用户中心"

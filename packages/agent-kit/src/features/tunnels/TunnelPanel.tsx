@@ -601,7 +601,7 @@ function TunnelDialog({
             <div className="space-y-1.5">
               <Label htmlFor="tunnel-host">主机</Label>
               <Select value={hostId} onValueChange={setHostId}>
-                <SelectTrigger id="tunnel-host" className="w-full">
+                <SelectTrigger variant="muted" id="tunnel-host" className="w-full">
                   <SelectValue placeholder="选择承载隧道的 SSH 主机" />
                 </SelectTrigger>
                 <SelectContent>
@@ -638,12 +638,14 @@ function TunnelDialog({
               <Label htmlFor="tunnel-bind">监听地址与端口</Label>
               <div className="grid grid-cols-[minmax(0,1fr)_7rem] gap-2">
                 <Input
+                  variant="muted"
                   id="tunnel-bind"
                   value={bindHost}
                   placeholder="127.0.0.1"
                   onChange={(e) => setBindHost(e.target.value)}
                 />
                 <Input
+                  variant="muted"
                   value={bindPort}
                   inputMode="numeric"
                   placeholder={type === 'remote' ? '0=自动' : '端口'}
@@ -662,12 +664,14 @@ function TunnelDialog({
                 <Label htmlFor="tunnel-target">目标地址与端口</Label>
                 <div className="grid grid-cols-[minmax(0,1fr)_7rem] gap-2">
                   <Input
+                    variant="muted"
                     id="tunnel-target"
                     value={targetHost}
                     placeholder={type === 'remote' ? '127.0.0.1' : '10.0.0.5'}
                     onChange={(e) => setTargetHost(e.target.value)}
                   />
                   <Input
+                    variant="muted"
                     value={targetPort}
                     inputMode="numeric"
                     placeholder="端口"
@@ -683,6 +687,7 @@ function TunnelDialog({
             <div className="space-y-1.5">
               <Label htmlFor="tunnel-label">备注（可选）</Label>
               <Input
+                variant="muted"
                 id="tunnel-label"
                 value={label}
                 placeholder="例如：内网 PostgreSQL"

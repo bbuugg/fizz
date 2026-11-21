@@ -321,6 +321,7 @@ export function HostDialog({
             {kind === 'local' ? (
               <>
                 <Input
+                  variant="muted"
                   placeholder={t('名称，如「项目终端」「Git Bash」')}
                   value={name}
                   onChange={(e) => setName(e.target.value)}
@@ -332,7 +333,7 @@ export function HostDialog({
                     value={shellId || NO_SHELL}
                     onValueChange={(value) => setShellId(value === NO_SHELL ? '' : value)}
                   >
-                    <SelectTrigger className="w-full">
+                    <SelectTrigger variant="muted" className="w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -352,6 +353,7 @@ export function HostDialog({
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="local-cwd">{t('工作目录')}</Label>
                   <Input
+                    variant="muted"
                     id="local-cwd"
                     spellCheck={false}
                     className="font-mono text-xs"
@@ -371,6 +373,7 @@ export function HostDialog({
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="local-args">{t('启动参数')}</Label>
                   <Textarea
+                    variant="muted"
                     id="local-args"
                     rows={2}
                     spellCheck={false}
@@ -387,6 +390,7 @@ export function HostDialog({
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="local-auto">{t('启动后自动执行')}</Label>
                   <Input
+                    variant="muted"
                     id="local-auto"
                     spellCheck={false}
                     className="font-mono text-xs"
@@ -406,11 +410,13 @@ export function HostDialog({
               */
               <div className="flex flex-col gap-3">
                 <Input
+                  variant="muted"
                   placeholder={t('名称（可留空）')}
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                 />
                 <Input
+                  variant="muted"
                   placeholder={t('主机地址，如 10.0.0.8')}
                   value={host}
                   onChange={(e) => setHost(e.target.value)}
@@ -419,12 +425,14 @@ export function HostDialog({
                     1:2 分栏两边都不挤，是这里唯一还划算的配对 */}
                 <div className="grid grid-cols-[minmax(5.5rem,1fr)_2fr] gap-3">
                   <Input
+                    variant="muted"
                     inputMode="numeric"
                     placeholder={t('端口 {port}', { port: DEFAULT_SSH_PORT })}
                     value={port}
                     onChange={(e) => setPort(e.target.value)}
                   />
                   <Input
+                    variant="muted"
                     placeholder={t('用户名，如 root')}
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
@@ -441,6 +449,7 @@ export function HostDialog({
 
                 {authType === 'password' ? (
                   <Input
+                    variant="muted"
                     type="password"
                     autoComplete="new-password"
                     placeholder={sshEditing?.hasPassword ? t('密码（留空 = 不修改）') : t('密码')}
@@ -450,6 +459,7 @@ export function HostDialog({
                 ) : (
                   <>
                     <Textarea
+                      variant="muted"
                       // 3 行够看个开头，私钥本体没必要在这里全展开（弹窗要矮）
                       rows={3}
                       spellCheck={false}
@@ -489,6 +499,7 @@ export function HostDialog({
                       />
                     </div>
                     <Input
+                      variant="muted"
                       type="password"
                       autoComplete="new-password"
                       placeholder={t('私钥口令（没有就留空）')}
@@ -507,7 +518,7 @@ export function HostDialog({
                     value={jumpHostId || NO_JUMP}
                     onValueChange={(value) => setJumpHostId(value === NO_JUMP ? '' : value)}
                   >
-                    <SelectTrigger className="w-full">
+                    <SelectTrigger variant="muted" className="w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -541,6 +552,7 @@ export function HostDialog({
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="ssh-keepalive">{t('保活（秒）')}</Label>
                     <Input
+                      variant="muted"
                       id="ssh-keepalive"
                       inputMode="numeric"
                       placeholder={String(DEFAULT_KEEPALIVE)}
