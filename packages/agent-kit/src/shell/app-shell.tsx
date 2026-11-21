@@ -317,14 +317,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setPaletteSession((n) => n + 1);
     setPaletteOpen(true);
   };
+  const openPaletteRef = useRef(openPalette);
+  openPaletteRef.current = openPalette;
 
   /*
     登记给 `requestCommandPalette()`：工作区下拉里那条「新建工作区」深在对话面板里，
     拿不到 `setPaletteOpen`，也不值得为它把 `onOpen` 打洞穿过七八层组件。
-    渲染期赋值是幂等的（每次渲染换成最新闭包）；卸载时清掉，别留一个指向已卸载组件的 setter。
+    effect setup 与 cleanup 成对管理；StrictMode 重放 effect 后入口仍有效。
   */
-  setCommandPaletteOpener(openPalette);
-  useEffect(() => () => setCommandPaletteOpener(null), []);
+  useEffect(() => {
+    const opener = (entry: CommandPaletteEntry): void => openPaletteRef.current(entry);
+    setCommandPaletteOpener(opener);
+    return () => setCommandPaletteOpener(null);
+  }, []);
 
   /*
     「新建工作区」的四条入口（选文件夹 / 从 Git 导入 / 连接远端服务器 / 新建容器型项目）

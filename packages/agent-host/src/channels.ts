@@ -9,6 +9,7 @@
 /** IPC 通道名（主进程与 preload 共用，别手抄字符串） */
 export const AGENT_IPC = {
   http: 'agent:http',
+  httpCancel: 'agent:http:cancel',
   sseOpen: 'agent:sse:open',
   sseChunk: 'agent:sse:chunk',
   sseEnd: 'agent:sse:end',
@@ -77,6 +78,8 @@ export interface AgentTransportRequest {
   method?: string
   headers?: Record<string, string>
   body?: string
+  /** Optional renderer-generated id for canceling an in-flight one-shot request. */
+  requestId?: string
 }
 
 export interface AgentHttpResponse {
@@ -214,6 +217,8 @@ export interface DroppedFile {
 export interface AgentTransportBridge {
   /** 一次性请求 */
   request(input: AgentTransportRequest): Promise<AgentHttpResponse>
+  /** 中止一条正在主进程执行的一次性请求 */
+  cancelRequest(requestId: string): Promise<void>
   /** 打开一条 SSE 读流；chunk / end 通过订阅回调送达 */
   openSse(input: AgentSseOpenRequest): Promise<AgentSseOpenResult>
   /** 断开某条读流（不中止服务端那一轮） */
@@ -307,4 +312,58 @@ export interface AgentTransportBridge {
   onWsData(cb: (event: WsDataEvent) => void): () => void
   /** 订阅关闭；返回退订函数 */
   onWsClosed(cb: (event: WsClosedEvent) => void): () => void
+}
+
+/** Race a one-shot IPC call against its AbortSignal and notify the host to stop it. */
+export function invokeWithAbort<T>(
+  signal: AbortSignal,
+  invoke: () => Promise<T>,
+  cancel: () => Promise<unknown>
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException('请求已中止', 'AbortError'))
+      return
+    }
+
+    let settled = false
+    const cleanup = (): void => signal.removeEventListener('abort', onAbort)
+    const onAbort = (): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      try {
+        void Promise.resolve(cancel()).catch(() => undefined)
+      } catch {
+        // Cancellation is best-effort; callers must still observe AbortError immediately.
+      }
+      reject(new DOMException('请求已中止', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+
+    let request: Promise<T>
+    try {
+      request = invoke()
+    } catch (error) {
+      settled = true
+      cleanup()
+      reject(error)
+      return
+    }
+    if (signal.aborted) onAbort()
+    request.then(
+      (value) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        resolve(value)
+      },
+      (error: unknown) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        reject(error)
+      }
+    )
+  })
 }

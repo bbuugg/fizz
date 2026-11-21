@@ -38,6 +38,18 @@ export function nextAttachmentId(): string {
   return `att-${Date.now()}-${attachmentSeq}`
 }
 
+/**
+ * Delayed file-preview callbacks may run after the draft was cleared or its view unmounted.
+ * They may start an upload only while their controller and conversation still match.
+ */
+export function shouldStartAttachmentUpload(
+  signal: AbortSignal,
+  pickedConversationId: string | null,
+  activeConversationId: string | null
+): boolean {
+  return !signal.aborted && pickedConversationId === activeConversationId
+}
+
 /** 本地预校验用的容量口径（按「所有可用上传源的并集」算出来，见 ChatPanel 的 providers） */
 export interface UploadLimits {
   /** 任一可用源接受的 MIME 精确集合 */

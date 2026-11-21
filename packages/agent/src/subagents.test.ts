@@ -821,6 +821,27 @@ describe('读图子任务（image_reader）', () => {
     expect(out).toContain('EACCES')
   })
 
+  it('默认附件用唯一 URL 识别，两个同名文件都能传给读图子任务', async () => {
+    const attachments = [
+      { name: 'screenshot.png', url: '/api/uploads/one.png', mediaType: 'image/png' },
+      { name: 'screenshot.png', url: '/api/uploads/two.png', mediaType: 'image/png' }
+    ]
+    const read = vi.fn(async (_url: string) => ({ mediaType: 'image/png', bytes: PNG }))
+    const built = build({ ids: ['image_reader'], images: { attachments, read } })
+    vi.mocked(streamText).mockClear()
+    vi.mocked(streamText).mockReturnValue(fakeStream('两张截图都已查看。') as never)
+
+    await (built.tools['agent-image_reader'] as DelegationTool).execute(
+      { task: '比较这两张截图' },
+      { toolCallId: 'p1' }
+    )
+    await wait(built, 'p1')
+
+    const content = lastRunArgs().messages[0].content as Array<{ type: string }>
+    expect(read.mock.calls.map(([url]) => url)).toEqual(['/api/uploads/one.png', '/api/uploads/two.png'])
+    expect(content.filter((part) => part.type === 'image')).toHaveLength(2)
+  })
+
   it('显式给工作区路径也能读；越界 / 非图片被跳过并写进任务说明', async () => {
     const built = build({
       ids: ['image_reader'],
@@ -842,6 +863,33 @@ describe('读图子任务（image_reader）', () => {
     // 没带上的必须说出来：静默丢掉会让它把「没看到」编成结论
     expect(text).toContain('../secret.png')
     expect(text).toContain('notes.txt')
+  })
+
+  it('接受 Windows 盘符形式的工作区绝对路径', async () => {
+    const path = 'C:\\repo\\shots\\ui.png'
+    const backend: WorkspaceBackend = {
+      resolve: (value: string) => {
+        if (value !== path) throw new Error('outside workspace')
+        return value
+      },
+      stat: async (absolute: string) => absolute === path ? { type: 'file', size: PNG.byteLength } : null,
+      readFile: async (absolute: string) => {
+        if (absolute !== path) throw new Error('ENOENT')
+        return PNG
+      }
+    } as unknown as WorkspaceBackend
+    const built = build({ ids: ['image_reader'], backend })
+    vi.mocked(streamText).mockClear()
+    vi.mocked(streamText).mockReturnValue(fakeStream('设计稿包含两栏。') as never)
+
+    await (built.tools['agent-image_reader'] as DelegationTool).execute(
+      { task: '看看设计稿', images: [path] },
+      { toolCallId: 'p1' }
+    )
+    await wait(built, 'p1')
+
+    const content = lastRunArgs().messages[0].content as Array<{ type: string }>
+    expect(content.filter((part) => part.type === 'image')).toHaveLength(1)
   })
 
   it('一张都没拿到就当场拒绝，不空跑一次子 run', async () => {

@@ -277,7 +277,9 @@ export async function putWithProvider(opts: {
   workspacePath?: string
   providerId?: string
   input: UploadPutInput
+  signal?: AbortSignal
 }): Promise<{ url: string; providerId: string }> {
+  if (opts.signal?.aborted) throw new DOMException('上传已取消', 'AbortError')
   const provider = await pickProvider(opts)
   const { input } = opts
 
@@ -294,17 +296,39 @@ export async function putWithProvider(opts: {
   }
 
   let timer: ReturnType<typeof setTimeout> | undefined
+  const controller = new AbortController()
+  let rejectAbort: ((reason: DOMException) => void) | undefined
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectAbort = reject
+  })
+  const onAbort = (): void => {
+    controller.abort()
+    rejectAbort?.(new DOMException('上传已取消', 'AbortError'))
+  }
+  opts.signal?.addEventListener('abort', onAbort, { once: true })
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`上传超时（${PUT_TIMEOUT_MS}ms）`)), PUT_TIMEOUT_MS)
+    timer = setTimeout(() => {
+      controller.abort()
+      reject(new Error(`上传超时（${PUT_TIMEOUT_MS}ms）`))
+    }, PUT_TIMEOUT_MS)
     // 别让这颗定时器把进程钉住（Node 才有 unref）
     ;(timer as unknown as { unref?: () => void }).unref?.()
   })
   let url: string
   try {
-    const result = await Promise.race([provider.put(input), timeout])
+    if (opts.signal?.aborted) {
+      controller.abort()
+      throw new DOMException('上传已取消', 'AbortError')
+    }
+    const result = await Promise.race([
+      provider.put({ ...input, signal: controller.signal }),
+      timeout,
+      ...(opts.signal ? [aborted] : [])
+    ])
     url = typeof result?.url === 'string' ? result.url.trim() : ''
   } finally {
     if (timer) clearTimeout(timer)
+    opts.signal?.removeEventListener('abort', onAbort)
   }
 
   if (!url) throw new Error(`上传源「${provider.title}」没有返回 url`)

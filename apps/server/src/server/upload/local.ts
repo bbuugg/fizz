@@ -10,7 +10,7 @@
  * `/api/uploads/...`，server 会把字节读出来塞进请求体（见 `attachments.ts`）。
  */
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { resolveDataDir } from '@fizz/workspace'
 import type { UploadAdapter } from './types'
@@ -31,13 +31,32 @@ export function uploadsDir(): string {
 export class LocalUploadAdapter implements UploadAdapter {
   readonly id = 'local'
 
-  async put(input: { name: string; mediaType: string; bytes: Uint8Array }): Promise<{ url: string }> {
+  async put(input: {
+    name: string
+    mediaType: string
+    bytes: Uint8Array
+    signal?: AbortSignal
+  }): Promise<{ url: string }> {
     const ext = EXT_BY_MIME[input.mediaType]
     if (!ext) throw new Error(`不支持的附件类型：${input.mediaType}`)
+    if (input.signal?.aborted) throw new DOMException('上传已取消', 'AbortError')
     const dir = uploadsDir()
     await mkdir(dir, { recursive: true })
     const name = `${randomUUID()}.${ext}`
-    await writeFile(join(dir, name), input.bytes)
+    const target = join(dir, name)
+    const temporary = join(dir, `.${name}.tmp`)
+    try {
+      if (input.signal?.aborted) throw new DOMException('上传已取消', 'AbortError')
+      await writeFile(temporary, input.bytes, input.signal ? { signal: input.signal } : undefined)
+      if (input.signal?.aborted) throw new DOMException('上传已取消', 'AbortError')
+      await rename(temporary, target)
+      if (input.signal?.aborted) {
+        await rm(target, { force: true })
+        throw new DOMException('上传已取消', 'AbortError')
+      }
+    } finally {
+      await rm(temporary, { force: true }).catch(() => undefined)
+    }
     return { url: `/api/uploads/${name}` }
   }
 
