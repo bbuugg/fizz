@@ -9,6 +9,23 @@
  * 映射是把 `--primary` 这类变量接到 Tailwind 的 `bg-primary` 工具类上，改它等于改所有
  * 组件里的类名含义。
  */
+/*
+ * 西文字体：自托管 Plus Jakarta Sans Variable（OFL，`@fontsource-variable/plus-jakarta-sans`）。
+ *
+ * 为什么不用链接 / 系统栈：本产品三端都离线（桌面壳、安卓壳、自托管网页），
+ * 不能挂 Google Fonts；而系统栈在英文界面下落到各平台的默认无衬线（Windows 的
+ * Segoe UI / 安卓的 Roboto），中英混排时还会被中文的拉丁字形顶掉，观感不一致。
+ * 打包进来后三端是同一套字形。
+ *
+ * 为什么是这款：几何骨架 + 大 x-height，13px 上下比 Inter 一类中性 grotesk 更松、
+ * 更易读；字形（a / g / t / y）带明显人文转折，英文界面一眼能看出换了字体。
+ * 想再换别的：装对应 `@fontsource-variable/<名字>`，改这行 `@import` 与
+ * `tokens.css` 里 `--fizz-font-sans` 的第一项即可，别处不用动。
+ *
+ * `font-family` 名是 `Plus Jakarta Sans Variable`（见 `tokens.css` 的栈首项）。包内
+ * 按 unicode-range 拆成 4 个 woff2，浏览器只下载用到的那份（英文 latin 26.7KB）。
+ */
+@import '@fontsource-variable/plus-jakarta-sans';
 @import './tokens.css';
 /* 命名主题（`<html data-theme="…">`）：必须排在 tokens.css **之后** —— 亮色块与 `:root`
    特异性相同（都是 0,1,0），靠源码顺序取胜；排前面会被默认配色压掉。 */

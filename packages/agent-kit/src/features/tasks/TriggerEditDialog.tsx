@@ -69,7 +69,10 @@ import {
 } from '@fizz/agent-kit/features/chat/ModelPicker'
 import { ReasoningEffortPanel } from '@fizz/agent-kit/features/chat/ReasoningEffortPanel'
 import { WorkspacePicker } from '@fizz/agent-kit/features/chat/WorkspacePicker'
-import { useWorkspaceAddActions } from '@fizz/agent-kit/features/chat/workspace-add-actions'
+import {
+  ADD_REMOTE_ACTION,
+  useWorkspaceAddActions
+} from '@fizz/agent-kit/features/chat/workspace-add-actions'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import { BrowserPicker } from '@fizz/agent-kit/features/chat/BrowserPicker'
 import { McpPicker } from '@fizz/agent-kit/features/chat/McpPicker'
@@ -337,12 +340,16 @@ function TriggerForm({
     editing?.template.reasoningEffort ?? null
   )
   /**
-   * 工作区下拉底部那四个添加入口（选目录 / Git / 远端 / 容器）与各自的弹窗，
-   * 与聊天输入框下方**同一份**（`useWorkspaceAddActions`）。加完就选中它 ——
-   * 用户刚建完的项目，下一步一定是想绑到这条任务上。
+   * 工作区下拉底部那几条添加入口与各自的弹窗，与命令面板的「新建工作区」页**同源**
+   * （`useWorkspaceAddActions`）。加完就选中它 —— 用户刚建完的项目，下一步一定是想绑到这条任务上。
+   *
+   * **远端那条不给**：定时任务首期不支持远端工作区（下面有红字提示），而它现在只有命令面板
+   * 一条路；面板建完不会回填本表单，摆在这儿只会让人点了之后什么也拿不到。
    */
   const { actions: workspaceActions, onAction: onWorkspaceAction, dialogs: workspaceDialogs } =
     useWorkspaceAddActions(app, (workspace) => setWorkspaceId(workspace.id))
+  /** 下拉真正渲染的那几条（远端那条筛掉了，理由见上） */
+  const pickerActions = workspaceActions.filter((action) => action.value !== ADD_REMOTE_ACTION)
 
   /**
    * 当前选的是外部 Agent（权限语义与内置模型那套不同，下面要单独提示）。
@@ -550,8 +557,8 @@ function TriggerForm({
               title={t(
                 '工作区：Agent 只能读写这个目录里的东西。不选 = 每次触发在数据目录下新建一个临时工作区（不进项目列表）'
               )}
-              // 与聊天输入框下方**同一份**菜单：选择文件夹 / 从 Git 导入 / 连接远端 / 新建容器型项目
-              actions={workspaceActions}
+              // 与命令面板同一份动作（远端那条除外）：选择文件夹 / 从 Git 导入 / 新建容器型项目
+              actions={pickerActions}
               onAction={onWorkspaceAction}
             />
           </div>
@@ -565,9 +572,9 @@ function TriggerForm({
             })}
           </p>
         ) : null}
-        {/* 远端工作区能选、能建（下拉菜单与聊天同一份），但定时任务首期跑不了它：
-            调度器与保存接口都会拒（`requireUsableTriggerWorkspace`）。在这儿先说清，
-            别等点了保存才被 toast 打回 —— 表单里那两条警告是同一个口径 */}
+        {/* 远端工作区仍可能被选到（已有任务、或者在命令面板里新建后回来改），但定时任务
+            首期跑不了它：调度器与保存接口都会拒（`requireUsableTriggerWorkspace`）。
+            在这儿先说清，别等点了保存才被 toast 打回 —— 表单里那两条警告是同一个口径 */}
         {workspaceIsRemote ? (
           <p className="flex items-start gap-1.5 text-xs leading-5 text-destructive">
             <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />

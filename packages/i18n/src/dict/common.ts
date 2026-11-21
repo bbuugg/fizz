@@ -13,6 +13,7 @@ export const COMMON: Record<string, string> = {
   '编辑': 'Edit',
   '确定': 'OK',
   '确认': 'Confirm',
+  '执行': 'Run',
   '返回': 'Back',
   '复制': 'Copy',
   '已复制': 'Copied',
@@ -178,6 +179,10 @@ export const COMMON: Record<string, string> = {
   '打开设置': 'Open settings',
   '切换主题（当前{theme}）': 'Toggle theme (currently {theme})',
   '返回命令列表': 'Back to command list',
+  '选择文件夹、从 Git 导入、连接远端服务器或新建容器型项目':
+    'Choose a folder, import from Git, connect to a remote server, or create a container project',
+  '筛选新建方式…': 'Filter add options…',
+  '没有匹配的新建方式。': 'No matching options.',
   '未分组': 'Ungrouped',
   '搜索会话…': 'Search conversations…',
   '更多功能区': 'More activities',

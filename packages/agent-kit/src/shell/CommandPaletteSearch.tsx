@@ -98,7 +98,7 @@ export function CommandPaletteSearch({
           ) : undefined
         }
       />
-      <CommandList className="min-h-0 max-h-none flex-1">
+      <CommandList className="min-h-0 max-h-[min(24rem,calc(85dvh_-_7rem))] flex-1">
         {/* cmdk 已关本地过滤（shouldFilter=false）：命中来自服务端（含消息正文），
             不能再被 cmdk 按标题筛一遍，否则「内容命中、标题不含关键词」的行会被吃掉。
             搜索期间结果区保留上一轮结果不动（防跳变），新结果到了才整体替换 ——

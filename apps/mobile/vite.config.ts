@@ -187,6 +187,10 @@ export default defineConfig(({ mode }) => {
           '../../packages/agent-kit/src/features'
         ),
         '@fizz/agent-kit/shared': resolve(import.meta.dirname, '../../packages/agent-kit/src/shared'),
+        // 外壳层：命令面板是共享实现（`shell/CommandPalette`，与 web / desktop 同一份）。
+        // 和上面两条一样必须排在包名本体之前 —— 否则会被 `@fizz/agent-kit` 那条吃掉，
+        // 拼成 `src/index.ts/shell/…`（tsc 有通配 paths 能过，只有打包时炸）。
+        '@fizz/agent-kit/shell': resolve(import.meta.dirname, '../../packages/agent-kit/src/shell'),
         '@fizz/agent-kit': resolve(import.meta.dirname, '../../packages/agent-kit/src/index.ts'),
         // 无业务原语（逐条展开，见 moduleAliases 的注释：通配写法在这里不生效）；
         // `@fizz/ui/dialog` 已被上面的 uiAliases 换成手机抽屉版

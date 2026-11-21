@@ -61,7 +61,8 @@ import {
 } from "@fizz/agent-kit/shared/lib/panel-store";
 import { NEW_TAB_KEY } from "@fizz/agent-kit/shared/lib/panel-tabs";
 import type { NewInWorkspaceKind } from "@fizz/agent-kit/shared/lib/new-in-workspace";
-import { CommandPalette } from "@/app/CommandPalette";
+import { CommandPalette } from "@fizz/agent-kit/shell/CommandPalette";
+import { useWorkspaceAddActions } from "@fizz/agent-kit/features/chat/workspace-add-actions";
 import { ScriptRunHost } from "@fizz/agent-kit/features/scripts/RunScriptDialog";
 import { ImportConversationDialog } from "@fizz/agent-kit/features/projects/ImportConversationDialog";
 import { ManageWorktreeDialog } from "@fizz/agent-kit/features/projects/ManageWorktreeDialog";
@@ -255,12 +256,41 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     },
     [app],
   );
+  /**
+   * 「新建工作区」的四条入口（选文件夹 / 从 Git 导入 / 连接远端服务器 / 新建容器型项目）。
+   *
+   * 动作清单、顺序、图标、以及「服务端有 docker 才有容器型项目」的门控，唯一来源是
+   * `useWorkspaceAddActions`（命令面板「新建工作区」页照它画），别在手机壳里另抄一份。
+   *
+   * `dialogs` 必须挂进这棵树（见下面 `CommandPalette` 之后）：Git 导入 / 容器型项目
+   * 这两个表单弹窗是「面板先关、弹窗再开」，挂在面板里会跟着卸载、Promise 永不 settle。
+   *
+   * 建好后落到新项目的「创建新任务」页 —— 与 worktree 建完的落点一致（`startDraftConversation`），
+   * 别在这里调 `app.newConversation`（那会立刻建一条空会话）。
+   */
+  const workspaceAdd = useWorkspaceAddActions(app, (ws) =>
+    startDraftConversation(ws.id),
+  );
   const importWorkspace = importWorkspaceId
     ? (app.workspaces.find((w) => w.id === importWorkspaceId) ?? null)
     : null;
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+
+  /**
+   * 打开命令面板：先收抽屉，再开面板。
+   *
+   * 抽屉是覆盖层（z-40）、面板是 dialog（z-50）：不收抽屉的话，面板会浮在半开的列表
+   * 上面、背后还压着一层遮罩，看着像卡住。
+   *
+   * 顶栏那颗搜索与快捷键分发共用这一条。前者点击时抽屉必然是关的，后者是外接键盘
+   * 按下的 —— 抽屉开着时多收一次而已，没有副作用（这也是它不带条件的原因）。
+   */
+  const openCommandPalette = useCallback(() => {
+    setMobileSidebarOpen(false);
+    setPaletteOpen(true);
+  }, []);
 
   /*
    * 任意位置右滑开抽屉、抽屉开着时左滑收起（判定见 use-sidebar-swipe.ts）。
@@ -394,7 +424,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const runShortcutAction = (action: AgentShortcutAction): void => {
     switch (action) {
       case "open-command-palette":
-        setPaletteOpen(true);
+        // 与顶栏那颗搜索同一条（收抽屉 + 开面板），别在这里只 setPaletteOpen
+        openCommandPalette();
         break;
       case "open-settings":
         openSettings();
@@ -609,7 +640,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           顶栏：**只有这一条** `h-11`（抽屉 / 当前标签 / 助手 / 更多，见 `MobileAppBar`）。
           本工程是**单标签**（`main.tsx` 调 `setSingleTabMode`）：既没有标签条，也没有标签列表。
         */}
-            <MobileAppBar />
+            {/* 顶栏那颗搜索是手机上命令面板的唯一入口（抽屉里那颗已移除，见 MobileAppBar） */}
+            <MobileAppBar onOpenCommandPalette={openCommandPalette} />
             {/* 工作行：`min-h-0 flex-1` 才让里面的侧栏 / 主区各自滚动，不被内容撑高 */}
             <div className="flex min-h-0 flex-1">
               {/*
@@ -647,13 +679,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 onImportInWorkspace={setImportWorkspaceId}
                 onManagePlugins={setPluginsWorkspaceId}
                 onOpenSettings={openSettings}
-                onOpenCommandPalette={() => {
-                  // 抽屉是覆盖层（z-40）、命令面板是 dialog（z-50）：不收起抽屉的话，
-                  // 面板会浮在半开的列表上面，背后还压着一层暗色遮罩，看着像卡住。
-                  // 先收抽屉再开面板，视觉上是「从内容区打开」。
-                  setMobileSidebarOpen(false);
-                  setPaletteOpen(true);
-                }}
               />
               {/*
           工作区「浮岛」：手机形态**一点内边距都不给** —— 内容直接铺满整屏，
@@ -723,6 +748,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               theme={theme}
               onToggleTheme={toggleTheme}
               onOpenSettings={openSettings}
+              /*
+                手机没有标题栏那颗「新会话」，命令面板是唯一入口 —— 不传这个回调
+                这一行就不画（桌面 / web 靠标题栏，不传）。落点与侧栏「新对话」一致。
+              */
+              onNewConversation={(workspaceId) =>
+                startDraftConversation(workspaceId)
+              }
+              /*
+                根级「设置」组里那三条全局面板入口不画：手机壳只接了系统监控 / 文件管理，
+                没有日志面板 —— 点「应用日志」会落到 `PanelView` 的兜底终端。
+                系统监控在抽屉左下角有入口（`Sidebar`），不必在这条清单里再来一个。
+              */
+              globalPanels={false}
+              workspaceAdd={workspaceAdd}
               onOpenHost={(host) => {
                 // 与「主机」侧栏点一行同一条路：SSH 主机 → 开主机终端标签（可多开）；
                 // 本机终端配置 → 按它存下的 shell / 参数开一条宿主本机终端标签。
@@ -751,6 +790,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               各自渲染一份会在「关一个、开另一个」的时序里把 body 的 pointer-events 收错。
             */}
             <ScriptRunHost app={app} />
+
+            {/*
+              「新建工作区」的表单弹窗（从 Git 导入 / 容器型项目）与表单那条路用的目录浏览器。
+              挂在这里而不是面板里：选中一条时面板先关、弹窗再开，跟着面板走会被一起卸载。
+            */}
+            {workspaceAdd.dialogs}
 
             {/*
              {/* 项目插件：从项目「更多」菜单打开，看 / 启停**这个项目**的插件 */}

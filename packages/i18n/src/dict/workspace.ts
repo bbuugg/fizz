@@ -63,6 +63,8 @@ export const WORKSPACE: Record<string, string> = {
   '这里列的是服务端上的目录（Agent 就跑在那台机器上）。选中的目录会登记为项目。': 'These are directories on the server (where the agent runs). The selected directory will be registered as a project.',
   '选择文件夹…': 'Choose folder…',
   '选择目录': 'Choose directory',
+  // 命令面板里那页目录浏览器的无障碍描述（具体用途由压栈那条命令自己写）
+  '在服务端目录里挑一个文件夹': 'Pick a folder on the server',
   '选择远端目录': 'Choose remote directory',
   '只列出目录；选中的目录会作为这个远端工作区的根。':
     'Only directories are listed; the selected one becomes the root of this remote workspace.',
@@ -75,6 +77,14 @@ export const WORKSPACE: Record<string, string> = {
   '从 Git 导入…': 'Import from Git…',
   '新建容器型项目…': 'New container project…',
   '连接远端服务器…': 'Connect to a remote server…',
+  // 命令面板那一页的标题（命令行动作带省略号，页面标题不带）
+  '连接远端服务器': 'Connect to a remote server',
+  // 命令面板「新建工作区」二级视图的第二行：下拉只有一行，说不清目录最终落在哪
+  '在磁盘上选一个文件夹': 'Browse a folder on disk',
+  '从远端仓库克隆一份': 'Clone from a remote repository',
+  '目录在 SSH 主机上，Agent 经 SFTP 读写':
+    'The directory lives on an SSH host; the agent reads and writes it over SFTP',
+  '目录由服务端建在容器里': 'The server creates the directory inside a container',
   '搜索工作区': 'Search workspaces',
   '没有匹配的工作区': 'No matching workspaces',
   '添加远端工作区': 'Add remote workspace',
@@ -83,10 +93,21 @@ export const WORKSPACE: Record<string, string> = {
   '还没有 SSH 主机：先在「主机」里添加一台，再回来选它。':
     'No SSH hosts yet: add one under “Hosts”, then come back and pick it.',
   'SSH 主机': 'SSH host',
+  // 命令面板那条路：主机页的搜索框 / 无障碍标题 / 远端目录页的副标题
+  '搜索远端主机…': 'Search SSH hosts…',
+  '选一台 SSH 主机，接下来在它的文件系统里选一个目录':
+    'Pick an SSH host, then choose a directory on its file system',
+  '选中的目录会作为这个远端工作区的根，项目名默认取目录名。':
+    'The chosen directory becomes the root of this remote workspace; the project name defaults to the directory name.',
   '选择一台主机': 'Choose a host',
   '远端目录（绝对路径）': 'Remote directory (absolute path)',
   '请填写以 / 开头的绝对路径。': 'Enter an absolute path starting with /.',
   '上一级': 'Up one level',
+  // 目录浏览（命令面板式的「选择目录」弹窗）：标题 / 底栏键位 / 右上角那颗按钮（`选择`，见 chat）
+  '目录': 'Directories',
+  '进入': 'Open',
+  // 桌面端才有的替代出口：面板列的是服务端目录，系统框能调出资源管理器 / 访达
+  '使用系统文件选择器': 'Use the system file picker',
   '正在读取…': 'Reading…',
   '这里没有子目录': 'No subdirectories here',
   '留空 = 用目录名': 'Empty = use the directory name',

@@ -12,7 +12,8 @@
  * - **左**：抽屉开关（唯一的侧栏入口，见 `mobile-sidebar.ts`）；
  * - **中**：留白。会话名在**会话内容的工具条**里（`ConversationTab` 的 `ViewHeader`），
  *   这里再显示一遍就是同一行字出现两次；
- * - **右**：后台任务徽标、SFTP 传输徽标、AI 助手开关（前两个有事才出现，见下）。
+ * - **右**：后台任务徽标、SFTP 传输徽标、命令面板、AI 助手开关（前两个有事才出现，见下）。
+ *   命令面板是手机上唯一的入口 —— 正文的会话搜索、新建工作区、切主题都在那里面。
  *
  * ## 单标签：没有标签条，也没有标签列表
  *
@@ -44,7 +45,7 @@
  * ⚠️ 本工程是**手机壳**：从 `app-shell.tsx` 到这里都按手机形态写死，不再按窗口宽度
  * 分岔（共享组件内部的 `useIsMobile` 是它们自己的事，真机上同样落在手机分支）。
  */
-import { Menu, Sparkles } from 'lucide-react'
+import { Menu, Search, Sparkles } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
 import {
   setMobileSidebarOpen,
@@ -63,7 +64,19 @@ import { useT } from '@fizz/agent-kit/shared/lib/language'
 /** 顶栏上按钮的统一尺寸：`size-10` 在 18px 根字号下约 45px，够触摸目标推荐值 */
 const BAR_BUTTON = 'size-10! shrink-0 p-0! text-muted-foreground hover:text-foreground'
 
-export function MobileAppBar() {
+export function MobileAppBar({
+  onOpenCommandPalette
+}: {
+  /**
+   * 命令面板入口 —— 手机上**唯一**的那一条。
+   *
+   * 为什么落在顶栏：手机没有任何键盘组合（Ctrl+K / ⌘K）能打开它；原先那颗藏在抽屉头
+   * 右上角，要先下滑展开抽屉、再去点右上角 —— 真机上等于不存在（用户反馈「手机版没有
+   * 命令面板入口」就是这么来的）。抽屉里那颗已随之一并移除，别再加回去：同一个动作
+   * 两个入口，点了一个的人会以为另一个没反应（本文件头上「设置只在抽屉左下角」是同一条理由）。
+   */
+  onOpenCommandPalette: () => void
+}) {
   const { app } = useAppContext()
   const sidebarOpen = useMobileSidebarOpen()
   const assistantOpen = useAssistantPanelOpen()
@@ -111,6 +124,17 @@ export function MobileAppBar() {
         贴屏幕底缘、没有收起态，正好压在内容右下角。搬到顶栏后与桌面同一份组件。
       */}
       <TransferBadge side="bottom" contentClassName="w-[calc(100vw-1rem)]" />
+
+      {/* 命令面板：手机唯一入口（见上面 prop 的注释），与助手的触摸尺寸同一套 */}
+      <Button
+        variant="ghost"
+        className={BAR_BUTTON}
+        aria-label={tr('搜索')}
+        title={tr('搜索')}
+        onClick={onOpenCommandPalette}
+      >
+        <Search className="size-5" />
+      </Button>
 
       {/*
         AI 助手开关：颜色即状态（收起灰 / 展开主题色），

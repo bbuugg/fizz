@@ -1,5 +1,5 @@
 /**
- * 回归：取消必须在所有执行操作之后，横排靠右、竖排靠下。
+ * 回归：取消必须在所有执行操作之前，横排靠左、竖排靠上。
  * Footer 是纯渲染函数，直接检查其真实 React 子树，不引入 DOM 测试环境。
  */
 import { Children, Fragment, createElement, isValidElement, type ReactElement, type ReactNode } from 'react'
@@ -26,37 +26,37 @@ function actions(footer: ReactElement<{ children?: ReactNode }>) {
 describe.each([
   { name: 'DialogFooter', render: (children: ReactNode) => DialogFooter({ children }) },
   { name: 'AlertDialogFooter', render: (children: ReactNode) => AlertDialogFooter({ children }) }
-])('$name · 取消固定最后', ({ render }) => {
-  it('两按钮：确认在前，取消在后', () => {
-    expect(actions(render([button('cancel', true), button('confirm')])).map((c) => c.props['data-action']))
-      .toEqual(['confirm', 'cancel'])
+])('$name · 取消固定最前', ({ render }) => {
+  it('两按钮：取消在前，确认在后', () => {
+    expect(actions(render([button('confirm'), button('cancel', true)])).map((c) => c.props['data-action']))
+      .toEqual(['cancel', 'confirm'])
   })
 
-  it('三按钮：取消原本在中间也要移到最后，其他动作相对顺序不变', () => {
+  it('三按钮：取消原本在中间也要移到最前，其他动作相对顺序不变', () => {
     expect(actions(render([button('close'), button('cancel', true), button('stop')])).map((c) => c.props['data-action']))
-      .toEqual(['close', 'stop', 'cancel'])
+      .toEqual(['cancel', 'close', 'stop'])
   })
 
   it('按语义而非按钮文案、ghost 样式或禁用状态识别取消', () => {
     expect(actions(render([
       button('leave', true, { disabled: true }),
       button('preview', false, { variant: 'ghost' }), button('save')
-    ])).map((c) => c.props['data-action'])).toEqual(['preview', 'save', 'leave'])
+    ])).map((c) => c.props['data-action'])).toEqual(['leave', 'preview', 'save'])
   })
 
-  it('片段与条件子项不会让取消留在前面', () => {
+  it('片段与条件子项不会让取消留在后面', () => {
     const children = [
-      createElement(Fragment, { key: 'group' }, button('cancel', true), false, button('save')),
+      createElement(Fragment, { key: 'group' }, button('save'), false, button('cancel', true)),
       null, button('other')
     ]
     expect(actions(render(children)).map((c) => c.props['data-action']))
-      .toEqual(['save', 'other', 'cancel'])
+      .toEqual(['cancel', 'save', 'other'])
   })
 
   it('移动后保留原来的点击处理、ref 和 disabled，不重写操作含义', () => {
     const onClick = vi.fn()
     const ref = { current: null }
-    const cancel = actions(render([button('cancel', true, { onClick, ref, disabled: true }), button('confirm')])).at(-1)!
+    const cancel = actions(render([button('confirm'), button('cancel', true, { onClick, ref, disabled: true })])).at(0)!
     expect(cancel.props.ref).toBe(ref)
     expect(cancel.props.disabled).toBe(true)
     cancel.props.onClick?.()
@@ -70,10 +70,10 @@ describe.each([
   })
 })
 
-it('原生 AlertDialogCancel 不需要调用方额外标记也会排在最后', () => {
+it('原生 AlertDialogCancel 不需要调用方额外标记也会排在最前', () => {
   const footer = AlertDialogFooter({ children: [
-    createElement(AlertDialogCancel, { key: 'cancel' }, '取消'),
-    createElement(AlertDialogAction, { key: 'confirm' }, '确认')
+    createElement(AlertDialogAction, { key: 'confirm' }, '确认'),
+    createElement(AlertDialogCancel, { key: 'cancel' }, '取消')
   ] })
-  expect(actions(footer).map((c) => c.type)).toEqual([AlertDialogAction, AlertDialogCancel])
+  expect(actions(footer).map((c) => c.type)).toEqual([AlertDialogCancel, AlertDialogAction])
 })

@@ -20,7 +20,8 @@
  * ## 外壳归本工程（`AgentSidebar` 的 `shell`）
  *
  * `AgentSidebar` 只管内容（分区 + git 告警 + 弹窗）；抽屉外面的形态由这一层挑：
- * `MobileShell` 就是同一个 `SidebarScaffold`，只多传一个 `header`（品牌行 + 设置入口）。
+ * `MobileShell` 就是同一个 `SidebarScaffold`，只多传一个 `header`（品牌行；设置入口在
+ * 下面的 `footer` 槽）。
  * 抽屉连窗口顶栏一起盖住（`styles.css` 的 `--sidebar-drawer-top`），顶栏里的品牌
  * 就看不见了，所以在抽屉自己的第一行补回来。web / desktop 不传 `shell`，
  * 用共享组件里的默认骨架（品牌在窗口顶栏）。
@@ -34,11 +35,12 @@
  * 和设置同属「一周点一次」的东西，放一起最不占地方。跑着的后台任务另有常驻位 ——
  * 顶栏那颗徽标（见 `MobileAppBar`），它是「随时要看」的，不能也塞进抽屉。
  *
- * 抽屉头右上角现在是**搜索**（命令面板）：手机上没有 Ctrl+K 这类键盘入口，不给一颗
- * 常驻按钮的话命令面板在真机上基本打不开。
+ * 抽屉头**只剩品牌**：命令面板那颗搜索曾经在右上角，要「展开抽屉 → 再点右上角」才
+ * 够得着，真机上等于没有入口（用户反馈过）。现已搬到窗口顶栏（`MobileAppBar` 右侧、
+ * AI 助手左边），抽屉里不再留第二颗 —— 同一个动作两个入口，点了一个会以为另一个没反应。
  */
 import { useMemo, useRef } from 'react'
-import { Gauge, Search, Settings } from 'lucide-react'
+import { Gauge, Settings } from 'lucide-react'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import {
   AgentSidebar,
@@ -63,12 +65,9 @@ function MobileShell({
   onMobileOpenChange,
   footer,
   children,
-  onOpenSettings,
-  onOpenCommandPalette
+  onOpenSettings
 }: AgentSidebarShellProps & {
   onOpenSettings: () => void
-  /** 抽屉右上角那颗搜索：打开命令面板（手机上没有键盘快捷键，这是唯一常驻入口） */
-  onOpenCommandPalette: () => void
 }) {
   const tr = useT()
   return (
@@ -92,20 +91,6 @@ function MobileShell({
       header={
         <div className="flex h-11 shrink-0 items-center gap-2 px-3">
           <AppBrand iconClassName="size-6" nameClassName="text-sm" />
-          {/*
-            搜索（命令面板）：放在品牌行**右端**。手机版既没有 Ctrl+K 这类键盘入口，
-            也没有底部导航，命令面板否则只能靠外接键盘才打得开 —— 等于不存在。
-            尺寸 / 悬停样式与左下角那颗设置一致，两颗常驻入口看起来是同一套。
-          */}
-          <button
-            type="button"
-            aria-label={tr('搜索')}
-            title={tr('搜索')}
-            onClick={onOpenCommandPalette}
-            className="ml-auto rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
-          >
-            <Search className="size-5" />
-          </button>
         </div>
       }
       footer={
@@ -163,8 +148,6 @@ export interface SidebarProps {
   onManagePlugins: (workspaceId: string) => void
   /** 抽屉左下角的设置入口（手机版没有底部导航，这里是唯一常驻入口） */
   onOpenSettings: () => void
-  /** 抽屉右上角的搜索入口：打开命令面板 */
-  onOpenCommandPalette: () => void
 }
 
 export function Sidebar({
@@ -172,8 +155,7 @@ export function Sidebar({
   onNewInWorkspace,
   onImportInWorkspace,
   onManagePlugins,
-  onOpenSettings,
-  onOpenCommandPalette
+  onOpenSettings
 }: SidebarProps) {
   const {
     app,
@@ -190,14 +172,11 @@ export function Sidebar({
    */
   const openSettingsRef = useRef(onOpenSettings)
   openSettingsRef.current = onOpenSettings
-  const openPaletteRef = useRef(onOpenCommandPalette)
-  openPaletteRef.current = onOpenCommandPalette
   const Shell = useMemo(() => {
     const StableShell = (props: AgentSidebarShellProps) => (
       <MobileShell
         {...props}
         onOpenSettings={() => openSettingsRef.current()}
-        onOpenCommandPalette={() => openPaletteRef.current()}
       />
     )
     return StableShell

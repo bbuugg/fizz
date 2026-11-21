@@ -93,7 +93,9 @@ function AlertDialogFooter({
     <div
       data-slot="alert-dialog-footer"
       className={cn(
-        "-mx-4 -mb-4 flex flex-col gap-2 rounded-b-xl p-4 group-data-[size=sm]/alert-dialog-content:grid group-data-[size=sm]/alert-dialog-content:grid-cols-2 sm:flex-row sm:justify-end",
+        // 横排时取消在最左（DOM 顺序由 Footer 统一），竖排（`<sm`）时 order 把它推到底部。
+        // `size=sm` 走两列 grid，那本来就是横向排布，不参与这次翻转。
+        "-mx-4 -mb-4 flex flex-col gap-2 rounded-b-xl p-4 group-data-[size=sm]/alert-dialog-content:grid group-data-[size=sm]/alert-dialog-content:grid-cols-2 max-sm:group-data-[size=default]/alert-dialog-content:[&>[data-dialog-dismiss]]:order-last sm:flex-row sm:justify-end",
         className
       )}
       {...props}

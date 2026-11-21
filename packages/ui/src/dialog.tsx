@@ -44,7 +44,7 @@ function DialogOverlay({
         // caption 命中，遮罩盖上去 mousedown 会被窗口过程拿去拖窗口），蒙住就等于把窗口
         // 按钮收走了；web 那边这个 token 覆盖成 0，整屏压暗；手机 = 安全区，也是整屏。
         // 各端取值在 tokens.css / 各端 styles.css 里，组件一行判断都不用加。
-        "fixed inset-x-0 bottom-0 top-[var(--overlay-top)] isolate z-50 bg-black/30 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+        "fixed inset-x-0 bottom-0 top-[var(--overlay-top)] isolate z-50 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
         className
       )}
       {...props}
@@ -77,7 +77,7 @@ function DialogContent({
         ref={contentRef}
         data-slot="dialog-content"
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 shadow-lg",
+          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 shadow-2xl",
           className
         )}
         {...props}
@@ -111,7 +111,7 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   )
 }
 
-/** 取消用 DialogClose 或 data-dialog-dismiss 标记；末尾顺序由 Footer 统一保证。 */
+/** 取消用 DialogClose 或 data-dialog-dismiss 标记：横排时它是最左那颗，竖排（`<sm`）时 order 把它推到底部。 */
 function DialogFooter({
   className,
   showCloseButton = false,
@@ -124,7 +124,7 @@ function DialogFooter({
     <div
       data-slot="dialog-footer"
       className={cn(
-        "-mx-4 -mb-4 flex flex-col gap-2 rounded-b-xl p-4 sm:flex-row sm:justify-end",
+        "-mx-4 -mb-4 flex flex-col gap-2 rounded-b-xl p-4 max-sm:[&>[data-dialog-dismiss]]:order-last sm:flex-row sm:justify-end",
         className
       )}
       {...props}

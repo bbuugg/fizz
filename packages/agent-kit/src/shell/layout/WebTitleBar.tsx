@@ -2,7 +2,8 @@
 
 /**
  * **web 版**的窗口级顶栏（desktop 有自绘标题栏，见 `apps/desktop/src/renderer/TitleBar.tsx`，
- * 那边是另一棵 React 树 + 原生窗口控制；web 没有窗口可拖，这儿只负责「身份 + 手机入口」）。
+ * 那边是另一棵 React 树 + 原生窗口控制；web 没有窗口可拖，这儿负责「身份 + 手机入口 +
+ * 命令面板搜索框」）。
  *
  * ## 为什么 web 也要有这一条
  *
@@ -35,6 +36,7 @@
 import { AppBrand } from '@fizz/agent-kit/shared/components/AppBrand'
 import { AiAssistantButton } from './AiAssistantButton'
 import { MobileSidebarToggle } from './MobileSidebarToggle'
+import { TitleBarSearch } from './TitleBarSearch'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 
 export function WebTitleBar({ className }: { className?: string }) {
@@ -47,10 +49,14 @@ export function WebTitleBar({ className }: { className?: string }) {
       {/* 品牌区：`size-4.5` / `text-xs` 是给 36px 高的顶栏挑的（与 desktop 标题栏一致） */}
       <AppBrand iconClassName="size-4.5" nameClassName="text-xs" />
       {/*
-        中间留白：web 没有可拖拽的窗口区域。品牌在左、助手开关在右，两端内容都靠边，
-        中间这段空出来既有呼吸感，也避免小屏下两者贴到一起。
+        中间：命令面板的搜索框（点击弹出面板，见 `TitleBarSearch`）。夹在品牌与助手之间
+        居中 —— 顶栏是整窗唯一横贯的一条，搜索放正中符合「找东西去顶部」的预期。
+        窄屏（<768px）收成一颗放大镜图标：这条顶栏在窄屏也渲染，入口不能跟着消失
+        （手机 app 那边另有 `MobileAppBar` 的搜索，两者互不影响）。
       */}
-      <div className="min-w-0 flex-1" />
+      <div className="flex min-w-0 flex-1 justify-center px-2">
+        <TitleBarSearch className="w-7 md:w-full md:max-w-xs" />
+      </div>
       {/* 右上角：AI 助手开关（全局右侧停靠面板）。手机上也渲染，面板以整屏浮层呈现 */}
       <AiAssistantButton />
     </header>

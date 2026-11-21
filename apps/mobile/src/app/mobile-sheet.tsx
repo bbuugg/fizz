@@ -4,7 +4,7 @@
  * 两个入口别名在窄屏下画的是**同一套抽屉**：
  * `@fizz/ui/dialog` → `mobile-dialog.tsx`，`@fizz/ui/alert-dialog` → `mobile-alert-dialog.tsx`。
  * 手柄、满宽内容区、底部动作行的具体类名只写在这里，两边都别各抄一份 —— 抄了之后
- * 「取消贴底」「三颗按钮竖排」这类规则迟早只改到一边（见 `apps/mobile/src/styles.css`）。
+ * 「取消排最前」「三颗按钮竖排」这类规则迟早只改到一边（见 `apps/mobile/src/styles.css`）。
  *
  * 形态判据为什么是 `min-width: 640px and (hover: hover)`、为什么关掉 vaul 的
  * `repositionInputs`、宽屏为什么要退回居中弹窗：见 `mobile-dialog.tsx` 文件头，

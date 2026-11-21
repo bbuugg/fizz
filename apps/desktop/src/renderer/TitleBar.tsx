@@ -14,10 +14,13 @@
  * 「应用日志」入口**已从这里移走**，下沉到**底部状态栏最右端**（`LogsButton`）—— 它低频、
  * 属全局工具，交给状态栏的 `actions` 槽。
  *
- * 窗口级工具只留「置顶图钉 + AI 助手」（窗口控制键除外）。除此之外**刻意不再放别的
- * 功能入口**（侧边栏折叠 / 搜索 / Window / About 都已移除）：
- * 侧边栏折叠在各侧栏自己身上（AgentSidebar / HostsSidebar / ApiPanel 里那颗按钮），
- * 命令面板走快捷键 `CommandOrControl+Shift+P`，退出走系统窗口控制与菜单。
+ * 窗口级工具只留「置顶图钉 + AI 助手」（窗口控制键除外），**中间**是命令面板的搜索框。
+ * 除此之外刻意不再放别的功能入口：侧边栏折叠在各侧栏自己身上（AgentSidebar /
+ * HostsSidebar / ApiPanel 里那颗按钮），退出走系统窗口控制与菜单。
+ *
+ * 搜索框（`TitleBarSearch`）替代了底部状态栏最右那颗 ⌘ 图标 —— 图标按钮看不出是搜索，
+ * 和旁边的日志 / 文件管理排成一排只能靠 tooltip 分辨；顶栏中央一条横贯的框才是「找东西
+ * 去顶部」的预期。快捷键 `CommandOrControl+Shift+P` 照旧生效，只是不再是唯一入口。
  *
  * 与根应用的差别：平台判定用 navigator（desktop 的 preload 只暴露传输桥 + 窗口桥，
  * 没有 window.api.app.platform）。
@@ -26,6 +29,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Copy, Minus, Pin, Sparkles, Square, X } from 'lucide-react'
 import { AppBrand, setAssistantPanelOpen, useAssistantPanelOpen } from '@fizz/agent-kit'
 import { MobileSidebarToggle } from '@fizz/agent-kit/shell/layout/MobileSidebarToggle'
+import { TitleBarSearch } from '@fizz/agent-kit/shell/layout/TitleBarSearch'
 // `window.fizzWindow` 的全局声明在 `shared/window.ts`（纯类型文件，preload 与渲染端共用）
 
 /** 渲染端没有 process.platform：从 UA 判（macOS 的 UA 一定带 Mac） */
@@ -87,8 +91,14 @@ export function TitleBar() {
         <AppBrand iconClassName="size-4.5" nameClassName="text-xs" />
       </div>
 
-      {/* 中间那段是空的拖拽区 */}
-      <div className="flex min-w-0 flex-1 items-end" />
+      {/*
+        中间：命令面板的搜索框（点击弹出面板，与 web 顶栏同一颗 `TitleBarSearch`）。
+        ⚠️ `app-no-drag` **只加在框本身**：这层 div 若整块设 no-drag，窗口中间就再也拖不
+        动了 —— 空白处必须留给窗口拖拽（顶栏整条是 `app-drag`，见文件头）。
+      */}
+      <div className="flex min-w-0 flex-1 items-center justify-center px-2">
+        <TitleBarSearch className="app-no-drag w-7 md:w-full md:max-w-xs" />
+      </div>
 
       {/*
         窗口置顶（图钉）：开启后主窗口浮在其它窗口之上，不随切走应用被盖住。

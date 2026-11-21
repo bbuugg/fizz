@@ -36,7 +36,7 @@ import {
   PickerPanel,
   PickerSearch
 } from '@fizz/ui/picker-panel'
-import { ChevronDown, Folder, FolderMinus, FolderOpen } from 'lucide-react'
+import { ChevronDown, Folder, FolderMinus, FolderOpen, FolderPlus } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useState } from 'react'
 import { CHAT_PILL } from '@fizz/agent-kit/features/chat/composer'
@@ -61,6 +61,13 @@ export interface WorkspacePickerProps {
    */
   actions?: { value: string; label: string; icon?: ReactNode }[]
   onAction?: (value: string) => void
+  /**
+   * 底部那条「新建工作区」：点它就等于去命令面板的「新建工作区」页。
+   *
+   * 不传就不画（定时任务表单走的是 `actions` 那一套，不要这条）。原样透传回调，
+   * 具体「怎么开面板」不归本组件管 —— 聊天里是 `requestCommandPalette('new-workspace')`。
+   */
+  onNewWorkspace?: () => void
   /**
    * 远端工作区所在主机的展示名（从 SSH 主机清单里查）。返回空 = 主机已删除
    * （此时显示「主机已删除」，`dirMissing` 的文案也不一样）。
@@ -87,6 +94,7 @@ export function WorkspacePicker({
   title = t('工作区：Agent 只能读写这个目录里的东西'),
   actions,
   onAction,
+  onNewWorkspace,
   remoteHostName,
   disabled
 }: WorkspacePickerProps) {
@@ -135,9 +143,15 @@ export function WorkspacePicker({
           <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
         </button>
       </PopoverTrigger>
-      {/* 一般贴在输入框下方，所以向下弹（Radix 会在贴底时自动翻转） */}
+      {/*
+        向上弹，与权限 / 模型 / MCP / 附件那几颗一致（`side="top"` + 6px，贴边时 Radix 自动翻转）。
+
+        这颗 pill 在**输入框下方**，向下弹等于往窗口底沿外顶 —— 空会话时输入框本来就靠底，
+        面板会被视口裁掉一截。`side="top"` 是「触发器贴着底部」时唯一稳的方向，与宿主无关：
+        定时任务表单里那几颗也是向上弹（见 `McpPicker` 的注释），别因为宿主不同就翻面。
+      */}
       <PickerPanel
-        side="bottom"
+        side="top"
         align="start"
         sideOffset={6}
         collisionPadding={8}
@@ -156,6 +170,18 @@ export function WorkspacePicker({
             >
               {emptyLabel}
             </PickerAction>
+            {onNewWorkspace ? (
+              <PickerAction
+                icon={<FolderPlus />}
+                // 先关面板：命令面板会盖在这块上面，留着只会两层面板叠着
+                onClick={() => {
+                  close()
+                  onNewWorkspace()
+                }}
+              >
+                {t('新建工作区')}
+              </PickerAction>
+            ) : null}
             {(actions ?? []).map((action) => (
               <PickerAction
                 key={action.value}

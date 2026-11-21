@@ -1,27 +1,62 @@
 /**
- * 「选择目录」弹窗：通用的目录浏览器。
+ * 目录浏览器：**一块本体 + 两副外壳**。
  *
- * 默认数据源是**服务端本机**目录（web 端碰不到服务端文件系统，只能让 server 列目录
- * `GET /api/fs/dirs`、代劳建目录 `POST /api/fs/mkdir`），所以路径可直接编辑后回车跳转，
- * 也能进子目录 / 回上级 / 跳到某个盘符根 / **在当前目录下新建文件夹**。
+ * ## 两副外壳
+ *
+ * - `ServerDirPicker`：独立弹窗。表单里的「选择文件夹…」（Git 导入的父目录、笔记根、
+ *   技能额外目录、远端工作区）用它 —— 那些地方自己已经是弹窗，再压进面板反而绕。
+ * - 命令面板的**目录页**（`CommandPalette` 的 `dir` 页）：直接压在面板栈上，
+ *   `Esc` / 左上返回退回上一级页面（如「新建工作区」），不必「关面板 → 重开 → 再点一次」。
+ *
+ * 两处共用 `DirectoryBrowser`：顶栏（返回 · 路径 · 新建文件夹 · 添加 ⌘⏎）、
+ * 目录清单（第一行 `..` + 子目录）、键位语义全在这一份里，差别只有外壳、宽度与底栏提示。
+ * 复制一份出来改，迟早出现「弹窗里 ⌘⏎ 能用、面板里不能」这类漂移。
+ *
+ * ## 键盘语义（两处一致）
+ *
+ * - `↑` `↓` 选行，`⏎`（或鼠标点击）**进入**它 —— 一路往深处走不用碰鼠标；
+ * - 输入框里的路径**被改过**时，`⏎` 是「跳到这个路径」（`preventDefault` 挡住 cmdk
+ *   根节点上那个「选中当前高亮项」）；
+ * - `⌘/Ctrl + ⏎` 与右上角那颗按钮是**添加当前目录**（唯一把路径交回调用方的出口）。
+ *   `⏎` 已经被「进入」占了，所以添加必须换一个键 —— 按钮上的键帽写的就是它；
+ * - `Backspace` 上一级（清单第一行那颗 `..` 也是它）；`⌘/Ctrl + ↑` 同义，两个地方都能按。
+ *   焦点在路径输入框里时 `Backspace` 是删字，不拦 —— 那里拦下来会把「改路径」变成「乱跳目录」；
+ * - `Esc`：弹窗里是关闭、面板里是退回上一级页面 —— 这层归外壳管，本体不拦。
+ *
+ * 默认数据源是**跑 Agent 那台机器**的目录（浏览器碰不到文件系统，只能让 server 列目录
+ * `GET /api/fs/dirs`、代劳建目录 `POST /api/fs/mkdir`；桌面端本机就是服务端，但走的仍是
+ * 同一个接口 —— 一份实现三端通用），所以路径可直接编辑后回车跳转，也能进子目录 / 回上级 /
+ * 跳到某个盘符根 / **在当前目录下新建文件夹**。
  *
  * 也接受一个 `source` 适配器（`DirPickerSource`）：远端工作区（SFTP）那种「目录在另一台
- * 机器上」的场景复用**同一个弹窗**，只换列目录 / 建目录的实现，不另写一套浏览器。
+ * 机器上」的场景复用**同一块本体**，只换列目录 / 建目录的实现，不另写一套浏览器。
+ *
+ * ## 底栏右下角只有一枚（桌面端才有）
+ *
+ * `使用系统文件选择器`（`SystemDirPickerLink`）：换条路进 —— 系统框认得收藏夹与上次打开的
+ * 位置，比一层层点进去快。原先并排的「在文件管理器中打开」已删：两枚都在做「去系统那边」，
+ * 挤在同一行会把左边那排键位提示逼得折行。
+ *
+ * 远端工作区（`source` 是 SFTP）不画：那目录不在这台机器的文件系统里。
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowUp, Folder, FolderPlus, Loader2 } from 'lucide-react'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@fizz/ui/dialog'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { ArrowUp, Folder, FolderPlus, FolderSearch, Loader2 } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
+import {
+  CommandDialog,
+  CommandFooter,
+  CommandFooterHint,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList
+} from '@fizz/ui/command'
 import { Input } from '@fizz/ui/input'
-import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { Kbd } from '@fizz/ui/kbd'
+import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
+import { formatShortcut } from '@fizz/agent-kit/shared/lib/shortcuts'
+import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 
 /** 目录项（只列目录；文件选了也不能当工作区根） */
@@ -52,34 +87,49 @@ export interface DirPickerSource {
   mkdir?: (parent: string, name: string) => Promise<string>
 }
 
-export function ServerDirPicker({
+/**
+ * 浏览本体：顶栏（上一级 · 路径 · 新建 · 添加）+ 目录清单。
+ *
+ * 只管「浏览 + 选定」，**不画外壳也不管开关**：弹窗传 `active={open}`，
+ * 命令面板的目录页一直是打开的（页面本身挂载即生效）。
+ */
+export function DirectoryBrowser({
   app,
   source,
-  open,
-  onOpenChange,
-  onPick,
-  title,
-  description,
-  initialPath
+  active = true,
+  initialPath,
+  leading,
+  listClassName,
+  onPick
 }: {
   /** 默认数据源用的 AgentApp；给了 `source` 时可以不传 */
   app?: AgentApp
   /** 自定义数据源（远端工作区用 SFTP）；不传则走 `app` 的服务端目录接口 */
   source?: DirPickerSource
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  /** 用户确认了当前目录（绝对路径） */
-  onPick: (path: string) => void
-  /**
-   * 副标题。默认文案是「登记为项目」—— 但这个组件早就被**别的用途**复用了
-   * （笔记根、技能的额外目录、Git 导入的父目录、远端工作区），照默认写的那句话
-   * 在那些地方是错的。复用方都该传一句说清「选中的目录会被拿去干什么」。
-   */
-  description?: string
-  /** 弹窗标题；默认「选择目录」 */
-  title?: string
+  /** 是否处于「打开」状态：切到 true 才加载，切回 false 清现场 */
+  active?: boolean
   /** 打开时从哪个目录开始；缺省交给数据源（服务端是本机用户主目录） */
   initialPath?: string
+  /**
+   * 顶栏最左侧的外壳动作（命令面板那枚「返回上一级页面」）。
+   *
+   * 不传 = 顶栏左边什么都不画（弹窗外壳就是这种：它没有「上一级页面」可回，
+   * 上一级**目录**是清单第一行的 `..`）。
+   */
+  leading?: ReactNode
+  /**
+   * 清单的高度类，**会整个替换**默认那条 `h-[min(20rem,calc(85dvh_-_10rem))]`
+   * （不是叠加，别两条高度一起生效）。
+   *
+   * - 不传：清单自己定高（面板页走这条，外壳高度是内容撑的）；
+   * - 外壳自己定了高度时传 `flex-1 min-h-0`（弹窗走这条，清单吃满剩下的那块）。
+   *
+   * **别再传 `max-h`** —— 那是「高度跟内容走」，加载完一长条清单就会把外壳顶高、
+   * 顶栏与底栏跟着跳。
+   */
+  listClassName?: string
+  /** 用户确认了当前目录（绝对路径） */
+  onPick: (path: string) => void
 }) {
   const tr = useT()
   const [data, setData] = useState<DirPickerListing | null>(null)
@@ -110,6 +160,22 @@ export function ServerDirPicker({
   const initialPathRef = useRef(initialPath)
   initialPathRef.current = initialPath
 
+  /**
+   * 打开时把焦点放到本体上，**不放在路径输入框里**。
+   *
+   * 底栏写着 `Backspace 上一级`（与参考 UI 一致）：焦点在输入框里的话它是删字，
+   * 提示就成了假的。焦点在本体上时所有键都冒泡到 cmdk 根，↑↓ / ⏎ / Backspace / Esc
+   * 全部按底栏说的来；想敲路径点一下顶栏那行即可（反正列表不参与过滤，打开就打字没意义）。
+   *
+   * 用 rAF 而不是直接 focus：Radix 打开时自己会聚焦一次，抢在它后面才留得住焦点。
+   */
+  const rootRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!active) return
+    const id = requestAnimationFrame(() => rootRef.current?.focus())
+    return () => cancelAnimationFrame(id)
+  }, [active])
+
   const load = useCallback(async (path: string): Promise<void> => {
     const src = sourceRef.current
     if (!src) return
@@ -128,13 +194,13 @@ export function ServerDirPicker({
 
   // 每次打开都从数据源给的起点重新起（别留着上次的深层路径），顺手收起新建行
   useEffect(() => {
-    if (!open) return
+    if (!active) return
     setData(null)
     setError(null)
     setCreating(false)
     setNewName('')
     void load(initialPathRef.current ?? '')
-  }, [open, load])
+  }, [active, load])
 
   /**
    * 在当前目录下建文件夹，**建完直接进去**（省一次点击：刚建的空目录本来就是想去的地方）。
@@ -159,76 +225,133 @@ export function ServerDirPicker({
     }
   }
 
-  // 既没有 app 也没有 source：没有可用的目录来源，不画空弹窗
+  /** 添加当前目录（右上角按钮 / ⌘⏎）：唯一把路径交回调用方的出口 */
+  const pickCurrent = (): void => {
+    if (!data || loading) return
+    onPick(data.path)
+  }
+
+  const onInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
+    // 路径被改过：⏎ 是「跳到这个路径」。必须挡住 cmdk 根节点上的 Enter，
+    // 否则它会去点「当前高亮的那一行」，把用户跳转的意图吃掉。
+    // 带 ⌘/Ctrl 的 ⏎ 不在此列 —— 那是「添加当前目录」，交给根节点的处理。
+    if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && draft.trim() !== (data?.path ?? '')) {
+      e.preventDefault()
+      const next = draft.trim()
+      if (next) void load(next)
+      return
+    }
+    // 输入框里的 Backspace 是删字，所以「上一级」走 ⌘/Ctrl + ↑（鼠标走左边那颗箭头）
+    if (e.key === 'ArrowUp' && (e.metaKey || e.ctrlKey) && data?.parent) {
+      e.preventDefault()
+      void load(data.parent)
+    }
+  }
+
+  /**
+   * 本体的键盘处理：cmdk 自己的 `onKeyDown`（↑↓ / ⏎ 选行）在 `defaultPrevented`
+   * 时会跳过，`⌘⏎` / `Backspace` 这种它不认识的组合正好在这里补齐。
+   *
+   * 挂在本体最外层（不是外壳的根节点）：两副外壳都靠事件冒泡吃到这里，
+   * 弹窗和面板不用各写一遍。
+   */
+  const onCommandKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault()
+      pickCurrent()
+      return
+    }
+    /*
+      Backspace 回上一级（底栏写的就是这一条）。焦点在路径输入框里时**不拦** ——
+      那里它是删字，拦下来会把「改路径」变成「乱跳目录」。
+    */
+    if (e.key === 'Backspace' && !(e.target instanceof HTMLInputElement) && data?.parent) {
+      e.preventDefault()
+      void load(data.parent)
+    }
+  }
+
   if (!sourceRef.current) return null
 
+  const canMkdir = Boolean(sourceRef.current.mkdir)
+  /** 上一级目录；null = 已经在根（清单第一行那颗 `..` 靠它，没有就不画） */
+  const parentDir = data?.parent ?? null
+
+  /** 列表区的三种「没有目录项」状态：撑满剩余空间并居中（不写 h-full，列表是 flex 列） */
+  const statusLine = (content: ReactNode, destructive = false): ReactNode => (
+    <div
+      className={cn(
+        'm-auto max-w-[32rem] px-4 py-10 text-center text-xs',
+        destructive ? 'text-destructive' : 'text-muted-foreground'
+      )}
+    >
+      {content}
+    </div>
+  )
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      {/*
-        **高度固定**（用户要求）：不跟目录条数变。
-        做法 = 弹窗给死高度（`h-[32rem]`）+ 纵向 flex，列表 `flex-1 min-h-0` 吃掉「扣掉头尾之后
-        剩下的那部分」—— 条数变了只影响列表内部滚动，弹窗和列表盒子的高度都不动。
-        原来是 `min-h-40 max-h-[45dvh]`：空目录 160px、目录一多涨到 45dvh，在目录之间来回切时
-        整个弹窗跟着一跳一跳。
-        `max-h-[85dvh]` 留着兜底：视口比 32rem 还矮时（横屏手机 / 小窗口）按视口缩，
-        此时列表跟着缩，但**仍然不随条数变**。
-        注意基础类里的 `grid` 会被这里的 `flex` 直接顶掉（`cn` 是 tailwind-merge 系，同组同修饰符去重）。
-      */}
-      <DialogContent className="flex h-[32rem] max-h-[85dvh] flex-col overflow-hidden sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>{title ?? tr('选择目录')}</DialogTitle>
-          <DialogDescription>
-            {description ??
-              tr('这里列的是服务端上的目录（Agent 就跑在那台机器上）。选中的目录会登记为项目。')}
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            className="size-8 shrink-0 p-0"
-            aria-label={tr('上一级')}
-            disabled={!data?.parent || loading}
-            onClick={() => {
-              if (data?.parent) void load(data.parent)
-            }}
-          >
-            <ArrowUp className="size-4" />
-          </Button>
-          <Input
-            variant="muted"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void load(draft.trim())
-            }}
-            placeholder={tr('绝对路径，回车跳转')}
-            className="min-w-0 flex-1 font-mono text-xs"
-          />
-          {/* 新建文件夹：在**当前目录**下建（列表顶部展开一行输入），不是建到某个子目录里 */}
-          {sourceRef.current.mkdir ? (
-            <Button
-              size="sm"
-              variant="outline"
-              className="size-8 shrink-0 p-0"
-              aria-label={tr('新建文件夹')}
-              title={tr('在当前目录下新建文件夹')}
-              disabled={!data || loading || creating}
-              onClick={() => {
-                setCreating(true)
-                setNewName('')
-                setError(null)
-              }}
-            >
-              <FolderPlus className="size-4" />
-            </Button>
-          ) : null}
-        </div>
-
+    /* 本体只有「顶栏 + 清单」两块，纵向 flex：外壳决定高度，清单吃剩下那部分。
+       `min-h-0` 一路传下去，否则固定高度的外壳里列表会撑破边界。
+       `tabIndex={-1}` + 上面那个 focus effect：打开时焦点在这块上而不是路径输入框里。 */
+    <div
+      ref={rootRef}
+      tabIndex={-1}
+      className="flex min-h-0 flex-1 flex-col outline-none"
+      onKeyDown={onCommandKeyDown}
+    >
+      {/* 头一块：← 返回 · 路径 · 新建文件夹 · 选择。多盘符那一排也归这里，
+          统一由外层那条 border-b 和列表分开 */}
+      <div className="shrink-0 border-b border-border/60">
+        <CommandInput
+          leading={leading}
+          // 目录浏览不放放大镜：图标位让给路径本身（`false` = 不画）
+          icon={false}
+          value={draft}
+          onValueChange={setDraft}
+          onKeyDown={onInputKeyDown}
+          placeholder={tr('绝对路径，回车跳转')}
+          /*
+            路径是「我在哪」，不是要填的字段：跟着标题字号走、不加边框。
+            `CommandInput` 本来就是无底色的一行，这里只把 `text-sm` 顶成 `text-base`。
+          */
+          className="text-base text-foreground"
+          trailing={
+            <>
+              {canMkdir ? (
+                <IconTip label={tr('在当前目录下新建文件夹')}>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="shrink-0"
+                    aria-label={tr('新建文件夹')}
+                    disabled={!data || loading || creating}
+                    onClick={() => {
+                      setCreating(true)
+                      setNewName('')
+                      setError(null)
+                    }}
+                  >
+                    <FolderPlus className="size-4" />
+                  </Button>
+                </IconTip>
+              ) : null}
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0 gap-1.5 pr-1.5"
+                disabled={!data || loading}
+                // 键帽本身就是提示：面板里 ⏎ 被「进入」占着，确认只能是 ⌘/Ctrl + ⏎
+                onClick={pickCurrent}
+              >
+                {tr('选择')}
+                <Kbd className="bg-muted/70">{formatShortcut('CommandOrControl+Enter')}</Kbd>
+              </Button>
+            </>
+          }
+        />
         {/* 多盘符（Windows）时给一排「跳到哪个盘」；单根（POSIX / SFTP）不必占地方 */}
-        {(data?.roots?.length ?? 0) > 1 && (
-          <div className="flex flex-wrap gap-1">
+        {(data?.roots?.length ?? 0) > 1 ? (
+          <div className="flex flex-wrap gap-1 px-3 pb-1.5">
             {data?.roots?.map((root) => (
               <button
                 key={root.path}
@@ -245,110 +368,262 @@ export function ServerDirPicker({
               </button>
             ))}
           </div>
-        )}
+        ) : null}
+      </div>
 
-        <div
-          className={cn(
-            // 列表盒固定高度：`flex-1` 拿「弹窗扣掉头/尾」的剩余空间，内部滚动。
-            // 别写回 `min-h-40 max-h-[45dvh]` —— 那样盒子高度会跟着目录条数变（见上面 DialogContent 的注释）
-            'min-h-0 flex-1 overflow-auto rounded-md border border-border/60',
-            loading && data && 'opacity-60'
-          )}
-        >
-          {/* 新建行贴顶：目录一多列表会滚，输入框不能跟着滚出去（autoFocus 也会把它带进视口） */}
-          {creating && (
-            <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border/60 bg-secondary/40 px-3 py-1.5 backdrop-blur-sm">
-              <FolderPlus className="size-4 shrink-0 text-muted-foreground" />
-              <Input
-                variant="muted"
-                autoFocus
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') void createFolder()
-                  // Esc 只收起这一行：stopPropagation 是拦 Radix 的 Dialog
-                  // （它自己在 document 上听 Escape 关弹窗），拦不住也只是退回原行为
-                  if (e.key === 'Escape') {
-                    e.stopPropagation()
-                    setCreating(false)
-                  }
-                }}
-                disabled={creatingBusy}
-                placeholder={tr('新文件夹名字，回车创建')}
-                className="h-7 min-w-0 flex-1 text-xs"
-              />
-              <Button
-                size="sm"
-                className="h-7 px-2 text-xs"
-                disabled={!newName.trim() || creatingBusy}
-                onClick={() => void createFolder()}
-              >
-                {tr('创建')}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 px-2 text-xs"
-                disabled={creatingBusy}
-                onClick={() => setCreating(false)}
-              >
-                {tr('取消')}
-              </Button>
-            </div>
-          )}
-          {/* 三种「没有列表项」的状态都撑满这个固定高度的盒子并垂直居中：
-              盒子高度是定死的，再用 py-* 顶出来的话字全挤在上边缘 */}
-          {loading && !data && (
-            <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">
+      <CommandList
+        className={cn(
+          'flex min-h-0 flex-col overflow-y-auto max-h-none',
+          /*
+            固定高度，不跟内容走。
+
+            加载前这里只有一行「读取目录…」，加载完可能是几十行 —— 高度若跟着内容长，
+            面板会在数据回来的那一帧整块往下跳（顶栏与底部键位提示一起移位）。
+            钉死之后位置不变，多出来的行只在列表内部滚。
+            `min()` 是给小屏和横屏留的：85dvh 减掉顶栏 / 底栏，再与 20rem 取小。
+            20rem ≈ 8 行目录（行高 36px），正好一屏不用滚、多出来再滚。
+
+            `listClassName` 给了就**整个换掉**这一条：弹窗外壳自己定了高度（`h-[32rem]`），
+            清单只负责吃满剩下的那块（传 `flex-1`）。两者别叠 —— `h-*` 与 `flex-1` 会同时
+            生效，最后靠 flex-basis 谁赢，读代码的人看不出来。
+          */
+          listClassName ?? 'h-[min(20rem,calc(85dvh_-_10rem))]',
+          /*
+            目录行比 `CommandDialog` 默认的 `py-3` 紧一档（44 → 36px）。
+            `!` 是必须的：`CommandDialog` 根上那条 `[&_[cmdk-item]]:py-3` 与本条
+            specificity 相同，不加 important 谁赢取决于产物里两条规则的先后，不可控。
+          */
+          '[&_[cmdk-item]]:py-2!',
+          loading && data ? 'opacity-60' : null
+        )}
+      >
+        {/* 新建行贴顶：目录一多列表会滚，输入框不能跟着滚出去（autoFocus 也会把它带进视口） */}
+        {creating ? (
+          <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border/60 bg-secondary/40 px-3 py-1.5 backdrop-blur-sm">
+            <FolderPlus className="size-4 shrink-0 text-muted-foreground" />
+            <Input
+              variant="muted"
+              autoFocus
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void createFolder()
+                // Esc 只收起这一行：stopPropagation 是拦 Radix 的 Dialog
+                // （它自己在 document 上听 Escape 关弹窗），拦不住也只是退回原行为
+                if (e.key === 'Escape') {
+                  e.stopPropagation()
+                  setCreating(false)
+                }
+              }}
+              disabled={creatingBusy}
+              placeholder={tr('新文件夹名字，回车创建')}
+              className="h-7 min-w-0 flex-1 text-xs"
+            />
+            <Button
+              size="xs"
+              disabled={!newName.trim() || creatingBusy}
+              onClick={() => void createFolder()}
+            >
+              {tr('创建')}
+            </Button>
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={creatingBusy}
+              onClick={() => setCreating(false)}
+            >
+              {tr('取消')}
+            </Button>
+          </div>
+        ) : null}
+
+        {loading && !data ? (
+          /*
+            首屏加载：撑满整块清单区再居中（上下左右都居中）。
+            用 `m-auto` 看着等价，但清单本身是滚动容器 —— 边距自动居中只在「恰好没溢出」
+            时可靠，远端（SFTP）首包慢、加上顶部还有盘符 / 新建行时，状态行会贴在上沿。
+            `flex-1` 让它吃满剩余高度，`grid place-items-center` 两个方向一起居中。
+          */
+          <div className="grid flex-1 place-items-center px-3 py-6 text-xs text-muted-foreground">
+            <span className="inline-flex items-center gap-2">
               <Loader2 className="size-3.5 animate-spin" />
               {tr('读取目录…')}
-            </div>
-          )}
-          {error && (
-            <p className="flex h-full items-center justify-center px-3 text-center text-xs text-destructive">
-              {error}
-            </p>
-          )}
-          {!loading && !error && data?.entries.length === 0 && (
-            <p className="flex h-full items-center justify-center px-3 text-center text-xs text-muted-foreground">
-              {tr('这个目录下没有子目录')}
-            </p>
-          )}
-          {data?.entries.map((entry) => (
-            <button
-              key={entry.path}
-              type="button"
-              onClick={() => void load(entry.path)}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-secondary/60"
-            >
-              <Folder className="size-4 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-            </button>
-          ))}
-        </div>
+            </span>
+          </div>
+        ) : null}
+        {error ? statusLine(error, true) : null}
+        {/* 有 `..` 行的时候不算「空」：目录真的空也能退出去，不必再多一句提示 */}
+        {!loading && !error && data?.entries.length === 0 && !parentDir
+          ? statusLine(tr('这个目录下没有子目录'))
+          : null}
 
-        <DialogFooter className="items-center gap-2">
-          <span
-            className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground"
-            title={data?.path}
-          >
-            {data?.path}
-          </span>
-          <Button data-dialog-dismiss="" variant="ghost" onClick={() => onOpenChange(false)}>
-            {tr('取消')}
-          </Button>
-          <Button
-            disabled={!data || loading}
-            onClick={() => {
-              if (!data) return
-              onPick(data.path)
-              onOpenChange(false)
-            }}
-          >
-            {tr('选择此目录')}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        {data && (parentDir || data.entries.length > 0) ? (
+          <CommandGroup heading={tr('目录')}>
+            {/* 第一行 `..`：上一级目录。原先它是顶栏一颗箭头，挪进清单是为了跟参考 UI 一致 —
+                顶栏只留「返回上一级页面」（面板）/ 路径 / 新建 / 添加，方向键一路走到底 */}
+            {parentDir ? (
+              <CommandItem
+                // `..` 不是真目录，value 别拿路径冒充（它只用于 cmdk 跟踪当前项）
+                value=".."
+                onSelect={() => void load(parentDir)}
+              >
+                <ArrowUp />
+                <span className="min-w-0 flex-1 truncate">..</span>
+              </CommandItem>
+            ) : null}
+            {data.entries.map((entry) => (
+              <CommandItem
+                key={entry.path}
+                value={entry.path}
+                // 选中即前往：⏎ / 点击都是「进这个子目录」（添加当前目录是上面那颗按钮）
+                onSelect={() => void load(entry.path)}
+              >
+                <Folder />
+                <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        ) : null}
+      </CommandList>
+    </div>
+  )
+}
+
+/**
+ * 底栏那枚纯文字动作的外形。
+ *
+ * 用纯文字而不是 `Button`：底栏只有一行高（和键位提示同高），带边框的按钮会把整条
+ * 撑高、看着像第二块工具条。
+ */
+const footerLink =
+  'inline-flex items-center gap-1 rounded-sm px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
+
+/**
+ * 底栏右下角那条纯文字动作：「使用系统文件选择器」。
+ *
+ * 两副外壳共用（弹窗底栏、命令面板目录页底栏），且与左边那排键位提示**同一行**
+ * （所以只有它一枚：多一枚就得折行）。**只在桌面端画** —— 调用方先判
+ * `host.pickLocalDirectory` 在不在；面板列的是服务端目录、路径得靠敲，系统框能直接
+ * 调出资源管理器 / 访达、还认得上次打开的位置。
+ */
+export function SystemDirPickerLink({
+  onPick,
+  className
+}: {
+  onPick: () => void
+  className?: string
+}) {
+  const tr = useT()
+  return (
+    <button type="button" onClick={onPick} className={cn(footerLink, className)}>
+      <FolderSearch className="size-3.5" />
+      {tr('使用系统文件选择器')}
+    </button>
+  )
+}
+
+/** 独立弹窗的外壳：固定高度的面板 + 底栏键位提示。表单里的「选择文件夹…」用它。 */
+export function ServerDirPicker({
+  app,
+  source,
+  open,
+  onOpenChange,
+  onPick,
+  onPickNative,
+  title,
+  description,
+  initialPath
+}: {
+  /** 默认数据源用的 AgentApp；给了 `source` 时可以不传 */
+  app?: AgentApp
+  /** 自定义数据源（远端工作区用 SFTP）；不传则走 `app` 的服务端目录接口 */
+  source?: DirPickerSource
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  /** 用户确认了当前目录（绝对路径） */
+  onPick: (path: string) => void
+  /**
+   * 桌面端多给一条「使用系统文件选择器」的出口（底栏右下角）。
+   *
+   * 面板里列的是**服务端**目录、路径靠输入框敲；系统框能直接调出资源管理器 / 访达，
+   * 还认得「上次打开的位置」和收藏夹 —— 两者各有所长，谁也别替谁做决定。
+   * 传了才画这一项（web / 远端工作区没有本机文件系统，传了就点不动）。
+   *
+   * 由调用方负责「先收起本面板、再弹系统框、拿到结果后自己 settle」。
+   */
+  onPickNative?: () => void
+  /**
+   * 副标题。默认文案是「登记为项目」—— 但这个组件早就被**别的用途**复用了
+   * （笔记根、技能的额外目录、Git 导入的父目录、远端工作区），照默认写的那句话
+   * 在那些地方是错的。复用方都该传一句说清「选中的目录会被拿去干什么」。
+   *
+   * 现在只给读屏用（命令面板式的外壳不画标题 / 副标题）：视觉上由右上角那颗「选择」
+   * 和调用处的上下文表达同一件事。
+   */
+  description?: string
+  /** 弹窗标题（同样只给读屏）；默认「选择目录」 */
+  title?: string
+  /** 打开时从哪个目录开始；缺省交给数据源（服务端是本机用户主目录） */
+  initialPath?: string
+}) {
+  const tr = useT()
+  return (
+    <CommandDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={title ?? tr('选择目录')}
+      description={
+        description ??
+        tr('这里列的是服务端上的目录（Agent 就跑在那台机器上）。选中的目录会登记为项目。')
+      }
+      // 面板自己不画标题 / 关闭叉：跟命令面板同一副外壳，退出走 Esc / 点外面
+      showCloseButton={false}
+      commandProps={{ shouldFilter: false }}
+      /*
+        高度固定（用户要求）：不跟目录条数变。`h-[32rem]` + 纵向 flex，清单 `flex-1 min-h-0`
+        吃掉「扣掉头尾之后剩下的那部分」—— 条数变了只影响列表内部滚动，面板高度不动。
+        `max-h-[85dvh]` 兜底：视口比 32rem 还矮时（横屏手机 / 小窗口）按视口缩。
+        注意基础类里的 `grid` 会被这里的 `flex` 顶掉（`cn` 是 tailwind-merge 系）。
+
+        宽度与命令面板一致（480px）：它现在同时是面板里的一页，两边跳转时不该换宽度。
+      */
+      className="flex h-[32rem] max-h-[85dvh] flex-col sm:max-w-[480px]"
+    >
+      <DirectoryBrowser
+        app={app}
+        source={source}
+        active={open}
+        initialPath={initialPath}
+        /*
+          外壳高度是固定的（上面那条 `h-[32rem]`），清单该吃满扣掉头尾之后剩下的那块。
+          不传就落到本体默认的固定高度（面板页要的那份），弹窗里会在底栏上方空出一条。
+        */
+        listClassName="flex-1 min-h-0"
+        onPick={(path) => {
+          onPick(path)
+          onOpenChange(false)
+        }}
+      />
+      {/*
+        左右两块用 `justify-between` 分开，两块各自 `items-center` —— 左边换行成两行时，
+        右边那枚出口仍在这一块的正中，不会跟着第一行往上贴。
+
+        `flex-nowrap` 是顶掉 `CommandFooter` 基础里的 `flex-wrap`：换行要发生在**左边那组
+        键位提示内部**（`span` 自己 `flex-wrap`），否则右边会整块掉到第二行、`justify-between`
+        就白设了。左组加 `min-w-0` 才压得窄 —— flex 项默认 `min-width: auto`，内容宽就顶开。
+      */}
+      <CommandFooter className="flex-nowrap items-center justify-between gap-x-3">
+        <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+          <CommandFooterHint keys={['↑', '↓']} label={tr('选择')} />
+          <CommandFooterHint keys={['⏎']} label={tr('进入')} />
+          <CommandFooterHint keys={['Backspace']} label={tr('上一级')} />
+          <CommandFooterHint keys={['Esc']} label={tr('关闭')} />
+        </span>
+        {/* 远端工作区（`source` 是 SFTP）不给本机入口：那目录不在这台机器的文件系统里 */}
+        {source || !onPickNative ? null : (
+          <SystemDirPickerLink className="shrink-0" onPick={onPickNative} />
+        )}
+      </CommandFooter>
+    </CommandDialog>
   )
 }

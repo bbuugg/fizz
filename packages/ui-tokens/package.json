@@ -12,5 +12,8 @@
   },
   "files": [
     "src"
-  ]
+  ],
+  "dependencies": {
+    "@fontsource-variable/plus-jakarta-sans": "^5.3.0"
+  }
 }

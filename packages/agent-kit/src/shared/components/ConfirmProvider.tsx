@@ -81,8 +81,8 @@ export interface ChooseOptions<T extends string> {
   title: string
   description?: ReactNode
   /**
-   * 非取消操作按从左到右的顺序给。`cancelValue` 对应的按钮由共享 Footer 固定放最后，
-   * 横排靠右、竖排靠下，不要求调用方猜测断点布局。
+   * 非取消操作按从左到右的顺序给。`cancelValue` 对应的按钮由共享 Footer 固定放最前
+   * （横排靠左），竖排时 Footer 用 `order` 把它推到底部，不要求调用方猜测断点布局。
    */
   actions: ChooseAction<T>[]
   /** Esc / 点遮罩 / 关掉弹窗时的答复（应当落在 `actions` 的某个 `value` 上） */
@@ -213,7 +213,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
                 variant={action.variant ?? 'outline'}
                 // 「取消」那颗在手机版的底部抽屉里要升回 outline（ghost 贴底几乎看不出是
                 // 按钮）：手机壳按这个属性做替换，见 `apps/mobile/src/app/mobile-sheet.tsx`
-                // 的 `restoreDismissVariants`。共享 Footer 也用它把取消固定排到最后。
+                // 的 `restoreDismissVariants`。共享 Footer 也用它把取消固定排到最前。
                 {...(action.value === options?.cancelValue
                   ? { 'data-dialog-dismiss': '' }
                   : {})}

@@ -34,6 +34,10 @@ import {
   useShortcuts,
   type AgentShortcutAction,
 } from "@fizz/agent-kit/shared/lib/shortcuts";
+import {
+  setCommandPaletteOpener,
+  type CommandPaletteEntry,
+} from "@fizz/agent-kit/shared/lib/command-palette";
 import { setPendingDraft } from "@fizz/agent-kit/shared/lib/pending-draft";
 import type { ProjectUiAction } from "@fizz/agent-kit/shared/lib/tool-actions";
 import { Sidebar } from "@fizz/agent-kit/shell/layout/Sidebar";
@@ -72,6 +76,8 @@ import { BackgroundTasksBadge } from "@fizz/agent-kit/shared/components/Backgrou
 import { TransferBadge } from "@fizz/agent-kit/shared/components/TransferBadge";
 import { CommandPalette } from "@fizz/agent-kit/shell/CommandPalette";
 import { ScriptRunHost } from "@fizz/agent-kit/features/scripts/RunScriptDialog";
+import { useWorkspaceAddActions } from "@fizz/agent-kit/features/chat/workspace-add-actions";
+import { selectNewWorkspace } from "@fizz/agent-kit/features/chat/select-new-workspace";
 import { ImportConversationDialog } from "@fizz/agent-kit/features/projects/ImportConversationDialog";
 import { ManageWorktreeDialog } from "@fizz/agent-kit/features/projects/ManageWorktreeDialog";
 import { NewWorktreeDialog } from "@fizz/agent-kit/features/projects/NewWorktreeDialog";
@@ -287,6 +293,59 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     : null;
 
   const [paletteOpen, setPaletteOpen] = useState(false);
+  /**
+   * 本次打开落在哪一页。常规入口（快捷键 / 状态栏 / 标题栏那颗）都是 `root`；
+   * 工作区下拉底部那条「新建工作区」直接进面板的 `new-workspace` 页。
+   */
+  const [paletteEntry, setPaletteEntry] = useState<CommandPaletteEntry>("root");
+  /**
+   * 每次打开 +1，当 `CommandPalette` 的 `key`。
+   *
+   * 页面栈是面板自己的 state，`initialPage` 只在挂载时读一次；不重挂的话，
+   * 从「新建工作区」进过一次之后，再按快捷键还会落在那一页（栈里还留着）。
+   */
+  const [paletteSession, setPaletteSession] = useState(0);
+
+  const openPalette = (entry: CommandPaletteEntry = "root"): void => {
+    /*
+      已经开着就什么都不做：`key` 换一次会让面板整块重挂（当前页、已敲的词全丢）。
+      快捷键分发在面板打开时也照常跑（监听在 window 上），以前 `setPaletteOpen(true)`
+      是幂等的，换成重挂之后必须补上这条守卫。
+    */
+    if (paletteOpen) return;
+    setPaletteEntry(entry);
+    setPaletteSession((n) => n + 1);
+    setPaletteOpen(true);
+  };
+
+  /*
+    登记给 `requestCommandPalette()`：工作区下拉里那条「新建工作区」深在对话面板里，
+    拿不到 `setPaletteOpen`，也不值得为它把 `onOpen` 打洞穿过七八层组件。
+    渲染期赋值是幂等的（每次渲染换成最新闭包）；卸载时清掉，别留一个指向已卸载组件的 setter。
+  */
+  setCommandPaletteOpener(openPalette);
+  useEffect(() => () => setCommandPaletteOpener(null), []);
+
+  /*
+    「新建工作区」的四条入口（选文件夹 / 从 Git 导入 / 连接远端服务器 / 新建容器型项目）
+    挂在外壳顶层，命令面板只拿 `actions` / `onAction` / `addDirectory` / `addRemoteWorkspace`
+    这一套（见 `CommandPalette` 的 prop 注释）。
+
+    为什么在这里挂而不是挂进命令面板：选中一条时面板**先关**、弹窗再开，那两个表单弹窗
+    （Git 导入 / 容器型项目）必须活过这次关闭 —— 挂在面板里会跟着卸载，Promise 永远不
+    settle。和 `ScriptRunHost` 同一条理由：命令面板是「关掉面板再干活」的地方，需要常驻
+    的弹窗一律由外壳持有。
+
+    两条**不走弹窗**的例外（命令面板就地压页，Esc 能逐级退回「新建工作区」）：
+    - 「选文件夹」→ `dir` 页，选完走 `addDirectory`；
+    - 「连接远端服务器」→ `remote-hosts` 页 → `remote-dir` 页，选完走 `addRemoteWorkspace`。
+    这两条不经过这里的 `dialogs`。远端那条**已经没有表单弹窗**（`RemoteWorkspaceDialog` 已删）；
+    选文件夹那条还留着，定时任务表单从 `onAction` 进它。
+
+    也**别在这里自己攒四条动作**：标签 / 图标 / 顺序 / 「服务端有 docker 才有容器型项目」
+    的门控唯一来源是 `useWorkspaceAddActions`（命令面板「新建工作区」页照它画）。
+ */
+  const workspaceAdd = useWorkspaceAddActions(app, (ws) => selectNewWorkspace(app, ws));
 
   // ---- 可配置快捷键：配置在共享存储里（设置页写、这里分发），分发监听也在这里 ----
   const shortcuts = useShortcuts();
@@ -417,7 +476,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const runShortcutAction = (action: AgentShortcutAction): void => {
     switch (action) {
       case "open-command-palette":
-        setPaletteOpen(true);
+        openPalette();
         break;
       case "open-settings":
         openSettings();
@@ -835,7 +894,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <StatusBar
               app={app}
               onOpenSettings={openSettings}
-              onOpenCommandPalette={() => setPaletteOpen(true)}
+              onOpenCommandPalette={() => openPalette()}
               /*
             系统监控条由设置 →「系统监控」的开关控制：关掉时整条不渲染（组件卸载 =
             轮询随之停；服务端的采样器已在保存设置时停掉）。`null` = 偏好还没拉到 →
@@ -849,11 +908,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               right={<StatusBarNodes app={app} />}
               /*
                 右端 `actions` 槽：**后台任务** + **SFTP 传输**两个清单入口 + **更新指示条**
-                （有事才出现的信息位）+ **应用日志**入口（最右那颗，右下角一眼可及）。
+                （有事才出现的信息位）+ 系统监控 / 文件管理 / 应用日志三颗入口。
                 AI 助手已上移到顶栏右上角（见 AiAssistantButton）。
                 更新指示条点它只打开设置（不直接下载，理由见 AppUpdateBadge 文件头）。
                 两颗清单徽标放最左（紧贴 spacer）：它们比「有新版本」更常用，点开都是一张
-                清单；靠右那颗留给一眼可及的日志入口。
+                清单；靠右留给「定位到别处去」的入口，日志压在最末。
+                命令面板**原先在这儿最右**（一颗 ⌘ 图标），现已上移到顶栏中央的搜索框
+                （见 `TitleBarSearch`）—— 图标看不出是搜索，夹在日志 / 文件管理中间只能
+                靠 tooltip 分辨。这里不要再加回去。
               */
               actions={
                 <>
@@ -883,11 +945,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               open={quickManageOpen && !!app.activeWorkspaceId}
               onClose={() => setQuickManageOpen(false)}
             />
-            {/* 命令面板：打开快捷键由上面的分发处理 */}
+            {/* 命令面板：打开快捷键由上面的分发处理；`key` 让每次打开都按 `paletteEntry` 重挂 */}
             <CommandPalette
+              key={paletteSession}
               app={app}
               open={paletteOpen}
               onOpenChange={setPaletteOpen}
+              initialPage={paletteEntry}
               onOpenConversation={openConversation}
               shortcuts={shortcuts}
               theme={theme}
@@ -912,6 +976,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   openHostTab(host);
                 }
               }}
+              workspaceAdd={workspaceAdd}
             />
 
             {/*
@@ -921,6 +986,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               各自渲染一份会在「关一个、开另一个」的时序里把 body 的 pointer-events 收错。
             */}
             <ScriptRunHost app={app} />
+
+            {/*
+              「新建工作区」的三个弹窗 + 目录选择器：宿主是上面那个 `workspaceAdd`
+              （命令面板的二级视图只发 `onAction`）。挂在外壳顶层而不是面板里，理由见
+              那一处注释 —— 面板关掉后弹窗还得开着。
+            */}
+            {workspaceAdd.dialogs}
 
             {/* 项目插件：从项目「更多」菜单打开，看 / 启停**这个项目**的插件 */}
             <PluginsDialog

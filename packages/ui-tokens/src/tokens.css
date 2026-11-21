@@ -222,7 +222,27 @@
   --primary-line: color-mix(in oklab, var(--primary) 45%, var(--background));
   --primary-strong: color-mix(in oklab, var(--primary) 76%, var(--foreground));
 
-  --fizz-font-sans: 'Segoe UI', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  /*
+   * 正文字体栈：西文用自托管的 Plus Jakarta Sans Variable（见 `index.css` 的 `@import`），
+   * 中文按平台回落（macOS 的苹方 / Windows 的雅黑 / 安卓与 Linux 的 Noto CJK）。
+   *
+   * ⚠️ 这款字体只含拉丁等西文字形，中文字符会**逐字**回落到后面的中文字体 ——
+   * 所以中文那几项不能删：删了中文界面会掉到 `sans-serif`（浏览器默认宋体 / 系统衬线），
+   * 中英混排看着像两种字体拼的。
+   * ⚠️ 系统西文字体（`Segoe UI Variable Text` / `Segoe UI`）排在自托管字体之后、中文字体之前：
+   * 它们只兜前者缺的西文符号（如部分箭头、圈号），不会抢走正文。
+   */
+  --fizz-font-sans:
+    'Plus Jakarta Sans Variable',
+    'Segoe UI Variable Text',
+    'Segoe UI',
+    'PingFang SC',
+    'Microsoft YaHei',
+    'Noto Sans SC',
+    'Noto Sans CJK SC',
+    system-ui,
+    -apple-system,
+    sans-serif;
   --fizz-font-heading: var(--fizz-font-sans);
   --fizz-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     'Liberation Mono', 'Courier New', monospace;

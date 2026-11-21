@@ -1,6 +1,10 @@
 import * as React from 'react'
 
-/** 取消固定在动作末尾；不按文案或按钮样式猜语义，也不改写事件、ref 与其他属性。 */
+/**
+ * 取消固定在最前（横排是左侧、竖排是顶部），执行操作跟在后面。
+ *
+ * 不按文案或按钮样式猜语义，也不改写事件、ref 与其他属性。
+ */
 export function orderDialogActions(
   children: React.ReactNode,
   cancelTypes: readonly React.ElementType[] = [],
@@ -16,14 +20,14 @@ export function orderDialogActions(
     if (cancel) dismiss.push(child)
     else actions.push(child)
   }
-  return [...actions, ...dismiss]
+  return [...dismiss, ...actions]
 }
 
 function flattenFragments(children: React.ReactNode): React.ReactNode[] {
   return React.Children.toArray(children).flatMap((child) => {
     if (!React.isValidElement<{ children?: React.ReactNode }>(child) || child.type !== React.Fragment)
       return [child]
-    // Fragment 不生成 DOM；展开它才可把其中的取消移动到整个 footer 的末尾。
+    // Fragment 不生成 DOM；展开它才可把其中的取消移动到整个 footer 的最前面。
     // 保留片段 key 的命名空间，避免不同片段内相同 key 的按钮冲突。
     return flattenFragments(child.props.children).map((nested) =>
       React.isValidElement(nested)

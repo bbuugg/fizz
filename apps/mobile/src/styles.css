@@ -287,7 +287,9 @@
  * 「取消 / 仅本条 / 及后续 N 条」这种三选一挤在一行，手机上每个只剩几十 px，文字换行、
  * 点哪个都容易误触。超过两个就不横向分了：竖着排，每颗按钮占满整行。
  *
- * DOM 已统一成「执行操作在前、取消最后」，竖排也保持这个顺序，取消贴底。
+ * DOM 统一成「取消在前、执行操作在后」（横排时取消靠左）。竖排是另一回事：手机上取消
+ * 留在最下面更好按，所以下面第二条规则用 `order` 把带 `data-dialog-dismiss` 的那颗推到
+ * 末尾 —— 其余动作的相对顺序不变。
  *
  * 判据是**按钮个数**（三个同级按钮的 `~` 链），不是子元素个数 —— footer 里可能还夹着
  * 路径 / 错误提示这类兄弟（`ServerDirPicker`），不能因为它们把两颗按钮排成竖的
@@ -301,6 +303,17 @@
   ) {
   flex-direction: column;
   align-items: stretch;
+}
+
+/* 竖排时取消贴底：DOM 里它在最前，靠 `order` 视觉上挪到最后。 */
+[data-mobile-dialog]
+  [data-slot='dialog-footer']:has(
+    > :is([data-slot='button'], [data-slot='spinner-button'])
+      ~ :is([data-slot='button'], [data-slot='spinner-button'])
+      ~ :is([data-slot='button'], [data-slot='spinner-button'])
+  )
+  > [data-dialog-dismiss] {
+  order: 1;
 }
 
 ::selection {
