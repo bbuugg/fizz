@@ -13,6 +13,8 @@ export interface ChatAttachment {
   id: string
   name: string
   mediaType: string
+  /** 字节大小；瓦片上显示用（历史回显的附件没有这个字段） */
+  size?: number
   /** 服务端地址（上传完成后填入）；占位期为空串 */
   url: string
   /** 是否已上传完成（含编辑回显——那些本来就是历史里的服务端 url） */

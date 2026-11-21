@@ -425,4 +425,7 @@ export const CHAT: Record<string, string> = {
   '已审批': 'Approved',
   '出错': 'Error',
   '已拒绝': 'Denied',
+  '移除 {name}': 'Remove {name}',
+  '正在上传 {name}，点击取消': 'Uploading {name} — click to cancel',
+  '{name} 上传失败': '{name} failed to upload',
 }

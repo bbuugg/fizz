@@ -106,6 +106,8 @@ export function useMainComposerProps(
     onAttachFiles?: (files: File[]) => void;
     /** 从预览行移除一条附件 */
     onRemoveAttachment?: (id: string) => void;
+    /** 上传中点击瓦片取消上传（散开动画结束后再由 onRemoveAttachment 删条目） */
+    onCancelUpload?: (id: string) => void;
     /** 队列「编辑」写回时还原附件（seed 用来生成稳定的附件 id） */
     onRestoreQueueFiles?: (files: UploadFileRef[], seed: string) => void;
     /**
@@ -285,10 +287,15 @@ export function useMainComposerProps(
             onRemove={opts.onRemoveQuote}
           />
         ) : null}
-        {(opts.attachments ?? []).length > 0 && opts.onRemoveAttachment ? (
+        {/*
+          行本身常驻（空列表时自己渲染 null）：最后一条附件的移除是「颗粒散开 + 整行
+          高度收拢」两步，如果按 `length > 0` 在这里卸载，收起动画根本没机会播。
+        */}
+        {opts.onRemoveAttachment ? (
           <AttachmentPreviewRow
             attachments={opts.attachments ?? []}
             onRemove={opts.onRemoveAttachment}
+            onCancelUpload={opts.onCancelUpload}
           />
         ) : null}
         {opts.editing ? (

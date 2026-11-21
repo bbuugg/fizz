@@ -32,6 +32,7 @@ export function NewTaskView({ app }: { app: AgentApp }) {
             onSelectUploadProvider: draft.setUploadProviderId,
             onRefreshUploadProviders: () => void draft.loadUploadProviders(),
             onRemoveAttachment: draft.removeAttachment,
+            onCancelUpload: draft.cancelUpload,
             onSubmit: (text, onStarted) => {
               // 附件还在上传 → 不发（按钮与 Enter 已拦，这里是兜底）
               if (draft.hasUploadingAttachment) return false

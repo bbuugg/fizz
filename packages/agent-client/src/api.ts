@@ -550,6 +550,11 @@ export function createApi(
       file: File,
       opts?: {
         onProgress?: (percent: number) => void;
+        /**
+         * 取消信号。web 端会真 abort XHR；desktop 的 IPC 桥**不转发** AbortSignal
+         * （见 AGENTS.md），那边只能由调用方在回调里判 `aborted` 把结果丢掉。
+         */
+        signal?: AbortSignal;
         /** 用哪个上传源；缺省 = 服务端的内置存储（见 `listUploadProviders`） */
         provider?: string;
         /** 这次上传属于哪个项目（带项目级插件提供的上传源才用得上） */
@@ -557,6 +562,8 @@ export function createApi(
       },
     ): Promise<UploadResult> {
       const onProgress = opts?.onProgress;
+      const signal = opts?.signal;
+      if (signal?.aborted) throw new DOMException("已取消上传", "AbortError");
       const input: UploadInput = {
         name: file.name,
         mediaType: file.type || "application/octet-stream",
@@ -564,10 +571,13 @@ export function createApi(
         ...(opts?.provider ? { provider: opts.provider } : {}),
         ...(opts?.workspaceId ? { workspaceId: opts.workspaceId } : {}),
       };
+      // 读文件（大图 base64）期间也可能被取消，这时一个字节都没发出去
+      if (signal?.aborted) throw new DOMException("已取消上传", "AbortError");
       if (getAgentHostOrNull()?.platform === "desktop") {
         const result = await request<UploadResult>(API_ROUTES.upload, {
           method: "POST",
           body: JSON.stringify(input),
+          ...(signal ? { signal } : {}),
         });
         onProgress?.(100);
         return result;
@@ -575,6 +585,9 @@ export function createApi(
       // web：fetch 拿不到请求体的上传进度，用 XHR
       return await new Promise<UploadResult>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
+        const onAbort = (): void => xhr.abort();
+        const cleanup = (): void => signal?.removeEventListener("abort", onAbort);
+        signal?.addEventListener("abort", onAbort, { once: true });
         xhr.open("POST", endpoint(API_ROUTES.upload));
         for (const [key, value] of Object.entries(authHeaders()))
           xhr.setRequestHeader(key, value);
@@ -583,7 +596,12 @@ export function createApi(
           if (e.lengthComputable)
             onProgress?.(Math.round((e.loaded / e.total) * 100));
         };
+        xhr.onabort = () => {
+          cleanup();
+          reject(new DOMException("已取消上传", "AbortError"));
+        };
         xhr.onload = () => {
+          cleanup();
           let json:
             | ({ error?: string; message?: string } & Partial<UploadResult>)
             | null = null;
@@ -604,8 +622,13 @@ export function createApi(
             ),
           );
         };
-        xhr.onerror = () => reject(new ApiError("上传失败：网络错误", 0));
+        xhr.onerror = () => {
+          cleanup();
+          reject(new ApiError("上传失败：网络错误", 0));
+        };
         xhr.send(JSON.stringify(input));
+        // 监听挂上之前就已经取消：补一次
+        if (signal?.aborted) xhr.abort();
       });
     },
 

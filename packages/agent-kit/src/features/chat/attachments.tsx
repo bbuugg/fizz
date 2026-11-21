@@ -2,15 +2,16 @@
  * 主会话输入区的附件交互（图片 / PDF / 其它）：上传入口 + 待发送预览行。
  *
  * 交互对齐 ainav/sdk 的 ChatInput：回形针 → 向上弹几项（图片 / PDF / 其它文件）→ 各自的
- * 隐藏 file input（可多选）；预览行 = 缩略图 / 文件图标 + 文件名 + 删除，上传中底部进度条、
- * 失败盖错误态。状态（ChatAttachment[]）归 ChatPanel 持有，这里只收 state + 回调。
+ * 隐藏 file input（可多选）。预览行改成了 dissolve 上传瓦片（见 `dissolve/`）：上传中由
+ * 颗粒逐颗拼成卡片，完成后才露出移除钮；取消 / 移除 / 失败都以颗粒散开收场。状态
+ * （ChatAttachment[]）归 ChatPanel 持有，这里只收 state + 回调。
  *
  * **上传源选择器**：可选的源超过一个时（内置存储 + 装了上传插件），菜单底部多一段
  * 「传到哪儿」，点一下切换（选择状态同样归 ChatPanel）。只装了内置那一个源时这段不出现
  * —— 不给一个只有一个选项的下拉。
  */
-import { useEffect, useRef, useState, type RefObject } from 'react'
-import { AlertCircle, Check, FileText, ImageIcon, Paperclip, X } from 'lucide-react'
+import { useRef, type RefObject } from 'react'
+import { Check, FileText, ImageIcon, Paperclip } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,10 +20,9 @@ import {
   DropdownMenuTrigger
 } from '@fizz/ui/dropdown-menu'
 import { CHAT_ICON_PILL } from '@fizz/agent-kit/features/chat/composer'
-import { loadMediaObjectUrl } from '@fizz/agent-kit/shared/lib/media-url'
 import type { ChatAttachment } from '@fizz/agent-kit/shared/lib/attachments'
 import type { UploadProviderView } from '@fizz/contracts/agent-api'
-import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { DissolveAttachmentRow } from '@fizz/agent-kit/features/chat/dissolve/UploadTray'
 
 /**
  * 操作行最左的上传入口。向上弹（side="top" + sideOffset 6）与权限 / 模型 pill 同款
@@ -149,100 +149,27 @@ export function AttachmentUploadButton({
   )
 }
 
-/** 待发送附件的预览行：渲染在输入卡片 header 槽位的最上方（队列区之上） */
+/**
+ * 待发送附件的预览行：渲染在输入卡片 header 槽位的最上方（队列区之上）。
+ *
+ * 每一条是一张 dissolve 上传瓦片（见 `dissolve/upload-tile.ts`）：上传时由颗粒逐颗
+ * 拼成卡片、完成才露出移除钮，取消 / 移除 / 失败都以颗粒散开收场。
+ */
 export function AttachmentPreviewRow({
   attachments,
-  onRemove
+  onRemove,
+  onCancelUpload
 }: {
   attachments: ChatAttachment[]
   onRemove: (id: string) => void
+  /** 上传中点击瓦片取消（不传 = 点了不会取消，但也不会误删） */
+  onCancelUpload?: (id: string) => void
 }) {
-  if (attachments.length === 0) return null
   return (
-    <div className="flex flex-wrap gap-2 px-3 py-2">
-      {attachments.map((att) => (
-        <AttachmentCard key={att.id} att={att} onRemove={onRemove} />
-      ))}
-    </div>
-  )
-}
-
-function AttachmentCard({
-  att,
-  onRemove
-}: {
-  att: ChatAttachment
-  onRemove: (id: string) => void
-}) {
-  const isUploading = !att.uploaded && !att.error
-  const isImage = att.mediaType.startsWith('image/')
-  // 预览源：刚选的图片是本地 data URL；编辑回显的图片只有服务端 url —— 统一经
-  // loadMediaObjectUrl 解析（web 原样、desktop 转 blob objectURL），PDF 不出缩略图
-  const previewSource = att.previewUrl ?? (att.uploaded ? att.url : '')
-  const [src, setSrc] = useState('')
-  useEffect(() => {
-    if (!isImage || !previewSource) return
-    let alive = true
-    loadMediaObjectUrl(previewSource)
-      .then((resolved) => {
-        if (alive) setSrc(resolved)
-      })
-      .catch(() => {
-        if (alive) setSrc('')
-      })
-    return () => {
-      alive = false
-    }
-  }, [isImage, previewSource])
-
-  return (
-    <div
-      className={cn(
-        'relative w-20 overflow-hidden rounded-lg border',
-        att.error ? 'border-destructive' : 'border-border'
-      )}
-    >
-      <div
-        className={cn(
-          'flex h-14 w-full items-center justify-center bg-muted/40',
-          isUploading && 'opacity-60'
-        )}
-      >
-        {isImage ? (
-          src ? (
-            <img src={src} alt={att.name} className="h-full w-full object-cover" />
-          ) : (
-            <ImageIcon className="size-5 text-muted-foreground" />
-          )
-        ) : (
-          <FileText className="size-5 text-muted-foreground" />
-        )}
-      </div>
-      <div className="px-1 py-0.5 text-center">
-        <span className="block truncate text-[0.6875rem] text-muted-foreground">{att.name}</span>
-      </div>
-      {isUploading && (
-        <div className="absolute inset-x-0 bottom-0 h-1 bg-border">
-          <div className="h-full bg-primary transition-[width]" style={{ width: `${att.progress}%` }} />
-        </div>
-      )}
-      {att.error && (
-        <div
-          className="absolute inset-0 flex items-center justify-center bg-destructive/15"
-          title={att.error}
-        >
-          <AlertCircle className="size-5 text-destructive" />
-        </div>
-      )}
-      <button
-        type="button"
-        aria-label={`移除 ${att.name}`}
-        title={`移除 ${att.name}`}
-        onClick={() => onRemove(att.id)}
-        className="absolute right-1 top-1 rounded-full bg-background/85 p-0.5 text-foreground shadow-sm transition-colors hover:bg-background"
-      >
-        <X className="size-3.5" />
-      </button>
-    </div>
+    <DissolveAttachmentRow
+      attachments={attachments}
+      onRemove={onRemove}
+      onCancelUpload={onCancelUpload}
+    />
   )
 }

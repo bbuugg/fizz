@@ -49,6 +49,13 @@ export interface AttachmentDraft {
    */
   loadUploadProviders: () => Promise<void>;
   removeAttachment: (id: string) => void;
+  /**
+   * 上传中取消一条：**只中断网络，不删条目**。
+   *
+   * 为什么要分开：瓦片的取消 / 移除是「颗粒散开」动画收场，动画结束才删条目；这里
+   * 同步删会让 React 立刻卸载瓦片，一帧动画都看不到。真正删除仍由 `removeAttachment`。
+   */
+  cancelUpload: (id: string) => void;
   /** 从消息 / 队列条目还原附件回显（整份替换，见实现处的注释） */
   restoreAttachments: (files: UploadFileRef[], seed: string) => void;
   /** 发送时提交的附件：剥掉未完成 / 失败的（三处出口共用一份，见 lib/attachments） */
@@ -78,7 +85,28 @@ export function useAttachmentDraft(app: AgentApp): AttachmentDraft {
       attachmentsRef.current.map((a) => (a.id === id ? { ...a, ...patch } : a)),
     );
   };
-  const clearAttachments = (): void => setBothAttachments(EMPTY_ATTACHMENTS);
+  const clearAttachments = (): void => {
+    abortAllUploads();
+    setBothAttachments(EMPTY_ATTACHMENTS);
+  };
+
+  /**
+   * 每条在途上传一个 AbortController。
+   *
+   * 取消 / 移除 / 换会话 / 卸载都要能收掉请求：web 端是 XHR 真 abort；desktop 的 IPC
+   * 桥不转发 AbortSignal（见 AGENTS.md），那边只能靠回调里的 `aborted` 判断把结果丢掉。
+   */
+  const uploadAbortsRef = useRef(new Map<string, AbortController>());
+  const cancelUpload = (id: string): void => {
+    const controller = uploadAbortsRef.current.get(id);
+    if (!controller) return;
+    uploadAbortsRef.current.delete(id);
+    controller.abort();
+  };
+  const abortAllUploads = (): void => {
+    for (const controller of uploadAbortsRef.current.values()) controller.abort();
+    uploadAbortsRef.current.clear();
+  };
 
   // ---------- 上传源（内置存储 + 插件注册的）----------
   /**
@@ -124,11 +152,15 @@ export function useAttachmentDraft(app: AgentApp): AttachmentDraft {
     [uploadProviders, uploadProviderId],
   );
 
-  // 换会话清空：附件是「本会话没发出的草稿」，带到别的会话发出去只会发错地方
+  // 换会话清空：附件是「本会话没发出的草稿」，带到别的会话发出去只会发错地方。
+  // 在途上传一并断掉，否则晚到的进度 / 完成回调会往新会话的空列表里补条目。
   const draftConversationId = app.activeConversationId;
   useEffect(() => {
+    abortAllUploads();
     setBothAttachments(EMPTY_ATTACHMENTS);
   }, [draftConversationId]);
+  // 卸载（换标签 / 关面板）同样收掉在途请求
+  useEffect(() => () => abortAllUploads(), []);
 
   const onPickFiles = (picked: FileList | File[]): void => {
     /**
@@ -173,6 +205,7 @@ export function useAttachmentDraft(app: AgentApp): AttachmentDraft {
         id,
         name: file.name,
         mediaType: file.type,
+        size: file.size,
         url: "",
         uploaded: false,
         progress: 0,
@@ -191,23 +224,34 @@ export function useAttachmentDraft(app: AgentApp): AttachmentDraft {
         if (useAgentStore.getState().activeConversationId !== pickedIn) return;
         attachmentsRef.current = [...attachmentsRef.current, att];
         setAttachments(attachmentsRef.current);
+        const controller = new AbortController();
+        uploadAbortsRef.current.set(id, controller);
         void api
           .uploadFile(file, {
-            onProgress: (percent) =>
-              updateAttachment(id, { progress: percent }),
+            signal: controller.signal,
+            onProgress: (percent) => {
+              // 已取消（瓦片正在散开）：不再更新进度，等条目随动画删掉
+              if (controller.signal.aborted) return;
+              updateAttachment(id, { progress: percent });
+            },
             provider: providerAtPick,
             workspaceId: workspaceAtPick,
           })
-          .then((result) =>
+          .then((result) => {
+            uploadAbortsRef.current.delete(id);
+            if (controller.signal.aborted) return;
             updateAttachment(id, {
               url: result.url,
               uploaded: true,
               progress: 100,
               // 服务端回的就是它实际用的那个源，以它为准（缺省 / 回落都在那边发生）
               provider: result.provider ?? providerAtPick,
-            }),
-          )
+            });
+          })
           .catch((err: unknown) => {
+            uploadAbortsRef.current.delete(id);
+            // 主动取消不是失败：不置错误态（条目马上就会被动画删掉）
+            if (controller.signal.aborted) return;
             const message = err instanceof Error ? err.message : t("上传失败");
             updateAttachment(id, { error: message });
             toast.error(`${file.name}：${message}`);
@@ -227,6 +271,8 @@ export function useAttachmentDraft(app: AgentApp): AttachmentDraft {
    * 与「编辑并重发」的语义一致（编辑的就是它，不该夹带上一次的残留）。
    */
   const restoreAttachments = (files: UploadFileRef[], seed: string): void => {
+    // 整份替换：先把在途上传收掉，否则晚到的进度会给已不存在的条目打补丁
+    abortAllUploads();
     setBothAttachments(
       files.map((f, i) => ({
         id: `${seed}-${i}`,
@@ -240,8 +286,11 @@ export function useAttachmentDraft(app: AgentApp): AttachmentDraft {
       })),
     );
   };
-  const removeAttachment = (id: string): void =>
+  const removeAttachment = (id: string): void => {
+    // 还在传就一起收掉（走移除而不是取消的条目同样不该留一条在途 XHR）
+    cancelUpload(id);
     setBothAttachments(attachmentsRef.current.filter((a) => a.id !== id));
+  };
 
   return {
     attachments,
@@ -251,6 +300,7 @@ export function useAttachmentDraft(app: AgentApp): AttachmentDraft {
     setUploadProviderId,
     loadUploadProviders,
     removeAttachment,
+    cancelUpload,
     restoreAttachments,
     collectSendFiles,
     hasUploadingAttachment,
