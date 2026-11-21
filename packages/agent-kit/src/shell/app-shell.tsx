@@ -367,6 +367,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 
   /**
+   * 助手面板正在拖宽度。
+   *
+   * 只用于给 aside 挂 `pointer-events-none`：面板里一旦有 `<iframe>` / `<webview>`
+   * （预览、消息里的 artifact），指针**向右**一进 guest，window 上的 `pointermove` 就被它
+   * 吞掉 —— 宽度卡在原地，等指针离开 guest 又猛跳一段，看着就是「不跟手」。抓手在面板
+   * 左缘，所以只有向右拖（变窄）会踩到；向左拖是指针离开面板，一切正常。
+   *
+   * 跨源 guest 上 `setPointerCapture` 在部分 Chromium 里也无效，只能靠这一层挡
+   * （与 `SidePanel` / `TerminalTabView` 同一条，那边注释更完整）。
+   */
+  const [assistantResizing, setAssistantResizing] = useState(false);
+
+  /**
    * 全局错误 → 右下角 toast（不自动隐藏）。
    * 挂在外壳而不是各个视图：这些错误（连不上服务端、clone 失败…）在哪个视图都可能发生，
    * 以前是会话面板里一条贴顶的红条，切到别的视图就没了。
@@ -786,6 +799,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       min={320}
                       max={640}
                       onResize={setAssistantWidth}
+                      onDragStart={() => setAssistantResizing(true)}
+                      onDragEnd={() => setAssistantResizing(false)}
                       onDoubleClick={() => setAssistantWidth(384)}
                     />
                     {/*
@@ -793,7 +808,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 留白，与助手收起时 main 的 `pr-2` 同宽。两处一起改才对称，别只调一边。
               */}
                     <aside
-                      className="hidden shrink-0 flex-col pl-1 pr-2 md:flex"
+                      className={cn(
+                        "hidden shrink-0 flex-col pl-1 pr-2 md:flex",
+                        // 拖拽中不吃指针事件：面板里的 iframe / webview 会吞掉 pointermove
+                        // （见上面 `assistantResizing` 的注释）
+                        assistantResizing && "pointer-events-none",
+                      )}
                       style={{ width: assistantWidth }}
                     >
                       <AssistantPanel

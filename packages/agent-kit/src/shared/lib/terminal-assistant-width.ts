@@ -24,7 +24,7 @@ const KEY = 'fizz.web.terminalAssistantWidth'
 
 /** 再窄消息就折行了：消息区与全局面板取同一个下限（app-shell 的 `min={320}`） */
 export const TERMINAL_ASSISTANT_MIN_WIDTH = 320
-/** 拖太宽终端就没地方站了：与 `SidePanel` 的 `MIN_CONTENT_WIDTH` 一致 */
+/** 分屏时留给终端的最小宽：与 `SidePanel` 的 `MIN_CONTENT_WIDTH` 一致（只用来算分屏阈值） */
 export const TERMINAL_MIN_WIDTH = 320
 /**
  * 左右分屏所需的最小容器宽：助手最小可用宽 + 终端最小宽。
@@ -49,16 +49,27 @@ export function getTerminalAssistantWidth(): number | null {
     const raw = localStorage.getItem(KEY)
     if (raw === null) return null
     const n = Number(raw)
-    return Number.isFinite(n) && n >= TERMINAL_ASSISTANT_MIN_WIDTH ? Math.round(n) : null
+    /**
+     * 这里**只判正数**，不判 `>= 最小宽`。
+     *
+     * 合法区间随容器变（窄容器下默认宽度与上限都会退让），存进去的值合不合法只有渲染那一刻
+     * 说了算 —— 在这里判最小宽，窄窗里存下的宽度会被当成「非法值 → 清除记录 → 回默认宽度」，
+     * 表现是**展开时面板猛地撑宽再弹回**。真正的夹取在渲染层（`TerminalTabView`）。
+     */
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : null
   } catch {
     return null
   }
 }
 
-/** 记下宽度；非法值当「清除记录」，回到按容器算的默认值 */
+/**
+ * 记下宽度；非法值（`NaN`）当「清除记录」，回到按容器算的默认值。
+ *
+ * ⚠️ 下限**不在这里**卡：合法区间随容器变（理由见 `getTerminalAssistantWidth`），
+ * 这里只挡 `NaN` / 非正数，夹取交给渲染层。
+ */
 export function setTerminalAssistantWidth(width: number): void {
-  const next =
-    Number.isFinite(width) && width >= TERMINAL_ASSISTANT_MIN_WIDTH ? Math.round(width) : null
+  const next = Number.isFinite(width) && width > 0 ? Math.round(width) : null
   if (getTerminalAssistantWidth() === next) return
   try {
     // null = 清除记录（双击复位条走这条路）
@@ -88,35 +99,46 @@ export function minTerminalAssistantWidth(containerWidth: number): number {
   return Math.min(TERMINAL_ASSISTANT_MIN_WIDTH, Math.round(w / 2))
 }
 
+/** 没拖过时的默认宽度：容器的三成出头（1200 宽 ≈ 384，即原来写死的 `w-96`） */
+const DEFAULT_RATIO = 0.32
 /**
- * 没拖过时给多宽：容器宽度的四成（约等于原来写死的 `w-96`，但跟着容器走）。
+ * 默认宽度的封顶 400。
+ *
+ * 只有比例不行：宽屏主区 1600+ 时四成就是 640+，助手比终端还宽，默认一开就喧宾夺主
+ * （用户报过「终端里的助手默认太宽」）。窄容器一侧由 `minTerminalAssistantWidth` 退让，
+ * 宽容器一侧由这里封顶。
+ */
+const DEFAULT_MAX_WIDTH = 400
+
+/**
+ * 没拖过时给多宽：容器宽度的 32%，并夹在 [下限, min(上限, 400)] 之间。
  *
  * 原来的 `w-96 max-w-[45%]` 断的是死值 384 —— 终端标签被塞进对话右侧窄面板
- * （380~600px 常见）时，384 会把终端挤到只剩几十 px。
+ * （380~600px 常见）时，384 会把终端挤到只剩几十 px。所以默认值必须跟着容器走，
+ * 但仍要封顶：纯比例在宽屏上会一路涨到 600+。
  */
 export function defaultTerminalAssistantWidth(containerWidth: number): number {
   if (containerWidth <= 0) return TERMINAL_ASSISTANT_MIN_WIDTH
+  const cap = Math.min(maxTerminalAssistantWidth(containerWidth), DEFAULT_MAX_WIDTH)
   return Math.max(
     minTerminalAssistantWidth(containerWidth),
-    Math.min(Math.round(containerWidth * 0.4), maxTerminalAssistantWidth(containerWidth))
+    Math.min(Math.round(containerWidth * DEFAULT_RATIO), cap)
   )
 }
 
 /**
- * 拖拽上限：容器宽 - 终端最小宽；容器还没量到时按 `FALLBACK_CONTAINER_WIDTH` 兜底。
+ * 拖拽上限：**容器的一半**。
  *
- * ⚠️ 两处下限都得随容器收缩，否则 `max()` 兜底会把它们顶回 320：
- * - 终端的「最小宽」不能写死 320px，得按容器封顶到四成 —— 与 `files-pane-width.ts`
- *   同一条教训：窄容器下 `容器 - 320` 会小于助手下限，上限被夹到**正好等于下限**，
- *   可拖范围退化成 0，拖起来像完全没反应；
- * - 助手的下限同理会把终端挤没（见 `minTerminalAssistantWidth`）。
+ * 助手是「陪着看终端」的角色，最多和终端平分，再宽就把输出挤没了。原来按
+ * 「容器 − 终端最小宽（320）」算，1200 宽时能拖到 880（73%）、终端只剩一条；
+ * 现在硬性对半，另一半永远留给终端。
  *
- * 于是 `390 → 234`、`640 → 384`、`1200 → 880`，宽容器（≥640）仍旧实打实留 320px 给终端。
+ * 封顶不能低于下限：窄容器下下限会退让到容器的一半（见 `minTerminalAssistantWidth`），
+ * 上限若掉到它下面，可拖区间就倒挂了（拖起来像完全没反应）。
  */
 export function maxTerminalAssistantWidth(containerWidth: number): number {
   const w = containerWidth > 0 ? containerWidth : FALLBACK_CONTAINER_WIDTH
-  const terminalMin = Math.min(TERMINAL_MIN_WIDTH, Math.round(w * 0.4))
-  return Math.max(minTerminalAssistantWidth(w), w - terminalMin)
+  return Math.max(minTerminalAssistantWidth(w), Math.round(w / 2))
 }
 
 function subscribe(listener: () => void): () => void {

@@ -289,16 +289,19 @@ export const Conversation = ({
         el.removeEventListener("touchmove", onTouchMove);
         el.removeEventListener("scroll", onScroll);
       };
-      /** 上一帧的容器高度；`null` = 首次回调（只记录，不当成一次变化） */
+      /** 上一帧的容器尺寸；`null` = 首次回调（只记录，不当成一次变化） */
       let prevHeight: number | null = null;
+      let prevWidth: number | null = null;
       const ro = new ResizeObserver(([entry]) => {
-        const height = entry.contentRect.height;
+        const { width, height } = entry.contentRect;
         const first = prevHeight === null;
         const prev = prevHeight;
         const heightChanged = !first && prev !== height;
+        const widthChanged = !first && prevWidth !== null && prevWidth !== width;
         prevHeight = height;
+        prevWidth = width;
         // 首帧只记录：挂载时不该被当成「刚刚变过尺寸」
-        if (!heightChanged) return;
+        if (!heightChanged && !widthChanged) return;
         /*
          * **从「没有布局盒」恢复出来**（`display:none` → 有尺寸）：面板标签切回来时就是
          * 这一下（后台标签只是 `hidden`，不卸载）。
@@ -318,6 +321,20 @@ export const Conversation = ({
             scrollToBottom({ animation: "instant" });
           }
           return;
+        }
+        /*
+         * **宽度变化** = 内容整体重排（换行位置全变了），而容器自身高度不变，所以下面那段
+         * relock 的老判据根本看不到它 —— 但重排几乎必然让内容长高。库的贴底是**异步**的
+         * （`scrollToBottom` 内部 `new Promise(requestAnimationFrame)`），于是这一帧会先按
+         * 旧 `scrollTop` 画出来：整块内容向下沉一截，下一帧才被拽回去。拖动侧栏 / 分栏 /
+         * 窗口时宽度**每帧**都在变，这个「沉一下 → 复位」就叠成持续抖动（用户报的
+         * 「拖窄时列表上下弹跳」，且与是否在流式输出无关）。
+         *
+         * ResizeObserver 回调在绘制之前跑，这里同步落底正好把那一帧的错位吃掉；
+         * 已经翻在历史里的用户（`userPausedRef`）不动他的视图。
+         */
+        if (widthChanged && !userPausedRef.current) {
+          el.scrollTop = el.scrollHeight;
         }
         // 直接量 DOM 而不是读 React state：这个判断必须与本次布局同步，
         // 走 state 会晚一帧（而这一帧正是库要贴底的那一帧）。

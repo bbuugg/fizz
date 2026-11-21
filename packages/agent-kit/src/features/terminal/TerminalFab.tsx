@@ -35,8 +35,11 @@
  *   （`shared/lib/terminal-touch-scroll.ts`），拖球时若不拦，终端会跟着一起滚，指针还会被
  *   它 `preventDefault` 掉的 touchmove 变成 `pointercancel`。React 合成事件挂在根节点上，
  *   挡不住容器上的原生监听 —— 所以用**原生监听**，挂在球的回调 ref 上（见 `setBallNode`）。
- * - **位置记在本机**（`fizz.web.terminalFabPos`，沿用 `fizz.web.*` 约定）：全局一份，
- *   所有终端标签共用；容器尺寸变了就按当前方向重新贴边。
+ * - **位置记在本机**（`fizz.web.terminalFabPos.v2`，沿用 `fizz.web.*` 约定）：全局一份，
+ *   所有终端标签共用；容器尺寸变了就按当前方向重新贴边。没记过时**贴右、上下居中**。
+ * - **只有角上要让开**（`cornerClearance`）：半圈朝内铺开，两端落在与贴边方向**垂直**的
+ *   那条轴上 —— 贴左右时端点在上下，贴上下时端点在左右。所以贴着边的中间位置完全不用留
+ *   距离，只有「贴边又贴角」那 8 个位置会把端点顶出容器，松手吸附时沿边让开即可。
  * - **测量层必须无条件渲染**（见下面 `pos` 那段注释里的死锁）—— 否则球根本不出现。
  */
 import {
@@ -64,7 +67,16 @@ const EDGE = 8
 const RING_GAP = 8
 /** 位移超过它才算「拖」而不是「点」（手指抖动不算） */
 const DRAG_THRESHOLD = 4
-const POS_KEY = 'fizz.web.terminalFabPos'
+/**
+ * 位置键。
+ *
+ * 带 `.v2`：上一版默认落在角落、且坐标口径变过（RING_MARGIN 那会儿离边很远），
+ * 老坐标会盖住新的「贴右居中」默认值。换键 = 一次性的位置复位，比在代码里猜
+ * 「这份旧坐标是不是角落」干净。
+ */
+const POS_KEY = 'fizz.web.terminalFabPos.v2'
+/** 旧键：读到新键缺失时顺手清掉，别在 localStorage 里留一份再也用不上的坐标 */
+const LEGACY_POS_KEY = 'fizz.web.terminalFabPos'
 
 /**
  * 黏球融合 / 分裂的时长。
@@ -103,7 +115,11 @@ function blurTerminalFocus(): void {
 function readPos(): Point | null {
   try {
     const raw = localStorage.getItem(POS_KEY)
-    if (!raw) return null
+    if (!raw) {
+      // 没有新键 = 还没在新口径下摆过：旧键那份一并丢掉，回到「贴右居中」
+      localStorage.removeItem(LEGACY_POS_KEY)
+      return null
+    }
     const [x, y] = raw.split(',').map((value) => Number(value))
     return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null
   } catch {
@@ -121,13 +137,59 @@ function writePos(point: Point): void {
 
 type DockSide = 'left' | 'right' | 'top' | 'bottom'
 
-/** 拖动中的自由位置：只保证球完整留在容器内，不吸附 */
+/**
+ * 半圈要多大半径：颗数越多、弧越长，半径越大。
+ *
+ * 相邻两颗的弦长 `2R·sin(step/2)` 得容下 `ITEM + RING_GAP`，所以摊开之后半径会自己
+ * 长出去（而不是把按钮挤成一团）。**布置环**与**留安全边距**必须用同一份数 ——
+ * 两边各算一份，缩半径时边距就不够了。
+ */
+function ringRadius(count: number): number {
+  const span = count <= 1 ? 0 : count === 2 ? 90 : 180
+  const step = count > 1 ? ((span * Math.PI) / 180) / (count - 1) : Math.PI / 2
+  return Math.max(
+    BALL / 2 + RING_GAP + ITEM / 2,
+    (ITEM + RING_GAP) / 2 / Math.sin(step / 2)
+  )
+}
+
+/**
+ * 贴边吸附时，球在**沿边方向**要为角落让出的距离（球边 → 容器边）。
+ *
+ * 半圈朝容器内侧铺开，两端落在「与贴边方向垂直」的那条轴上：贴左 / 贴右时端点朝上下，
+ * 贴顶 / 贴底时端点朝左右。所以问题只出在**角上** —— 贴着左边又贴着上边时，朝上的那颗
+ * 按钮无处可去（要么顶出容器被夹、要么缩半径硬塞）。
+ *
+ * 换算 = 球心到按钮外沿（环半径 + 按钮半径）− 球半径，再带一点贴边留白。四边共用这一个数，
+ * 它描述的是「离角多远算让开」，**不是**「离边必须多远」：贴着边中间完全合法。
+ */
+function cornerClearance(count: number): number {
+  return EDGE + Math.max(0, ringRadius(count) + ITEM / 2 - BALL / 2)
+}
+
+/**
+ * 把沿边坐标让开两端角落：夹进 `[min + clearance, max - clearance]`。
+ *
+ * 区间倒挂（容器被压得太小，两边都让不出来）时退化成居中 —— 至少球还在可视范围内，
+ * 也不会算出 `min > max` 那种来回抖的夹取。
+ */
+function alongEdge(value: number, min: number, max: number, clearance: number): number {
+  const lo = min + clearance
+  const hi = max - clearance
+  if (hi < lo) return Math.max(0, Math.round((min + max) / 2))
+  return Math.max(lo, Math.min(value, hi))
+}
+
+/**
+ * 拖动中的自由位置：球完整留在容器内，**四边都能真贴住**。
+ *
+ * 不做任何边距：拖动时不展开环，没有「按钮没地方站」的问题；角上那点空间等松手吸附时
+ * 再让（见 `dockPoint`）。这样跟手，也不会出现「明明拖到边了球却停在一截之外」。
+ */
 function clampBall(x: number, y: number, width: number, height: number): Point {
-  const maxX = Math.max(EDGE, width - BALL - EDGE)
-  const maxY = Math.max(EDGE, height - BALL - EDGE)
   return {
-    x: Math.max(EDGE, Math.min(x, maxX)),
-    y: Math.max(EDGE, Math.min(y, maxY))
+    x: Math.max(EDGE, Math.min(x, Math.max(EDGE, width - BALL - EDGE))),
+    y: Math.max(EDGE, Math.min(y, Math.max(EDGE, height - BALL - EDGE)))
   }
 }
 
@@ -145,26 +207,33 @@ function nearestSide(x: number, y: number, width: number, height: number): DockS
 }
 
 /**
- * 吸附到最近一条边。沿边方向保留用户拖到的位置，只把它夹回容器内；容器太小时
- * 退化成左上角，至少球还在可视范围内。
+ * 吸附到最近一条边：沿边方向保留用户拖到的位置，只把**角落**让开（见 `cornerClearance`）。
+ *
+ * 贴左 / 贴右时端点朝上下 → 纵向让；贴顶 / 贴底时端点朝左右 → 横向让。所以终态可以是
+ * 「贴着边的任意位置」，只有 4 边 × 2 端 = 8 个角落位置不行。
  */
 function dockPoint(
   x: number,
   y: number,
   width: number,
-  height: number
+  height: number,
+  clearance: number
 ): { point: Point; side: DockSide } {
   const side = nearestSide(x, y, width, height)
   const free = clampBall(x, y, width, height)
+  const maxX = Math.max(EDGE, width - BALL - EDGE)
+  const maxY = Math.max(EDGE, height - BALL - EDGE)
+  const alongX = alongEdge(free.x, EDGE, maxX, clearance)
+  const alongY = alongEdge(free.y, EDGE, maxY, clearance)
   switch (side) {
     case 'left':
-      return { point: { x: EDGE, y: free.y }, side }
+      return { point: { x: EDGE, y: alongY }, side }
     case 'right':
-      return { point: { x: Math.max(EDGE, width - BALL - EDGE), y: free.y }, side }
+      return { point: { x: maxX, y: alongY }, side }
     case 'top':
-      return { point: { x: free.x, y: EDGE }, side }
+      return { point: { x: alongX, y: EDGE }, side }
     default:
-      return { point: { x: free.x, y: Math.max(EDGE, height - BALL - EDGE) }, side }
+      return { point: { x: alongX, y: maxY }, side }
   }
 }
 
@@ -424,6 +493,8 @@ export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
    * 跟着它重新跑 —— 动作可能是后到的（历史作用域随数据加载才成立）。
    */
   const enabled = actions.length > 0
+  /** 角落要让出的距离：贴边吸附（含默认位置）都吃这一个数 */
+  const clearance = cornerClearance(actions.length)
 
   // 量容器 + 夹取当前位置。容器尺寸会变（助手展开把终端挤窄、面板拖宽），球必须跟着回到安全区。
   useLayoutEffect(() => {
@@ -438,18 +509,19 @@ export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
       if (width <= 0 || height <= 0) return
       setSize({ width, height })
       setPos((prev) => {
-        // 默认贴右侧居中（小米悬浮球的默认位）；已有位置也重新吸附，兼容旧版
-        // RING_MARGIN 留下的「离边很远」坐标。
-        const base = prev ??
-          readPos() ?? { x: width - BALL - EDGE, y: height / 2 - BALL / 2 }
-        return dockPoint(base.x, base.y, width, height).point
+        // 没记过位置时**贴右、上下居中**（小米悬浮球的默认位）；已有位置也重新吸附一次，
+        // 容器变窄 / 变矮时顺手把它夹回容器、把角落让开。
+        const base =
+          prev ?? readPos() ?? { x: width - BALL - EDGE, y: height / 2 - BALL / 2 }
+        return dockPoint(base.x, base.y, width, height, clearance).point
       })
     }
     measure()
     const observer = new ResizeObserver(measure)
     observer.observe(host)
     return () => observer.disconnect()
-  }, [enabled])
+    // `clearance` 也在依赖里：动作颗数变了（半圈变大 → 角落要让得更多）要重新吸附一次
+  }, [enabled, clearance])
 
   /**
    * 球一挂上就把触摸手势**就地截断**（见文件头「触摸手势必须就地截断」）。
@@ -613,7 +685,8 @@ export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
       drag.x + (e.clientX - drag.px),
       drag.y + (e.clientY - drag.py),
       size.width,
-      size.height
+      size.height,
+      clearance
     ).point
     setPos(next)
     writePos(next)
@@ -649,26 +722,20 @@ export function TerminalFab({ actions }: { actions: TerminalAction[] }) {
    *
    * 一直开整圈是不可能的：球贴边，朝外那半边必然出界被裁。所以排的是朝内的**半圈**：
    * - `span`：一颗正对内；两颗收成 90°（张得太开会像两条竖线）；三颗起铺满 180°；
-   * - 半径：至少「球半径 + 空隙 + 按钮半径」，再按**弦长**校验相邻两颗不叠
-   *   （相邻夹角 step，弦长 = 2R·sin(step/2)，要不小于 ITEM + RING_GAP）。颗数一多
-   *   弧长不够，半径自己长出去，环就变大而不是挤成一团；
-   * - 放不下就缩半径：球被拖到角落时，半圈会顶到另一条边；缩到两颗相切为止，
-   *   剩下的交给最后的夹取（宁可挨近一点，也不能有按钮落在可视区外点不到）。
+   * - 半径直接用 `ringRadius(count)` —— 角落让位（`cornerClearance`）吃的是同一个数，两边各算
+   *   一份就会「环按大半径排、球却按小边距放」；
+   * - 放不下才缩半径（球还在角上、没松手时半圈会顶到另一条边）：缩到两颗相切为止，
+   *   剩下的交给最后的夹取。吸附后的正常位不该走到这里。
    */
   const ring = ((): Point[] => {
     if (!pos || size.width <= 0 || size.height <= 0) return []
     const span = count <= 1 ? 0 : count === 2 ? 90 : 180
-    const step = count > 1 ? ((span * Math.PI) / 180) / (count - 1) : Math.PI / 2
     const base = inwardAngle(dockSide)
     const radiusFloor = BALL / 2 + ITEM / 2
-    const minRadius = Math.max(
-      BALL / 2 + RING_GAP + ITEM / 2,
-      (ITEM + RING_GAP) / 2 / Math.sin(step / 2)
-    )
     const angles = actions.map((_, index) => ringAngle(base, span, count, index))
     const place = (radius: number): Point[] =>
       angles.map((degrees) => ringPoint({ x: centerX, y: centerY }, radius, degrees))
-    let radius = minRadius
+    let radius = ringRadius(count)
     let points = place(radius)
     while (!points.every((point) => boxFits(point, size.width, size.height)) && radius > radiusFloor) {
       radius = Math.max(radiusFloor, radius - 12)

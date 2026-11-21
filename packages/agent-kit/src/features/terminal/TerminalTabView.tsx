@@ -26,9 +26,9 @@
  * ## 宽度可以拖（全局一份）
  *
  * aside 左缘有一颗 `ResizeHandle`（`invert`：面板在右侧，向左拖才变宽），宽度记在
- * `lib/terminal-assistant-width.ts`。默认按容器四成算、上限是「容器 - 终端最小宽」，
- * 两个都跟着容器走 —— 终端标签可能被塞进对话右侧那种 400px 级的窄面板里，写死
- * `w-96` 会把终端挤没。没拖过（`null`）时才用默认值，拖过就尊重用户。
+ * `lib/terminal-assistant-width.ts`。默认按容器三成出头算、**上限是容器的一半**（再多
+ * 就把终端挤没了），两个都跟着容器走 —— 终端标签可能被塞进对话右侧那种 400px 级的
+ * 窄面板里，写死 `w-96` 会把终端挤没。没拖过（`null`）时才用默认值，拖过就尊重用户。
  *
  * ## 窄容器改成覆盖形态（手机 / 侧栏里的终端）
  *
@@ -70,6 +70,8 @@ export function TerminalTabView({ tabKey, children }: { tabKey: string; children
    */
   const [containerRef, containerWidth] = useContainerWidth()
   const userWidth = useTerminalAssistantWidth()
+  /** 正在拖动：拖动期间给 aside 关掉 `pointer-events`（见下面样式处） */
+  const [dragging, setDragging] = useState(false)
   /**
    * 窄容器不做左右分屏，助手改成**覆盖层**盖住终端。
    *
@@ -82,6 +84,7 @@ export function TerminalTabView({ tabKey, children }: { tabKey: string; children
    */
   const overlay = containerWidth > 0 && containerWidth < TERMINAL_SPLIT_MIN_WIDTH
   const maxWidth = maxTerminalAssistantWidth(containerWidth)
+  /** `ResizeHandle` 提交的已经是夹好的合法值，这里再夹一次只防容器变窄后的旧值 */
   const width =
     userWidth === null
       ? defaultTerminalAssistantWidth(containerWidth)
@@ -133,6 +136,8 @@ export function TerminalTabView({ tabKey, children }: { tabKey: string; children
               min={TERMINAL_ASSISTANT_MIN_WIDTH}
               max={maxWidth}
               onResize={setTerminalAssistantWidth}
+              onDragStart={() => setDragging(true)}
+              onDragEnd={() => setDragging(false)}
               onDoubleClick={resetTerminalAssistantWidth}
             />
           )}
@@ -143,7 +148,18 @@ export function TerminalTabView({ tabKey, children }: { tabKey: string; children
               // 关掉助手立刻回到全宽 —— 收起 / 展开都不重建 PTY / xterm。
               overlay
                 ? 'absolute inset-y-0 right-0 z-30 w-full shadow-2xl'
-                : 'shrink-0 border-l'
+                : 'shrink-0 border-l',
+              /*
+               * 拖拽中整块面板**不吃指针事件** —— 与 `SidePanel` 同一条（那边注释里有完整由来）。
+               *
+               * 这里的方向性是重点：抓手在面板**左缘**，向右拖 = 指针钻进面板内部，而面板里
+               * 可能有预览的 `<iframe>` / `<webview>`，`pointermove` 一进 guest 就被它吞掉，
+               * window 上的监听收不到 → 宽度卡住、等指针离开 guest 又猛跳一截。向左拖是指针
+               * 离开面板进终端区（同文档，不吞事件），所以只有「向右拖不跟手」。
+               *
+               * 跨源 guest 上 `setPointerCapture` 在部分 Chromium 里也无效，只能靠这一层挡。
+               */
+              dragging && 'pointer-events-none'
             )}
             style={overlay ? undefined : { width }}
           >

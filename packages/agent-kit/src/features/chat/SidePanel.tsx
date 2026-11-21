@@ -170,6 +170,9 @@ export function SidePanel({
    * 没拖过（`userWidth === null`）→ **默认占容器的一半**（与左侧会话区各 50%），按容器
    * 实时算：窗口变大面板跟着长，不会卡在打开那一刻算出的旧值。
    * 拖过 → 夹到 [最小宽度, 上限] 之间：容器变窄时上限会跟着降。
+   *
+   * 拖拽期间也照旧夹死：`ResizeHandle` 提交上来的就是合法值（不再有越界值），
+   * 松手即收尾，所以这里不需要为「回弹」留任何余量。
    */
   const defaultWidth = Math.round(effectiveContainer / 2)
   const flowWidth =

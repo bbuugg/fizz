@@ -365,11 +365,11 @@ export function PanelGroupView({ groupId }: { groupId: string }) {
         {groupZone && (
           <div className="pointer-events-none absolute inset-0 z-20">
             {groupZone === 'center' ? (
-              <div className="absolute inset-0 rounded-lg ring-2 ring-primary ring-inset" />
+              <div className="absolute inset-0 rounded-lg ring-2 ring-primary/40 ring-inset" />
             ) : (
               <div
                 className={cn(
-                  'absolute rounded-lg bg-primary/20 ring-2 ring-primary ring-inset',
+                  'absolute rounded-lg bg-primary/10 ring-2 ring-primary/40 ring-inset',
                   groupZone === 'left' && 'inset-y-0 left-0 w-1/2',
                   groupZone === 'right' && 'inset-y-0 right-0 w-1/2',
                   groupZone === 'up' && 'inset-x-0 top-0 h-1/2',

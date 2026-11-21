@@ -242,17 +242,14 @@ export function PanelTabItem({
           // `shrink-0` 拒绝被压窄（侧栏那份要能挤）
           className={cn('max-w-52 min-w-28 shrink-0', isDragging && 'opacity-40')}
         >
-          {/* 落区提示：一条竖线（插到前 / 后）或一圈描边（并入本组） */}
-          {zone === 'inside' ? (
-            <span className="pointer-events-none absolute inset-0 rounded-md ring-1 ring-primary" />
-          ) : zone ? (
-            <span
-              className={cn(
-                'pointer-events-none absolute inset-y-0 w-0.5 bg-primary',
-                zone === 'before' ? 'left-0' : 'right-0'
-              )}
-            />
-          ) : null}
+          {/*
+            落区提示：只在「并入本组」时给一圈浅描边。
+            插到前 / 后**不画竖线** —— 那条线紧贴标签边缘，看着跟标签的分隔线混在一起，
+            而插到前后本来就由「拖到哪个标签上」表达（落点判定 `zoneOf` 不变，只是不提示）。
+          */}
+          {zone === 'inside' && (
+            <span className="pointer-events-none absolute inset-0 rounded-md ring-1 ring-primary/40" />
+          )}
         </PanelTab>
       </ContextMenuTrigger>
 

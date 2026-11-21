@@ -2,6 +2,20 @@
  * 竖直拖拽条：拖动改变相邻面板宽度。视觉上是 1px 分隔线，但用负 margin 扩出更宽的抓取热区，
  * 不占额外布局宽度。
  *
+ * ## 只跟手，不做弹性
+ *
+ * 这里曾经有「越界抵抗 + 松手回弹 + 逐帧写 SVG 的形变」三件套（橡胶带 + 欠阻尼弹簧）。
+ * 手感确实好，但代价是**拖拽生命周期比一次 `pointerdown` 长**：松手后还要跑几十帧 rAF 才能
+ * 收敛，而「松手」只有 `pointerup` 一条通道。指针在窗口外 / 跨源 `<iframe>` 上抬起时那条通道
+ * 会断，rAF 就带着自己的起点快照活下来；多标签 / 多面板并存时几个僵尸循环轮流提交，
+ * 宽度于是毫无规律地乱跳。**已整条拆掉**：现在值就是「起点 + 指针位移」夹进 `min`/`max`，
+ * 抬手即收尾，没有任何跨帧状态。
+ *
+ * 抓手只保留「显隐」：悬停淡入、拖动中不透明。形变也试过（按拖动方向弯曲），调小两轮仍嫌多，
+ * 一并撤了 —— 现在拖拽期间除了值在变，没有任何多余的每帧状态，抬手即收尾。
+ *
+ * 想加手感请先想清楚这条代价，别在原处重新长出一套弹簧。
+ *
  * ## 触摸设备（手机 / 平板）要单独处理的三件事
  *
  * 桌面鼠标上「`pointerdown` + 监听 window 的 `pointermove`」就够了。触摸设备上这套会**直接失灵**，
@@ -15,13 +29,19 @@
  *    更是不会触发（面板的宽度过渡会一直关着）。之后**鼠标在页面上随便动一下就会改面板宽度**，
  *    光标与选中行为也被整页污染。`pointerup` / `pointercancel` / `blur` 统一走一个幂等的 `cleanup()`。
  * 3. **热区只有 8px，且指示线只在 hover 时浮现**：手指按不准；触摸又没有 hover，那条线压根不出现，
- *    用户连「这里能拖」都看不出来。故窄屏热区放宽到 16px、并常驻一条淡线。
+ *    用户连「这里能拖」都看不出来。故窄屏热区放宽到 16px，可拖提示交给常显的抓手。
  *
  * 改**高度**的分隔条（纵向，位置各异、套不进这个组件的 JSX）用同文件下面的 `useDragResize`：
  * 同一套管线，别在调用方再手写一遍 `pointermove`（漏掉 `touch-action` 就是手机拖不动）。
  */
-import { useCallback, useRef, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { ResizeGrip } from '@fizz/agent-kit/shared/components/ResizeGrip'
+
+/** 面板宽度落值前压到 0.1px：存进 localStorage 的是一串整数好看点，视觉上也没差别 */
+function quantize(value: number): number {
+  return Math.round(value * 10) / 10
+}
 
 interface Props {
   /** 当前面板宽度（px） */
@@ -52,89 +72,34 @@ export function ResizeHandle({
   onDoubleClick,
   className
 }: Props) {
-  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
-    // 只认主键 / 单指：右键（要弹菜单）、中键、以及另一根手指按在别处，都不该被当成拖拽起点
-    if (!e.isPrimary) return
-    if (e.pointerType === 'mouse' && e.button !== 0) return
+  /**
+   * min / max / onResize 每帧现取：拖到一半容器变窄会把 `max` 重算、调用方也可能换掉
+   * `onResize`，不能把 props 关在 `pointerdown` 那一刻的闭包里。
+   */
+  const latest = useRef({ min, max, onResize })
+  latest.current = { min, max, onResize }
+  /** 面板长在抓手的哪一侧：换算成「屏幕方向 → 宽度变化」的正负号 */
+  const dir = invert ? -1 : 1
+  /** 拖动中（只用来让抓手保持不透明） */
+  const [dragging, setDragging] = useState(false)
 
-    e.preventDefault()
-    const handle = e.currentTarget
-    const pointerId = e.pointerId
-    const startX = e.clientX
-    const startWidth = width
-    onDragStart?.()
-
-    /**
-     * 一帧只提交一次宽度。
-     *
-     * `pointermove` 在高刷屏 / 高轮询鼠标上可能一帧来好几次，而每次提交都是
-     * 「写 store + 落 localStorage + React 重渲染 + 面板里 iframe 重排」—— 全按事件频率跑，
-     * 主线程会被塞满，手感就是「拖了但跟不上」。收尾时把最后一帧补提交，避免松手位置差一点。
-     */
-    let frame = 0
-    let pendingX = startX
-    const apply = (): void => {
-      frame = 0
-      const delta = (pendingX - startX) * (invert ? -1 : 1)
-      onResize(Math.max(min, Math.min(max, startWidth + delta)))
-    }
-    const move = (ev: PointerEvent): void => {
-      pendingX = ev.clientX
-      if (frame === 0) frame = requestAnimationFrame(apply)
-    }
-
-    /**
-     * 幂等收尾：`pointerup` / `pointercancel` / `blur` 三者可能只来一个，也可能连着来
-     * （触摸被浏览器接管时是 cancel，取消后再抬手还会补一个 up）。
-     *
-     * `done` 这个闸门是必需的：没有它，`pointercancel` 之后再来的 `pointerup` 会二次调用
-     * `onDragEnd`，而更早的那个泄漏的 `pointermove` 至今还挂在 window 上。
-     */
-    let done = false
-    const cleanup = (): void => {
-      if (done) return
-      done = true
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', cleanup)
-      window.removeEventListener('pointercancel', cleanup)
-      window.removeEventListener('blur', cleanup)
-      // 把还没提交的那一帧补上：否则松手位置会比指针最后的位置差一小段
-      if (frame !== 0) {
-        cancelAnimationFrame(frame)
-        apply()
-      }
-      try {
-        handle.releasePointerCapture(pointerId)
-      } catch {
-        // 指针已释放（如 pointercancel）时忽略
-      }
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-      document.body.style.touchAction = ''
+  const onPointerDown = useDragResize<{ startWidth: number }>({
+    axis: 'x',
+    onStart: () => {
+      setDragging(true)
+      onDragStart?.()
+      return { startWidth: width }
+    },
+    onMove: (delta, ctx) => {
+      const { min, max, onResize } = latest.current
+      const next = Math.max(min, Math.min(max, ctx.startWidth + delta * dir))
+      onResize(quantize(next))
+    },
+    onEnd: () => {
+      setDragging(false)
       onDragEnd?.()
     }
-
-    /*
-     * 捕获指针：不加的话，指针一移出这条 8px 热区就只剩 window 上的 `pointermove` 兜着 ——
-     * 光标进到 `<iframe>` / `<webview>`（预览标签）里时连 window 都收不到事件，拖拽直接卡住。
-     * 与 `useDragResize` 同一套做法（跨源 guest 上捕获不一定生效，所以调用方还要把面板内容
-     * 设成 `pointer-events-none` 兜底，见 `SidePanel`）。
-     */
-    try {
-      handle.setPointerCapture(pointerId)
-    } catch {
-      // 合成事件没有真实指针，退化为 window 监听即可
-    }
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
-    // 手势起点已有 touch-none（见下面的 className），这里在 body 上再关一次：
-    // iOS 上手指滑出抓手后，页面仍可能开始橡皮筋回弹，拖拽期间一并压掉，结束后原样还回去。
-    document.body.style.touchAction = 'none'
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', cleanup)
-    window.addEventListener('pointercancel', cleanup)
-    window.addEventListener('blur', cleanup)
-  }
+  })
 
   return (
     <div
@@ -152,27 +117,37 @@ export function ResizeHandle({
         className
       )}
     >
-      {/* 触摸没有 hover，指示线默认透明的话手机上完全看不出这里能拖 —— 窄屏常驻一条淡线。
-          与下面那条用 `sm:hidden` 互斥，不要合并成一条：那会让 sm 断点上的 `sm:bg-transparent`
-          与 `group-hover` 抢同一个属性，最终谁生效取决于 Tailwind 生成 CSS 的先后顺序。 */}
-      <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border/50 sm:hidden" />
-      {/* 桌面：默认透明，悬停（或拖着时指针仍压在上面）才浮现，不干扰静态视觉 */}
-      <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors group-hover/resize:bg-border" />
+      {/*
+        这条热区上**不画任何线**（以前是一条常驻淡线 + 一条 hover 时变主色的线）。
+        侧栏 / 助手面板本来就有 `border-l`，再加一条与它错开半根像素的线就是双线；分栏那边
+        同理（见 `Splitter`）。可拖的提示统一交给抓手：桌面悬停淡入，
+        触摸设备（没有 hover）靠 `[@media(hover:none)]` 常显。
+      */}
+      <ResizeGrip axis="x" dragging={dragging} />
     </div>
   )
 }
 
 /**
+ * 全局**唯一**活动拖拽的收尾函数。
+ *
+ * 指针在窗口外 / 跨源 `<iframe>` / `<webview>` 上抬起时 `pointerup` 可能收不到，
+ * 监听与 `body` 上的光标就会留在页面里。这里做一道**串行闸门**：新拖拽一开始先把上一个
+ * 强行收掉。正常路径下它早已被 `cleanup` 清空，什么都不做。
+ */
+let activeDrag: (() => void) | null = null
+
+/**
  * 拖拽分隔条的**指针管线**（触摸安全的唯一实现）。
  *
  * `ResizeHandle` 是「改宽度」的现成组件，但改高度的几条分隔条（API 页响应区、WS 页发送区、
- * 侧栏内容组标题行、`PanelView` 分隔条）位置与定位方式各不相同、套不进同一个 JSX，于是各自抄了一份
- * `pointerdown + window pointermove` —— 抄的都是**桌面鼠标那一版**：缺 `touch-action`，
- * 手机上手指一动就被浏览器当成滚动手势抢走，紧接着一个 `pointercancel` 把拖拽打断，
- * 表现就是「一次只能拖一点点」。这里把文件头 1 / 2 两条（`touch-action` + 幂等收尾）收进来，
- * 调用方只管「按 `delta` 算新高度 / 新权重」。
+ * 侧栏内容组标题行）位置与定位方式各不相同、套不进同一个 JSX，于是共用这个 hook；
+ * `Splitter`（多标签分栏）也走它，只是单位从 px 换成权重。
  *
- * ⚠️ 调用方仍要在**自己的** className 里带上 `touch-none`（见下）：这个 hook 只管拖动开始后的
+ * 一帧只落一次值：`pointermove` 在高刷屏上一帧可能来好几条，每条都算一遍会让面板里的
+ * iframe / xterm 跟着重排好几次。抬手时补最后一帧，落点不会差一截。
+ *
+ * ⚠️ 调用方仍要在**自己的** className 里带上 `touch-none`（见上）：这个 hook 只管拖动开始后的
  * 管线，起点那一按能不能被识别成拖拽由元素的 `touch-action` 决定；热区宽窄（手机上要放宽到
  * 16px、桌面 8px）也由调用方按定位方式自己写。
  *
@@ -197,6 +172,15 @@ export function useDragResize<C>({
   /** 回调每次渲染都是新函数：存进 ref，免得拖拽中途换成新实现后读到旧值 */
   const latest = useRef({ onStart, onMove, onEnd })
   latest.current = { onStart, onMove, onEnd }
+  /** 卸载时把还在跑的拖拽收掉 —— 否则 window 上的监听 / body 样式会漏在页面里 */
+  const abortRef = useRef<(() => void) | null>(null)
+
+  useEffect(
+    () => () => {
+      abortRef.current?.()
+    },
+    []
+  )
 
   return useCallback(
     (e: ReactPointerEvent<HTMLDivElement>): void => {
@@ -211,20 +195,35 @@ export function useDragResize<C>({
       const ctx = latest.current.onStart?.(e)
       if (ctx === null) return
 
+      /** 最新指针坐标（只在 rAF 里读它算值，`pointermove` 自己不落值） */
+      let pointer = start
+      let raf = 0
+      let done = false
+
+      const flush = (): void => {
+        raf = 0
+        latest.current.onMove(pointer - start, ctx as C)
+      }
+
       const move = (ev: PointerEvent): void => {
-        latest.current.onMove((axis === 'x' ? ev.clientX : ev.clientY) - start, ctx as C)
+        pointer = axis === 'x' ? ev.clientX : ev.clientY
+        if (raf === 0) raf = requestAnimationFrame(flush)
       }
 
       /**
        * 幂等收尾：`pointerup` / `pointercancel` / `blur` 可能只来一个，也可能连着来
        * （触摸被浏览器接管时是 cancel，取消后再抬手还会补一个 up）。没有 `done` 闸门的话，
-       * 后到的那个会把监听与 `body` 上的样式解第二遍，而更早泄漏的 `pointermove` 仍挂在 window 上。
+       * 后到的那个会把监听与 `body` 上的样式解第二遍。
        */
-      let done = false
-      const cleanup = (): void => {
+      const cleanup = (ev?: Event): void => {
         if (done) return
         done = true
-        window.removeEventListener('pointermove', move)
+        // 抬手 / 取消那一帧的坐标也要吃进来：上一帧之后可能还挪了几像素（`blur` 没坐标）
+        if (ev && 'clientX' in ev) {
+          const point = ev as PointerEvent
+          pointer = axis === 'x' ? point.clientX : point.clientY
+        }
+        window.removeEventListener('pointermove', guardedMove)
         window.removeEventListener('pointerup', cleanup)
         window.removeEventListener('pointercancel', cleanup)
         window.removeEventListener('blur', cleanup)
@@ -236,8 +235,33 @@ export function useDragResize<C>({
         document.body.style.cursor = ''
         document.body.style.userSelect = ''
         document.body.style.touchAction = ''
+        // 还没落地的那一帧补上，否则松手位置会差最后几个像素
+        if (raf !== 0) {
+          cancelAnimationFrame(raf)
+          flush()
+        }
+        if (activeDrag === cleanup) activeDrag = null
+        abortRef.current = null
         latest.current.onEnd?.()
       }
+
+      /**
+       * ⚠️ 这里兼当 `pointerup` 的兜底。
+       *
+       * 指针在**窗口外**（拖到屏幕边缘 / 浏览器外）或者跨源 `<iframe>` / `<webview>` 上抬起时，
+       * window 收不到 `pointerup`（`setPointerCapture` 跨源也未必生效）。指针移回窗口后的
+       * 第一个 `move` 一定带着 `buttons === 0`（没有任何键按着），据此补一次收尾即可。
+       * 触摸没有这个信号（抬手后根本没有 move），但它一定会收到 `pointerup` / `pointercancel`，
+       * 由那两个入口负责。
+       */
+      const guardedMove = (ev: PointerEvent): void => {
+        if (ev.buttons === 0 && ev.pointerType !== 'touch') cleanup(ev)
+        else move(ev)
+      }
+
+      // 先把可能残留的上一次拖拽收掉：它的收尾会把 body 上的光标 / 选中样式清空，
+      // 放在下面那几行之后就会把本次刚设好的样式又抹掉
+      activeDrag?.()
 
       try {
         handle.setPointerCapture(pointerId)
@@ -248,10 +272,13 @@ export function useDragResize<C>({
       document.body.style.userSelect = 'none'
       // 手势起点已有 touch-none，这里在 body 上再关一次：手指滑出抓手后 iOS 仍可能开始橡皮筋回弹
       document.body.style.touchAction = 'none'
-      window.addEventListener('pointermove', move)
+      window.addEventListener('pointermove', guardedMove)
       window.addEventListener('pointerup', cleanup)
       window.addEventListener('pointercancel', cleanup)
       window.addEventListener('blur', cleanup)
+
+      abortRef.current = cleanup
+      activeDrag = cleanup
     },
     [axis, cursor]
   )
