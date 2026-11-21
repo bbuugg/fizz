@@ -140,7 +140,10 @@ export function LogsPanel() {
     const kw = keyword.trim().toLowerCase()
     return state.entries
       .filter((e) => activeScope === ALL || e.scope === activeScope)
-      .filter((e) => !kw || e.message.toLowerCase().includes(kw))
+      // 正文与 `detail` 一起搜：detail 放的是外部命令原文、报错堆栈这类排查时最先
+      // 要搜的东西，只搜 message 的话「搜得到标题、搜不到原因」。命名空间不参与匹配
+      // —— 它已经是 Tab（选 Tab 就筛过了），再让关键词也命中它只会让结果变浑。
+      .filter((e) => !kw || `${e.message}\n${e.detail ?? ''}`.toLowerCase().includes(kw))
       .slice()
       .reverse()
   }, [state.entries, activeScope, keyword])
