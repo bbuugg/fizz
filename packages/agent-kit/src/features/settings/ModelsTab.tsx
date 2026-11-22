@@ -47,8 +47,14 @@ import {
   SelectTrigger,
   SelectValue
 } from '@fizz/ui/select'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from '@fizz/ui/tooltip'
 import { cn, formatContextWindow } from '@fizz/agent-kit/shared/lib/utils'
 import { ConfirmDeleteDialog } from '@fizz/agent-kit/shared/components/ConfirmDeleteDialog'
+import { ModelIdInfo } from '@fizz/agent-kit/features/settings/ModelIdInfo'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import {
@@ -230,6 +236,9 @@ export function ModelsTab({ app }: { app: AgentApp }) {
   const [fetching, setFetching] = useState(false)
   const [fetchError, setFetchError] = useState('')
   const [filter, setFilter] = useState('')
+  /** 手动添加的模型 id（上游没返回的那些，对齐 ACP「挑模型」的手动添加入口） */
+  const [manualId, setManualId] = useState('')
+  const [manualIds, setManualIds] = useState<string[]>([])
   const fetchVersion = useRef(0)
 
   const isEditing = editingId != null
@@ -252,6 +261,8 @@ export function ModelsTab({ app }: { app: AgentApp }) {
     setFetched(null)
     setFetchError('')
     setFilter('')
+    setManualId('')
+    setManualIds([])
     setPicked([])
     setUnpicked([])
   }
@@ -455,12 +466,33 @@ export function ModelsTab({ app }: { app: AgentApp }) {
     if (ok) closePicker()
   }
 
+  /**
+   * 手动添加一个模型 id：对齐 ACP「挑模型」的手动添加入口。
+   *
+   * 记进「本次手动清单」并直接勾上；上游清单里没有它也能加，列表照样显示、能取消。
+   * 已经在本配置里的不重复加，只把它从 `unpicked`（= 保存后移出）里摘出来。
+   */
+  const addManualModel = (): void => {
+    const id = manualId.trim()
+    if (!id) return
+    setManualId('')
+    if (!(fetched ?? []).includes(id) && !manualIds.includes(id)) {
+      setManualIds((prev) => [...prev, id])
+    }
+    if ((pickingConfig?.models ?? []).some((model) => model.id === id)) {
+      setUnpicked((prev) => prev.filter((m) => m !== id))
+    } else {
+      setPicked((prev) => (prev.includes(id) ? prev : [...prev, id]))
+    }
+  }
+
   const keyword = filter.trim().toLowerCase()
-  const visible = !fetched
-    ? []
-    : keyword
-      ? fetched.filter((m) => m.toLowerCase().includes(keyword))
-      : fetched
+  /**
+   * 列表候选 = 上游返回的清单 + 本次手动添加的 id（去重，保持上游顺序）。
+   * 上游没返回、但用户手里有的模型可以直接敲进来，与 ACP 那份手动添加同一个语义。
+   */
+  const allIds = [...new Set([...(fetched ?? []), ...manualIds])]
+  const visible = keyword ? allIds.filter((m) => m.toLowerCase().includes(keyword)) : allIds
   /** 候选里「还没在本配置里」的那些（全选只针对它们） */
   const visibleNew = visible.filter(
     (id) => !(pickingConfig?.models ?? []).some((model) => model.id === id)
@@ -928,162 +960,223 @@ export function ModelsTab({ app }: { app: AgentApp }) {
         「从上游拉取」的候选清单：**独立弹窗**。
         勾选只改本地草稿 `picked`，「确认添加」才并进配置 —— 取消不留痕迹。
 
-        ⚠️ 滚动只在**列表**里发生，弹窗本身不滚（`overflow-hidden` + flex 列）：
-        上游清单动辄几百个模型，让 DialogContent 自己滚的话标题、筛选框、底部按钮会
-        跟着一起滚出视口，而且列表的 `max-h` 与弹窗的 `max-h` 会叠成两条滚动条。
-        高度上限由 DialogContent 的 `max-h-[85dvh]` 提供，列表 `min-h-0 flex-1` 吃掉
-        剩余空间并在内部滚 —— 与「编辑模型」弹窗同一套排法。
+        排法对齐 ACP 的「挑模型」（见 `AcpTab`）：
+        - 宽度 `sm:max-w-2xl`：上游模型 id 往往是一长串（`accounts/fireworks/models/…`），
+          默认的 384px 里只看得见开头；
+        - 高度**钉死**（`h-[min(34rem,85dvh)]`，不是 `max-h`）：一打开是「正在要清单」，
+          回来后多出整片列表，用 max-h 会先小后大地跳一下；
+        - 滚动只在**列表**里发生（`overflow-hidden` + flex 列）：上游清单动辄几百个模型，
+          让 DialogContent 自己滚的话标题、筛选框、操作行、底部按钮会一起滚出视口；
+        - 打开时**不自动聚焦**：第一个可聚焦元素是筛选框，手机上一开弹窗就弹软键盘。
       */}
       <Dialog open={pickingId !== null} onOpenChange={(open) => !open && closePicker()}>
-        <DialogContent className="flex max-h-[85dvh] flex-col overflow-hidden">
+        <DialogContent
+          className="flex h-[min(34rem,85dvh)] flex-col overflow-hidden sm:max-w-2xl"
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
           <DialogHeader className="shrink-0">
             <DialogTitle>{tr('从上游拉取模型')}</DialogTitle>
           </DialogHeader>
 
-          {fetching && (
-            <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-              <Loader2 className="size-3.5 animate-spin" />
-              {tr('正在向上游要模型清单…')}
+          <div className="flex min-h-0 flex-1 flex-col gap-3">
+            {/* 筛选框**常驻**：拉取中 / 拉取失败时也在，不必等清单回来才能输入 */}
+            <div className="flex shrink-0 items-center gap-2">
+              <Input
+                variant="muted"
+                placeholder={tr('筛选模型…')}
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                className="h-8 text-xs"
+              />
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {allIds.length > 0
+                  ? keyword
+                    ? `${visible.length}/${allIds.length}`
+                    : tr('{count} 个', { count: allIds.length })
+                  : null}
+              </span>
             </div>
-          )}
-          {/* 拉取失败的原文可能是很长的 URL / JSON 片段：break-all 让它在弹窗内换行 */}
-          {fetchError && <p className="shrink-0 text-xs break-all text-destructive">{fetchError}</p>}
 
-          {fetched && (
-            <div className="flex min-h-0 flex-1 flex-col gap-3">
-              <div className="flex shrink-0 items-center gap-2">
-                <Input
-                  variant="muted"
-                  placeholder={tr('筛选模型…')}
-                  value={filter}
-                  onChange={(e) => setFilter(e.target.value)}
-                  className="h-8 text-xs"
-                />
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  {keyword ? `${visible.length}/${fetched.length}` : tr('{count} 个', { count: fetched.length })}
-                </span>
+            {/* 拉取状态紧贴在筛选框下面（用户要求） */}
+            {fetching && (
+              <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin" />
+                {tr('正在向上游要模型清单…')}
               </div>
+            )}
+            {/* 拉取失败的原文可能是很长的 URL / JSON 片段：break-all 让它在弹窗内换行 */}
+            {fetchError && <p className="shrink-0 text-xs break-all text-destructive">{fetchError}</p>}
 
-              {/* 唯一允许滚动的容器：`min-h-0` 让它能缩到比内容更小，滚动条才会落在列表上。
-                  `data-dialog-scroll`：滚动条贴弹窗右沿，且没条时右侧也留满 16px（见 styles.css）。 */}
-              <div data-dialog-scroll="" className="min-h-0 flex-1 space-y-0.5 overflow-x-hidden overflow-y-auto">
-                {visible.map((id) => {
-                  const already = (pickingConfig?.models ?? []).some((model) => model.id === id)
-                  // 已有项默认勾上，取消勾选只是记进 `unpicked`（保存时才真的移出）
-                  const checked = already ? !unpicked.includes(id) : picked.includes(id)
-                  const removing = already && !checked
-                  return (
-                    <div
-                      key={id}
-                      className={cn(
-                        'flex items-center gap-2 rounded px-1.5 py-1 text-sm transition-colors',
-                        checked ? 'bg-secondary/60' : 'hover:bg-secondary'
-                      )}
-                    >
-                      <button
-                        type="button"
-                        role="checkbox"
-                        aria-checked={checked}
-                        title={already ? tr('{id}（已在列表中，取消勾选 = 保存后移出）', { id }) : id}
-                        onClick={() =>
-                          already
-                            ? setUnpicked((prev) =>
-                                prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id]
-                              )
-                            : setPicked((prev) =>
-                                prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id]
-                              )
-                        }
-                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                      >
-                        <span
-                          className={cn(
-                            'flex size-3.5 shrink-0 items-center justify-center rounded-sm border',
-                            checked ? 'border-primary bg-primary text-primary-foreground' : 'border-border'
-                          )}
-                        >
-                          {checked && <Check className="size-2.5" />}
-                        </span>
-                        <span
-                          className={cn(
-                            'min-w-0 truncate font-mono',
-                            checked ? 'text-foreground' : 'text-muted-foreground',
-                            removing && 'line-through'
-                          )}
-                        >
-                          {id}
-                        </span>
-                        {already && (
-                          <span className="shrink-0 text-[0.6875rem] text-muted-foreground">
-                            {removing ? tr('保存后移出') : tr('已在列表')}
-                          </span>
-                        )}
-                      </button>
-                      {!already && picked.includes(id) && (
+            {/* 唯一允许滚动的容器：`min-h-0` 让它能缩到比内容更小，滚动条才会落在列表上。
+                `data-dialog-scroll`：滚动条贴弹窗右沿，且没条时右侧也留满 16px（见 styles.css）。
+                容器**无条件渲染**：只有拿到清单才出现的话，加载中 / 失败时下方操作行与底部
+                按钮会紧贴上方内容浮到卡片中间（ACP 那边用户报过「按钮跑上面去了」）。 */}
+            <div data-dialog-scroll="" className="min-h-0 flex-1 space-y-0.5 overflow-x-hidden overflow-y-auto">
+              {visible.map((id) => {
+                const already = (pickingConfig?.models ?? []).some((model) => model.id === id)
+                // 已有项默认勾上，取消勾选只是记进 `unpicked`（保存时才真的移出）
+                const checked = already ? !unpicked.includes(id) : picked.includes(id)
+                const removing = already && !checked
+                return (
+                  <div
+                    key={id}
+                    className={cn(
+                      'flex items-center gap-2 rounded px-1.5 py-1 text-sm transition-colors',
+                      checked ? 'bg-secondary/60' : 'hover:bg-secondary'
+                    )}
+                  >
+                    {/*
+                      与 ACP「挑模型」同一套行结构：整行是勾选触发器，id 用等宽字体 +
+                      truncate。上游清单只有 id、没有展示名，完整内容靠两处兜底：桌面悬停
+                      tooltip，触屏（没有 hover）行尾 `ModelIdInfo` 那颗 ⓘ。
+                    */}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
                         <button
                           type="button"
-                          aria-label={tr('取消选择 {id}', { id })}
-                          title={tr('取消选择')}
-                          onClick={() => setPicked((prev) => prev.filter((m) => m !== id))}
-                          className="shrink-0 rounded-sm p-0.5 text-muted-foreground transition-colors hover:text-destructive"
+                          role="checkbox"
+                          aria-checked={checked}
+                          onClick={() =>
+                            already
+                              ? setUnpicked((prev) =>
+                                  prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id]
+                                )
+                              : setPicked((prev) =>
+                                  prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id]
+                                )
+                          }
+                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
                         >
-                          <X className="size-3.5" />
+                          <span
+                            className={cn(
+                              'flex size-3.5 shrink-0 items-center justify-center rounded-sm border',
+                              checked ? 'border-primary bg-primary text-primary-foreground' : 'border-border'
+                            )}
+                          >
+                            {checked && <Check className="size-2.5" />}
+                          </span>
+                          <span
+                            className={cn(
+                              'min-w-0 truncate font-mono',
+                              checked ? 'text-foreground' : 'text-muted-foreground',
+                              removing && 'line-through'
+                            )}
+                          >
+                            {id}
+                          </span>
                         </button>
-                      )}
-                    </div>
-                  )
-                })}
-                {visible.length === 0 && (
-                  <div className="px-1.5 py-2 text-xs text-muted-foreground">
-                    {fetched.length === 0 ? tr('上游没有返回任何模型。') : tr('没有匹配「{keyword}」的模型。', { keyword: filter.trim() })}
+                      </TooltipTrigger>
+                      <TooltipContent side="top" align="start" className="max-w-80 text-left">
+                        <div className="break-all font-mono text-xs">{id}</div>
+                        {already && (
+                          <div className="mt-0.5 text-[0.6875rem] opacity-70">
+                            {tr('已在列表中，取消勾选 = 保存后移出')}
+                          </div>
+                        )}
+                      </TooltipContent>
+                    </Tooltip>
+                    {already && (
+                      <span className="shrink-0 text-[0.6875rem] text-muted-foreground">
+                        {removing ? tr('保存后移出') : tr('已在列表')}
+                      </span>
+                    )}
+                    <ModelIdInfo value={id} />
+                    {!already && picked.includes(id) && (
+                      <button
+                        type="button"
+                        aria-label={tr('取消选择 {id}', { id })}
+                        title={tr('取消选择')}
+                        onClick={() => setPicked((prev) => prev.filter((m) => m !== id))}
+                        className="shrink-0 rounded-sm p-0.5 text-muted-foreground transition-colors hover:text-destructive"
+                      >
+                        <X className="size-3.5" />
+                      </button>
+                    )}
                   </div>
-                )}
-              </div>
-
-              <div className="flex shrink-0 flex-wrap gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => {
-                    // 全选 = 看得见的全勾上（刚被取消的已有项一并恢复，但不动筛选外那些）
-                    setUnpicked((prev) => prev.filter((id) => !visible.includes(id)))
-                    setPicked((prev) => [...new Set([...prev, ...visibleNew])])
-                  }}
-                >
-                  {keyword ? tr('全选筛选结果') : tr('全选')}
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 px-2 text-xs"
-                  disabled={!picked.length}
-                  onClick={() => setPicked([])}
-                >
-                  {tr('清空选择')}
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 px-2 text-xs"
-                  disabled={fetching}
-                  onClick={() =>
-                    pickingConfig &&
-                    void fetchUpstream({
-                      id: pickingConfig.id,
-                      kind: pickingConfig.kind,
-                      ...(pickingConfig.baseURL ? { baseURL: pickingConfig.baseURL } : {})
-                    })
-                  }
-                >
-                  {tr('重新拉取')}
-                </Button>
-              </div>
+                )
+              })}
+              {fetched && visible.length === 0 && (
+                <div className="px-1.5 py-2 text-xs text-muted-foreground">
+                  {allIds.length === 0 ? tr('上游没有返回任何模型。') : tr('没有匹配「{keyword}」的模型。', { keyword: filter.trim() })}
+                </div>
+              )}
             </div>
-          )}
+
+            {/* 手动添加：上游没返回 / 网关没广告清单时兜底，或直接按 id 指定（与 ACP 同一套） */}
+            <form
+              className="shrink-0 space-y-1 rounded-md border border-dashed border-border px-2 py-2"
+              onSubmit={(e) => {
+                e.preventDefault()
+                addManualModel()
+              }}
+            >
+              <div className="text-xs text-muted-foreground">
+                {tr('手动添加：填模型 id（必填）。上游没返回的模型也可以直接加进来。')}
+              </div>
+              <div className="flex items-center gap-2">
+                <Input
+                  variant="muted"
+                  placeholder={tr('模型 id，如 anthropic/claude-sonnet-4')}
+                  value={manualId}
+                  onChange={(e) => setManualId(e.target.value)}
+                  className="h-8 min-w-0 flex-1 font-mono text-xs"
+                />
+                <Button
+                  type="submit"
+                  size="sm"
+                  variant="outline"
+                  className="h-8 shrink-0 px-2 text-xs"
+                  disabled={!manualId.trim()}
+                >
+                  <Plus className="size-3.5" /> {tr('添加')}
+                </Button>
+              </div>
+            </form>
+
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2 text-xs"
+                disabled={visible.length === 0}
+                onClick={() => {
+                  // 全选 = 看得见的全勾上（刚被取消的已有项一并恢复，但不动筛选外那些）
+                  setUnpicked((prev) => prev.filter((id) => !visible.includes(id)))
+                  setPicked((prev) => [...new Set([...prev, ...visibleNew])])
+                }}
+              >
+                {keyword ? tr('全选筛选结果') : tr('全选')}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2 text-xs"
+                disabled={!picked.length}
+                onClick={() => setPicked([])}
+              >
+                {tr('清空选择')}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2 text-xs"
+                disabled={fetching}
+                onClick={() =>
+                  pickingConfig &&
+                  void fetchUpstream({
+                    id: pickingConfig.id,
+                    kind: pickingConfig.kind,
+                    ...(pickingConfig.baseURL ? { baseURL: pickingConfig.baseURL } : {})
+                  })
+                }
+              >
+                {tr('重新拉取')}
+              </Button>
+            </div>
+          </div>
 
           <DialogFooter className="shrink-0 pt-1">
             <Button data-dialog-dismiss="" type="button" size="sm" variant="ghost" onClick={closePicker}>

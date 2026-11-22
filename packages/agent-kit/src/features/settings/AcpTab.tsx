@@ -28,10 +28,9 @@
  * 比「点两次按钮就地确认」值得多问一句。移除白名单里的单个模型同样走这套确认弹窗。
  */
 import { useEffect, useState } from 'react'
-import { Check, ChevronDown, ChevronRight, Download, Info, Loader2, Pencil, Plus, Power, RefreshCw, Trash2, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Download, Loader2, Pencil, Plus, Power, RefreshCw, Trash2, X } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
 import { Input } from '@fizz/ui/input'
-import { Popover, PopoverContent, PopoverTrigger } from '@fizz/ui/popover'
 import {
   Select,
   SelectContent,
@@ -45,6 +44,7 @@ import {
   TooltipTrigger
 } from '@fizz/ui/tooltip'
 import { ConfirmDeleteDialog } from '@fizz/agent-kit/shared/components/ConfirmDeleteDialog'
+import { ModelIdInfo } from '@fizz/agent-kit/features/settings/ModelIdInfo'
 import {
   Dialog,
   DialogContent,
@@ -56,7 +56,6 @@ import {
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { formatCommandArgs, parseCommandArgs } from '@fizz/agent-kit/shared/lib/command-args'
-import { isTouchOnlyInput } from '@fizz/agent-kit/shared/hooks/useVirtualKeyBar'
 import { formatDuration } from '@fizz/agent-kit/shared/lib/duration'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import type {
@@ -76,36 +75,6 @@ const ACP_TYPE_LABELS: Record<AcpAgentType, string> = {
   generic: '通用',
   opencode: 'opencode',
   pi: 'pi'
-}
-
-/**
- * 触屏上的模型 id 查看入口。
- *
- * 桌面把 id 收在悬停 tooltip 里；`Tooltip` 在触屏被整体停用（没有悬停语义），
- * 所以手机额外给一颗 ⓘ —— 点开 Popover 看完整 id 与 agent 给的描述。
- */
-function ModelIdInfo({ value, description }: { value: string; description?: string }) {
-  const tr = useT()
-  if (!isTouchOnlyInput()) return null
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label={tr('查看模型 ID')}
-          className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-        >
-          <Info className="size-3.5" />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent side="top" align="end" sideOffset={6} className="w-auto max-w-72 text-xs">
-        <div className="break-all font-mono">{value}</div>
-        {description ? (
-          <div className="mt-1 text-muted-foreground">{description}</div>
-        ) : null}
-      </PopoverContent>
-    </Popover>
-  )
 }
 
 export function AcpTab({ app }: { app: AgentApp }) {
@@ -266,7 +235,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
    * （上次保存的、刚手动添加的）。勾选 / 取消只改 `added` 标记，
    * **不会把某一行挪到列表最上面**（用户明确要求：选中的模型不要往上跑），搜索也只是过滤、不重排。
    */
-  const modelRows = [
+  const allRows = [
     ...probeOptions.map((o) => ({
       model: modelByValue.get(o.value) ?? o,
       added: selected.includes(o.value)
@@ -274,7 +243,8 @@ export function AcpTab({ app }: { app: AgentApp }) {
     ...[...modelByValue.values()]
       .filter((m) => !probeValueSet.has(m.value))
       .map((m) => ({ model: m, added: selected.includes(m.value) }))
-  ].filter(({ model }) => match(model))
+  ]
+  const modelRows = allRows.filter(({ model }) => match(model))
   /** 当前白名单里的模型数（= 保存后写入的条数） */
   const chosenCount = selected.length
 
@@ -927,7 +897,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
           Esc / Tab 由 Radix 的焦点陷阱与 DismissableLayer 照常接管，点击列表也能正常落焦。
         */}
         <DialogContent
-          className="flex h-[min(34rem,85dvh)] flex-col gap-4 overflow-hidden"
+          className="flex h-[min(34rem,85dvh)] flex-col gap-4 overflow-hidden sm:max-w-2xl"
           onOpenAutoFocus={(event) => event.preventDefault()}
         >
           <DialogHeader className="shrink-0">
@@ -937,6 +907,25 @@ export function AcpTab({ app }: { app: AgentApp }) {
             </DialogDescription>
           </DialogHeader>
 
+          {/* 搜索**常驻**：探测中 / 失败 / 没候选时也在，已保存与手动添加的模型也能筛 */}
+          <div className="flex shrink-0 items-center gap-2">
+            <Input
+              variant="muted"
+              placeholder={tr('搜索模型…')}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-8 text-xs"
+            />
+            <span className="shrink-0 text-xs text-muted-foreground">
+              {allRows.length > 0
+                ? keyword
+                  ? `${modelRows.length}/${allRows.length}`
+                  : tr('{count} 个', { count: allRows.length })
+                : null}
+            </span>
+          </div>
+
+          {/* 拉取状态紧贴在搜索框下面（与「从上游拉取模型」同一套排法） */}
           {probe === 'loading' && (
             <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
               <Loader2 className="size-3.5 animate-spin" />
@@ -947,28 +936,12 @@ export function AcpTab({ app }: { app: AgentApp }) {
             <div className="shrink-0 text-xs text-destructive">{tr('读取失败：{error}', { error: probe.error })}</div>
           )}
 
-          {/* 探测结果说明：没广告清单时不显示搜索，但仍可在下面手动添加 */}
+          {/* 探测结果说明：没广告清单时下面仍会有搜索 + 已保存 / 手动添加的模型 */}
           {probe && typeof probe === 'object' && 'configId' in probe && probe.configId == null && (
             <div className="shrink-0 text-xs text-muted-foreground">
               {tr('这个 agent 没有广告可选模型（或它不支持 ACP 的会话配置项）。')}
               {addedList.length > 0 && tr(' 下方仍是已添加的模型，取消勾选即可移出。')}
               {tr('也可以在下面手动填模型 id。')}
-            </div>
-          )}
-
-          {/* 搜索：只在探测到候选时出现（`configId` 非空即 options 非空） */}
-          {probeOptions.length > 0 && (
-            <div className="flex shrink-0 items-center gap-2">
-              <Input
-                variant="muted"
-                placeholder={tr('搜索模型…')}
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="h-8 text-xs"
-              />
-              <span className="shrink-0 text-xs text-muted-foreground">
-                {keyword ? `${modelRows.length}/${probeOptions.length}` : tr('{count} 个', { count: probeOptions.length })}
-              </span>
             </div>
           )}
 
