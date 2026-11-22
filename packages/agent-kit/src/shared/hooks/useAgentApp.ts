@@ -745,6 +745,17 @@ function announceSessionExpired(): void {
 }
 
 /**
+ * 「本连接有哪些会话正在跑」的**独立订阅**（侧栏转圈用）。
+ *
+ * 为什么不用 `app.runningConversations`：外壳投影刻意把它排除了（见 `useAgentApp`
+ * 末尾的 `shellKeys`），否则每轮开始 / 结束都会让整棵外壳重渲一次 —— 用户点发送的
+ * 那一刻会明显卡一下。谁需要这个状态谁自己用选择器订阅，只重渲自己。
+ */
+export function useRunningConversations(): Record<string, true> {
+  return useAgentStore((s) => s.runningConversations);
+}
+
+/**
  * 应用级视图：绑定**当前活跃会话**，并承担全部全局副作用。
  *
  * 这是唯一的「副作用宿主」—— 状态 WS 订阅、连接后全量对账、401 收场、从后台回来
@@ -924,8 +935,15 @@ export function useAgentApp(): AgentApp {
   );
   const shellKeys: unknown[] = [];
   for (const [key, value] of Object.entries(s)) {
-    // 流式正文在 slices 里，其余根字段（连接 / 清单 / 动作）都是外壳关心的
-    if (key !== "slices") shellKeys.push(value);
+    /**
+     * 流式正文在 slices 里；`runningConversations` 走下面的 `useRunningConversations()`
+     * 选择器单独订阅（侧栏转圈用）。
+     *
+     * 它每轮开始 / 结束都会变 —— 放进投影就是「用户点发送的那一瞬」外壳全量重渲一次
+     * （侧栏 / 主区域所有标签一起跟着走），实测就是那一下卡顿。聚合状态与正文一样，
+     * 属于「谁要谁自己订阅」。
+     */
+    if (key !== "slices" && key !== "runningConversations") shellKeys.push(value);
   }
   const shellCache = shellCacheRef.current;
   if (

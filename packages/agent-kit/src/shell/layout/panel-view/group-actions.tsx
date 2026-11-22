@@ -6,6 +6,7 @@ import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { isConversationTabKey, NEW_TAB_KEY } from '@fizz/agent-kit/shared/lib/panel-tabs';
 import { renameToolTab } from '@fizz/agent-kit/shared/lib/tool-tabs'
 import { requestReloadTab } from '../tab-reload'
+import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
 import {
   activateTab,
   activeTabKey,
@@ -174,8 +175,10 @@ export function useGroupActions(): GroupActions {
   const reloadTab = useCallback(
     (key: string): void => {
       if (key !== NEW_TAB_KEY && isConversationTabKey(key)) {
-        // 正在生成时 store 会拒绝（权威历史会把流式现场整段盖掉）—— 这里先说清为什么没反应
-        if (app.runningConversations[key]) {
+        // 正在生成时 store 会拒绝（权威历史会把流式现场整段盖掉）—— 这里先说清为什么没反应。
+        // 现读 store 而不是 `app.runningConversations`：外壳投影已冻结这份聚合状态
+        // （见 `useAgentApp` 的 shellKeys），读 app 会拿到旧值。
+        if (useAgentStore.getState().runningConversations[key]) {
           toast('这一轮还在生成，先停止再刷新')
           return
         }

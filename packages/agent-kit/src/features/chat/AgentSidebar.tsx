@@ -162,6 +162,7 @@ import type {
   ContainerProjectState,
   ContainerProjectsSnapshot,
 } from "@fizz/contracts/types";
+import { useRunningConversations } from "@fizz/agent-kit/shared/hooks/useAgentApp";
 import type { AgentApp } from "@fizz/agent-kit/shared/hooks/useAgentApp";
 import { useStateValue } from "@fizz/agent-kit/shared/lib/state-ws";
 import {
@@ -393,6 +394,12 @@ export function AgentSidebar({
   /** 外壳：宿主挑；不传就是桌面 / web 的默认骨架（见 prop 注释） */
   const Shell = shell ?? DefaultShell;
   const t = useT();
+  /**
+   * 「本连接在跑的会话」单独订阅（不用 `app.runningConversations`）：
+   * 外壳投影刻意冻结了这份聚合状态，否则每轮开始 / 结束都会让整棵外壳重渲一次
+   * （用户点发送的那一下卡顿就来自这里）。只有侧栏需要它，就只重渲侧栏。
+   */
+  const runningConversations = useRunningConversations();
   /** 主题色（菜单里选强调色）。就地取用：纯视觉偏好、不进 AppShell 的 prop 链 */
   /** 正在重命名的会话 id（null = 未在编辑） */
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -820,7 +827,7 @@ export function AgentSidebar({
     const waiting = activity.waiting;
     const running =
       !waiting &&
-      (activity.running || !!app.runningConversations[conversation.id]);
+      (activity.running || !!runningConversations[conversation.id]);
     /** 外部 ACP agent 驱动的会话：行尾「更多」里的重启 / 重新加载只给它 */
     const isAcp = conversation.backend === "acp";
     /** 正在重新加载：行首转圈 + 更多菜单里那一项也禁用，避免重复点 */
@@ -1158,7 +1165,7 @@ export function AgentSidebar({
           continue;
         }
         // 与会话行同一个兜底：本标签页发起的轮次（`runningConversations`）也算在跑
-        if (activity.running || app.runningConversations[conversation.id])
+        if (activity.running || runningConversations[conversation.id])
           running = true;
       }
     }
