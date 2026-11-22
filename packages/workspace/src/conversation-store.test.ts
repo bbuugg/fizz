@@ -9,9 +9,9 @@
  * 2. 启动装配能扫到这份目录（主机 / 工作区记录都不参与）；
  * 3. 本地工作区缺失目录时的兜底语义**逐字不变**。
  */
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rename, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { AgentWorkspace } from '@fizz/contracts/types'
 import {
@@ -99,5 +99,38 @@ describe('远端会话的落盘与启动装配', () => {
 
     const found = await listRemoteConversations(dataDir)
     expect(found.map((c) => c.id)).toEqual(['c9'])
+  })
+})
+
+/**
+ * 防的回归：旧布局的临时会话目录（`conversations/<会话 id>`）**不迁移、不兼容**。
+ * 新布局只认 `conversations/<年月日>/<会话 id>`；旧的工作区记录与会话在启动时直接
+ * 丢弃，不能被扫回列表里（否则等于还在兼容旧路径）。
+ */
+describe('旧布局临时会话', () => {
+  it('启动时直接丢弃，不搬进日期目录', async () => {
+    const conversationId = 'old-conv'
+    const store = await JsonStore.open(dataDir)
+    const domain = new AgentDomain(store)
+    const ws = await domain.ensureScratchWorkspace(conversationId)
+    domain.saveConversation({ id: conversationId, workspaceId: ws.id, title: '旧会话' })
+    await store.flush()
+
+    // 手工退回旧布局，并让工作区记录重新指向它
+    const oldPath = join(dataDir, 'conversations', conversationId)
+    await mkdir(dirname(oldPath), { recursive: true })
+    await rename(ws.path, oldPath)
+    store.mutate((d) => {
+      d.workspaces = d.workspaces.map((w) => (w.id === ws.id ? { ...w, path: oldPath } : w))
+    })
+    await store.flush()
+
+    const reopened = await JsonStore.open(dataDir)
+
+    expect(reopened.snapshot().workspaces.some((w) => w.id === ws.id)).toBe(false)
+    expect(reopened.snapshot().conversations.some((c) => c.id === conversationId)).toBe(false)
+    // 不主动删用户磁盘数据：目录原样留着，需要腾空间时用户自己清
+    expect((await stat(oldPath)).isDirectory()).toBe(true)
+    await reopened.flush()
   })
 })

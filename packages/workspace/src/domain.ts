@@ -7,7 +7,7 @@
  *    工作区列表就是权限边界（桌面端由本机用户自己选目录，无所谓）。
  */
 import { promises as fs } from 'node:fs'
-import { isAbsolute, join, resolve } from 'node:path'
+import { isAbsolute, resolve } from 'node:path'
 import type {
   AcpContextUsage,
   AcpModesState,
@@ -102,6 +102,7 @@ import type {
 import {
   newId,
   JsonStore,
+  scratchWorkspacePath,
   type StoredHost,
   type StoredLocalHost,
   type StoredSshHost
@@ -110,18 +111,6 @@ import { validateRemoteWorkspacePath } from '@fizz/contracts/workspace'
 import { pickContainer } from './container-carry'
 import { acpAgentKey } from '@fizz/contracts/agent-api'
 import { applyTransferPayload, buildTransferPayload, type TransferSnapshot } from './transfer'
-
-/**
- * 临时工作区在数据目录里的落点：`<数据目录>/conversations/<年月日>/<会话 id>`（如 `20261122`）。
- *
- * 日期用**本地时间**（用户在文件管理器里看到的就是本机日历），月 / 日补零保证排序。
- */
-function scratchWorkspacePath(dataDir: string, conversationId: string, at = new Date()): string {
-  const year = String(at.getFullYear())
-  const month = String(at.getMonth() + 1).padStart(2, '0')
-  const day = String(at.getDate()).padStart(2, '0')
-  return join(dataDir, 'conversations', `${year}${month}${day}`, conversationId)
-}
 
 /**
  * 归一化模型清单：每个条目只保留 `{ id, contextWindow?, settings? }`。

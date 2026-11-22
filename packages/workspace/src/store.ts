@@ -13,7 +13,7 @@
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname, resolve } from 'node:path'
 import type {
   AgentConversation,
   AgentWorkspace,
@@ -395,6 +395,32 @@ export function resolveDataDir(): string {
   return process.env.FIZZ_DATA_DIR?.trim() || join(homedir(), '.fizz-server')
 }
 
+/**
+ * 临时工作区在数据目录里的落点：`<数据目录>/conversations/<年月日>/<会话 id>`（如 `20261122`）。
+ *
+ * 新建（`ensureScratchWorkspace`）与历史目录迁移（`migrateScratchWorkspaceDirs`）共用这一份，
+ * 别再各写一份格式 —— 两份漂移就会出现「搬过去了，工作区 path 却对不上」。
+ *
+ * 日期用**本地时间**（用户看的是本机日历）；月 / 日补零保证排序。
+ */
+export function scratchWorkspacePath(
+  dataDir: string,
+  conversationId: string,
+  at: number | Date = Date.now()
+): string {
+  const date = at instanceof Date ? at : new Date(at)
+  const year = String(date.getFullYear())
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return join(dataDir, 'conversations', `${year}${month}${day}`, conversationId)
+}
+
+/** 路径比较口径：Windows 大小写不敏感，其余平台原样 */
+function normalizePath(path: string): string {
+  const resolved = resolve(path)
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+}
+
 // ---------- 密钥加解密 ----------
 
 const ENC_PREFIX = 'enc:v1:'
@@ -581,6 +607,12 @@ export class JsonStore {
     await this.loadConversationsFromDisk(legacyConversations)
     this.loaded = true
     /**
+     * 老版本的临时会话目录是 `conversations/<会话 id>`（一层）。新布局只认
+     * `conversations/<年月日>/<会话 id>` —— 旧布局**不迁移、不兼容**，启动时直接丢弃
+     * （工作区记录与会话索引一起剔除；磁盘文件不动）。
+     */
+    if (this.discardLegacyScratchWorkspaces()) this.schedulePersist()
+    /**
      * 跑过一次性迁移（文件版本比当前低）：立刻落一次盘，把**新版本号 + 迁移结果**写回去。
      *
      * 不写的话每次启动都会重跑迁移 —— 迁移是「压掉已写着的旧默认值」，重跑就等于
@@ -625,6 +657,31 @@ export class JsonStore {
     if (migrated) {
       console.log(`[conversation] 已把 ${legacy.length} 条老会话迁移到会话目录`)
     }
+  }
+
+  /**
+   * 丢弃**旧布局**的临时工作区：`conversations/<会话 id>`（一层）。
+   *
+   * 按新布局，临时会话在 `conversations/<年月日>/<会话 id>`。旧布局不迁移、不兼容 ——
+   * 直接把工作区记录和它的会话从索引里剔除，旧会话不再出现在列表里。
+   *
+   * 磁盘目录**不主动删**：那是用户数据，启动流程里做 `rm -rf` 太危险。需要腾空间时
+   * 用户自己清 `conversations/` 下那些 uuid 目录即可。
+   */
+  private discardLegacyScratchWorkspaces(): boolean {
+    const base = normalizePath(resolve(join(this.dataDir, 'conversations')))
+    const legacy = new Set(
+      this.data.workspaces
+        .filter(
+          (w) => w.scratch && w.path && normalizePath(resolve(dirname(w.path))) === base
+        )
+        .map((w) => w.id)
+    )
+    if (legacy.size === 0) return false
+    this.data.workspaces = this.data.workspaces.filter((w) => !legacy.has(w.id))
+    this.data.conversations = this.data.conversations.filter((c) => !legacy.has(c.workspaceId))
+    console.log(`[workspace] 已丢弃 ${legacy.size} 个旧布局的临时工作区（不迁移、不兼容）`)
+    return true
   }
 
   /** 读一份快照（调用方别直接改它，用 mutate） */
