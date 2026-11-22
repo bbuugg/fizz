@@ -257,6 +257,11 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     /** 当前打开的会话是否正在流式（后台会话在跑不影响这里；侧栏转圈看 runningConversations） */
     streaming: activeSlice?.streaming ?? false,
     /**
+     * 本轮**实时估算**的输出速度（tok/s），流式期间每来一帧内容增量更新一次；
+     * null = 没在跑的轮 / 还没出过字。轮末以消息上的 `usage.tps`（服务端真值）为准。
+     */
+    liveTps: activeSlice?.liveTps ?? null,
+    /**
      * 正在「回放现场」（断线重连后服务端从帧日志头部重放这一轮）。
      * 只影响滚动跟随：回放期间改成瞬时贴底，免得内容先塌后长时被弹簧带着
      * 从顶部一路滚下来（见 store 的 `ConvSlice.replaying`）。

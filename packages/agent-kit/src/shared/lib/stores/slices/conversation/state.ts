@@ -45,6 +45,7 @@ export const emptySlice = (): ConvSlice => ({
   droppedRound: null,
   loadGen: 0,
   scrollResetSeq: 0,
+  liveTps: null,
   touchedAt: Date.now(),
   collab: null,
 });

@@ -110,6 +110,8 @@ export function createRunActions(
         // 这些插话已经不可能生效，但**内容是用户刚写的**，留在列表里让他能 ➤ 立刻发送
         // 或 ✕ 丢弃；直接清掉就等于把人写的东西弄没了。
         retryNotice: null,
+        // 用户点了停止：圆环旁的实时估算一起收掉
+        liveTps: null,
       }));
       markRunning(conversationId, false);
     },

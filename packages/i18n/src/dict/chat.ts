@@ -191,6 +191,9 @@ export const CHAT: Record<string, string> = {
   '查找文件': 'Find files',
   '搜索内容': 'Search contents',
   '读取文件': 'Read file',
+  '{tps} tok/s': '{tps} tok/s',
+  '实时输出速度（按字符估算）：{tps} tokens/秒。轮次结束后以服务端统计为准。':
+    'Live output speed (estimated from characters): {tps} tokens/s. Replaced by server-side stats when the turn ends.',
   '写入文件': 'Write file',
   '编辑文件': 'Edit file',
   '删除文件': 'Delete file',

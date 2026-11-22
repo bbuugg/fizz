@@ -241,6 +241,30 @@ function BranchPill({ app, editable }: { app: AgentApp; editable: boolean }) {
   )
 }
 
+/**
+ * 本轮**实时估算**的输出速度（tok/s），放在上下文圆环左侧。
+ *
+ * 只在「这一轮正在跑、且已经采到速度」时出现：数字来自流式增量的客户端估算
+ * （见 `shared/lib/live-tps.ts` 的口径说明），轮末会以服务端 `usage.tps` 为准 ——
+ * 所以这里不显示在空闲态，也不进 tooltip 之外的任何统计。
+ */
+function LiveTps({ app, running }: { app: AgentApp; running: boolean }) {
+  const tr = useT()
+  const tps = app.liveTps?.tps ?? 0
+  if (!running || tps <= 0) return null
+  return (
+    <span
+      className="shrink-0 px-1 text-xs tabular-nums text-muted-foreground"
+      title={tr(
+        '实时输出速度（按字符估算）：{tps} tokens/秒。轮次结束后以服务端统计为准。',
+        { tps }
+      )}
+    >
+      {tr('{tps} tok/s', { tps })}
+    </span>
+  )
+}
+
 export function ComposerStatusBar({ app, running }: { app: AgentApp; running: boolean }) {
   const isAcp = turnIsAcp(app)
   return (
@@ -249,6 +273,7 @@ export function ComposerStatusBar({ app, running }: { app: AgentApp; running: bo
       <BranchPill app={app} editable={!running} />
       {/* 与输入相关的控件留在卡片里；这两颗是「当前状态 / 全轮生效」的设置，归到横条 */}
       <div className="ml-auto flex shrink-0 items-center gap-1">
+        <LiveTps app={app} running={running} />
         <ContextRing app={app} />
         {isAcp ? (
           <AcpPermissionPill app={app} />

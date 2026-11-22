@@ -24,6 +24,7 @@ import type {
   QueuedMessage,
 } from "@fizz/contracts/types";
 import { type BrowserSettings } from "@fizz/contracts";
+import type { LiveTpsState } from "../../../live-tps";
 
 export type { QueuedMessage };
 
@@ -227,6 +228,15 @@ export interface ConvSlice {
    * 刷新都不碰它，免得把正在翻历史的用户拽到底部。
    */
   scrollResetSeq: number;
+  /**
+   * 本轮**实时估算**的输出速度（tok/s）：流式期间每来一帧内容增量就更新（见
+   * `shared/lib/live-tps.ts`），轮次结束 / 停止 / 断线时清空。
+   *
+   * 与消息上的 `usage.tps`（服务端真值，轮末才到）是两回事：这里分子是**按字符估算**
+   * 的 token，只用来在圆环旁给一个滚动中的大概速度，结束后一切以 `usage.tps` 为准。
+   * null = 没有在跑的轮 / 还没出过字。
+   */
+  liveTps: LiveTpsState | null;
   /** 最近一次被打开 / 触碰的时刻（淘汰排序用） */
   touchedAt: number;
   /** 协作运行态（仅 collab 会话；任务 / 消息 / 状态 + 实时增量） */

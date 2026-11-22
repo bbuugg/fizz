@@ -20,6 +20,7 @@ import {
 } from "@fizz/agent-kit/shared/lib/parts";
 import { fileRefsOfParts } from "@fizz/agent-kit/shared/lib/attachments";
 import { createFrameBatcher } from "@fizz/agent-kit/shared/lib/frame-batch";
+import { advanceLiveTps } from "@fizz/agent-kit/shared/lib/live-tps";
 import {
   dispatchProjectUiAction,
   uiActionsFromEvent,
@@ -160,6 +161,8 @@ export function createConversationRunLoop(ctx: ConvCore) {
         followupRequests: {},
         retryNotice: null,
         reconnectNotice: null,
+        // 接回来的这一轮从零开算实时 TPS（回放期间不累计，见 handleFrame）
+        liveTps: null,
         // 作废在途的消息加载：从现在起本地这份「回放现场」是真源
         loadGen: s.loadGen + 1,
         request: s.request && !s.request.controller.signal.aborted
@@ -649,6 +652,9 @@ export function createConversationRunLoop(ctx: ConvCore) {
         // 走到这里的都是「内容增量 / 错误 / 结束」事件：说明重试后的新尝试已经开始产出内容
         // （或这一轮已结束）—— 把重试提示撤掉，只在重试等待的那一小段可见。
         retryNotice: null,
+        // 轮中实时 TPS：只累计直播里真正到达的增量。重连回放是把同一段内容再放一遍，
+        // 时间戳全挤在一起算出来没有意义 —— 回放期间保持原值（接回时已置 null）。
+        liveTps: s.replaying ? s.liveTps : advanceLiveTps(s.liveTps, event),
         messages: s.messages.map((message, i) =>
           i === liveIndex
             ? {
@@ -1118,6 +1124,8 @@ export function createConversationRunLoop(ctx: ConvCore) {
       streaming: true,
       // 新一轮是全新开跑（不是回放）：万一上一轮的回放窗口没收干净，这里一并复位
       replaying: false,
+      // 实时 TPS 从零起算（上一轮的估算不能带到这一轮）
+      liveTps: null,
       // 新一轮开始时清掉上一轮残留的审批卡片（上一轮的审批已随落盘的消息给过结论）
       pendingConfirms: [],
       followupRequests: {},
@@ -1286,6 +1294,8 @@ export function createConversationRunLoop(ctx: ConvCore) {
         pendingConfirms: [],
         followupRequests: {},
         retryNotice: null,
+        // 这一轮结束了：圆环旁的实时速度收掉
+        liveTps: null,
       }));
       markRunning(conversationId, false);
       // 标题 / 消息数 / 排序都变了，收流后同步一次列表
@@ -1357,6 +1367,8 @@ export function createConversationRunLoop(ctx: ConvCore) {
       // 用户才能用 ➤ 立刻发送 / ✕ 移除（见 `sendSteer`）；起下一轮时它们会自动转入待发送队列。
       retryNotice: null,
       reconnectNotice: null,
+      // 收场：圆环旁的实时速度收掉（真值在消息的 usage.tps 上）
+      liveTps: null,
       // 这一轮有着落（收到 end / 服务端已落盘），没有待对账的断线轮次了
       droppedRound: null,
     }));
