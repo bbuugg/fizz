@@ -32,6 +32,7 @@ import {
   type WorkspaceAddActions
 } from '@fizz/agent-kit/features/chat/workspace-add-actions'
 import { ScriptPaletteList } from '@fizz/agent-kit/features/scripts/ScriptPaletteList'
+import { HostPaletteList } from '@fizz/agent-kit/features/hosts/HostPaletteList'
 import { hostPaletteFields } from '@fizz/agent-kit/features/hosts/host-format'
 import { getAgentHostOrNull } from '@fizz/agent-client/host'
 import {
@@ -65,14 +66,12 @@ import {
   MessageSquarePlus,
   Moon,
   Network,
-  Cloud,
   FolderPlus,
   FolderTree,
   ScrollText,
   Search,
   Server,
   Settings,
-  SquareTerminal,
   Sun
 } from 'lucide-react'
 import { useState } from 'react'
@@ -702,35 +701,13 @@ export function CommandPalette({
           {/* 过滤交给 cmdk 本地做（主机清单就在内存里，不用打接口） */}
           <CommandList className="min-h-0 max-h-[min(24rem,calc(85dvh_-_7rem))] flex-1">
             <CommandEmpty>{t("没有匹配的主机。")}</CommandEmpty>
-            <CommandGroup heading={t("主机")}>
-              {app.sshHosts.map((host) => {
-                const isLocal = host.kind === 'local'
-                /**
-                 * 标题 / 副标题 / 关键词统一由 `hostPaletteFields` 给（纯函数，有单测）。
-                 *
-                 * ⚠️ 不要在这里就地拼 `['ssh', host.name, host.host, host.username]`：
-                 * cmdk 会对 keywords 逐个 `.trim()`，数据里只要有一条缺 `username` 的记录
-                 * （例如别的版本写进去的 `kind: 'vnc'`，服务端原样透传）就整个面板白屏，
-                 * 「打开主机」从此进不去。
-                 */
-                const { label, subtitle, keywords } = hostPaletteFields(host)
-                return (
-                  <CommandItem
-                    key={host.id}
-                    // value 参与 cmdk 的本地过滤：把能搜的字段都拼进来
-                    value={`${label} ${subtitle}`}
-                    keywords={keywords}
-                    onSelect={run(() => onOpenHost(host))}
-                  >
-                    {isLocal ? <SquareTerminal /> : <Cloud />}
-                    <span className="truncate">{label}</span>
-                    <span className="ml-auto max-w-40 truncate font-mono text-xs text-muted-foreground">
-                      {subtitle}
-                    </span>
-                  </CommandItem>
-                )
-              })}
-            </CommandGroup>
+            {/* 主机：按分组树分段（与「主机」侧栏同一套数据与顺序）。
+                以前这里把所有主机平铺在一个标题下，分组结构整块丢失。 */}
+            <HostPaletteList
+              hosts={app.sshHosts}
+              groups={app.hostGroups}
+              onSelect={(host) => run(() => onOpenHost(host))()}
+            />
           </CommandList>
         </>
       ) : page.kind === 'scripts' ? (
@@ -771,34 +748,21 @@ export function CommandPalette({
             ) : (
               <>
                 <CommandEmpty>{t('没有匹配的主机。')}</CommandEmpty>
-                <CommandGroup heading={t('SSH 主机')}>
-                  {workspaceAdd.remoteHosts.map((host) => {
-                    // 与「主机」那一页同一套标题 / 副标题 / 关键词（含对缺字段记录的兜底）
-                    const { label, subtitle, keywords } = hostPaletteFields(host)
-                    return (
-                      <CommandItem
-                        key={host.id}
-                        value={`${label} ${subtitle}`}
-                        keywords={keywords}
-                        onSelect={() =>
-                          push({
-                            kind: 'remote-dir',
-                            hostName: label,
-                            // 数据源在这里造一次、跟着页面走：它绑的是「这台主机」
-                            source: workspaceAdd.remoteDirSource(host.id),
-                            onPick: (path) => workspaceAdd.addRemoteWorkspace(host.id, path)
-                          })
-                        }
-                      >
-                        <Cloud />
-                        <span className="truncate">{label}</span>
-                        <span className="ml-auto max-w-40 truncate font-mono text-xs text-muted-foreground">
-                          {subtitle}
-                        </span>
-                      </CommandItem>
-                    )
-                  })}
-                </CommandGroup>
+                <HostPaletteList
+                  hosts={workspaceAdd.remoteHosts}
+                  groups={app.hostGroups}
+                  onSelect={(host) => {
+                    // 页标题要显示主机名（与「主机」页同一套兜底字段）
+                    const { label } = hostPaletteFields(host)
+                    push({
+                      kind: 'remote-dir',
+                      hostName: label,
+                      // 数据源在这里造一次、跟着页面走：它绑的是「这台主机」
+                      source: workspaceAdd.remoteDirSource(host.id),
+                      onPick: (path) => workspaceAdd.addRemoteWorkspace(host.id, path)
+                    })
+                  }}
+                />
               </>
             )}
           </CommandList>
