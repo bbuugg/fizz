@@ -7,8 +7,11 @@
  * 自己的停止。这两条用例防的就是「点了没反应」（路由查表查不到，回 `{ stopped: false }`），
  * 以及修这件事时把容器一轮原有的停止转发器盖掉。
  */
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { setLanguage } from '@fizz/i18n'
 import type { ChatRun } from './chat-run'
+
+afterEach(() => setLanguage('zh'))
 
 // 真实的 state 会在 import 时初始化状态目录；这里只需要那两张表
 vi.mock('./state', () => ({
@@ -36,8 +39,17 @@ function makeRun(): ChatRun {
   } as unknown as ChatRun
 }
 
-function framesOf(run: ChatRun): Array<{ type: string; approved?: boolean; confirm?: { id: string } }> {
-  return run.frames as unknown as Array<{ type: string; approved?: boolean; confirm?: { id: string } }>
+interface ConfirmFrame {
+  type: string
+  approved?: boolean
+  confirm?: {
+    id: string
+    options?: Array<{ optionId: string; name: string; kind: string }>
+  }
+}
+
+function framesOf(run: ChatRun): ConfirmFrame[] {
+  return run.frames as unknown as ConfirmFrame[]
 }
 
 describe('审批挂起期间的停止钮', () => {
@@ -96,5 +108,48 @@ describe('审批挂起期间的停止钮', () => {
 
     // 批完还得能停：转发器原样回去
     expect(run.commandStops.get('tc-2')).toBe(forward)
+  })
+})
+
+/**
+ * 内置选项的文案：`name` 是我们自己写的中文源文案，必须在**下发那一刻**按界面
+ * 语言翻译。以前直接下发 `BUILTIN_CONFIRM_OPTIONS` 的原文，英文界面里审批卡上
+ * 四行选项全露中文。防的是两条：忘了翻译、以及在模块顶层翻译（切语言后失效）。
+ */
+describe('内置审批选项的文案', () => {
+  it('英文界面：选项名翻译，optionId / kind 原样', async () => {
+    setLanguage('en')
+    const run = makeRun()
+    const gate = createConfirmGate({
+      run,
+      ownerKey: 'options-en',
+      title: '测试会话',
+      confirmTimeoutMs: 0
+    })
+    const pending = gate.requestConfirm({
+      toolCallId: 'tc-3',
+      toolName: 'bash',
+      command: 'rm -rf dist'
+    })
+
+    const frame = framesOf(run).find((f) => f.type === 'confirm')
+    const options = frame?.confirm?.options ?? []
+    expect(options.map((option) => option.name)).toEqual([
+      'Allow once',
+      'Always allow this command',
+      'Deny once',
+      'Always deny this command'
+    ])
+    // 回传给服务端的键不能跟着翻译（`requestConfirm` 按 optionId 认「始终」）
+    expect(options.map((option) => option.optionId)).toEqual([
+      'allow_once',
+      'allow_always',
+      'reject_once',
+      'reject_always'
+    ])
+
+    const id = frame?.confirm?.id
+    pendingConfirms.get(id as string)?.resolve({ approved: false })
+    await expect(pending).resolves.toBe(false)
   })
 })

@@ -470,6 +470,25 @@ export function isStoppableToolName(toolName: string): boolean {
 }
 
 /**
+ * 这条工具调用是不是正在**等用户审批**（confirm 档下审批卡已挂起、工具还没开始执行）。
+ *
+ * 判据只有「审批表里有没有同 `toolCallId` 的一条」——不看工具名，也不看有没有 output：
+ * 审批挂起期间工具本来就没有结果，`toolState` 会把它算成 `input-available`（执行中），
+ * 卡片上那颗转圈和「命令运行中，暂无输出」都是假的。渲染层用它把这档换成
+ * `approval-requested`（琥珀色时钟 + Tooltip「等待审批」），并跳过实时输出区。
+ */
+export function isAwaitingApproval(
+  part: AgentMessagePart,
+  confirmingToolCallIds?: ReadonlySet<string> | null
+): boolean {
+  return (
+    part.type === 'tool-call' &&
+    !!confirmingToolCallIds &&
+    confirmingToolCallIds.has(part.toolCallId)
+  )
+}
+
+/**
  * 「在飞且可单独停止」——判据与 `isCommandRunning` 同源（不看 `liveOutput`，理由见上），
  * 只是工具集合更宽。渲染层用它决定停止钮是「只停这条」还是「中止整轮」。
  */

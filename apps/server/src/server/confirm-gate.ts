@@ -24,6 +24,7 @@ import type {
   AgentConfirmRequest,
   ServerEvent
 } from '@fizz/contracts/types'
+import { t } from '@fizz/i18n'
 import { appLog } from '@fizz/workspace'
 import { emit, type ChatRun } from './chat-run'
 import { pendingConfirms } from './state'
@@ -36,6 +37,10 @@ export const DEFAULT_CONFIRM_TIMEOUT_MS = 10 * 60 * 1000
  * 内置工具审批的四个选项:与 ACP 权限选项**同一套 kind**(allow_once / allow_always /
  * reject_once / reject_always),确认卡渲染同一份 UI。语义差异只在「始终」的落地方式:
  * ACP 的 always 由 agent 自己记,内置的 always 由服务端按**命令**记(见文件头)。
+ *
+ * `name` 是中文源文案,**下发那一刻**才按界面语言翻译(见 `requestConfirm`)——
+ * 这里写死译文的话,服务端切语言后新卡还是旧语言。ACP 的选项名是 agent 自己给的
+ * 说法,不经过这里、也不翻译(`ConfirmCard` 原样渲染)。
  */
 export const BUILTIN_CONFIRM_OPTIONS: AgentConfirmOption[] = [
   { optionId: 'allow_once', name: '允许一次', kind: 'allow_once' },
@@ -202,8 +207,17 @@ export function createConfirmGate(input: {
       const allowed = await approvedCommandsOf(input.approvedCommandsPath)
       if (allowed.includes(command)) return true
     }
-    const reply = await waitForConfirmReply({ ...req, options: BUILTIN_CONFIRM_OPTIONS })
-    const option = BUILTIN_CONFIRM_OPTIONS.find((o) => o.optionId === reply.optionId)
+    /*
+     * 文案是**我们自己写的**,不是 agent 的:按答复这一刻的语言翻译。
+     * 不能在模块顶层翻译 —— `t()` 读到的是导入时的语言,服务端切语言后
+     * 下一张审批卡还会是旧语言。
+     */
+    const options = BUILTIN_CONFIRM_OPTIONS.map((option) => ({
+      ...option,
+      name: t(option.name)
+    }))
+    const reply = await waitForConfirmReply({ ...req, options })
+    const option = options.find((o) => o.optionId === reply.optionId)
     if (option?.kind === 'allow_always') {
       if (input.approvedCommandsPath) {
         try {

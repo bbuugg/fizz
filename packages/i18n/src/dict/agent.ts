@@ -409,6 +409,11 @@ export const AGENT: Record<string, string> = {
   '下一项': 'Next',
   '全部允许': 'Allow all',
   '全部拒绝': 'Deny all',
+  // 内置工具审批卡的四个选项（服务端 `BUILTIN_CONFIRM_OPTIONS` 下发前翻译）
+  '允许一次': 'Allow once',
+  '始终允许此命令': 'Always allow this command',
+  '拒绝一次': 'Deny once',
+  '始终拒绝此命令': 'Always deny this command',
 
   // ---------- 定时任务（Scheduled tasks） ----------
   '到点自动起一轮会话 · 共 {total} 条 · {enabledCount} 条启用中':

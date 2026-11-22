@@ -69,6 +69,7 @@ import {
 } from '@fizz/agent-kit/features/chat/message-parts'
 import { waitingIndicatorSlot } from '@fizz/agent-kit/shared/lib/waiting-indicator'
 import type { AgentChatMessage } from '@fizz/contracts/agent-api'
+import type { AgentConfirmRequest } from '@fizz/contracts/types'
 import { toolLabel } from '@fizz/agent-kit/shared/lib/parts'
 import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
 import type { ContextCompactionState } from '@fizz/agent-kit/shared/lib/stores/slices/conversation'
@@ -144,6 +145,11 @@ export interface MessageListProps {
   emptyState?: ReactNode
   /** 提问卡的作答通道；不传 = 提问卡只读（容器工作台没有） */
   followup?: MessageFollowupBridge
+  /**
+   * 本会话正在等答复的审批：对应的工具卡 / 分组抬头据此显示「等待审批」。
+   * 不传 = 没有审批现场（容器侧、子任务片段）。
+   */
+  pendingConfirms?: AgentConfirmRequest[]
   /**
    * 消息下方的**文档入口**（本轮写出的 markdown 文档，见
    * `shared/lib/artifacts.ts`）。返回 null 则不渲染。
@@ -233,6 +239,7 @@ export function MessageList({
   deleting = false,
   emptyState,
   followup,
+  pendingConfirms,
   renderArtifacts,
   renderActions,
   outline = false,
@@ -627,6 +634,7 @@ export function MessageList({
                           total={fullTotal}
                           streaming={streaming}
                           followup={followup}
+                          pendingConfirms={pendingConfirms}
                           compaction={messageCompaction}
                           onReload={conversationId ? refreshConversation : undefined}
                           reloading={reloading}

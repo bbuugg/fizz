@@ -32,6 +32,7 @@ import {
 import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
 import {
   coalescePartFragments,
+  isAwaitingApproval,
   isErrorText,
   isStoppableToolRunning,
   textOf
@@ -47,7 +48,7 @@ import { ContextCompactionCard } from '@fizz/agent-kit/features/chat/ContextComp
 import type { ContextCompactionState } from '@fizz/agent-kit/shared/lib/stores/slices/conversation'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
-import type { AgentMessagePart, AskFollowupAnswer } from '@fizz/contracts/types'
+import type { AgentMessagePart, AskFollowupAnswer, AgentConfirmRequest } from '@fizz/contracts/types'
 import type { AgentChatMessage } from '@fizz/contracts/agent-api'
 
 /**
@@ -133,6 +134,14 @@ export interface MessagePartsProps {
   streaming: boolean
   /** 不传 = 提问卡只读（容器侧） */
   followup?: MessageFollowupBridge
+  /**
+   * 本会话正在等答复的审批（`pendingConfirms`）。
+   *
+   * 只用来把对应的工具卡 / 分组抬头标成「等待审批」—— 审批挂起期间工具还没开始
+   * 执行，按「有没有结果」推导会得出「执行中」，那是假的（见 `isAwaitingApproval`）。
+   * 不传 = 没有审批现场（容器侧 / 子任务片段）。
+   */
+  pendingConfirms?: AgentConfirmRequest[]
   /** 当前会话的交接文档；只有 `messageId` 匹配的那条消息会把它插进 parts 流。 */
   compaction?: ContextCompactionState | null
   /**
@@ -183,6 +192,7 @@ function MessagePartsInner({
   total,
   streaming,
   followup,
+  pendingConfirms,
   compaction,
   onContinue,
   onReload,
@@ -239,6 +249,17 @@ function MessagePartsInner({
    */
   const display = useMemo(() => coalescePartFragments(message.parts), [message.parts])
   const parts = display.parts
+  /**
+   * 待审批的工具调用 id 集合：只有这些卡要换成「等待审批」。
+   * 由 `pendingConfirms` 派生一次，别在每个 part 上线性查数组（一条消息几十个 part）。
+   */
+  const confirmingToolCallIds = useMemo(
+    () =>
+      pendingConfirms?.length
+        ? new Set(pendingConfirms.map((confirm) => confirm.toolCallId))
+        : undefined,
+    [pendingConfirms]
+  )
   let reloadErrorIndex = -1
   if (onReload && message.role === 'assistant' && index === total - 1) {
     for (let i = parts.length - 1; i >= 0; i -= 1) {
@@ -296,6 +317,7 @@ function MessagePartsInner({
         turnLive={isStreamingLast}
         followupPending={!!followupReq}
         followupResumable={resumable}
+        awaitingApproval={isAwaitingApproval(part, confirmingToolCallIds)}
         onResolveFollowup={
           tcid && followupReq && followup
             ? (answer) => followup.onResolve(tcid, answer)
@@ -466,7 +488,13 @@ function MessagePartsInner({
     const parts = steps.map((step) => step.part)
     const tail = steps[steps.length - 1]
     const live = !turnDone && tail.partIndex === lastVisibleIndex
-    const running = live && isStepInFlight(tail.part)
+    /*
+     * 尾步在等审批：它不是「在跑」（命令还没起跑），但也不能只报工具名 ——
+     * 那和真正执行中长得一样。抬头改报「等待审批 · <这一步要干什么>」，并撤掉扫光 /
+     * 竖条（`active` 为 false）；右边的停止钮保留，服务端在挂起期间把它当「按拒绝答复」。
+     */
+    const tailAwaiting = isAwaitingApproval(tail.part, confirmingToolCallIds)
+    const running = live && !tailAwaiting && isStepInFlight(tail.part)
     const preview = turnStepPreview(parts)
     // 与 `turnStepActivity` 同一个分支：只有尾 part 是 tool-call 才走「工具」那一档，
     // 其余（思考 / 空组）按思考算 —— 否则图标会和那行文案对不上
@@ -498,8 +526,9 @@ function MessagePartsInner({
         ? tail.part.toolCallId
         : undefined
     if (!turnDone) {
+      const activity = turnStepActivity(parts, { showIntent: showToolIntent, active: running })
       return {
-        label: turnStepActivity(parts, { showIntent: showToolIntent, active: running }),
+        label: tailAwaiting ? `${tr('等待审批')} · ${activity}` : activity,
         active: running,
         live,
         kind,
@@ -650,6 +679,7 @@ export const MessageParts = memo(
     prev.total === next.total &&
     prev.streaming === next.streaming &&
     prev.compaction === next.compaction &&
+    prev.pendingConfirms === next.pendingConfirms &&
     prev.followup?.requests === next.followup?.requests &&
     !!prev.followup?.onResume === !!next.followup?.onResume
 )

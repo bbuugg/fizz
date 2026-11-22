@@ -393,6 +393,10 @@ export function AssistantPanel({
       <ChatSurface
         list={{
           messages: session?.messages ?? [],
+          // 待审批的工具卡 / 分组抬头据此显示「等待审批」（与主会话同一张审批卡、同一口径）
+          ...(session?.pendingConfirms?.length
+            ? { pendingConfirms: session.pendingConfirms }
+            : {}),
           streaming,
           // 自己发送 / 开始新一轮时同帧落底（seq 在切片里 bump，流式追加不碰它）
           resetKey: `${session?.sessionId ?? ''}#${session?.scrollResetSeq ?? 0}`,

@@ -51,6 +51,7 @@ import {
   partialJsonString,
   toolCardHead,
   type ToolCallPart,
+  toolDetailOf,
   toolErrorText,
   toolLabel,
   toolOutputText,
@@ -799,6 +800,12 @@ export interface PartViewProps {
    */
   followupResumable?: boolean
   onResolveFollowup?: (answer: AskFollowupAnswer | null) => void
+  /**
+   * 该工具调用正在**等用户审批**（审批卡已挂起）：
+   * 卡片显示成「等待审批」，而不是 `input-available` 的「执行中 + 实时输出」。
+   * 由 `MessageParts` 按本会话的 `pendingConfirms` 算好传进来（见 `isAwaitingApproval`）。
+   */
+  awaitingApproval?: boolean
 }
 
 function PartViewInner({
@@ -810,7 +817,8 @@ function PartViewInner({
   turnLive,
   followupPending,
   followupResumable,
-  onResolveFollowup
+  onResolveFollowup,
+  awaitingApproval
 }: PartViewProps) {
   // 停止动作（工具在飞时头部那颗停止钮用）。两个都是 store 上的稳定引用，
   // 不会因为它们在依赖里引发额外重渲染。
@@ -959,6 +967,34 @@ function PartViewInner({
           else void stopTurn()
         }
       : undefined
+
+  /*
+   * 审批挂起：工具**还没开始跑**（服务端停住等答复），不能画成「执行中」。
+   *
+   * `toolState` 只看有没有 output，挂起期间自然给出 `input-available` —— 卡片上那颗
+   * 转圈和「命令运行中，暂无输出」都是假的，用户会以为命令已经在跑、只是没输出。
+   * 这里换成 `approval-requested`（琥珀色时钟 + Tooltip「等待审批」），内容区只铺
+   * 命令 / 主入参；真正的答复入口在输入框位置那张审批卡上。
+   *
+   * 停止钮保留：服务端在挂起期间把这个 toolCallId 的停止位占成「按拒绝答复」
+   * （见 `apps/server/src/server/confirm-gate.ts`），点了就是「别跑了」，不是空操作。
+   */
+  if (awaitingApproval) {
+    const cmdRaw = (part.input as { command?: unknown } | undefined)?.command
+    const command = typeof cmdRaw === 'string' ? cmdRaw.trim() : ''
+    return (
+      <ToolCallCard
+        type={`tool-${part.toolName}` as ToolUIPart['type']}
+        state="approval-requested"
+        live={turnLive}
+        {...cardHead(part, toolDetailOf(part))}
+        onStop={onStop}
+      >
+        {command ? <AcpTextBlock text={`$ ${command}`} singleLine /> : null}
+        <p className="text-xs text-muted-foreground">{tr('等待你在下方审批')}</p>
+      </ToolCallCard>
+    )
+  }
 
   // 待办清单（todowrite；保留 todo 历史别名）：入参 / 结果都是任务数组，画成清单，
   // 不铺「输入 / 输出 JSON」。这是「动态规划」在界面上的落点 —— 模型每改写一次清单，
@@ -1277,7 +1313,8 @@ export const PartView = memo(
     prev.streaming === next.streaming &&
     prev.turnLive === next.turnLive &&
     prev.followupPending === next.followupPending &&
-    prev.followupResumable === next.followupResumable
+    prev.followupResumable === next.followupResumable &&
+    prev.awaitingApproval === next.awaitingApproval
 )
 
 /**

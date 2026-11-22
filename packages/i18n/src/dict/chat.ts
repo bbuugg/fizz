@@ -437,6 +437,7 @@ export const CHAT: Record<string, string> = {
   '正在生成参数': 'Preparing input',
   '执行中': 'Running',
   '等待审批': 'Awaiting approval',
+  '等待你在下方审批': 'Waiting for your approval below',
   '已审批': 'Approved',
   '出错': 'Error',
   '已拒绝': 'Denied',

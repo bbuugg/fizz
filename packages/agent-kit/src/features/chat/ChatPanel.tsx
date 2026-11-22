@@ -485,6 +485,8 @@ function ChatPanelInner({
           retryNotice: app.retryNotice,
           // 连接断了但服务端那轮还在跑：在「正在思考…」的位置显示「连接中断，正在重连」
           reconnectNotice: app.reconnectNotice,
+          // 待审批的工具卡 / 分组抬头据此显示「等待审批」（工具还没开始执行）
+          pendingConfirms: app.pendingConfirms,
           // 上下文交接文档：挂在触发压缩的那条助手消息里（和思考 part 同形态），
           // 不再占用列表顶部的 sticky 位置
           compaction: app.compaction,
