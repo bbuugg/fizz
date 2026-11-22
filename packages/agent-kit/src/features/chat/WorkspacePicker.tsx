@@ -38,7 +38,7 @@ import {
 } from '@fizz/ui/picker-panel'
 import { ChevronDown, Folder, FolderMinus, FolderOpen, FolderPlus } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { CHAT_PILL } from '@fizz/agent-kit/features/chat/composer'
 import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
@@ -76,11 +76,10 @@ export interface WorkspacePickerProps {
   /**
    * 触发器形态：
    * - `pill`（默认）：输入行那种胶囊，用于横条 / 定时任务表单；
-   * - `inline`：标题句里的文字入口（「在 ___ 里做点什么？」），未选时显示占位下划线。
+   * - `inline`：标题句里的文字入口（「在 ▁▁▁ 里做点什么？」）。未选工作区时是一枚
+   *   **不依赖字符**的淡色空位条（字体换了也不会变形），选中后宽度补间、句子跟着重新居中。
    */
   variant?: 'pill' | 'inline'
-  /** `inline` 且未选工作区时的占位文案（默认取 `emptyLabel`） */
-  placeholder?: string
   /**
    * 面板弹出方向：默认 `bottom`（聊天「开始新对话」页的标题句上方，向下展开顺手）；
    * 定时任务表单传 `top`，与同排的模型下拉一致（两者都是弹窗里的 pill）。
@@ -88,6 +87,42 @@ export interface WorkspacePickerProps {
    */
   side?: 'top' | 'bottom'
   disabled?: boolean
+}
+
+/**
+ * 标题句里那颗 token 的尺寸，全部按 `load.txt` 里 demo 的 CSS 折算成 em（原值按字号 48px）：
+ *
+ * | demo | 原值 | 这里 |
+ * | --- | --- | --- |
+ * | token 高度 | 64px | `1.333em` |
+ * | 底色高度 / 垂直偏移 | 54.8px / +3.16px | `1.142em` / `+0.066em` |
+ * | 左右内边距 | 4.8px / 13.44px | `0.1em` / `0.28em` |
+ * | 图标窗宽 | 64.97px | `1.354em` |
+ * | 文字起点 | 77.45px | `1.614em` |
+ *
+ * 圆角是 999px（胶囊）。没选工作区时里面只有图标，但胶囊留一段**空位**（`BLANK_WIDTH`）——
+ * 太窄会只剩一个图标按钮，看不出「这里还没填」；选中后同一颗胶囊里出现名字。
+ */
+const BLANK_WIDTH = 56 // 空态胶囊的固定长度（图标之后只留一小段空位）
+const TOKEN_TEXT_LEFT = 1.614
+const TOKEN_PAD_RIGHT = 0.28
+const TOKEN_MAX_WIDTH = 224 // 与 `max-w-[14rem]` 对齐
+
+/** 按字素切分（demo 的 Torph 用 `Intl.Segmenter`；类型库里未必有，这里用结构类型取） */
+type SegmenterLike = new (
+  locale?: string,
+  options?: { granularity: 'grapheme' }
+) => { segment(input: string): Iterable<{ segment: string }> }
+
+function splitGraphemes(text: string): string[] {
+  const Segmenter = (Intl as unknown as { Segmenter?: SegmenterLike }).Segmenter
+  if (Segmenter) {
+    return Array.from(
+      new Segmenter(undefined, { granularity: 'grapheme' }).segment(text),
+      (part) => part.segment
+    )
+  }
+  return Array.from(text)
 }
 
 /**
@@ -111,7 +146,6 @@ export function WorkspacePicker({
   onNewWorkspace,
   remoteHostName,
   variant = 'pill',
-  placeholder,
   side = 'bottom',
   disabled
 }: WorkspacePickerProps) {
@@ -137,6 +171,141 @@ export function WorkspacePicker({
 
   const close = (): void => setOpen(false)
 
+  /**
+   * 标题句入口的宽度 —— **直接照抄** inline-text-morph 那颗 token 的做法（原实现见仓库
+   * 根目录 `load.txt` 的 `InlineTextMorphEngine` / `inlineMorph`）：宽度不走 CSS transition，
+   * 而是每帧按弹簧积分推进：
+   *
+   *   velocity += ((target - width) * 600 - velocity * 34) * step   // 每帧 4 个子步
+   *   width    += velocity * step
+   *
+   * 常量全部沿用原实现（stiffness 600 / damping 34 / dt 上限 1/30、收敛阈值 0.02px 与
+   * 0.05px/s），所以手感和它一致；句子是 flex 居中的，宽度一变整句自己重新居中。
+   *
+   * 宽度用不可见副本量（字体与标题一致），不拿字符去凑：`______` 那种占位在不同字体 /
+   * 字号下长度完全不一样。上限与 `max-w-[14rem]` 对齐。
+   */
+  const measureRef = useRef<HTMLSpanElement>(null)
+  const widthRef = useRef<HTMLButtonElement>(null)
+  const spring = useRef({ width: 0, target: 0, velocity: 0, raf: 0, last: 0, started: false })
+
+  const tickSpring = (now: number): void => {
+    const s = spring.current
+    const el = widthRef.current
+    s.raf = 0
+    if (!el) return
+    const dt = Math.min(Math.max((now - s.last) / 1000, 0) || 1 / 60, 1 / 30)
+    s.last = now
+    const target = s.target
+    for (let i = 0; i < 4; i++) {
+      const step = dt / 4
+      s.velocity += ((target - s.width) * 600 - s.velocity * 34) * step
+      s.width += s.velocity * step
+    }
+    if (Math.abs(target - s.width) < 0.02 && Math.abs(s.velocity) < 0.05) {
+      s.width = target
+      s.velocity = 0
+    } else {
+      s.raf = requestAnimationFrame(tickSpring)
+    }
+    el.style.width = `${s.width}px`
+  }
+
+  const springTo = (target: number, immediate: boolean): void => {
+    const s = spring.current
+    const el = widthRef.current
+    if (!el) return
+    if (s.raf) cancelAnimationFrame(s.raf)
+    s.raf = 0
+    // 首次挂载 / 用户要求减少动效：直接落定（原实现的 initial / reduced 分支）
+    if (immediate || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      s.width = target
+      s.target = target
+      s.velocity = 0
+      el.style.width = `${target}px`
+      return
+    }
+    s.target = target
+    el.style.width = `${s.width}px`
+    s.last = performance.now()
+    s.raf = requestAnimationFrame(tickSpring)
+  }
+
+  /** 字体晚到 / 主题换字体都要重新量：原实现同样在 `document.fonts` 就绪后重算宽度 */
+  const [fontEpoch, setFontEpoch] = useState(0)
+  useLayoutEffect(() => {
+    let alive = true
+    const recompute = (): void => {
+      if (alive) setFontEpoch((n) => n + 1)
+    }
+    void document.fonts?.ready.then(recompute)
+    document.fonts?.addEventListener('loadingdone', recompute)
+    return () => {
+      alive = false
+      document.fonts?.removeEventListener('loadingdone', recompute)
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    const immediate = !spring.current.started
+    spring.current.started = true
+    // 名字宽 + 图标窗 + 左右内边距（后两者是 em，按当前字号折成 px）；上限 14rem
+    const el = widthRef.current
+    const fontSize = el ? Number.parseFloat(getComputedStyle(el).fontSize) || 16 : 16
+    const chrome = (TOKEN_TEXT_LEFT + TOKEN_PAD_RIGHT) * fontSize
+    // 没选工作区时给一段更长的空位（只画图标会像一颗纯图标按钮，看不出「还没填」）
+    const target = current
+      ? Math.max(1, Math.min(measureRef.current?.scrollWidth ?? 0, TOKEN_MAX_WIDTH - chrome)) +
+        chrome
+      : BLANK_WIDTH
+    springTo(target, immediate)
+    // `springTo` / `tickSpring` 每次渲染都是新的，但这里只吃名字与字体版本
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current?.name, fontEpoch])
+
+  /** 图标的弹入层（demo 的 `renderIcon`：scale .4 → 1.1 → 1、rotate -16° → +5° → 0） */
+  const iconRef = useRef<HTMLSpanElement>(null)
+  /** 文字层：逐字素切开，换名字时每个字从下方顶上来（Torph 用 `Intl.Segmenter`，同口径） */
+  const textRef = useRef<HTMLSpanElement>(null)
+  const morphSeen = useRef(false)
+  useLayoutEffect(() => {
+    // 首次挂载不动（demo 的 `initial` 分支）：从别的页面切回来不该每次都被抬一下
+    const first = !morphSeen.current
+    morphSeen.current = true
+    if (first) return
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    // 时长 / 曲线照抄 demo：图标 300ms、文字 200ms，都是 (0.19, 1, 0.22, 1)
+    const ease = 'cubic-bezier(0.19, 1, 0.22, 1)'
+    iconRef.current?.animate(
+      [
+        { opacity: 0, transform: 'scale(0.4) rotate(-16deg)' },
+        { opacity: 1, transform: 'scale(1.1) rotate(5deg)', offset: 0.65 },
+        { opacity: 1, transform: 'scale(1) rotate(0deg)' }
+      ],
+      { duration: 300, easing: ease }
+    )
+    const chars = textRef.current?.querySelectorAll<HTMLElement>('[data-morph-char]')
+    chars?.forEach((node, index) => {
+      node.animate(
+        [
+          { opacity: 0, transform: 'translateY(0.35em)' },
+          { opacity: 1, transform: 'none' }
+        ],
+        // 逐字错开一点点，跟 demo 里字母一个个到位的感觉一致（80ms 封顶）
+        { duration: 200, delay: Math.min(index * 12, 80), easing: ease, fill: 'backwards' }
+      )
+    })
+  }, [current?.name])
+
+  const nameChars = current ? splitGraphemes(current.name) : []
+
+  // 卸载时把 rAF 停掉（原实现的 destroy）
+  useLayoutEffect(() => () => {
+    const s = spring.current
+    if (s.raf) cancelAnimationFrame(s.raf)
+    s.raf = 0
+  }, [])
+
   return (
     <Popover
       open={open}
@@ -148,22 +317,68 @@ export function WorkspacePicker({
       <PopoverTrigger asChild>
         {variant === 'inline' ? (
           /*
-            标题句里的文字入口：字号 / 字重跟着标题走，这里只负责「可点」的视觉线索
-            （点线下划线）。未选工作区时显示调用方给的占位（如 `______`）。
+            标题句里的 token —— 长相照抄 `load.txt` 里 demo 的 `.itm-token`（尺寸见文件头常量表）：
+
+            - 胶囊底不是铺满整颗 token：它只有 1.142em 高、中心再往下 0.066em，圆角 999px
+              （demo 用 `::before` 干这事，这里用一层绝对定位的 span）；
+            - 左边一枚图标窗（1.354em），名字从 1.614em 处开始，右边留 0.28em；
+            - 没选工作区时没有字，只剩图标与胶囊底 —— 不用下划线字符，换字体 / 换语言都不变形；
+            - 宽度由弹簧逐帧写进 `style.width`（demo 的 tick 积分），整句 flex 居中会自己重排；
+            - 换工作区时图标弹一下（scale .4 → 1.1 → 1 / -16° → +5° → 0），名字逐字从下方顶上来。
           */
           <button
             type="button"
+            ref={widthRef}
             disabled={disabled}
             aria-label={t('工作区')}
             title={title}
             className={cn(
-              'max-w-[14rem] min-w-0 truncate rounded-sm underline decoration-dotted underline-offset-4 transition-colors',
-              current
-                ? 'text-primary hover:decoration-solid'
-                : 'text-muted-foreground hover:text-foreground'
+              'group relative isolate inline-flex max-w-[14rem] min-w-0 items-center self-center p-0',
+              current ? 'text-primary' : 'text-muted-foreground'
             )}
+            style={{ height: '1.333em' }}
           >
-            {current?.name ?? placeholder ?? emptyLabel}
+            {/* 胶囊底：高度 / 偏移 / 圆角全按 demo 的 ::before 折算 */}
+            <span
+              aria-hidden
+              className="pointer-events-none absolute inset-x-0 top-1/2 -z-10 rounded-full bg-foreground/10 transition-colors duration-[180ms] group-hover:bg-foreground/15 group-active:bg-foreground/20 group-focus-visible:outline-2 group-focus-visible:outline-offset-4 group-focus-visible:outline-muted-foreground"
+              style={{ height: '1.142em', transform: 'translateY(calc(-50% + 0.066em))' }}
+            />
+            {/* 量宽用的不可见副本（跟着标题字体走，所以宽度是准的） */}
+            <span
+              ref={measureRef}
+              aria-hidden
+              className="pointer-events-none invisible absolute w-max whitespace-nowrap"
+            >
+              {current?.name ?? ''}
+            </span>
+            {/* 图标窗：demo 里是彩色贴纸，这里用设计系统的文件夹图标，尺寸按同一比例。
+                位置固定在最左边（与 demo 的 `.itm-icon-window` 一致），空态时右边留空位。 */}
+            <span
+              aria-hidden
+              className="pointer-events-none absolute inset-y-0 inline-flex items-center justify-center"
+              style={{ left: '0.1em', width: '1.354em' }}
+            >
+              <span ref={iconRef} className="inline-flex origin-center will-change-transform">
+                <Folder className="size-[0.9em] shrink-0" />
+              </span>
+            </span>
+            {/* 文字层：逐字素渲染，换名字时每个字从下方顶上来 */}
+            <span
+              ref={textRef}
+              className="pointer-events-none absolute inset-y-0 flex items-center overflow-hidden leading-none whitespace-nowrap"
+              style={{ left: '1.614em', right: '0.28em' }}
+            >
+              {nameChars.map((char, index) => (
+                <span
+                  key={`${index}:${char}`}
+                  data-morph-char
+                  className="inline-block shrink-0 will-change-transform"
+                >
+                  {char === ' ' ? '\u00a0' : char}
+                </span>
+              ))}
+            </span>
           </button>
         ) : (
           /* 手写 button（不是 Select 了）：样式仍走 CHAT_PILL —— 前置图标、箭头大小 / 颜色

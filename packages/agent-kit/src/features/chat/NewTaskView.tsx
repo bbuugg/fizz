@@ -9,8 +9,9 @@ import { useAttachmentDraft } from "@fizz/agent-kit/features/chat/use-attachment
 /**
  * 初始页：标题句（工作区入口内嵌）+ 中央输入框。
  *
- * 标题「在 ___ 里做点什么？」里的 ___ 就是工作区入口：点了弹与输入行同一个
- * `WorkspacePicker`，未选工作区时显示下划线占位。工作区选择因此**不再占**输入框
+ * 标题「在 ▁▁▁ 里做点什么？」里的空位条就是工作区入口：点了弹与输入行同一个
+ * `WorkspacePicker`，未选工作区时是一条不依赖字符的淡色空位条（换字体不走形），
+ * 选中后宽度补间展开成名字、整句重新居中。工作区选择因此**不再占**输入框
  * 下方那条常驻横条 —— 那条只留 git / 权限 / 上下文。
  *
  * 附件与正式会话走**同一份**草稿（`useAttachmentDraft`）：截图 / 图片先行的对话是
@@ -27,7 +28,7 @@ export function NewTaskView({ app }: { app: AgentApp }) {
       <div className="w-full max-w-2xl">
         <div className="mb-3 flex flex-wrap items-baseline justify-center gap-x-1 text-center text-xl font-semibold">
           <span>{before.trim()}</span>
-          <WorkspaceSelect app={app} variant="inline" placeholder="______" />
+          <WorkspaceSelect app={app} variant="inline" />
           <span>{after.trim()}</span>
         </div>
         {/* 草稿在「确认开跑」后才清：建 ACP 会话要先起外部进程，失败时输入框必须还在 */}

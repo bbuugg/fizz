@@ -11,7 +11,8 @@ import { useT } from "@fizz/agent-kit/shared/lib/language";
  * 会话的 `workspaceId` 落库后不可改，所以切换 = 回空会话，下一条消息按新归属新建。
  * 已有会话时不再渲染这个入口：摆一个能把人踢回空会话的选择器只会让人以为能改归属。
  *
- * 标题句里用 `variant="inline"`（文字入口 + 占位下划线）；定时任务表单仍用默认的 pill。
+ * 标题句里用 `variant="inline"`（文字入口；未选时是一枚不依赖字符的空位条）；定时任务
+ * 表单仍用默认的 pill。
  *
  * 「未指定工作区」**不是一种归属**，只是这一行上的「还没选」：真发消息时服务端会为这条
  * 会话建一个临时工作区（目录 `<数据目录>/conversations/<年月日>/<会话 id>`）再绑上去 ——
@@ -24,12 +25,10 @@ import { useT } from "@fizz/agent-kit/shared/lib/language";
  */
 export function WorkspaceSelect({
   app,
-  variant,
-  placeholder
+  variant
 }: {
   app: AgentApp
   variant?: 'pill' | 'inline'
-  placeholder?: string
 }) {
   const t = useT();
 
@@ -37,7 +36,6 @@ export function WorkspaceSelect({
     <WorkspacePicker
       value={app.activeWorkspaceId}
       variant={variant}
-      placeholder={placeholder}
       workspaces={app.workspaces.filter(
         // 临时工作区不进这个列表：它是「不选项目」发消息后自动建的，
         // 再把它们列出来等于让人能手动选一个 uuid 目录
