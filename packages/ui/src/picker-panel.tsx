@@ -192,6 +192,7 @@ function PickerNote({ className, ...props }: React.ComponentProps<'p'>) {
 function PickerItem({
   icon,
   hint,
+  action,
   active = false,
   className,
   children,
@@ -203,11 +204,16 @@ function PickerItem({
   hint?: React.ReactNode
   /** 是否为当前选中项（只影响行尾那枚勾） */
   active?: boolean
+  /**
+   * 行尾动作（如删除按钮）。占一格固定宽度，**不随 hover 改变布局** ——
+   * 显隐由调用方控制（`group-hover:opacity-100` 即可，行本身带 `group`）。
+   */
+  action?: React.ReactNode
 }) {
   return (
     <CommandItem
       {...props}
-      className={cn('cursor-pointer gap-2.5 rounded-lg px-2.5 py-1.5 text-sm', className)}
+      className={cn('group cursor-pointer gap-2.5 rounded-lg px-2.5 py-1.5 text-sm', className)}
     >
       {icon ? (
         <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground [&_svg]:size-4">
@@ -218,6 +224,7 @@ function PickerItem({
       {hint ? (
         <span className="max-w-[45%] shrink-0 truncate text-xs text-muted-foreground">{hint}</span>
       ) : null}
+      {action ? <span className="flex shrink-0 items-center">{action}</span> : null}
       <span className="flex size-4 shrink-0 items-center justify-center">
         {active ? <CheckIcon className="size-4 text-foreground" /> : null}
       </span>

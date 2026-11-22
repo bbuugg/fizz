@@ -31,13 +31,11 @@ import {
   Archive,
   ArchiveRestore,
   ArrowDown,
-  Check,
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
   GitBranch as GitBranchIcon,
-  GitBranchPlus,
   History,
   List,
   ListTree,
@@ -86,7 +84,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -105,6 +102,7 @@ import {
 } from '@fizz/ui/select'
 import { FileDiffView } from '@fizz/agent-kit/features/git/FileDiffView'
 import { ChangeTreeList } from '@fizz/agent-kit/features/git/GitChangeTree'
+import { BranchPicker } from '@fizz/agent-kit/features/chat/BranchPicker'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { ChangeRow } from '@fizz/agent-kit/features/git/ChangeRow'
 import { GitHistory } from '@fizz/agent-kit/features/git/GitHistory'
@@ -298,17 +296,6 @@ export function GitPanel({
   const [stashesOpen, setStashesOpen] = useState(false)
   /** 待确认删除的贮藏（drop 掉之后只剩 reflog 能找） */
   const [dropStash, setDropStash] = useState<GitStashEntry | null>(null)
-  /**
-   * 待确认的分支删除（本地 / 远端）。删分支就是把一条线扔掉、删远端分支还推得到别人面前，
-   * 所以和回退一个路子：先弹 AlertDialog 把后果说清，点过确认才真的动手。
-   */
-  const [deleteTarget, setDeleteTarget] = useState<
-    | { kind: 'local'; name: string }
-    | { kind: 'remote'; remote: string; branch: string }
-    | null
-  >(null)
-  /** 删除确认框里的「强制删除」（本地分支未合并也删 = `git branch -D`） */
-  const [deleteForce, setDeleteForce] = useState(false)
 
   // 回调放 ref：`onChanges` 每次渲染都是新函数，进依赖会让 refresh 每帧都变，进而把
   // 「变可见就刷新」的 effect 拖成死循环（与 refreshRef 同一个理由）
@@ -720,16 +707,6 @@ export function GitPanel({
   /** 「管理远端」弹窗里那个表单能不能提交（改地址时名字是锁死的，不用再校验） */
   const canSaveRemote =
     remoteDraft.url.trim().length > 0 && (remoteDraft.editing || remoteDraft.name.trim().length > 0) && !busy
-  /** 删除确认框里显示的完整分支名（远端带着远端名前缀，免得看不出会被推到哪个远端） */
-  const deleteLabel =
-    deleteTarget?.kind === 'remote'
-      ? `${deleteTarget.remote}/${deleteTarget.branch}`
-      : (deleteTarget?.name ?? '')
-  /** 远端分支名（`origin/feature/x`）→ { remote, branch }：分支名允许带 `/`，只能按第一段拆 */
-  function splitRemoteBranch(name: string): { remote: string; branch: string } {
-    const slash = name.indexOf('/')
-    return { remote: name.slice(0, slash), branch: name.slice(slash + 1) }
-  }
 
   /** 打开「管理远端」：表单复位成「新增」（没有远端时点推送 / 拉取会直接开到这儿） */
   function openRemoteDialog(): void {
@@ -740,32 +717,6 @@ export function GitPanel({
   /** 把某一行的地址填进表单，进入「改地址」态（名字不给改：改名是 git remote rename，另说） */
   function editRemote(name: string, url: string): void {
     setRemoteDraft({ name, url, editing: true })
-  }
-
-  /**
-   * 删分支（确认框点过「删除」之后才走到这里）：本地 `git branch -d` / `-D`，远端
-   * `git push <remote> --delete <branch>`。
-   *
-   * 统一走 `run()`：成功 toast + 刷新（删完分支清单、状态、历史都得重拿，删远端分支后
-   * 本地那条 remote-tracking ref 也会跟着消失）。失败时面板把 git 的原话讲出来 ——
-   * 「还没合并」「远端 ref 不存在」「没权限」都够用户判断下一步。
-   */
-  async function deleteBranch(): Promise<void> {
-    const target = deleteTarget
-    if (!target) return
-    // 先取出来再清：`setDeleteTarget(null)` 之后 state 就不再属于这次操作了
-    const force = deleteForce
-    setDeleteTarget(null)
-    setDeleteForce(false)
-    await run(async () =>
-      target.kind === 'remote'
-        ? app.gitAction(workspaceId, {
-            action: 'delete-remote-branch',
-            remote: target.remote,
-            branch: target.branch
-          })
-        : app.gitAction(workspaceId, { action: 'delete-branch', name: target.name, force })
-    )
   }
 
   /**
@@ -1118,98 +1069,44 @@ export function GitPanel({
   }
 
   /**
-   * 分支下拉（头部那一行）：切换本地分支 / 检出远端分支，行尾那颗垃圾桶删分支。
-   *
-   * 它原来独占下面一整行状态条，现在直接占头部的标题位 —— 标签条上已经有「源码管理」，
-   * 再写一遍「源代码管理」纯属重复。不是仓库（含加载中）时返回 null。
+   * 分支选择（头部那一行）：与 composer 输入条下面那颗**同一份实现**（`BranchPicker`）——
+   * 搜索、本地 / 远端分组、hover 删除、删除确认都在那边；这里只把 GitPanel 的数据与
+   * `run()`（成功 toast + 刷新）接进去。不是仓库（含加载中）时返回 null。
    */
   function branchDropdown(): ReactNode {
     if (!status?.isRepo) return null
     return (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            variant="ghost"
-            className="h-6! min-w-0 gap-1 px-1.5! text-sm font-normal"
-            disabled={busy}
-            title={status.root ?? undefined}
-          >
-            <span className="max-w-[160px] truncate">{branchLabel}</span>
-            <ChevronDown className="size-3 shrink-0" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="max-h-80 w-64 overflow-y-auto">
-          <DropdownMenuLabel className="text-xs text-muted-foreground">{t('切换分支')}</DropdownMenuLabel>
-          {branches?.branches.length ? (
-            branches.branches.map((name) => (
-              <DropdownMenuItem
-                key={name}
-                // group：给行尾那颗垃圾桶一个锚（`group` 挂在 DropdownMenuItem 上，
-                // 见下行 className）；垃圾桶常驻显示 —— 触屏没有 hover，藏起来等于没有
-                className="group gap-1.5 pr-1"
-                onSelect={() => void run(() => app.gitAction(workspaceId, { action: 'checkout', ref: name }))}
-              >
-                <span className="min-w-0 flex-1 truncate">{name}</span>
-                {name === status.branch && <Check className="size-3.5 shrink-0" />}
-                <IconTip label={name === status.branch ? t('不能删除当前所在的分支') : t('删除本地分支 {name}…', { name })}>
-                  <Button
-                    variant="ghost"
-                    className="size-6! shrink-0 rounded p-0! text-muted-foreground/50 hover:text-destructive"
-                    aria-label={t('删除本地分支 {name}', { name })}
-                    disabled={name === status.branch || busy}
-                    onClick={(e) => {
-                      // ⚠️ radix 菜单项的「选中」就是它自己的 onClick（见 MenuItemImpl），
-                      // 不拦 stopPropagation 的话点垃圾桶会顺手把该分支检出、还会把菜单关掉。
-                      // React 的合成事件冒泡到外层菜单项之前会先经过这里，拦得住。
-                      e.stopPropagation()
-                      setDeleteForce(false)
-                      setDeleteTarget({ kind: 'local', name })
-                    }}
-                  >
-                    <Trash2 className="size-3.5" />
-                  </Button>
-                </IconTip>
-              </DropdownMenuItem>
-            ))
-          ) : (
-            <DropdownMenuItem disabled>{t('还没有任何分支（先提交一次）')}</DropdownMenuItem>
-          )}
-          {branches?.remotes.length ? (
-            <>
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel className="text-xs text-muted-foreground">
-                {t('远端分支（检出为本地分支并跟踪）')}
-              </DropdownMenuLabel>
-              {branches.remotes.map((name) => (
-                <DropdownMenuItem
-                  key={name}
-                  className="group gap-1.5 pr-1"
-                  onSelect={() => void run(() => app.gitAction(workspaceId, { action: 'checkout', ref: name }))}
-                >
-                  <span className="min-w-0 flex-1 truncate">{name}</span>
-                  <IconTip label={t('删除远端分支 {name}…', { name })}>
-                    <Button
-                      variant="ghost"
-                      className="size-6! ml-1 shrink-0 rounded p-0! text-muted-foreground/50 hover:text-destructive"
-                      aria-label={t('删除远端分支 {name}', { name })}
-                      disabled={busy}
-                      onClick={(e) => {
-                        // 同行内嵌按钮：不拦 stopPropagation 会连带触发外层的「检出」
-                        e.stopPropagation()
-                        const { remote, branch } = splitRemoteBranch(name)
-                        setDeleteForce(false)
-                        setDeleteTarget({ kind: 'remote', remote, branch })
-                      }}
-                    >
-                      <Trash2 className="size-3.5" />
-                    </Button>
-                  </IconTip>
-                </DropdownMenuItem>
-              ))}
-            </>
-          ) : null}
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <BranchPicker
+        branch={status.branch}
+        isRepo={status.isRepo}
+        branches={branches}
+        loading={!branches}
+        busy={busy}
+        variant="header"
+        label={branchLabel}
+        title={status.root ?? undefined}
+        onCheckout={(ref) =>
+          void run(() => app.gitAction(workspaceId, { action: 'checkout', ref }))
+        }
+        // 新建分支的弹窗要选起点（当前 HEAD / 任意分支），比内联表单复杂：面板里的
+        // 「新建分支…」只负责把它开出来（原先挂在头部「更多」里，现在收进分支面板）
+        onRequestCreate={() => {
+          setNewBranchName('')
+          setNewBranchFrom(NEW_BRANCH_HEAD)
+          setNewBranchOpen(true)
+        }}
+        onDelete={(target, force) =>
+          void run(() =>
+            target.kind === 'remote'
+              ? app.gitAction(workspaceId, {
+                  action: 'delete-remote-branch',
+                  remote: target.remote,
+                  branch: target.branch
+                })
+              : app.gitAction(workspaceId, { action: 'delete-branch', name: target.name, force })
+          )
+        }
+      />
     )
   }
 
@@ -1344,17 +1241,6 @@ export function GitPanel({
                   </DropdownMenuSub>
                 )}
                 <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  title={t('新建分支：从当前 HEAD 或任意分支切一条新分支出来')}
-                  onSelect={() => {
-                    setNewBranchName('')
-                    setNewBranchFrom(NEW_BRANCH_HEAD)
-                    setNewBranchOpen(true)
-                  }}
-                >
-                  <GitBranchPlus className="size-3.5" />
-                  {t('新建分支…')}
-                </DropdownMenuItem>
                 {/* 「管理远端」（增 / 改地址 / 删）收在这里：以前「没有远端」时状态条上有个
                     琥珀色入口，现在那个入口没了，这里就是唯一的地方 */}
                 <DropdownMenuItem
@@ -1908,63 +1794,6 @@ export function GitPanel({
             <AlertDialogCancel>{t('取消')}</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={() => void rollbackListed()}>
               {t('回滚 {count} 个文件', { count: bulkPaths.length })}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/*
-        删除分支确认：本地 / 远端分开写后果 —— 含糊地说「确定吗」用户根本不知道会失去什么。
-        本地分支默认走 `git branch -d`（git 自己判有没有合并），未合并的会被 git 拒绝；
-        想连未合并的一起删得勾「强制删除」（= `-D`：删完只剩 reflog，默认约 90 天能找回）。
-        远端分支删除就是 `git push <remote> --delete <branch>`，不可撤销。
-      */}
-      <AlertDialog
-        open={deleteTarget !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setDeleteTarget(null)
-            setDeleteForce(false)
-          }
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {deleteTarget?.kind === 'remote' ? t('删除远端分支？') : t('删除本地分支？')}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {deleteTarget?.kind === 'remote' ? (
-                <>
-                  {t('远端的 {branch} 会被删掉（=', { branch: deleteLabel })}{' '}
-                  <code className="font-mono">{`git push ${deleteTarget.remote} --delete ${deleteTarget.branch}`}</code>
-                  {t('）。这一步会推到远端，别人再 fetch 就会看到它消失，无法撤销。本地如果还有同名分支，不受影响。')}
-                </>
-              ) : (
-                <>
-                  {t('本地分支')} <code className="font-mono">{deleteLabel}</code>{' '}
-                  {t('的引用会被删除。已经并进其它分支的提交不会丢；删完之后也只有 reflog（默认保留约 90 天）里还能找回它。')}
-                </>
-              )}
-              {/* 强制删除只对本地分支有意义：远端分支删除本身就是强删（远端 ref 被推空） */}
-              {deleteTarget?.kind !== 'remote' && (
-                <label className="mt-2 flex items-start gap-2 text-xs">
-                  <Checkbox
-                    className="mt-px"
-                    checked={deleteForce}
-                    onCheckedChange={(checked) => setDeleteForce(checked === true)}
-                  />
-                  <span>
-                    {t('强制删除：这个分支还没有合并也删（未合并的提交删完只剩 reflog 能找回）')}
-                  </span>
-                </label>
-              )}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t('取消')}</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={() => void deleteBranch()}>
-              {t('删除')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
