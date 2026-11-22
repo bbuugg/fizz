@@ -1157,6 +1157,23 @@ export interface AgentChatMessage {
    */
   durationMs?: number
   /**
+   * 这一轮的**估算用量**：只在拿不到真实 `usage` 时由客户端填（目前就是 ACP 轮次）。
+   *
+   * 为什么不在 `usage` 里造一份假数据：`usage` 的语义是「上游上报的真值」，伪造的数字
+   * 会让「输入 / 合计 / 缓存命中」这些根本没有的格子显示成 0，比不显示更误导。这里只
+   * 记客户端**确实能估出来**的两个量（输出 token、生成速度），界面也必须明确标成估算。
+   *
+   * 口径见 `agent-kit/src/shared/lib/live-tps.ts`：分子按字符估算（CJK 加权），分母是
+   * 「只累计有输出增量的时间片」。**只活在客户端本地消息上**：不落盘、不经服务端，
+   * 刷新 / `session/load` 重建历史后没有这个字段（与 `durationMs` 在 ACP 上的处境一致）。
+   */
+  estimatedUsage?: {
+    /** 估算的生成速度（tok/s），与 `TurnUsage.tps` 同口径 */
+    tps: number
+    /** 按字符估算的输出 token 累计（含思考与工具入参） */
+    outputTokens: number
+  }
+  /**
    * 这一轮是**被截断**的（目前只有「撞上 `maxSteps` 工具步数上限」）：有值就说明模型
    * 是被闸停下的，不是自己说完的。
    *

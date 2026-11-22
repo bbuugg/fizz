@@ -672,6 +672,22 @@ export function createConversationRunLoop(ctx: ConvCore) {
                       ...(event.durationMs != null
                         ? { durationMs: event.durationMs }
                         : {}),
+                      /**
+                       * 没有真值、但轮中采到过估算量（目前就是 ACP：它的 finish 从不带
+                       * usage）→ 把实时估算收成一份「估算用量」挂到消息上，界面上明确标成
+                       * ≈。有 `usage` 时绝不写（真值优先）。
+                       *
+                       * ⚠️ 读的是**本帧处理前**的 `s.liveTps`：下面那次 `advanceLiveTps`
+                       * 对 finish 会返回 null，否则这份估算就没了。
+                       */
+                      ...(!event.usage && s.liveTps && s.liveTps.outputTokens > 0
+                        ? {
+                            estimatedUsage: {
+                              tps: s.liveTps.tps,
+                              outputTokens: s.liveTps.outputTokens,
+                            },
+                          }
+                        : {}),
                     }
                   : {}),
               }

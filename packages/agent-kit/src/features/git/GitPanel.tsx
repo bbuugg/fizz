@@ -103,6 +103,7 @@ import {
 import { FileDiffView } from '@fizz/agent-kit/features/git/FileDiffView'
 import { ChangeTreeList } from '@fizz/agent-kit/features/git/GitChangeTree'
 import { BranchPicker } from '@fizz/agent-kit/features/chat/BranchPicker'
+import { NotARepoState } from '@fizz/agent-kit/features/git/NotARepoState'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { ChangeRow } from '@fizz/agent-kit/features/git/ChangeRow'
 import { GitHistory } from '@fizz/agent-kit/features/git/GitHistory'
@@ -1272,27 +1273,14 @@ export function GitPanel({
           </Button>
         </div>
       ) : !status?.isRepo ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
-          <GitBranchIcon className="size-6 text-muted-foreground/50" />
-          <p className="text-sm text-foreground">{t('这个工作区还不是 git 仓库。')}</p>
-          <SpinnerButton
-            className="h-7! gap-1.5 text-xs"
-            disabled={busy}
-            loading={busyAction === 'init'}
-            spinnerClassName="size-3.5"
-            title={t('在这个工作区目录里执行 git init（初始分支沿用你 git 配置里的 init.defaultBranch）')}
-            onClick={() =>
-              void run(() => app.gitAction(workspaceId, { action: 'init' }), t('已初始化 git 仓库'), 'init')
-            }
-          >
-            {busyAction !== 'init' && <Plus className="size-3.5" />}
-            {t('初始化 git 仓库')}
-          </SpinnerButton>
-          <p className="max-w-[280px] text-xs text-muted-foreground">
-            {t('初始化后所有文件都是未跟踪状态；建议先补一个')} <code>.gitignore</code>{' '}
-            {t('再提交。')}
-          </p>
-        </div>
+        <NotARepoState
+          className="flex-1"
+          busy={busy}
+          initializing={busyAction === 'init'}
+          onInit={() =>
+            void run(() => app.gitAction(workspaceId, { action: 'init' }), t('已初始化 git 仓库'), 'init')
+          }
+        />
       ) : (
         <>
           {/* 原来这里有一行状态条（分支下拉 / 分离头指针 / ↑↓ / 上游）—— 已整体并入头部，

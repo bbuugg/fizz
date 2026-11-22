@@ -50,6 +50,7 @@ import {
 } from '@fizz/ui/picker-panel'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@fizz/ui/tooltip'
 import { CHAT_PILL } from '@fizz/agent-kit/features/chat/composer'
+import { NotARepoState } from '@fizz/agent-kit/features/git/NotARepoState'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { ROW_ACTION_CLASS } from '@fizz/agent-kit/shared/components/RowAction'
 import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
@@ -340,15 +341,7 @@ export function BranchPicker({
                   </div>
                 </form>
               </PickerFooter>
-            ) : !isRepo ? (
-              onInit ? (
-                <PickerFooter>
-                  <PickerAction icon={<GitBranch />} disabled={busy} onClick={() => void onInit()}>
-                    {tr('初始化仓库')}
-                  </PickerAction>
-                </PickerFooter>
-              ) : undefined
-            ) : onCreate ? (
+            ) : !isRepo ? undefined : onCreate ? (
               <PickerFooter>
                 <PickerAction icon={<GitBranchPlus />} onClick={() => setCreating(true)}>
                   {tr('新建分支…')}
@@ -382,7 +375,18 @@ export function BranchPicker({
           ) : null}
           <PickerList>
             {!isRepo ? (
-              <PickerEmpty>{tr('当前工作区还不是 Git 仓库')}</PickerEmpty>
+              // 非仓库态与 `GitPanel` 的整页空态**同一份实现**（图标 + 说明 + 初始化按钮 +
+              // .gitignore 提醒）：这一步唯一的动作就是初始化，不该缩成一行灰字
+              onInit ? (
+                <NotARepoState
+                  className="py-4"
+                  busy={busy}
+                  initializing={busy}
+                  onInit={() => void onInit()}
+                />
+              ) : (
+                <PickerEmpty>{tr('当前工作区还不是 Git 仓库')}</PickerEmpty>
+              )
             ) : loading ? (
               <PickerEmpty>{tr('读取分支…')}</PickerEmpty>
             ) : local.length === 0 && remote.length === 0 ? (

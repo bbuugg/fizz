@@ -17,14 +17,29 @@ import { type TurnUsage } from "@fizz/contracts/types";
  * 图标沿用圆环那套（`Gauge`）：它与输入框那栏的上下文用量圆环是「同一类信息」的两种粒度
  * —— 那颗是「整个会话的上下文占用」，这颗是「这一轮的账目」。
  */
-export function UsageRow({ usage }: { usage?: TurnUsage }) {
+export function UsageRow({
+  usage,
+  estimated,
+  durationMs
+}: {
+  usage?: TurnUsage;
+  /**
+   * 没有真值时的**估算用量**（目前只有 ACP 轮次，见 `AgentChatMessage.estimatedUsage`）。
+   * 卡片里必须明确标成「估算」，且只显示估算得出来的两项：输出 token 与速度。
+   */
+  estimated?: { tps: number; outputTokens: number };
+  /** 估算卡片里的整轮耗时（消息上的 `durationMs`；没有就不显示这一格） */
+  durationMs?: number;
+}) {
   /*
    * 没有 usage 就整颗不渲染（不再有「占位形态」）。
    * 用户已明确要求「不要占位」：占位会把结束那一帧的高度提前撑起来，而那种
    * invisible 的高度在屏幕上就是一片看不见的空白，代价与收益不成比例。
    */
   const t = useT();
-  if (!usage) return null;
+  if (!usage && !estimated) return null;
+  /** 这一份是不是估算（真值优先：有 usage 时 estimated 不参与渲染） */
+  const estimating = !usage && !!estimated;
 
   /** 卡片里的一个「标签 + 数值」格（`title` 用来挂原始数，如百分比的分子分母） */
   const row = (label: string, value: ReactNode, title?: string): ReactNode => (
@@ -48,9 +63,11 @@ export function UsageRow({ usage }: { usage?: TurnUsage }) {
    * 上游没报这个字段、或这一轮输入为 0（除不出来）时是 `undefined` —— 那一格不渲染，
    * 而不是摆一个凭空的 0%。
    */
-  const cachedTokens = usage.cachedInputTokens;
+  const cachedTokens = usage?.cachedInputTokens;
   const hitRate =
-    cachedTokens === undefined || !usage.inputTokens ? undefined : cachedTokens / usage.inputTokens;
+    usage && cachedTokens !== undefined && usage.inputTokens
+      ? cachedTokens / usage.inputTokens
+      : undefined;
 
   /** 一位小数：命中率常见 99.x%，取整会把「几乎全命中」和「全命中」抹成同一个数 */
   const formatRate = (rate: number): string => {
@@ -58,14 +75,17 @@ export function UsageRow({ usage }: { usage?: TurnUsage }) {
     return `${Number.isInteger(pct) ? pct : pct.toFixed(1)}%`;
   };
 
+  /** 整轮耗时：真值（`usage.durationMs`）优先；ACP 估算卡片退到消息上的 `durationMs` */
+  const totalMs = usage?.durationMs ?? durationMs;
+
   return (
     <HoverCard openDelay={150} closeDelay={100}>
       <HoverCardTrigger asChild>
         {/* 与 `MessageActionRow` 里的复制按钮同一套样式（无边框、hover 底色） */}
         <button
           type="button"
-          title={t("本轮用量")}
-          aria-label={t("本轮用量")}
+          title={estimating ? t("本轮用量（估算）") : t("本轮用量")}
+          aria-label={estimating ? t("本轮用量（估算）") : t("本轮用量")}
           className="rounded p-1 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
         >
           <Gauge className="size-4" />
@@ -75,51 +95,71 @@ export function UsageRow({ usage }: { usage?: TurnUsage }) {
         <div className="space-y-1.5 text-xs">
           <div className="flex items-center gap-1.5 font-medium text-foreground">
             <Gauge className="size-3.5" />
-            {t("本轮用量")}
+            {estimating ? t("本轮用量（估算）") : t("本轮用量")}
           </div>
           {/*
            * 速度与耗时是「一眼想看」的两个数，放在最上面一行（大一点）。
            * `formatDuration` 短轮次到 0.1s、超一分钟换 `3m 45s`；精确毫秒值放 title。
            *
-           * `tps` 直接用服务端算好的值，**前端不重算**：它的分母是「只累计有输出增量的
-           * 时间片」（工具执行 / 等审批的空窗不算），前端手里只有墙钟，重算会得到两个数
-           * （见 `agent/src/agent.ts` 的 `TurnGenClock`）。耗时那一格仍然是整轮墙钟。
+           * 有 `usage` 时 `tps` 直接用服务端算好的值，**前端不重算**：它的分母是「只累计
+           * 有输出增量的时间片」（工具执行 / 等审批的空窗不算），前端手里只有墙钟，重算
+           * 会得到两个数（见 `agent/src/agent.ts` 的 `TurnGenClock`）。
+           * 没有 `usage`（ACP）时才是客户端按同一口径估算的值，前面带 `≈` 明示。
            */}
           <div className="flex items-baseline gap-1.5">
             <span
               className="text-lg font-semibold tabular-nums"
-              title={t("仅算模型生成的时间（工具执行与等待不计）")}
+              title={
+                estimating
+                  ? t("按流式输出估算（只累计有输出增量的时间片）")
+                  : t("仅算模型生成的时间（工具执行与等待不计）")
+              }
             >
-              {usage.tps}
+              {usage ? usage.tps : `≈${estimated?.tps ?? 0}`}
             </span>
             <span className="text-muted-foreground">tok/s</span>
-            <span
-              className="ml-auto tabular-nums text-muted-foreground"
-              title={t("整轮耗时 {time}", { time: formatDurationExact(usage.durationMs) })}
-            >
-              {formatDuration(usage.durationMs)}
-            </span>
+            {totalMs === undefined ? null : (
+              <span
+                className="ml-auto tabular-nums text-muted-foreground"
+                title={t("整轮耗时 {time}", { time: formatDurationExact(totalMs) })}
+              >
+                {formatDuration(totalMs)}
+              </span>
+            )}
           </div>
           <div className="space-y-0.5 border-t pt-1.5">
-            {stat(t("输入"), usage.inputTokens)}
-            {stat(t("输出"), usage.outputTokens)}
-            {stat(t("合计"), usage.totalTokens)}
-            {stat(t("思考"), usage.reasoningTokens)}
-            {/*
-              * 缓存命中给**百分比**而不是 token 数（用户要求）：这一格要回答的是「这轮的
-              * 输入有多少是从缓存里读的」，绝对数看不出比例。原始 token 数挂在 `title`
-              * 上，想核对具体数字时悬停即可，不必回到日志里翻。
-              */}
-            {hitRate === undefined
-              ? null
-              : row(
-                  t("缓存命中率"),
-                  formatRate(hitRate),
-                  t("缓存命中 {cached} / 输入 {input}", {
-                    cached: (cachedTokens ?? 0).toLocaleString(),
-                    input: usage.inputTokens.toLocaleString()
-                  })
-                )}
+            {usage ? (
+              <>
+                {stat(t("输入"), usage.inputTokens)}
+                {stat(t("输出"), usage.outputTokens)}
+                {stat(t("合计"), usage.totalTokens)}
+                {stat(t("思考"), usage.reasoningTokens)}
+                {/*
+                  * 缓存命中给**百分比**而不是 token 数（用户要求）：这一格要回答的是「这轮的
+                  * 输入有多少是从缓存里读的」，绝对数看不出比例。原始 token 数挂在 `title`
+                  * 上，想核对具体数字时悬停即可，不必回到日志里翻。
+                  */}
+                {hitRate === undefined
+                  ? null
+                  : row(
+                      t("缓存命中率"),
+                      formatRate(hitRate),
+                      t("缓存命中 {cached} / 输入 {input}", {
+                        cached: (cachedTokens ?? 0).toLocaleString(),
+                        input: usage.inputTokens.toLocaleString()
+                      })
+                    )}
+              </>
+            ) : (
+              <>
+                {row(t("输出"), `≈${(estimated?.outputTokens ?? 0).toLocaleString()}`)}
+                <p className="leading-relaxed text-muted-foreground">
+                  {t(
+                    "ACP agent 不上报 token 用量，以上按流式输出估算：只有输出与速度，输入 / 合计 / 缓存未知。"
+                  )}
+                </p>
+              </>
+            )}
           </div>
         </div>
       </HoverCardContent>

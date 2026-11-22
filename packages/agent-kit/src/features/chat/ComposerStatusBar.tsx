@@ -157,7 +157,9 @@ function BranchPill({ app, editable }: { app: AgentApp; editable: boolean }) {
     setBusy(true)
     try {
       await app.gitAction(workspaceId, { action: 'init' })
+      // 面板不关：初始化完当场换成分支清单（不然会停在「没有可切换的分支」）
       await refreshBranch()
+      loadBranches()
     } catch (err) {
       toast.error(
         tr('初始化仓库失败：{error}', {

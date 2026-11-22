@@ -52,6 +52,11 @@ export const CHAT: Record<string, string> = {
   '（这条消息没有文字）': '(This message has no text)',
   '会话加载失败': 'Failed to load conversation',
   '本轮用量': 'This turn usage',
+  '本轮用量（估算）': 'This turn usage (estimated)',
+  '按流式输出估算（只累计有输出增量的时间片）':
+    'Estimated from streamed output (only slices with output deltas count)',
+  'ACP agent 不上报 token 用量，以上按流式输出估算：只有输出与速度，输入 / 合计 / 缓存未知。':
+    'ACP agents do not report token usage. The figures above are estimated from streamed output: only output and speed are available; input / total / cache are unknown.',
   '整轮耗时 {time}': 'Turn duration {time}',
   '仅算模型生成的时间（工具执行与等待不计）':
     'Generation time only (tool runs and waits excluded)',

@@ -620,15 +620,21 @@ function ChatPanelInner({
            */
           renderActions: ({ message, index, total }) => {
             /*
-             * 「本轮用量」那颗图标：所有**助手**消息都给（只要有 usage）。
-             * 内置 agent 每轮 finish 一定带 usage；ACP 没有（`acp.ts` 适配层丢弃），
-             * 所以 ACP 会话自动就是「不显示」，不需要在这里判 activeIsAcp。
+             * 「本轮用量」那颗图标：所有**助手**消息都给（有真值 `usage`，或有客户端
+             * 估算的 `estimatedUsage`）。内置 agent 每轮 finish 一定带 usage；ACP 没有
+             * （agent 协议里没有用量层），轮末把实时估算收成一份「估算用量」挂上，
+             * 卡片里会明确标成 ≈。
              * 用 `message.usage` 而不是「是不是末条」：历史里每一轮都有账目，
              * 翻上去看某一轮花了多少也是常见用法。
              */
             const usageSlot =
-              message.role === "assistant" && message.usage ? (
-                <UsageRow usage={message.usage} />
+              message.role === "assistant" &&
+              (message.usage || message.estimatedUsage) ? (
+                <UsageRow
+                  usage={message.usage}
+                  estimated={message.estimatedUsage}
+                  durationMs={message.durationMs}
+                />
               ) : undefined;
             // acp 会话的历史在 agent 侧，改不了也删不掉 —— 挂「复制」+「从此转为内置会话」
             // （编辑 / 删除都给不了，见 `CopyOnlyActions`）
