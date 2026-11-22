@@ -44,6 +44,12 @@ import { cn } from 'cn'
 
 import { Command, CommandItem } from './command'
 import { useHeightTransition } from './height-transition'
+import {
+  clearLiquidLens,
+  GLASS_PANEL_CLASS,
+  LiquidGlassPanel,
+  trackLiquidLens
+} from './liquid-glass'
 import { PopoverContent } from './popover'
 import { SearchField } from './search-field'
 
@@ -86,13 +92,30 @@ function PickerPanel({
         event.preventDefault()
         onOpenAutoFocus?.(event)
       }}
+      // 玻璃边缘光圈：指针位置写到面板自身的 CSS 变量上，由 `LiquidGlassPanel` 读取
+      onPointerEnter={(event) => {
+        trackLiquidLens(event)
+        props.onPointerEnter?.(event)
+      }}
+      onPointerMove={(event) => {
+        trackLiquidLens(event)
+        props.onPointerMove?.(event)
+      }}
+      onPointerLeave={(event) => {
+        clearLiquidLens(event)
+        props.onPointerLeave?.(event)
+      }}
       className={cn(
-        // 边框与 `SelectContent`（权限 / 终端那几颗 pill 的下拉）保持一致：`border-border` 是一条
-        // 实描边，比 Popover 自带的 `ring-foreground/5`（几乎看不见）更能兜住面板边界。
-        'flex max-h-[min(26rem,var(--radix-popper-available-height,calc(100dvh_-_3rem)))] w-72 flex-col gap-0 overflow-hidden rounded-xl border border-border p-0',
+        // 与弹窗 / 命令面板同一套液态玻璃外壳（见 `liquid-glass.tsx`）：
+        // 纯实色面板底 + 淡描边 + 景深投影由 `GLASS_PANEL_CLASS` 提供，跟随指针的边缘光圈
+        // 由 `LiquidGlassPanel` 铺。`ring-0` 顶掉 `PopoverContent` 自带的淡 ring ——
+        // 勾边只留玻璃那一圈，不要两层。
+        'flex max-h-[min(26rem,var(--radix-popper-available-height,calc(100dvh_-_3rem)))] w-72 flex-col gap-0 overflow-hidden rounded-xl p-0 ring-0',
+        GLASS_PANEL_CLASS,
         className
       )}
     >
+      <LiquidGlassPanel />
       <Command shouldFilter={false} className="h-auto min-h-0 flex-1 gap-0 bg-transparent">
         {children}
       </Command>

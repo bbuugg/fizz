@@ -188,6 +188,8 @@ export function WorkspacePicker({
   const measureRef = useRef<HTMLSpanElement>(null)
   const widthRef = useRef<HTMLButtonElement>(null)
   const spring = useRef({ width: BLANK_WIDTH, target: BLANK_WIDTH, velocity: 0, raf: 0, last: 0 })
+  /** 名字超过胶囊上限：文字层改用 `truncate`（末尾省略号），逐字素动画对超长名字没意义 */
+  const [nameOverflows, setNameOverflows] = useState(false)
 
   const tickSpring = (now: number): void => {
     const s = spring.current
@@ -251,11 +253,12 @@ export function WorkspacePicker({
     const el = widthRef.current
     const fontSize = el ? Number.parseFloat(getComputedStyle(el).fontSize) || 16 : 16
     const chrome = (TOKEN_TEXT_LEFT + TOKEN_PAD_RIGHT) * fontSize
+    const maxText = Math.max(1, TOKEN_MAX_WIDTH - chrome)
+    const rawWidth = measureRef.current?.scrollWidth ?? 0
+    // 名字放不下：文字层换 `truncate` 收尾省略号（只影响渲染方式，宽度照旧钉在上限）
+    setNameOverflows(rawWidth > maxText + 0.5)
     // 没选工作区时给一段更长的空位（只画图标会像一颗纯图标按钮，看不出「还没填」）
-    const target = current
-      ? Math.max(1, Math.min(measureRef.current?.scrollWidth ?? 0, TOKEN_MAX_WIDTH - chrome)) +
-        chrome
-      : BLANK_WIDTH
+    const target = current ? Math.min(rawWidth, maxText) + chrome : BLANK_WIDTH
     /*
       选工作区会让**整块新对话页重挂** —— 草稿面板的 key 是 `draft:<工作区>`
       （`panel-session.ts` 的 `draftPanelKey`），ChatPanel 拿它当 Provider 的 key。
@@ -335,7 +338,8 @@ export function WorkspacePicker({
             ref={widthRef}
             disabled={disabled}
             aria-label={t('工作区')}
-            title={title}
+            // 名字太长会被 truncate，悬停给全文（下面那行是原有的语义说明）
+            title={current ? `${current.name}\n${title}` : title}
             className={cn(
               'group relative isolate inline-flex max-w-[14rem] min-w-0 items-center self-center p-0',
               current ? 'text-primary' : 'text-muted-foreground'
@@ -348,11 +352,12 @@ export function WorkspacePicker({
               className="pointer-events-none absolute inset-x-0 top-1/2 -z-10 rounded-full bg-foreground/10 transition-colors duration-[180ms] group-hover:bg-foreground/15 group-active:bg-foreground/20 group-focus-visible:outline-2 group-focus-visible:outline-offset-4 group-focus-visible:outline-muted-foreground"
               style={{ height: '1.142em', transform: 'translateY(calc(-50% + 0.066em))' }}
             />
-            {/* 量宽用的不可见副本（跟着标题字体走，所以宽度是准的） */}
+            {/* 量宽用的不可见副本（跟着标题字体走，所以宽度是准的）。
+                字号必须与文字层一致（`text-[0.85em]`），否则量出来的宽度和实际显示对不上 */}
             <span
               ref={measureRef}
               aria-hidden
-              className="pointer-events-none invisible absolute w-max whitespace-nowrap"
+              className="pointer-events-none invisible absolute w-max text-[0.85em] whitespace-nowrap"
             >
               {current?.name ?? ''}
             </span>
@@ -367,21 +372,28 @@ export function WorkspacePicker({
                 <Folder className="size-[0.9em] shrink-0" />
               </span>
             </span>
-            {/* 文字层：逐字素渲染，换名字时每个字从下方顶上来 */}
+            {/* 文字层：**字号比标题小一档**（`0.85em`）—— token 高度按标题字号定死 1.333em，
+                而中文字的墨迹约 1.45em，原尺寸会把上下沿顶出去（用户要求不改高度、只缩字号）。
+                放得下时逐字素渲染（换名字时每个字从下方顶上来）；超过上限就退化成一段
+                truncate 文本、末尾收省略号 —— flex 里逐个 char 没法用 `text-overflow`。 */}
             <span
               ref={textRef}
-              className="pointer-events-none absolute inset-y-0 flex items-center overflow-hidden leading-none whitespace-nowrap"
+              className="pointer-events-none absolute inset-y-0 flex items-center overflow-hidden text-[0.85em] leading-none whitespace-nowrap"
               style={{ left: '1.614em', right: '0.28em' }}
             >
-              {nameChars.map((char, index) => (
-                <span
-                  key={`${index}:${char}`}
-                  data-morph-char
-                  className="inline-block shrink-0 will-change-transform"
-                >
-                  {char === ' ' ? '\u00a0' : char}
-                </span>
-              ))}
+              {nameOverflows ? (
+                <span className="min-w-0 flex-1 truncate leading-[1.5]">{current?.name}</span>
+              ) : (
+                nameChars.map((char, index) => (
+                  <span
+                    key={`${index}:${char}`}
+                    data-morph-char
+                    className="inline-block shrink-0 will-change-transform"
+                  >
+                    {char === ' ' ? '\u00a0' : char}
+                  </span>
+                ))
+              )}
             </span>
           </button>
         ) : (
@@ -392,7 +404,7 @@ export function WorkspacePicker({
             className={cn(CHAT_PILL, 'disabled:cursor-not-allowed disabled:opacity-50')}
             disabled={disabled}
             aria-label={t('工作区')}
-            title={title}
+            title={current ? `${current.name}\n${title}` : title}
           >
             <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
             <span className="truncate">{label}</span>
