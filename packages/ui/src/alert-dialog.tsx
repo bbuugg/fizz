@@ -37,7 +37,7 @@ function AlertDialogOverlay({
       className={cn(
         // 与 `DialogOverlay` 同一条：上沿读 `--overlay-top`（desktop 让开窗口按钮，
         // web 覆盖成 0 = 整屏，手机 = 安全区），见 tokens.css
-        "fixed inset-x-0 bottom-0 top-[var(--overlay-top)] z-50 bg-black/50 duration-200 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+        "fixed inset-x-0 bottom-0 top-[var(--overlay-top)] z-50 duration-200 supports-backdrop-filter:backdrop-blur-sm data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
         className
       )}
       {...props}
@@ -59,7 +59,9 @@ function AlertDialogContent({
         data-slot="alert-dialog-content"
         data-size={size}
         className={cn(
-          "group/alert-dialog-content fixed top-1/2 left-1/2 z-50 grid w-full -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-popover-foreground duration-100 outline-none data-[size=default]:max-w-xs data-[size=sm]:max-w-xs data-[size=default]:sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          // 与 `DialogContent` 同一套勾边（遮罩不压暗后，光靠白底分不出边界）：
+          // 发丝边 + 贴地小阴影 + 远距投影，dark 下补顶部内高光。
+          "group/alert-dialog-content fixed top-1/2 left-1/2 z-50 grid w-full -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-popover-foreground ring-1 ring-black/10 outline-none duration-100 data-[size=default]:max-w-xs data-[size=sm]:max-w-xs data-[size=default]:sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 dark:ring-white/10 dark:shadow-[inset_0_1px_0_0_rgb(255_255_255/0.06),0_20px_50px_-12px_rgb(0_0_0/0.7)] shadow-[0_2px_4px_rgb(0_0_0/0.04),0_20px_50px_-12px_rgb(0_0_0/0.25)]",
           className
         )}
         {...props}

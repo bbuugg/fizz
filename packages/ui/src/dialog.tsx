@@ -44,7 +44,7 @@ function DialogOverlay({
         // caption 命中，遮罩盖上去 mousedown 会被窗口过程拿去拖窗口），蒙住就等于把窗口
         // 按钮收走了；web 那边这个 token 覆盖成 0，整屏压暗；手机 = 安全区，也是整屏。
         // 各端取值在 tokens.css / 各端 styles.css 里，组件一行判断都不用加。
-        "fixed inset-x-0 bottom-0 top-[var(--overlay-top)] isolate z-50 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+        "fixed inset-x-0 bottom-0 top-[var(--overlay-top)] isolate z-50 duration-100 supports-backdrop-filter:backdrop-blur-sm data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
         className
       )}
       {...props}
@@ -77,7 +77,11 @@ function DialogContent({
         ref={contentRef}
         data-slot="dialog-content"
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 shadow-2xl",
+          // 边界：遮罩**不压暗**（`DialogOverlay` 只有可选毛玻璃），光靠 `shadow-2xl`
+          // 在 light 下弹窗和页面同为纯白、边界会糊。这里用三层把轮廓勾出来：
+          // ① `ring-1` 发丝边（light 黑 10%，dark 白 10%）；② 贴地小阴影；
+          // ③ 远距大投影；dark 下再加顶部 1px 内高光，补上深色里看不见的投影。
+          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-black/10 outline-none duration-100 sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 dark:ring-white/10 dark:shadow-[inset_0_1px_0_0_rgb(255_255_255/0.06),0_20px_50px_-12px_rgb(0_0_0/0.7)] shadow-[0_2px_4px_rgb(0_0_0/0.04),0_20px_50px_-12px_rgb(0_0_0/0.25)]",
           className
         )}
         {...props}
