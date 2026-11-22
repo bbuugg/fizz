@@ -81,6 +81,12 @@ export interface WorkspacePickerProps {
   variant?: 'pill' | 'inline'
   /** `inline` 且未选工作区时的占位文案（默认取 `emptyLabel`） */
   placeholder?: string
+  /**
+   * 面板弹出方向：默认 `bottom`（聊天「开始新对话」页的标题句上方，向下展开顺手）；
+   * 定时任务表单传 `top`，与同排的模型下拉一致（两者都是弹窗里的 pill）。
+   * 空间不够时 Radix 仍会自动翻转到另一侧。
+   */
+  side?: 'top' | 'bottom'
   disabled?: boolean
 }
 
@@ -106,6 +112,7 @@ export function WorkspacePicker({
   remoteHostName,
   variant = 'pill',
   placeholder,
+  side = 'bottom',
   disabled
 }: WorkspacePickerProps) {
   // 订阅语言（默认值里的 t() 只在本组件重渲染时才会重算）
@@ -175,14 +182,14 @@ export function WorkspacePicker({
         )}
       </PopoverTrigger>
       {/*
-        向下弹（`side="bottom"` + 6px）。
+        方向由调用方选（`side`，默认向下 + 6px）。
 
-        工作区入口现在主要挂在「开始新对话」页的标题句里，下方就是输入框与页面留白，
-        向下展开才是顺手的方向（向上会顶到标题上方的空白 / 窗口边）。定时任务表单里
-        同样向下；空间不够时 Radix 会自己翻上去，不会出界。
+        聊天里工作区入口挂在「开始新对话」页的标题句上，下方就是输入框与页面留白，
+        向下展开才顺手（向上会顶到标题上方的空白 / 窗口边）；定时任务表单在弹窗里，
+        与同排的模型下拉一致向上弹。空间不够时 Radix 会自己翻到另一侧，不会出界。
       */}
       <PickerPanel
-        side="bottom"
+        side={side}
         align="start"
         sideOffset={6}
         collisionPadding={8}

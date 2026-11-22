@@ -53,13 +53,14 @@ export function TitleBarSearch({ className }: { className?: string }) {
       title={t('搜索')}
       onClick={() => requestCommandPalette()}
       className={cn(
-        // 外观即输入框：`--secondary` 在深色 / 亮色两套主题下都比 `--sidebar` 更"凹/凸"，
-        // 用它半透明叠一层就有输入框的观感（`--background` 在部分主题里与侧栏同色，会看不见）
-        // 窄屏 `w-7`（28px）时去掉左右内边距，否则图标 + padding 撑出边框
-        'flex h-6 min-w-0 items-center justify-center gap-1.5 rounded-md border border-border bg-secondary/50 text-xs text-muted-foreground transition-colors',
-        // 窄屏 `w-7`（28px）时不留左右内边距，否则图标 + padding 会撑出边框
+        // 外观即输入框，但**不描边**：顶栏（`bg-sidebar`）上一条边框只会显得碎。
+        // 底色用 `--foreground` 的低透明度叠在顶栏上 —— 深色主题变亮、亮色主题变暗，
+        // 每套主题下都能看出是一块输入区（比 `--secondary` 半透明稳：后者在部分主题里
+        // 与侧栏只差 0.01，几乎看不出来）。
+        'flex h-6 min-w-0 items-center justify-center gap-1.5 rounded-md bg-foreground/5 text-xs text-muted-foreground transition-colors',
+        // 窄屏 `w-7`（28px）时不留左右内边距，否则图标 + padding 会把框撑变形
         'px-0 md:px-2',
-        'hover:border-ring/60 hover:bg-secondary hover:text-foreground',
+        'hover:bg-foreground/10 hover:text-foreground',
         'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
         // 宽屏左对齐（图标 + 文字 + 快捷键），窄屏只剩图标时居中
         'md:justify-start',

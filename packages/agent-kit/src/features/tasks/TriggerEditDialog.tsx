@@ -553,6 +553,8 @@ function TriggerForm({
               value={workspaceId}
               workspaces={workspaces}
               onChange={setWorkspaceId}
+              // 与同排的模型下拉一致向上弹（弹窗底部空间有限，向下会贴到按钮栏）
+              side="top"
               emptyLabel={t('每次运行自动创建')}
               title={t(
                 '工作区：Agent 只能读写这个目录里的东西。不选 = 每次触发在数据目录下新建一个临时工作区（不进项目列表）'
