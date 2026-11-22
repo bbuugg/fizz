@@ -41,6 +41,7 @@ import { t } from '@fizz/i18n'
 import { FileDiffView, DiffStat, type DiffHunk } from '@fizz/agent-kit/features/git/FileDiffView'
 import { useWorkspaceFileOpener } from '@fizz/agent-kit/features/files/open-file'
 import { workspaceRelativePath } from '@fizz/agent-kit/shared/lib/workspace-path'
+import { looksLikeMarkdown } from '@fizz/agent-kit/shared/lib/markdown-text'
 import { diffStat } from '@fizz/agent-kit/shared/lib/diff'
 import {
   ASK_FOLLOWUP_TOOL,
@@ -551,7 +552,23 @@ function renderAcpDirect(part: AgentMessagePart): DirectResult | null {
         </div>
       )
     } else if (item?.type === 'content' && item.content?.type === 'text' && item.content.text) {
-      nodes.push(<AcpTextBlock key={`text-${i}`} text={item.content.text} />)
+      /**
+       * text 内容块是 agent 写给**人看**的展示文本 —— 不少 agent 把结果写成 markdown
+       * （最常见的是 ```diff 围栏）。带强信号（围栏 / 首行标题 / 列表块）就走消息正文
+       * 那套 streamdown 渲染；其余仍按等宽 pre 原样展示，免得把原始终端输出重排。
+       * 判定口径与取舍见 `lib/markdown-text.ts`。
+       */
+      const text = item.content.text
+      nodes.push(
+        looksLikeMarkdown(text) ? (
+          // 限高滚动与 diff 直显同参：整篇 diff / 长清单展开时不把消息流撑爆
+          <div key={`text-${i}`} className="max-h-72 overflow-y-auto no-scrollbar">
+            <MessageResponse className="px-2 py-1.5 tracking-[0.02em]">{text}</MessageResponse>
+          </div>
+        ) : (
+          <AcpTextBlock key={`text-${i}`} text={text} />
+        )
+      )
     } else if (
       item?.type === 'content' &&
       item.content?.type === 'image' &&
