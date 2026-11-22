@@ -10,10 +10,10 @@
  * 这里的用例钉住三件事：远端标记存活、`(hostId, path)` 去重、以及远端与
  * worktree / 容器 / 临时工作区的互斥。
  */
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { JsonStore } from './store'
 import { AgentDomain, sameWorkspacePath } from './domain'
 
@@ -399,5 +399,25 @@ describe('ACP 运行态同步 · 不动 updatedAt', () => {
     const next = domain.setAcpSessionState(id, { acpModes: modes('plan') })
 
     expect(next).toBe(before)
+  })
+})
+
+/**
+ * 防的回归：临时会话目录退回成 `conversations/<id>` 一层 —— 用户要求按年月日分组，
+ * 一旦有人把日期层删掉，所有临时会话又会在 `conversations/` 下堆成 uuid 目录。
+ */
+describe('临时工作区目录', () => {
+  it('按本地年月日分组：conversations/<YYYYMMDD>/<会话 id>', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 10, 22, 10, 0, 0))
+    try {
+      const ws = await domain.ensureScratchWorkspace('conv-1')
+
+      expect(ws.scratch).toBe(true)
+      expect(ws.path).toBe(join(dataDir, 'conversations', '20261122', 'conv-1'))
+      expect((await stat(ws.path)).isDirectory()).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

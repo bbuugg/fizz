@@ -222,7 +222,7 @@ async function processFire(
   /**
    * 工作区解析：绑了就落在绑的那个；**没绑（或绑的那个已被删）就当场建一个临时工作区**
    * —— 与「新建会话时不选工作区」同一套（`ensureScratchWorkspace`：目录在
-   * `<数据目录>/conversations/<会话 id>`，带 `scratch` 标记、不进项目列表）。
+   * `<数据目录>/conversations/<年月日>/<会话 id>`，带 `scratch` 标记、不进项目列表）。
    *
    * 临时工作区按**会话 id** 命名，所以会话 id 得先定下来（`saveConversation` 接受显式 id）。
    * 每次触发都是一个新目录 —— 定时任务之间不共享状态，正是「从零干一遍」的语义。

@@ -3,7 +3,7 @@
  *
  * 用途见 `apps/server/src/api/workspaces/[id]/git/status/route.ts`：判断 `repoRoot()`
  * 返回的仓库根**是不是工作区自己**。临时会话（`scratch`）目录落在数据目录里
- * （`~/.fizz-server/conversations/<会话 id>`），而数据目录常常落在用户主目录 ——
+ * （`~/.fizz-server/conversations/<年月日>/<会话 id>`），而数据目录常常落在用户主目录 ——
  * 主目录一旦被 `git init` 过（dotfiles 仓库，很常见），`repoRoot()` 就会返回主目录。
  * 那时若把它当仓库，`git status --untracked-files=all` 会在**整个主目录**上枚举未跟踪
  * 文件：面板永远停在「读取仓库状态…」，会话 JSON 还会被列成待提交改动。

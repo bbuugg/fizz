@@ -42,7 +42,7 @@ export async function POST(request: Request) {
    *
    * - 给了 `workspaceId` → 必须是登记过的项目；
    * - **没给**（输入框下方「不选项目」直接发消息）→ 当场建一个**临时工作区**，目录
-   *   `<数据目录>/conversations/<会话 id>`，会话绑上去。会话的 `workspaceId` 落库后
+   *   `<数据目录>/conversations/<年月日>/<会话 id>`，会话绑上去。会话的 `workspaceId` 落库后
    *   不可改，所以「没选项目」只能在创建这一刻兑现，不能事后补绑。
    */
   const id = input.id ?? randomUUID()

@@ -10,7 +10,7 @@ import { createRemoteGitExec } from '@/lib/server/ssh/git-exec'
  *
  * 为什么不能直接用 `repoRoot(workspace.path)`：
  *
- * 临时工作区（`scratch`）的目录在数据目录里 —— `<数据目录>/conversations/<会话 id>`，
+ * 临时工作区（`scratch`）的目录在数据目录里 —— `<数据目录>/conversations/<年月日>/<会话 id>`，
  * 数据目录默认 `~/.fizz-server`。而用户主目录被 `git init` 过是常见情况（dotfiles 仓库），
  * 于是 `repoRoot()` 会从临时会话目录一路向上找到主目录，把它当成「这个工作区的仓库」：
  *

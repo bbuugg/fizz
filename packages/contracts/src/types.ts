@@ -828,7 +828,7 @@ export interface AgentWorkspace {
   container?: ContainerProjectConfig
   /**
    * **临时工作区**：用户在输入框下方没选项目就发消息时，服务端为这条会话自动建的目录
-   * （`<数据目录>/conversations/<会话 id>`）。
+   * （`<数据目录>/conversations/<年月日>/<会话 id>`）。
    *
    * 它与普通项目的区别只有一处 —— 侧栏不把它当项目列出来（否则每开一条无项目会话就
    * 多一个 uuid 项目行），它的会话归到「临时会话」那一组。除此之外一切照旧：有真实
@@ -2620,7 +2620,7 @@ export interface TaskTrigger {
    * 绑定的工作区（`AgentWorkspace.id`）。
    *
    * **可选**：和「新建会话时不选工作区」同一套语义 —— 缺省 = 每次触发都新开一个临时
-   * 工作区（目录 `<数据目录>/conversations/<会话 id>`，带 `scratch` 标记、不进项目列表），
+   * 工作区（目录 `<数据目录>/conversations/<年月日>/<会话 id>`，带 `scratch` 标记、不进项目列表），
    * 让这条任务在空目录里从头干。用户想让它去改某个仓库时才绑一个。
    *
    * 老记录一定带这个字段（那时是必填）；它指向的工作区被删掉时按「没绑」处理

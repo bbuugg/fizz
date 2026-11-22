@@ -102,7 +102,6 @@ import type {
 import {
   newId,
   JsonStore,
-  resolveDataDir,
   type StoredHost,
   type StoredLocalHost,
   type StoredSshHost
@@ -111,6 +110,18 @@ import { validateRemoteWorkspacePath } from '@fizz/contracts/workspace'
 import { pickContainer } from './container-carry'
 import { acpAgentKey } from '@fizz/contracts/agent-api'
 import { applyTransferPayload, buildTransferPayload, type TransferSnapshot } from './transfer'
+
+/**
+ * 临时工作区在数据目录里的落点：`<数据目录>/conversations/<年月日>/<会话 id>`（如 `20261122`）。
+ *
+ * 日期用**本地时间**（用户在文件管理器里看到的就是本机日历），月 / 日补零保证排序。
+ */
+function scratchWorkspacePath(dataDir: string, conversationId: string, at = new Date()): string {
+  const year = String(at.getFullYear())
+  const month = String(at.getMonth() + 1).padStart(2, '0')
+  const day = String(at.getDate()).padStart(2, '0')
+  return join(dataDir, 'conversations', `${year}${month}${day}`, conversationId)
+}
 
 /**
  * 归一化模型清单：每个条目只保留 `{ id, contextWindow?, settings? }`。
@@ -758,7 +769,12 @@ export class AgentDomain {
   }
 
   /**
-   * 给「没选项目」的会话建一个**临时工作区**：目录 `<数据目录>/conversations/<会话 id>`。
+   * 给「没选项目」的会话建一个**临时工作区**：目录
+   * `<数据目录>/conversations/<年月日>/<会话 id>`（如 `conversations/20261122/<id>`）。
+   *
+   * 按**本地日期**分组：以前所有临时会话直接在 `conversations/` 下堆一层 uuid 目录，
+   * 时间久了完全没法在文件管理器里按天找。目录名是紧凑的 `YYYYMMDD`，一天一个目录。
+   * 日期取创建这一刻的本地时间（用户看的是本机日历，不是 UTC）。
    *
    * 为什么不提前建：用户只是没选项目，可能下一秒就选了 —— 在界面上建会在数据目录里
    * 攒一堆空目录。真正的时机是**发送**：服务端 `POST /api/conversations` 收到空
@@ -769,7 +785,7 @@ export class AgentDomain {
    * 登记出来的工作区带 `scratch` 标记，侧栏不把它当项目列出来。
    */
   async ensureScratchWorkspace(conversationId: string): Promise<AgentWorkspace> {
-    const path = join(resolveDataDir(), 'conversations', conversationId)
+    const path = scratchWorkspacePath(this.store.dataDir, conversationId)
     await fs.mkdir(path, { recursive: true })
     return this.addWorkspace({ path, name: '临时会话', scratch: true })
   }
@@ -1193,8 +1209,9 @@ export class AgentDomain {
      * 工作区校验：**每条会话都必须绑一个登记过的工作区**。
      *
      * 「不选项目」不是一种归属 —— 那只是输入框上的临时状态，发送时服务端会先建一个
-     * 临时工作区（`ensureScratchWorkspace`，目录在数据目录的 `conversations/<会话 id>`）
-     * 再建会话。所以这里不需要放行任何哨兵值：走到这儿还没有工作区就是调用方漏了那一步。
+     * 临时工作区（`ensureScratchWorkspace`，目录在数据目录的
+     * `conversations/<年月日>/<会话 id>`）再建会话。所以这里不需要放行任何哨兵值：
+     * 走到这儿还没有工作区就是调用方漏了那一步。
      */
     const knownWorkspace = Boolean(this.getWorkspace(input.workspaceId))
     if (input.id && !prev) {

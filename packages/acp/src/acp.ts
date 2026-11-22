@@ -790,7 +790,7 @@ function spawnCommand(
  *
  * 为什么必须判：`/api/acp/agents/:id/models`、`/capabilities` 两个接口把「登记表里第一个
  * 工作区」当 cwd 传进来，而登记表里常年躺着已经被删掉的「临时会话」（scratch，目录在
- * `<数据目录>/conversations/<会话 id>`，会话一删目录就没了）。目录不存在时 `spawn` 报的是
+ * `<数据目录>/conversations/<年月日>/<会话 id>`，会话一删目录就没了）。目录不存在时 `spawn` 报的是
  * **`spawn codebuddy ENOENT`** —— libuv 在 chdir 失败时也回 ENOENT，而报错里只有命令名，
  * 看着像「命令没装 / 系统坏了」。用户侧的表现是：**设置页里所有 ACP agent 都拉不到模型，
  * 换一台数据目录干净的机器（比如服务器）又全好**。

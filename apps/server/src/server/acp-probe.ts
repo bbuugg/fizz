@@ -14,7 +14,7 @@ import { domain } from './state'
  * （`probeAcp*` 会退回用户主目录）。
  *
  * ⚠️ 别退回 `listWorkspaces()[0].path` 这种写法：登记表里常年躺着已经被删掉的
- * 「临时会话」（`scratch`，目录在 `<数据目录>/conversations/<会话 id>`，会话一删就没了，
+ * 「临时会话」（`scratch`，目录在 `<数据目录>/conversations/<年月日>/<会话 id>`，会话一删就没了，
  * 巡检已经把它标成 `dirMissing`）。拿这种路径当 cwd 去 spawn，Node 报的是
  * **`spawn codebuddy ENOENT`** —— cwd 不存在也是 ENOENT，且报错里只有命令名。
  * 用户侧看到的现象是「设置页里**所有** ACP agent 都拉不到模型，换台机器（数据目录干净）
