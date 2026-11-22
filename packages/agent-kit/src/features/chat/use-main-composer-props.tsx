@@ -21,7 +21,6 @@ import {
   resolveSlashDispatchFor,
 } from "@fizz/agent-kit/shared/lib/slash-commands";
 import type { UploadFileRef, UploadProviderView } from "@fizz/contracts/agent-api";
-import { PermissionPill } from "@fizz/agent-kit/features/chat/composer";
 import {
   ComposerToolbar,
   ComposerToolbarPlaceholder,
@@ -30,14 +29,12 @@ import type { AgentApp } from "@fizz/agent-kit/shared/hooks/useAgentApp";
 import { useT } from "@fizz/agent-kit/shared/lib/language";
 import { type AgentChatMessage } from "@fizz/contracts/types";
 import { AcpModePill } from "@fizz/agent-kit/features/chat/AcpModePill";
-import { AcpPermissionPill } from "@fizz/agent-kit/features/chat/AcpPermissionPill";
 import { AcpThoughtLevelSelect } from "@fizz/agent-kit/features/chat/AcpThoughtLevelSelect";
-import { ContextRing } from "@fizz/agent-kit/features/chat/ContextRing";
+import { ComposerStatusBar } from "@fizz/agent-kit/features/chat/ComposerStatusBar";
 import { EditMessageBar } from "@fizz/agent-kit/features/chat/EditMessageBar";
 import { McpSelect } from "@fizz/agent-kit/features/chat/McpSelect";
 import { QueuedMessages } from "@fizz/agent-kit/features/chat/QueuedMessages";
 import { SteerEditBar } from "@fizz/agent-kit/features/chat/SteerEditBar";
-import { WorkspaceSelect } from "@fizz/agent-kit/features/chat/WorkspaceSelect";
 import {
   attachmentsSupported,
   turnIsAcp,
@@ -387,13 +384,12 @@ export function useMainComposerProps(
         />
       ) : null,
     /*
-     * 输入卡片**下方**：工作区选择行（含「未指定工作区」）——**只在空会话时**出现。
+     * 输入卡片**下方**：常驻状态横条（git 分支 / 权限档 / 上下文占用）。
      *
-     * 会话的 `workspaceId` 落库后不可改，进了会话还摆一行「切换工作区」只会让人以为
-     * 能改当前会话的归属（点它其实只会把人踢回空会话）。会话的归属在顶栏那行只读
-     * 事实里看就够了；要换归属就点「新建会话」回空态，那一行自然又出现。
+     * 工作区入口不在这里 —— 它在「开始新对话」页的标题句里（见 `NewTaskView`）。
+     * `running` 传给横条：只有「这一轮正在跑」时 git 分支才置灰。
      */
-    below: app.activeConversationId ? null : <WorkspaceSelect app={app} />,
+    below: <ComposerStatusBar app={app} running={streaming} />,
     leading: (
       <>
         {/* 上传附件：排在最左，与 ainav 的回形针一致。
@@ -412,27 +408,10 @@ export function useMainComposerProps(
             onMenuOpen={opts.onRefreshUploadProviders}
           />
         )}
-        {/* 工具权限：非 ACP 会话用内置三档 `permissionMode` —— 只有 内置 那条路读它
-            （runAgent → tools 的 guardWrite）。ACP 那边要控权限是 agent 自己发
-            session/request_permission，所以这里给的是**答复策略**（确认 / 完全放行，按会话记住）；
-            agent 自己的模式（opencode 的 build / plan）在右侧模型选择器之后 */}
-        {isAcp ? (
-          <AcpPermissionPill app={app} />
-        ) : (
-          <PermissionPill
-            value={app.permissionMode}
-            onChange={app.setPermissionMode}
-          />
-        )}
       </>
     ),
     trailing: (
       <>
-        {/* 上下文用量圆环：模型选择左侧；点击出详情 + 手动压缩。
-            ACP 会话也渲染：agent 通过 session/update 的 usage_update 上报占用
-            （→ 流事件 context-usage → 消息的 contextUsage），圆环用 agent 实测的
-            分子 / 分母；本地压缩那几项对 ACP 不可用，组件里按 isAcp 隐掉 */}
-        <ContextRing app={app} />
         <ModelSelect app={app} />
         {/* 模式：**只有 opencode 风格**才显示（build / plan），摆在模型选择器之后；
             没有模式时返回 null —— 不做中性 pill */}

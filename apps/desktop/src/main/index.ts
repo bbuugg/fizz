@@ -653,7 +653,7 @@ function sharedWebPreferences(): Electron.WebPreferences {
  */
 const MAIN_WINDOW_SIZE = {
   preferred: { width: 1080, height: 720 },
-  min: { width: 360, height: 640 }
+  min: { width: 360, height: 720 }
 }
 
 /**

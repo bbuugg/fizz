@@ -318,6 +318,7 @@ export const CHAT: Record<string, string> = {
   '下载图片': 'Download image',
   '正在运行': 'Running',
   '未指定工作区': 'No workspace',
+  '在 {workspace} 里做点什么？': 'What would you like to do in {workspace}?',
   '（目录不存在）': ' (directory missing)',
   '工作区：Agent 只能读写这个目录里的东西': 'Workspace: the agent can only read and write inside this directory',
   '浏览器工具：已开启（点击关闭）': 'Browser tools: on (click to turn off)',

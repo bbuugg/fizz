@@ -178,7 +178,7 @@ interface ComposerProps {
    */
   sending?: boolean
   placeholder?: string
-  /** 操作行左侧（工作区 / 权限） */
+  /** 操作行左侧（附件） */
   leading?: ReactNode
   /** 操作行右侧、**发送钮左边**（模型） */
   trailing?: ReactNode
@@ -740,13 +740,12 @@ export function Composer({
             )}
 
             {/*
-              操作行：左 `leading`、右 `trailing`（模型）+ 语音 + 发送 / 停止。
+              操作行：左 `leading`（附件）、右 `trailing`（模型 / ACP 模式）+ 语音 + 发送 / 停止。
 
               ⚠️ 两组之间的 `gap-8`（2rem = **一颗图标的宽度**）是「窄屏时的最小间距」：
               `justify-between` 只会在它之上补剩余空间，宽屏照旧被两侧撑开；窄到要挤压时，
-              这 32px 是硬底 —— 宁可让中间那颗模型 pill 多截几个字，也不让左边那颗权限图标和
-              右边的上下文圆环挤在一起（之前是 `gap-2`，窄屏下这两颗 32px 的圆钮只隔 8px，
-              看着像粘成一组）。
+              这 32px 是硬底 —— 宁可让中间那颗模型 pill 多截几个字，也不让左右两组贴在一起。
+              权限档与上下文圆环已移到卡片下方的 `ComposerStatusBar`，不占这一行。
             */}
             <div className="flex items-center justify-between gap-8 px-2 pb-2">
               <div className="flex min-w-0 items-center gap-1">{leading}</div>

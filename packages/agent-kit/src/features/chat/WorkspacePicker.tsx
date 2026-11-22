@@ -73,6 +73,14 @@ export interface WorkspacePickerProps {
    * （此时显示「主机已删除」，`dirMissing` 的文案也不一样）。
    */
   remoteHostName?: (workspace: AgentWorkspace) => string | null
+  /**
+   * 触发器形态：
+   * - `pill`（默认）：输入行那种胶囊，用于横条 / 定时任务表单；
+   * - `inline`：标题句里的文字入口（「在 ___ 里做点什么？」），未选时显示占位下划线。
+   */
+  variant?: 'pill' | 'inline'
+  /** `inline` 且未选工作区时的占位文案（默认取 `emptyLabel`） */
+  placeholder?: string
   disabled?: boolean
 }
 
@@ -96,6 +104,8 @@ export function WorkspacePicker({
   onAction,
   onNewWorkspace,
   remoteHostName,
+  variant = 'pill',
+  placeholder,
   disabled
 }: WorkspacePickerProps) {
   // 订阅语言（默认值里的 t() 只在本组件重渲染时才会重算）
@@ -129,29 +139,50 @@ export function WorkspacePicker({
       }}
     >
       <PopoverTrigger asChild>
-        {/* 手写 button（不是 Select 了）：样式仍走 CHAT_PILL —— 前置图标、箭头大小 / 颜色
-            必须和权限 / 模型那两颗 pill 对齐。触发器自己不渲染默认箭头，这里自己画一枚小的。 */}
-        <button
-          type="button"
-          className={cn(CHAT_PILL, 'disabled:cursor-not-allowed disabled:opacity-50')}
-          disabled={disabled}
-          aria-label={t('工作区')}
-          title={title}
-        >
-          <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
-          <span className="truncate">{label}</span>
-          <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
-        </button>
+        {variant === 'inline' ? (
+          /*
+            标题句里的文字入口：字号 / 字重跟着标题走，这里只负责「可点」的视觉线索
+            （点线下划线）。未选工作区时显示调用方给的占位（如 `______`）。
+          */
+          <button
+            type="button"
+            disabled={disabled}
+            aria-label={t('工作区')}
+            title={title}
+            className={cn(
+              'max-w-[14rem] min-w-0 truncate rounded-sm underline decoration-dotted underline-offset-4 transition-colors',
+              current
+                ? 'text-primary hover:decoration-solid'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            {current?.name ?? placeholder ?? emptyLabel}
+          </button>
+        ) : (
+          /* 手写 button（不是 Select 了）：样式仍走 CHAT_PILL —— 前置图标、箭头大小 / 颜色
+             必须和权限 / 模型那两颗 pill 对齐。触发器自己不渲染默认箭头，这里自己画一枚小的。 */
+          <button
+            type="button"
+            className={cn(CHAT_PILL, 'disabled:cursor-not-allowed disabled:opacity-50')}
+            disabled={disabled}
+            aria-label={t('工作区')}
+            title={title}
+          >
+            <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="truncate">{label}</span>
+            <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+          </button>
+        )}
       </PopoverTrigger>
       {/*
-        向上弹，与权限 / 模型 / MCP / 附件那几颗一致（`side="top"` + 6px，贴边时 Radix 自动翻转）。
+        向下弹（`side="bottom"` + 6px）。
 
-        这颗 pill 在**输入框下方**，向下弹等于往窗口底沿外顶 —— 空会话时输入框本来就靠底，
-        面板会被视口裁掉一截。`side="top"` 是「触发器贴着底部」时唯一稳的方向，与宿主无关：
-        定时任务表单里那几颗也是向上弹（见 `McpPicker` 的注释），别因为宿主不同就翻面。
+        工作区入口现在主要挂在「开始新对话」页的标题句里，下方就是输入框与页面留白，
+        向下展开才是顺手的方向（向上会顶到标题上方的空白 / 窗口边）。定时任务表单里
+        同样向下；空间不够时 Radix 会自己翻上去，不会出界。
       */}
       <PickerPanel
-        side="top"
+        side="bottom"
         align="start"
         sideOffset={6}
         collisionPadding={8}

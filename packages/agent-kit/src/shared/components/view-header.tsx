@@ -83,7 +83,12 @@ export function ViewHeader({
           </div>
         ) : null}
       </div>
-      <div className="flex shrink-0 items-center gap-2">{trailing}</div>
+      {/*
+        `min-h-8` 不能省：右侧按钮全是条件渲染的（没选工作区 / 虚拟工作区时终端、文件、
+        源码管理、快捷功能整组消失），若高度跟着内容走，顶栏会比有按钮时矮 12px ——
+        切到「未指定工作区」的草稿页时整条顶栏轻微一跳。固定成按钮的高度即可。
+      */}
+      <div className="flex min-h-8 shrink-0 items-center gap-2">{trailing}</div>
     </header>
   )
 }

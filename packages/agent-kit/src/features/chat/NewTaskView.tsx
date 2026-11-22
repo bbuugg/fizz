@@ -2,11 +2,16 @@
 import { ChatComposer } from "@fizz/agent-kit/features/chat/chat-surface";
 import type { AgentApp } from "@fizz/agent-kit/shared/hooks/useAgentApp";
 import { useT } from "@fizz/agent-kit/shared/lib/language";
+import { WorkspaceSelect } from "@fizz/agent-kit/features/chat/WorkspaceSelect";
 import { useMainComposerProps } from "@fizz/agent-kit/features/chat/use-main-composer-props";
 import { useAttachmentDraft } from "@fizz/agent-kit/features/chat/use-attachment-draft";
 
 /**
- * 初始页：中央输入框 + 下方常驻的工作区选择行（不指定项目也能直接聊）。
+ * 初始页：标题句（工作区入口内嵌）+ 中央输入框。
+ *
+ * 标题「在 ___ 里做点什么？」里的 ___ 就是工作区入口：点了弹与输入行同一个
+ * `WorkspacePicker`，未选工作区时显示下划线占位。工作区选择因此**不再占**输入框
+ * 下方那条常驻横条 —— 那条只留 git / 权限 / 上下文。
  *
  * 附件与正式会话走**同一份**草稿（`useAttachmentDraft`）：截图 / 图片先行的对话是
  * 最常见的开场（「这是什么」），初始页少了回形针，用户只能先随便发一句把会话建出来。
@@ -15,11 +20,15 @@ import { useAttachmentDraft } from "@fizz/agent-kit/features/chat/use-attachment
 export function NewTaskView({ app }: { app: AgentApp }) {
   const t = useT()
   const draft = useAttachmentDraft(app)
+  // 文案里的 `{workspace}` 由下面的工作区入口顶替（英文语序也靠这个占位符保持通顺）
+  const [before, after] = t('在 {workspace} 里做点什么？').split('{workspace}')
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-3 sm:px-6 pb-20">
       <div className="w-full max-w-2xl">
-        <div className="mb-5 flex flex-col items-center gap-1 text-center space-y-4">
-          <div className="text-lg font-semibold">{t('开始新对话')}</div>
+        <div className="mb-3 flex flex-wrap items-baseline justify-center gap-x-1 text-center text-xl font-semibold">
+          <span>{before.trim()}</span>
+          <WorkspaceSelect app={app} variant="inline" placeholder="______" />
+          <span>{after.trim()}</span>
         </div>
         {/* 草稿在「确认开跑」后才清：建 ACP 会话要先起外部进程，失败时输入框必须还在 */}
         <ChatComposer
