@@ -187,7 +187,7 @@ export function WorkspacePicker({
    */
   const measureRef = useRef<HTMLSpanElement>(null)
   const widthRef = useRef<HTMLButtonElement>(null)
-  const spring = useRef({ width: 0, target: 0, velocity: 0, raf: 0, last: 0, started: false })
+  const spring = useRef({ width: BLANK_WIDTH, target: BLANK_WIDTH, velocity: 0, raf: 0, last: 0 })
 
   const tickSpring = (now: number): void => {
     const s = spring.current
@@ -217,7 +217,7 @@ export function WorkspacePicker({
     if (!el) return
     if (s.raf) cancelAnimationFrame(s.raf)
     s.raf = 0
-    // 首次挂载 / 用户要求减少动效：直接落定（原实现的 initial / reduced 分支）
+    // 用户要求减少动效：直接落定
     if (immediate || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       s.width = target
       s.target = target
@@ -247,8 +247,6 @@ export function WorkspacePicker({
   }, [])
 
   useLayoutEffect(() => {
-    const immediate = !spring.current.started
-    spring.current.started = true
     // 名字宽 + 图标窗 + 左右内边距（后两者是 em，按当前字号折成 px）；上限 14rem
     const el = widthRef.current
     const fontSize = el ? Number.parseFloat(getComputedStyle(el).fontSize) || 16 : 16
@@ -258,7 +256,13 @@ export function WorkspacePicker({
       ? Math.max(1, Math.min(measureRef.current?.scrollWidth ?? 0, TOKEN_MAX_WIDTH - chrome)) +
         chrome
       : BLANK_WIDTH
-    springTo(target, immediate)
+    /*
+      选工作区会让**整块新对话页重挂** —— 草稿面板的 key 是 `draft:<工作区>`
+      （`panel-session.ts` 的 `draftPanelKey`），ChatPanel 拿它当 Provider 的 key。
+      所以这里不能把「首次挂载」当成「冷启动直接落定」：挂载本身往往就是刚选完工作区，
+      弹簧从空位长度（`spring` 的初始 width）弹到名字宽度，动画才会出现。
+    */
+    springTo(target, false)
     // `springTo` / `tickSpring` 每次渲染都是新的，但这里只吃名字与字体版本
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current?.name, fontEpoch])
@@ -267,14 +271,14 @@ export function WorkspacePicker({
   const iconRef = useRef<HTMLSpanElement>(null)
   /** 文字层：逐字素切开，换名字时每个字从下方顶上来（Torph 用 `Intl.Segmenter`，同口径） */
   const textRef = useRef<HTMLSpanElement>(null)
-  const morphSeen = useRef(false)
   useLayoutEffect(() => {
-    // 首次挂载不动（demo 的 `initial` 分支）：从别的页面切回来不该每次都被抬一下
-    const first = !morphSeen.current
-    morphSeen.current = true
-    if (first) return
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
-    // 时长 / 曲线照抄 demo：图标 300ms、文字 200ms，都是 (0.19, 1, 0.22, 1)
+    // 没有名字时没有东西要动（清空工作区不播退场）
+    if (!current) return
+    /*
+      同上：选工作区会重挂整块新对话页，所以「挂载时有名字」就应该播入场动画，
+      不能跳过首次挂载 —— 跳过的话用户点完工作区只会看到名字直接出现。
+    */
     const ease = 'cubic-bezier(0.19, 1, 0.22, 1)'
     iconRef.current?.animate(
       [
