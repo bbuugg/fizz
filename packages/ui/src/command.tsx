@@ -73,7 +73,10 @@ function CommandDialog({
           // 搜索框的高 / 图标尺寸由 `CommandInput` 自己给，这里只调列表与分组的内边距。
           // 别再往这里加 `[cmdk-input]` / `[cmdk-input-wrapper]` 的覆盖 —— 两处都写高度，
           // 改一处就漏一处。
-          className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group]]:px-2 [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5"
+          //
+          // `bg-transparent`：命令面板是液态玻璃浮层（`DialogContent` 已换成玻璃材质，见
+          // `liquid-glass.tsx`），`Command` 默认的 `bg-popover` 会把玻璃整块盖死。
+          className="bg-transparent [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group]]:px-2 [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5"
           {...commandProps}
         >
           {children}
@@ -237,8 +240,13 @@ function CommandFooter({
     <div
       data-slot="command-footer"
       className={cn(
-        "relative flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1.5 bg-popover px-3 py-2 text-xs text-muted-foreground",
-        "before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-3 before:bg-linear-to-t before:from-popover before:to-transparent",
+        // 底栏**不铺不透明底色**：命令面板现在是一整块液态玻璃（见 `liquid-glass.tsx`），
+        // `bg-popover` 会在这里切出一条实色带、把面板下半截的玻璃材质盖掉。改用 5% 前景色
+        // 的薄雾拉开层次 —— 亮 / 暗两套主题都只是在玻璃上压暗一点点，不改变材质。
+        "relative flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1.5 bg-foreground/5 px-3 py-2 text-xs text-muted-foreground dark:bg-white/5",
+        // 上方那条 12px 渐隐同理：原来是从不透明的 `--popover` 淡出，现在只能淡到透明，
+        // 否则又会在底栏上方糊出一条白色（暗色下是黑色）的带子。
+        "before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-3 before:bg-linear-to-t before:from-foreground/5 before:to-transparent dark:before:from-white/5",
         "after:pointer-events-none after:absolute after:inset-x-0 after:top-0 after:h-px after:bg-border/60",
         className
       )}

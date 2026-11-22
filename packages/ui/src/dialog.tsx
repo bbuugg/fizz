@@ -5,6 +5,12 @@ import { Dialog as DialogPrimitive } from "radix-ui"
 import { Button } from "./button"
 import { orderDialogActions } from "./dialog-actions"
 import { useHeightTransition } from "./height-transition"
+import {
+  clearLiquidLens,
+  GLASS_PANEL_CLASS,
+  LiquidGlassPanel,
+  trackLiquidLens,
+} from "./liquid-glass"
 import { XIcon } from "lucide-react"
 
 function Dialog({
@@ -77,15 +83,30 @@ function DialogContent({
         ref={contentRef}
         data-slot="dialog-content"
         className={cn(
-          // 边界：遮罩**不压暗**（`DialogOverlay` 只有可选毛玻璃），光靠 `shadow-2xl`
-          // 在 light 下弹窗和页面同为纯白、边界会糊。这里用三层把轮廓勾出来：
-          // ① `ring-1` 发丝边（light 黑 10%，dark 白 10%）；② 贴地小阴影；
-          // ③ 远距大投影；dark 下再加顶部 1px 内高光，补上深色里看不见的投影。
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-black/10 outline-none duration-100 sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 dark:ring-white/10 dark:shadow-[inset_0_1px_0_0_rgb(255_255_255/0.06),0_20px_50px_-12px_rgb(0_0_0/0.7)] shadow-[0_2px_4px_rgb(0_0_0/0.04),0_20px_50px_-12px_rgb(0_0_0/0.25)]",
+          // 液态玻璃面板：**纯实色面板底**（`bg-popover`）+ 淡描边 + 景深投影都来自
+          // `GLASS_PANEL_CLASS`；跟随指针的边缘光圈由 `LiquidGlassPanel` 铺在内容之上。
+          // 遮罩本来就不压暗，所以弹窗必须自带不透明底，边界靠描边与投影勾出来。
+          // ⚠️ 别再往这里加 `bg-*`：会把实色底换成别的（透明）颜色。
+          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl p-4 text-sm text-popover-foreground outline-none duration-100 sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          GLASS_PANEL_CLASS,
           className
         )}
         {...props}
+        // 玻璃的边缘光圈：指针位置写到容器自身的 CSS 变量上，由 `LiquidGlassPanel` 读取
+        onPointerEnter={(event) => {
+          trackLiquidLens(event)
+          props.onPointerEnter?.(event)
+        }}
+        onPointerMove={(event) => {
+          trackLiquidLens(event)
+          props.onPointerMove?.(event)
+        }}
+        onPointerLeave={(event) => {
+          clearLiquidLens(event)
+          props.onPointerLeave?.(event)
+        }}
       >
+        <LiquidGlassPanel />
         {children}
         {showCloseButton && (
           <DialogPrimitive.Close data-slot="dialog-close" asChild>

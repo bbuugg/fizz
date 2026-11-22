@@ -184,3 +184,28 @@ export function draftPanelKey(workspaceId: string | null | undefined): string {
 export function isDraftPanelKey(key: string): boolean {
   return key.startsWith(DRAFT_PREFIX)
 }
+
+/**
+ * 面板现场该挂到哪个工作区、拿哪条目录：**会话自己的** > 现场已有的 > 当前选中的。
+ *
+ * ⚠️ 为什么必须有这层「事后可重算」的解析：`activeWorkspaceId` 是同步从 localStorage
+ * 恢复的，而 `workspaces` 列表是异步拉回来的 —— 首帧里建出来的现场只能拿到
+ * `cwd: null`（工作区还不在列表里）。这个空路径一旦写进现场就会被缓存，表现为
+ * 「刷新后停在某个工作区，点终端没反应；切走再切回来才好」。工作区 / 会话列表到达后
+ * 用本函数把缺目录的现场补算一次即可。
+ */
+export function resolvePanelWorkspace(
+  key: string,
+  panelWorkspaceId: string | null | undefined,
+  conversations: readonly { id: string; workspaceId: string | null }[],
+  workspaces: readonly { id: string; path: string | null }[],
+  activeWorkspaceId: string | null | undefined
+): { workspaceId: string; cwd: string | null } {
+  // 会话自己的 workspaceId 优先；空串（历史数据）当作没有
+  const workspaceId =
+    conversations.find((c) => c.id === key)?.workspaceId || panelWorkspaceId || activeWorkspaceId || ''
+  return {
+    workspaceId,
+    cwd: workspaces.find((w) => w.id === workspaceId)?.path ?? null
+  }
+}

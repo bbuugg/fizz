@@ -331,3 +331,101 @@ export function LiquidGlassSurface({
     </div>
   )
 }
+
+/**
+ * 面板级液态玻璃的**外框**：`isolate`（让光圈能升到 `z-10`）+ **纯实色面板底** + 淡描边 +
+ * 景深投影。
+ *
+ * 底色直接写在容器上（不靠子层铺 `-z-10` 的实底）：弹窗里全是表单 / 列表，只要底是透的，
+ * 背后的页面就会混进正文；实色放在容器自己身上最不容易出岔子。
+ *
+ * 用在命令面板 / Dialog / AlertDialog 的内容容器上，和 `LiquidGlassPanel` 一起用：
+ *
+ * ```tsx
+ * <DialogPrimitive.Content className={cn("fixed ... rounded-xl", GLASS_PANEL_CLASS, className)}>
+ *   <LiquidGlassPanel />
+ *   {children}
+ * </DialogPrimitive.Content>
+ * ```
+ *
+ * ⚠️ 容器上的 `bg-popover` 别删，也别再叠别的底色。
+ */
+export const GLASS_PANEL_CLASS = `isolate bg-popover ${GLASS_RIM_CONTRAST}`
+
+/** 指针位置 → 跟随光圈的 CSS 变量（面板容器在自己的 `onPointerMove` 里调） */
+export function trackLiquidLens<T extends HTMLElement>(event: React.PointerEvent<T>): void {
+  // 触摸设备没有「指向」，光圈是纯装饰
+  if (event.pointerType === "touch") return
+  const rect = event.currentTarget.getBoundingClientRect()
+  if (!rect.width || !rect.height) return
+  const style = event.currentTarget.style
+  style.setProperty("--lens-x", `${(((event.clientX - rect.left) / rect.width) * 100).toFixed(2)}%`)
+  style.setProperty("--lens-y", `${(((event.clientY - rect.top) / rect.height) * 100).toFixed(2)}%`)
+  style.setProperty("--lens-opacity", "1")
+}
+
+/** 指针离开 → 收起光圈（面板容器在自己的 `onPointerLeave` 里调） */
+export function clearLiquidLens<T extends HTMLElement>(event: React.PointerEvent<T>): void {
+  event.currentTarget.style.setProperty("--lens-opacity", "0")
+}
+
+/** 边缘光圈的遮罩：只留 `padding` 宽的一圈（与 `.liquid-lens::before` 同一套 mask 配方） */
+const EDGE_LIGHT_MASK: React.CSSProperties = {
+  padding: "2px",
+  WebkitMask: "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
+  WebkitMaskComposite: "xor",
+  mask: "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
+  maskComposite: "exclude",
+  opacity: "var(--lens-opacity, 0)",
+}
+
+/**
+ * 面板边缘光圈的亮色档：**主题色**的一圈光（ainav 输入框浅色下用品牌绿，这里换成
+ * `--primary`，跟着用户选的主题走）。固定 180px 半径 —— 大面板上用百分比会把整条边
+ * 一起点亮，看着像描边高亮而不是「光标附近亮了」。
+ */
+const EDGE_LIGHT_PRIMARY: React.CSSProperties = {
+  ...EDGE_LIGHT_MASK,
+  background:
+    "radial-gradient(180px circle at var(--lens-x, 50%) var(--lens-y, 50%), color-mix(in srgb, var(--primary) 75%, transparent), color-mix(in srgb, var(--primary) 38%, transparent) 20%, color-mix(in srgb, var(--primary) 8%, transparent) 46%, color-mix(in srgb, var(--primary) 0%, transparent) 62%)",
+}
+
+/** 暗色档：深底上主色会发闷，改用纯白（与按钮 / ainav 的 `.dark .liquid-lens` 一致） */
+const EDGE_LIGHT_WHITE: React.CSSProperties = {
+  ...EDGE_LIGHT_MASK,
+  background:
+    "radial-gradient(180px circle at var(--lens-x, 50%) var(--lens-y, 50%), rgba(255,255,255,0.95), rgba(255,255,255,0.7) 20%, rgba(255,255,255,0.1) 46%, rgba(255,255,255,0) 62%)",
+}
+
+/** 材质层与边缘光圈共用的定位外壳（大小 / 圆角跟着宿主容器走） */
+const PANEL_LAYER = "pointer-events-none absolute inset-0 rounded-[inherit]"
+
+/**
+ * 面板级液态玻璃的**边缘光圈**：给命令面板 / Dialog / AlertDialog 用，渲染在
+ * `GLASS_PANEL_CLASS` 容器的第一颗子节点即可。
+ *
+ * 面板底（实色 `--popover`）、描边与景深投影都由容器的 `GLASS_PANEL_CLASS` 提供，这里
+ * 只管那圈跟随指针的光：**只有边框内侧亮一圈**，光标底下没有扫光 / 光斑。
+ *
+ * 光圈层用 `z-10` 而不是排在子节点最后：容器是 `isolate` 的，正 z 会压在内容之上 ——
+ * 命令面板那种 `p-0` 满铺、或底栏自带一层薄雾的场景，贴边的那圈光也不会被盖掉。
+ *
+ * 指针位置由宿主写进容器的 `--lens-x` / `--lens-y` / `--lens-opacity`（`trackLiquidLens`
+ * / `clearLiquidLens`）；触摸设备没有「指向」，光圈保持隐藏。
+ */
+export function LiquidGlassPanel() {
+  return (
+    <>
+      <span
+        aria-hidden
+        className={cn(PANEL_LAYER, "z-10 transition-opacity duration-200 ease-out dark:hidden")}
+        style={EDGE_LIGHT_PRIMARY}
+      />
+      <span
+        aria-hidden
+        className={cn(PANEL_LAYER, "z-10 hidden transition-opacity duration-200 ease-out dark:block")}
+        style={EDGE_LIGHT_WHITE}
+      />
+    </>
+  )
+}

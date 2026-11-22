@@ -38,6 +38,7 @@ import {
   isDraftPanelKey,
   isTabMounted,
   isTerminalTabKey,
+  resolvePanelWorkspace,
   terminalTabKey,
   withSideTab,
   withoutMounted,
@@ -249,6 +250,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 const conversationIdList = app.conversations.map((c) => c.id).join('\n')
 const workspaceIdList = app.workspaces.map((w) => w.id).join('\n')
 /**
+ * 工作区 id + 目录（join 成字符串）：`cwd` 要跟着工作区目录变，光看 id 列表不够
+ * （新建 / 导入的项目会先出现在列表里、路径稍后才填上）。
+ */
+const workspacePathList = app.workspaces.map((w) => `${w.id}=${w.path ?? ''}`).join('\n')
+/**
  * 容器型项目的工作区 id（join 成字符串）：`openTerminalTabOf` 要用它判「默认该开哪种终端」，
  * 而 `app.workspaces` 每次渲染都是新引用 —— 用这个稳定串当依赖，内容不变就不重建回调。
  */
@@ -264,13 +270,18 @@ const containerWorkspaceIdList = app.workspaces
    * 按它自己所属的工作区建（否则文件树 / 终端会挂到错误的工作区上）。
    */
   function blankPanelFor(key: string): PanelSession {
-    const conv = app.conversations.find((c) => c.id === key)
-    const workspaceId = conv?.workspaceId ?? app.activeWorkspaceId ?? ''
-    const workspace = app.workspaces.find((w) => w.id === workspaceId)
+    // 工作区 / cwd 的解析统一走纯函数（列表没就绪时会得到 null，见下面补算的 effect）
+    const { workspaceId, cwd } = resolvePanelWorkspace(
+      key,
+      '',
+      app.conversations,
+      app.workspaces,
+      app.activeWorkspaceId
+    )
     return {
       id: `panel-${++panelSeq}`,
       workspaceId,
-      cwd: workspace?.path ?? null,
+      cwd,
       sideTab: null,
       lastSideTab: null,
       tabOrder: [],
@@ -305,10 +316,50 @@ const containerWorkspaceIdList = app.workspaces
         return { ...prev, [key]: next }
       })
     },
-    // blankPanelFor 每次渲染都是新引用，但它只读 app 的当前值 —— 用这几个驱动即可
+    // blankPanelFor 每次渲染都是新引用，但它只读 app 的当前值 —— 用这几条稳定串驱动即可
+    // （`workspacePathList` 也要在：路径晚于工作区 id 到达时，新建现场得拿到新路径）
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [conversationIdList, workspaceIdList, app.activeWorkspaceId]
+    [conversationIdList, workspaceIdList, workspacePathList, app.activeWorkspaceId]
   )
+
+  /**
+   * 工作区 / 会话列表比首屏晚到：`activeWorkspaceId` 是**同步**从 localStorage 恢复的，
+   * 首次渲染时 `app.workspaces` 还是空数组，`blankPanelFor` 于是把现场建成 `cwd: null`。
+   * 这个空路径会一直缓存在 `panelSessions` 里 —— 表现就是「刷新后停在某个工作区，点终端
+   * 没反应（`openTerminalTabOf` 拿不到 cwd 直接放弃）；切到别的工作区再切回来才好」
+   * （切回来时列表已经加载完，新现场能拿到路径）。
+   *
+   * 列表一到就把缺目录的现场补算一次。**只补 `cwd` 为空的**，已有现场一律不动 ——
+   * 终端 / 文件树的现场不能被这次补算重挂。
+   */
+  useEffect(() => {
+    setPanelSessions((prev) => {
+      let changed = false
+      const next: Record<string, PanelSession> = {}
+      for (const [key, panel] of Object.entries(prev)) {
+        if (panel.cwd) {
+          next[key] = panel
+          continue
+        }
+        const resolved = resolvePanelWorkspace(
+          key,
+          panel.workspaceId,
+          app.conversations,
+          app.workspaces,
+          app.activeWorkspaceId
+        )
+        if (!resolved.cwd) {
+          next[key] = panel
+          continue
+        }
+        next[key] = { ...panel, workspaceId: resolved.workspaceId, cwd: resolved.cwd }
+        changed = true
+      }
+      return changed ? next : prev
+    })
+    // app 每次渲染都是新引用，用这几条稳定串驱动（内容不变就不重跑）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspacePathList, conversationIdList, app.activeWorkspaceId])
 
   /**
    * 关掉**指定会话**的某个标签（内容随之卸载：该条终端会话被掐、文件树的展开状态丢掉）。
