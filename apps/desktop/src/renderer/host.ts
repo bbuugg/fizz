@@ -25,6 +25,7 @@ import {
   type SshConnectProgress
 } from '@fizz/contracts/agent-api'
 import { agentBrowserSessionId } from '@fizz/contracts'
+import { invokeWithAbort } from '@fizz/agent-host/channels'
 import type {
   AgentTransportBridge,
   AgentTransportRequest,
@@ -59,6 +60,8 @@ const TERMINAL_FONT_KEY = 'fizz.desktop.terminalFontSize'
 const NULL_BODY_STATUS = new Set([101, 204, 205, 304])
 
 let streamSeq = 0
+let httpRequestSeq = 0
+const httpRequestPrefix = Math.random().toString(36).slice(2, 8)
 
 /**
  * 是否 dev（渲染进程由 Vite dev server 提供 → `http://`；生产走 `file://`）。
@@ -281,7 +284,20 @@ function createIpcFetch(bridge: AgentTransportBridge): typeof fetch {
       return openSse(bridge, request, init?.signal ?? null)
     }
 
-    const res = await bridge.request(request)
+    const signal = init?.signal
+    if (signal?.aborted) throw new DOMException('请求已中止', 'AbortError')
+
+    let res: Awaited<ReturnType<AgentTransportBridge['request']>>
+    if (signal) {
+      const requestId = `http-${httpRequestPrefix}-${++httpRequestSeq}`
+      res = await invokeWithAbort(
+        signal,
+        () => bridge.request({ ...request, requestId }),
+        () => bridge.cancelRequest(requestId)
+      )
+    } else {
+      res = await bridge.request(request)
+    }
     if (DEV) {
       console.log(`[api] ← ${res.status} ${method} ${request.path}（${Date.now() - started}ms）`)
       if (typeof res.body === 'string' && res.body) {

@@ -10,7 +10,7 @@ export interface UploadAdapter {
    * 落存储并返回对外 URL。local 返回相对 `/api/uploads/<uuid>.<ext>`（由 GET 路由
    * 公开服务）；远端存储适配器可直接返回绝对 https URL（不经过本地 GET 路由）。
    */
-  put(input: { name: string; mediaType: string; bytes: Uint8Array }): Promise<{ url: string }>
+   put(input: { name: string; mediaType: string; bytes: Uint8Array; signal?: AbortSignal }): Promise<{ url: string }>
   /** 该 URL 是否由本适配器管辖（chat-turn 校验附件引用归属用，防任意 URL 注入历史） */
   owns(url: string): boolean
   /**

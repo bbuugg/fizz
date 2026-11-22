@@ -62,6 +62,10 @@ import {
 import { NEW_TAB_KEY } from "@fizz/agent-kit/shared/lib/panel-tabs";
 import type { NewInWorkspaceKind } from "@fizz/agent-kit/shared/lib/new-in-workspace";
 import { CommandPalette } from "@fizz/agent-kit/shell/CommandPalette";
+import {
+  setCommandPaletteOpener,
+  type CommandPaletteEntry,
+} from "@fizz/agent-kit/shared/lib/command-palette";
 import { useWorkspaceAddActions } from "@fizz/agent-kit/features/chat/workspace-add-actions";
 import { ScriptRunHost } from "@fizz/agent-kit/features/scripts/RunScriptDialog";
 import { ImportConversationDialog } from "@fizz/agent-kit/features/projects/ImportConversationDialog";
@@ -277,6 +281,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteEntry, setPaletteEntry] = useState<CommandPaletteEntry>("root");
+  const [paletteSession, setPaletteSession] = useState(0);
 
   /**
    * 打开命令面板：先收抽屉，再开面板。
@@ -287,9 +293,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    * 顶栏那颗搜索与快捷键分发共用这一条。前者点击时抽屉必然是关的，后者是外接键盘
    * 按下的 —— 抽屉开着时多收一次而已，没有副作用（这也是它不带条件的原因）。
    */
-  const openCommandPalette = useCallback(() => {
+  const openCommandPalette = useCallback((entry: CommandPaletteEntry = "root") => {
+    if (paletteOpen) return;
     setMobileSidebarOpen(false);
+    setPaletteEntry(entry);
+    setPaletteSession((session) => session + 1);
     setPaletteOpen(true);
+  }, [paletteOpen]);
+
+  /** 为共享工作区选择器注册入口；effect 重放后会重新注册，闭包始终读取最新状态。 */
+  const openCommandPaletteRef = useRef(openCommandPalette);
+  openCommandPaletteRef.current = openCommandPalette;
+  useEffect(() => {
+    const opener = (entry: CommandPaletteEntry): void => openCommandPaletteRef.current(entry);
+    setCommandPaletteOpener(opener);
+    return () => setCommandPaletteOpener(null);
   }, []);
 
   /*
@@ -740,9 +758,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             />
             {/* 命令面板：打开快捷键由上面的分发处理 */}
             <CommandPalette
+              key={paletteSession}
               app={app}
               open={paletteOpen}
               onOpenChange={setPaletteOpen}
+              initialPage={paletteEntry}
               onOpenConversation={openConversation}
               shortcuts={shortcuts}
               theme={theme}

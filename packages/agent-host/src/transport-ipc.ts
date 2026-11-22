@@ -62,8 +62,15 @@ interface StreamHandle {
   sender: WebContents
 }
 
+interface HttpRequestHandle {
+  controller: AbortController
+  sender: WebContents
+}
+
 /** 活跃的 SSE 读流。key 是渲染端给的 streamId */
 const streams = new Map<string, StreamHandle>()
+/** 活跃的一次性请求。key 是渲染端给的 requestId（桌面上传取消用） */
+const httpRequests = new Map<string, HttpRequestHandle>()
 /** PTY 会话归属：sessionId → 打开它的 webContents（窗口销毁时收掉它的终端） */
 const ptyOwners = new Map<string, WebContents>()
 /**
@@ -76,6 +83,10 @@ const ptyOwners = new Map<string, WebContents>()
 const wsStreams = new Map<string, WebSocket>()
 /** WS 归属：streamId → 打开它的 webContents（窗口销毁时一并收掉） */
 const wsOwners = new Map<string, WebContents>()
+
+function httpRequestKey(sender: WebContents, requestId: string): string {
+  return `${sender.id}:${requestId}`
+}
 
 // ---------------------------------------------------------------------------
 // WS 下行合批
@@ -141,6 +152,15 @@ function dropStreamsOf(sender: WebContents): void {
   }
 }
 
+/** 页面卸载 / 窗口关闭时中止它发起的普通 HTTP 请求（例如仍在上传的附件）。 */
+function dropHttpRequestsOf(sender: WebContents): void {
+  for (const [id, handle] of httpRequests) {
+    if (handle.sender !== sender) continue
+    httpRequests.delete(id)
+    handle.controller.abort()
+  }
+}
+
 /**
  * 收掉这个 webContents 开的 WS 桥。顺序与 `wsClose` 一致：**先冲尾巴、再摘 owner、
  * 最后 close**（合批器发消息时按 streamId 找发送方，见 `onSend` / `onclose` 的注释）。
@@ -181,6 +201,7 @@ function hookLifecycle(sender: WebContents): void {
   hooked.add(sender)
   sender.once('destroyed', () => {
     dropStreamsOf(sender)
+    dropHttpRequestsOf(sender)
     // 它开的终端也一并杀掉（shell 是给人交互用的，窗口都没了就没人看了）
     for (const [id, owner] of ptyOwners) {
       if (owner !== sender) continue
@@ -193,6 +214,7 @@ function hookLifecycle(sender: WebContents): void {
   sender.on('did-start-navigation', (details) => {
     if (!details.isMainFrame || details.isSameDocument) return
     dropStreamsOf(sender)
+    dropHttpRequestsOf(sender)
     dropWsOf(sender)
   })
 }
@@ -231,15 +253,37 @@ export function registerAgentTransportIpc(): void {
   // 闸的取舍值得一整段注释，塞这里会把传输桥的文件头淹掉。
   registerLocalFileIpc()
 
-  ipcMain.handle(AGENT_IPC.http, async (_event, input: AgentTransportRequest): Promise<AgentHttpResponse> => {
-    const res = await backendManager.fetch(buildRequest(input))
-    const body = await res.arrayBuffer()
-    return {
-      status: res.status,
-      statusText: res.statusText,
-      headers: [...res.headers.entries()],
-      body
+  ipcMain.handle(AGENT_IPC.http, async (event, input: AgentTransportRequest): Promise<AgentHttpResponse> => {
+    const controller = new AbortController()
+    const requestId = input.requestId
+    const key = requestId ? httpRequestKey(event.sender, requestId) : undefined
+    if (key) {
+      hookLifecycle(event.sender)
+      httpRequests.set(key, { controller, sender: event.sender })
     }
+    try {
+      const res = await backendManager.fetch(buildRequest(input, controller.signal))
+      const body = await res.arrayBuffer()
+      return {
+        status: res.status,
+        statusText: res.statusText,
+        headers: [...res.headers.entries()],
+        body
+      }
+    } finally {
+      if (key && httpRequests.get(key)?.controller === controller) {
+        httpRequests.delete(key)
+      }
+    }
+  })
+
+  ipcMain.handle(AGENT_IPC.httpCancel, (event, requestId: string): void => {
+    const key = httpRequestKey(event.sender, requestId)
+    const handle = httpRequests.get(key)
+    // A renderer may only cancel requests it owns.
+    if (!handle || handle.sender !== event.sender) return
+    httpRequests.delete(key)
+    handle.controller.abort()
   })
 
   ipcMain.handle(

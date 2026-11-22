@@ -539,7 +539,9 @@ async function collectImages(
       continue
     }
     // 远端地址不下载：只认「工作区里的文件」和「本轮自己上传的附件」
-    if (/^[a-z][a-z0-9+.-]*:/i.test(ref)) {
+    // Windows 盘符路径也是绝对工作区路径，不应被当成 URI scheme 拒绝。
+    const windowsAbsolutePath = /^[a-z]:[\\/]/i.test(ref)
+    if (!windowsAbsolutePath && /^[a-z][a-z0-9+.-]*:/i.test(ref)) {
       skipped.push(`${ref}（只支持工作区路径或本轮上传的图片）`)
       continue
     }
@@ -838,7 +840,8 @@ export function buildDelegationTools(
           const refs =
             explicit.length > 0
               ? explicit
-              : (opts.images?.attachments ?? []).map((a) => a.name || a.url)
+              // URL 是上传附件的唯一句柄；文件名可能重复，按文件名去重会静默漏图。
+              : (opts.images?.attachments ?? []).map((a) => a.url)
           const picked = await collectImages(refs, imageBackend, opts.images)
           // 一张都没拿到就别空跑：父模型拿到原因才能换来源或去问用户
           if (picked.images.length === 0) {

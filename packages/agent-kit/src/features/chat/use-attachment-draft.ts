@@ -15,6 +15,7 @@ import {
   nextAttachmentId,
   readImagePreview,
   sendableAttachments,
+  shouldStartAttachmentUpload,
   splitUploadable,
   type ChatAttachment,
 } from "@fizz/agent-kit/shared/lib/attachments";
@@ -93,8 +94,8 @@ export function useAttachmentDraft(app: AgentApp): AttachmentDraft {
   /**
    * 每条在途上传一个 AbortController。
    *
-   * 取消 / 移除 / 换会话 / 卸载都要能收掉请求：web 端是 XHR 真 abort；desktop 的 IPC
-   * 桥不转发 AbortSignal（见 AGENTS.md），那边只能靠回调里的 `aborted` 判断把结果丢掉。
+   * 取消 / 移除 / 换会话 / 卸载都要能收掉请求：web 端 abort XHR；desktop 用请求 ID
+   * 通过 IPC 发显式取消。回调仍检查 `aborted`，防止取消与响应同时到达时写回旧草稿。
    */
   const uploadAbortsRef = useRef(new Map<string, AbortController>());
   const cancelUpload = (id: string): void => {
@@ -219,13 +220,22 @@ export function useAttachmentDraft(app: AgentApp): AttachmentDraft {
             .then((previewUrl) => ({ ...placeholder, previewUrl }))
             .catch(() => placeholder)
         : Promise.resolve(placeholder);
+      // 先登记 controller，再等 FileReader：卸载 / 换会话发生在预览读取期间时，
+      // cleanup 也能取消这条尚未发起网络请求的上传。
+      const controller = new AbortController();
+      uploadAbortsRef.current.set(id, controller);
       void withPreview.then((att) => {
         // 会话已切走：占位不能追加进新会话（useEffect 刚清空的正是它）
-        if (useAgentStore.getState().activeConversationId !== pickedIn) return;
+        if (!shouldStartAttachmentUpload(
+          controller.signal,
+          pickedIn,
+          useAgentStore.getState().activeConversationId
+        )) {
+          uploadAbortsRef.current.delete(id);
+          return;
+        }
         attachmentsRef.current = [...attachmentsRef.current, att];
         setAttachments(attachmentsRef.current);
-        const controller = new AbortController();
-        uploadAbortsRef.current.set(id, controller);
         void api
           .uploadFile(file, {
             signal: controller.signal,

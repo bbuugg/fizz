@@ -552,8 +552,8 @@ export function createApi(
       opts?: {
         onProgress?: (percent: number) => void;
         /**
-         * 取消信号。web 端会真 abort XHR；desktop 的 IPC 桥**不转发** AbortSignal
-         * （见 AGENTS.md），那边只能由调用方在回调里判 `aborted` 把结果丢掉。
+         * 取消信号。web 端 abort XHR；desktop 桥不序列化 AbortSignal，而是用 requestId
+         * 发显式 IPC 取消请求（服务端持续运行的后台任务仍要走自己的 cancel API）。
          */
         signal?: AbortSignal;
         /** 用哪个上传源；缺省 = 服务端的内置存储（见 `listUploadProviders`） */

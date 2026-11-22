@@ -42,6 +42,8 @@ export interface UploadPutInput {
   name: string
   mediaType: string
   bytes: Uint8Array
+  /** 上传被用户取消或请求断开时触发；异步上传源应尽快中止上游请求并清理临时数据。 */
+  signal?: AbortSignal
   /** 当前项目根目录（项目级插件按它分流；用户级插件一般用不到） */
   workspacePath?: string
 }
@@ -61,7 +63,10 @@ export interface UploadProviderSpec {
   accept?: UploadProviderAccept
   /** `false` = 不在前端选择器里出现（只想被显式指定时用）；缺省 = 出现 */
   selectable?: boolean
-  /** 落存储并返回对外 URL。抛错 = 这次上传失败（错误原话会回给用户） */
+  /**
+   * 落存储并返回对外 URL。抛错 = 这次上传失败（错误原话会回给用户）。
+   * 若有 `input.signal`，应在取消时中止上游请求并清理未完成的远端对象。
+   */
   put(input: UploadPutInput): Promise<{ url: string }>
   /**
    * 交给模型的绝对地址；缺省 = 原样返回（返回公网 https 的适配器不用实现它）。

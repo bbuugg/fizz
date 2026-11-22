@@ -36,6 +36,9 @@ export function createAgentTransportBridge(): AgentTransportBridge {
     request: (input: AgentTransportRequest) =>
       ipcRenderer.invoke(AGENT_IPC.http, input) as Promise<AgentHttpResponse>,
 
+    cancelRequest: (requestId: string) =>
+      ipcRenderer.invoke(AGENT_IPC.httpCancel, requestId) as Promise<void>,
+
     openSse: (input: AgentSseOpenRequest) =>
       ipcRenderer.invoke(AGENT_IPC.sseOpen, input) as Promise<AgentSseOpenResult>,
 

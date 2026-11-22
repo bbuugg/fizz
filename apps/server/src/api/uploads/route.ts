@@ -55,17 +55,21 @@ export async function POST(request: Request): Promise<Response> {
 
   // 先把「已签发」表读回来再写：避免读盘结果覆盖刚记下的一条（同一进程里两者都写这张表）
   await initUploadTrust()
+  if (request.signal.aborted) return new Response(null, { status: 499 })
 
   try {
     const { url, providerId: used } = await putWithProvider({
       workspaceId,
       workspacePath,
       providerId,
+      signal: request.signal,
       input: { name, mediaType: body.mediaType, bytes, workspacePath }
     })
+    if (request.signal.aborted) throw new DOMException('上传已取消', 'AbortError')
     recordIssuedUpload(url, body.mediaType)
     return Response.json({ url, name, mediaType: body.mediaType, size: bytes.length, provider: used })
   } catch (err) {
+    if (request.signal.aborted) return new Response(null, { status: 499 })
     const message = err instanceof Error ? err.message : String(err)
     // 客户端能自己改的（未知上传源 / 类型不支持 / 太大）回 400，其余（上游报错、超时、
     // 插件返回值越界）回 500 —— 前端两种都直接把 message 显示出来

@@ -698,6 +698,16 @@ function renderBuiltinDirect(
   if (part.isError === true) return { content: null, detail }
   // 结果文本：抠不出来（结构化对象 / 还没结果）就不硬造一块 —— 有结果才给
   const outputText = toolOutputText(output)
+  if (name === 'task_wait') {
+    return {
+      content: outputText ? (
+        <MessageResponse className="px-2 py-1.5 tracking-[0.02em]">
+          {outputText}
+        </MessageResponse>
+      ) : null,
+      detail
+    }
+  }
   // bash 的结果文本只有 stdout / stderr / 退出码标记（与 dsh 的 renderResult 一致），
   // 不带命令行 —— 所以这里必须补一行 `$ 命令`，否则用户看不出这条输出来自哪条命令。
   const echo = isExec ? `$ ${subject}` : ''
