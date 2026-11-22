@@ -22,7 +22,7 @@
  * 另一个地方含糊带过。确认后调 `onDelete(target, force)`，真正的命令与刷新在调用方。
  */
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, GitBranch, GitBranchPlus, Trash2 } from 'lucide-react'
+import { ChevronDown, GitBranch, GitBranchPlus, Pencil, Trash2 } from 'lucide-react'
 import type { GitBranchesResult } from '@fizz/git'
 import {
   AlertDialog,
@@ -128,8 +128,11 @@ export interface BranchPickerProps {
   /** 打开面板时刷新分支清单（调用方自己发请求） */
   onOpen?: () => void
   onCheckout: (ref: string) => void | Promise<void>
-  /** 给了才在底部出现「新建分支…」的内联表单（从当前 HEAD 新建） */
-  onCreate?: (name: string) => void | Promise<void>
+  /**
+   * 给了才在底部出现「新建分支…」的内联表单。`from` = 起点分支（本地或远端 ref），
+   * 不传 = 从当前 HEAD 切 —— 用户在表单里可以用「起点」那颗按钮改。
+   */
+  onCreate?: (name: string, from?: string) => void | Promise<void>
   /**
    * 底部「新建分支…」交给调用方自己开弹窗（`GitPanel` 的新建分支要选起点，比内联表单
    * 复杂）。与 `onCreate` 二选一：给了 `onCreate` 就走内联表单。
@@ -139,6 +142,8 @@ export interface BranchPickerProps {
   onInit?: () => void | Promise<void>
   /** 确认框点过「删除」之后调用；不传 = 不画垃圾桶 */
   onDelete?: (target: BranchDeleteTarget, force: boolean) => void | Promise<void>
+  /** 本地分支改名（`git branch -m`）；不传 = 不画铅笔 */
+  onRename?: (from: string, to: string) => void | Promise<void>
   side?: 'top' | 'bottom'
   align?: 'start' | 'end' | 'center'
 }
@@ -160,6 +165,7 @@ export function BranchPicker({
   onRequestCreate,
   onInit,
   onDelete,
+  onRename,
   side = 'bottom',
   align = 'start'
 }: BranchPickerProps) {
@@ -170,8 +176,15 @@ export function BranchPicker({
   const [query, setQuery] = useState('')
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
+  /** 新建分支的起点（空串 = 当前 HEAD） */
+  const [newFrom, setNewFrom] = useState('')
+  /** 正在主列表里挑起点（此时列表展示分支而不是可切换分支的动作） */
+  const [pickingBase, setPickingBase] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<BranchDeleteTarget | null>(null)
   const [deleteForce, setDeleteForce] = useState(false)
+  /** 正在改名的本地分支（null = 没开弹窗）；输入值单独存，取消即丢 */
+  const [renameTarget, setRenameTarget] = useState<string | null>(null)
+  const [renameName, setRenameName] = useState('')
 
   const text = label ?? branch ?? emptyLabel ?? tr('Git')
 
@@ -179,6 +192,8 @@ export function BranchPicker({
   const reset = (): void => {
     setCreating(false)
     setNewName('')
+    setNewFrom('')
+    setPickingBase(false)
     setQuery('')
   }
 
@@ -186,6 +201,21 @@ export function BranchPicker({
   const match = (name: string): boolean => !keyword || name.toLowerCase().includes(keyword)
   const local = (branches?.branches ?? []).filter(match)
   const remote = (branches?.remotes ?? []).filter(match)
+  /**
+   * 还没有任何提交（`git init` 之后）：`git branch` 一条 ref 都没有，`checkout -b` 只是给
+   * 这根「未出生」的分支改个名 —— 命令返回成功，但分支清单依然空白。服务端现在直接拒
+   * （见 git/action 路由），这里也不摆「新建分支…」入口，空态改成「先提交一次」。
+   *
+   * 判据：仓库里一条本地 / 远端 ref 都没有，且仍挂在某个分支名上（分离头指针是有提交的，
+   * `branch` 为 null，不算）。
+   */
+  const noCommits =
+    isRepo &&
+    !loading &&
+    branches !== null &&
+    branches.branches.length === 0 &&
+    branches.remotes.length === 0 &&
+    branch !== null
 
   /** 确认框里显示的分支全名（远端带上远端名，免得看不出推的是哪条） */
   const deleteLabel =
@@ -194,14 +224,15 @@ export function BranchPicker({
       : (deleteTarget?.name ?? '')
 
   /**
-   * 行尾那颗垃圾桶：与会话行同一套「hover 整行才浮现」的底板（`RowAction`）。
+   * 行尾动作按钮：与会话行同一套「hover 整行才浮现」的底板（`RowAction`）。
    * 只改 `opacity`，不挪布局 —— 槽位一直占着（`PickerItem` 的 `action`）。
    * 触摸设备没有 hover 态，常显。
    */
-  const deleteClass = cn(
+  const iconActionClass = cn(
     ROW_ACTION_CLASS,
-    'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 hover:text-destructive'
+    'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100'
   )
+  const deleteClass = cn(iconActionClass, 'hover:text-destructive')
 
   const select = async (ref: string): Promise<void> => {
     if (busy) return
@@ -214,9 +245,13 @@ export function BranchPicker({
   const submitCreate = async (): Promise<void> => {
     const name = newName.trim()
     if (!name || !onCreate) return
-    close()
-    reset()
-    await onCreate(name)
+    const from = newFrom || undefined
+    // **不关面板**（用户要求）：建完当场就能看到新分支并继续操作，只把底部表单收起来
+    setCreating(false)
+    setNewName('')
+    setNewFrom('')
+    setPickingBase(false)
+    await onCreate(name, from)
   }
 
   const confirmDelete = async (): Promise<void> => {
@@ -226,6 +261,29 @@ export function BranchPicker({
     setDeleteTarget(null)
     setDeleteForce(false)
     await onDelete(target, force)
+  }
+
+  /** 改名表单能不能提交：非空、不能同名、不能以 `-` 开头或带空白（与服务端同一套校验） */
+  const renameTo = renameName.trim()
+  const canRename =
+    !!renameTarget &&
+    !!renameTo &&
+    renameTo !== renameTarget &&
+    !renameTo.startsWith('-') &&
+    !/\s/.test(renameTo) &&
+    !busy
+
+  const cancelRename = (): void => {
+    setRenameTarget(null)
+    setRenameName('')
+  }
+
+  const submitRename = async (): Promise<void> => {
+    const from = renameTarget
+    if (!from || !canRename || !onRename) return
+    setRenameTarget(null)
+    setRenameName('')
+    await onRename(from, renameTo)
   }
 
   /** 行尾动作（删除）：不看 `onDelete` 就给不画 */
@@ -247,6 +305,26 @@ export function BranchPicker({
         className={deleteClass}
       >
         <Trash2 className="size-3.5" />
+      </button>
+    </IconTip>
+  )
+
+  /** 行尾动作（改名）：只对本地分支有意义，排在垃圾桶左侧 */
+  const renameAction = (name: string): React.ReactNode => (
+    <IconTip label={tr('重命名分支')}>
+      <button
+        type="button"
+        aria-label={tr('重命名分支 {name}', { name })}
+        disabled={busy}
+        // 同行内嵌按钮：不拦的话点铅笔会顺手把这条分支检出
+        onClick={(e) => {
+          e.stopPropagation()
+          setRenameName(name)
+          setRenameTarget(name)
+        }}
+        className={iconActionClass}
+      >
+        <Pencil className="size-3.5" />
       </button>
     </IconTip>
   )
@@ -320,6 +398,31 @@ export function BranchPicker({
                     className="h-8 text-xs"
                     autoFocus
                   />
+                  {/*
+                    起点：默认当前 HEAD，点一下把上面的列表切成分支清单去挑（本地 / 远端都行）。
+                    **不用 Select** —— Radix Select 的内容是 portal，点它会被外层 Popover 判成
+                    「点在外面」直接关掉面板；用面板自己的列表挑就不存在这层冲突。
+                  */}
+                  <button
+                    type="button"
+                    title={tr('选择从哪条分支创建（默认当前 HEAD）')}
+                    onClick={() => {
+                      setPickingBase((value) => !value)
+                      setQuery('')
+                    }}
+                    className="flex h-7 w-full items-center gap-1.5 rounded-md bg-muted px-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <GitBranch className="size-3.5 shrink-0" />
+                    <span className="min-w-0 flex-1 truncate text-left">
+                      {tr('起点：{from}', { from: newFrom || tr('当前 HEAD') })}
+                    </span>
+                    <ChevronDown
+                      className={cn(
+                        'size-3 shrink-0 transition-transform',
+                        pickingBase && 'rotate-180'
+                      )}
+                    />
+                  </button>
                   <div className="flex justify-end gap-1">
                     <Button
                       type="button"
@@ -341,27 +444,35 @@ export function BranchPicker({
                   </div>
                 </form>
               </PickerFooter>
-            ) : !isRepo ? undefined : onCreate ? (
-              <PickerFooter>
-                <PickerAction icon={<GitBranchPlus />} onClick={() => setCreating(true)}>
-                  {tr('新建分支…')}
-                </PickerAction>
-              </PickerFooter>
-            ) : onRequestCreate ? (
+            ) : !isRepo || !(onCreate || onRequestCreate) ? undefined : (
+              /*
+                底部动作**始终占一行**（有提交时可用、还没有提交时禁用）：
+                分支清单是打开面板后才读回来的，若「要不要画这一行」跟着数据变，
+                面板会先长出一行再缩回去 —— 高度跳一下（用户报过）。
+                没有提交时置灰即可，理由由上面的空态说明（「先提交一次」）。
+              */
               <PickerFooter>
                 <PickerAction
                   icon={<GitBranchPlus />}
+                  disabled={busy || noCommits}
                   onClick={() => {
+                    if (noCommits) return
+                    if (onCreate) {
+                      setNewFrom('')
+                      setPickingBase(false)
+                      setCreating(true)
+                      return
+                    }
                     // 先关面板：调用方会开自己的弹窗（要选起点），留着只会两层叠在一起
                     close()
                     reset()
-                    onRequestCreate()
+                    onRequestCreate?.()
                   }}
                 >
                   {tr('新建分支…')}
                 </PickerAction>
               </PickerFooter>
-            ) : undefined
+            )
           }
         >
           {isRepo ? (
@@ -369,8 +480,8 @@ export function BranchPicker({
               autoFocus={!isMobile}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder={tr('搜索分支')}
-              aria-label={tr('搜索分支')}
+              placeholder={pickingBase ? tr('搜索起点分支') : tr('搜索分支')}
+              aria-label={pickingBase ? tr('搜索起点分支') : tr('搜索分支')}
             />
           ) : null}
           <PickerList>
@@ -387,30 +498,36 @@ export function BranchPicker({
               ) : (
                 <PickerEmpty>{tr('当前工作区还不是 Git 仓库')}</PickerEmpty>
               )
-            ) : loading ? (
-              <PickerEmpty>{tr('读取分支…')}</PickerEmpty>
-            ) : local.length === 0 && remote.length === 0 ? (
-              <PickerEmpty>
-                {keyword ? tr('没有匹配的分支') : tr('没有可切换的分支')}
-              </PickerEmpty>
-            ) : (
-              /* 一颗 provider 管整张列表：提示只在名字真被截断时才挂（见 `BranchName`），
-                 `delayDuration` 给 400ms —— 鼠标扫过一行不该立刻冒气泡 */
+            ) : creating && pickingBase ? (
+              /*
+                挑起点：复用主列表（本地 / 远端分组 + 搜索），选中即回到表单。
+                这里不摆改名 / 删除按钮 —— 这一步只是选一个 ref。
+              */
               <TooltipProvider delayDuration={400}>
+                <PickerItem
+                  value="base:head"
+                  icon={<GitBranch />}
+                  reserveCheck={false}
+                  active={newFrom === ''}
+                  onSelect={() => {
+                    setNewFrom('')
+                    setPickingBase(false)
+                  }}
+                >
+                  {tr('当前 HEAD')}
+                </PickerItem>
                 {local.length ? <PickerLabel>{tr('本地分支')}</PickerLabel> : null}
                 {local.map((name) => (
                   <PickerItem
-                    key={`local:${name}`}
-                    value={`local:${name}`}
+                    key={`base-local:${name}`}
+                    value={`base-local:${name}`}
                     icon={<GitBranch />}
-                    active={name === branch}
-                    // 当前所在的分支不能删（git 会拒）：不摆垃圾桶，免得点了才被拒
-                    action={
-                      onDelete && name !== branch
-                        ? deleteAction({ kind: 'local', name }, tr('删除分支 {name}', { name }))
-                        : undefined
-                    }
-                    onSelect={() => void select(name)}
+                    reserveCheck={false}
+                    active={newFrom === name}
+                    onSelect={() => {
+                      setNewFrom(name)
+                      setPickingBase(false)
+                    }}
                   >
                     <BranchName name={name} />
                   </PickerItem>
@@ -418,9 +535,100 @@ export function BranchPicker({
                 {remote.length ? <PickerLabel>{tr('远端分支')}</PickerLabel> : null}
                 {remote.map((name) => (
                   <PickerItem
+                    key={`base-remote:${name}`}
+                    value={`base-remote:${name}`}
+                    icon={<GitBranch />}
+                    reserveCheck={false}
+                    active={newFrom === name}
+                    onSelect={() => {
+                      setNewFrom(name)
+                      setPickingBase(false)
+                    }}
+                  >
+                    <BranchName name={name} />
+                  </PickerItem>
+                ))}
+              </TooltipProvider>
+            ) : loading ? (
+              <PickerEmpty>{tr('读取分支…')}</PickerEmpty>
+            ) : local.length === 0 && remote.length === 0 ? (
+              <PickerEmpty>
+                {noCommits
+                  ? tr('还没有任何分支（先提交一次）')
+                  : keyword
+                    ? tr('没有匹配的分支')
+                    : tr('没有可切换的分支')}
+              </PickerEmpty>
+            ) : (
+              /* 一颗 provider 管整张列表：提示只在名字真被截断时才挂（见 `BranchName`），
+                 `delayDuration` 给 400ms —— 鼠标扫过一行不该立刻冒气泡 */
+              <TooltipProvider delayDuration={400}>
+                {local.length ? <PickerLabel>{tr('本地分支')}</PickerLabel> : null}
+                {local.map((name) =>
+                  /* 行内改名（与侧栏会话行同一套：Enter 提交、Esc / 失焦取消）。
+                     这一行**不走 PickerItem**：cmdk 的行会把输入框里的键盘抢去做「选中 = 检出」。 */
+                  renameTarget === name ? (
+                    <div key={`local:${name}`} className="flex items-center gap-2.5 px-2.5 py-1">
+                      <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground [&_svg]:size-4">
+                        <GitBranch />
+                      </span>
+                      <Input
+                        autoFocus
+                        value={renameName}
+                        onChange={(e) => setRenameName(e.target.value)}
+                        onKeyDown={(e) => {
+                          // 别让 cmdk 根的键盘处理抢走回车 / 方向键
+                          e.stopPropagation()
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            void submitRename()
+                          } else if (e.key === 'Escape') {
+                            e.preventDefault()
+                            cancelRename()
+                          }
+                        }}
+                        onBlur={cancelRename}
+                        // 描边主题色（与会话行内改名一致）：默认 `--input` 灰看不出正在改哪行
+                        className="h-6 min-w-0 flex-1 rounded border-primary px-1.5 py-0 text-sm focus-visible:border-primary"
+                      />
+                    </div>
+                  ) : (
+                    <PickerItem
+                      key={`local:${name}`}
+                      value={`local:${name}`}
+                      icon={<GitBranch />}
+                      reserveCheck={false}
+                      active={name === branch}
+                      /*
+                        行尾动作：铅笔（改名）+ 垃圾桶（删除）。删不了「当前所在的分支」
+                        （git 会拒），但**改名可以改当前分支**（HEAD 跟着改名，不切走）。
+                      */
+                      action={
+                        onRename || (onDelete && name !== branch) ? (
+                          <span className="flex items-center gap-0.5">
+                            {onRename ? renameAction(name) : null}
+                            {onDelete && name !== branch
+                              ? deleteAction(
+                                  { kind: 'local', name },
+                                  tr('删除分支 {name}', { name })
+                                )
+                              : null}
+                          </span>
+                        ) : undefined
+                      }
+                      onSelect={() => void select(name)}
+                    >
+                      <BranchName name={name} />
+                    </PickerItem>
+                  )
+                )}
+                {remote.length ? <PickerLabel>{tr('远端分支')}</PickerLabel> : null}
+                {remote.map((name) => (
+                  <PickerItem
                     key={`remote:${name}`}
                     value={`remote:${name}`}
                     icon={<GitBranch />}
+                    reserveCheck={false}
                     active={name === branch}
                     action={
                       onDelete

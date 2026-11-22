@@ -37,12 +37,26 @@ describe('advanceLiveTps', () => {
     expect(state?.outputTokens).toBe(2)
   })
 
+  it('显示值按 500ms 节流、且取整（不保留小数）', () => {
+    let state = advanceLiveTps(null, text('abcd'), 1_000)
+    state = advanceLiveTps(state, text('abcd'), 1_200)
+    // 200ms 窗口、2 token → 10 tok/s
+    expect(state?.tps).toBe(10)
+    // 还没到下一个刷新点：瞬时值是 7.5，但显示值不动
+    state = advanceLiveTps(state, text('abcd'), 1_400)
+    expect(state?.tps).toBe(10)
+    // 攒够 500ms 后重算：800ms 窗口、4 token → 5 tok/s（整数）
+    state = advanceLiveTps(state, text('abcd'), 1_800)
+    expect(state?.tps).toBe(5)
+  })
+
   it('空串增量不算输出帧，保持同一个引用', () => {
     const state: LiveTpsState = {
       genMs: 0,
       lastAt: 1_000,
       outputTokens: 1,
       tps: 0,
+      tpsAt: 0,
       streamedToolCalls: []
     }
     expect(advanceLiveTps(state, text(''), 2_000)).toBe(state)

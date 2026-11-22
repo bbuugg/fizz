@@ -252,11 +252,36 @@ export async function POST(
       if (name.startsWith('-') || /\s/.test(name)) return jsonError(400, `分支名不合法：${name}`)
       const from = (body.from ?? '').trim()
       if (from.startsWith('-')) return jsonError(400, `起点不合法：${from}`)
+      /**
+       * 还没有任何提交时**不许新建分支**：`git init` 之后 HEAD 是「未出生」的分支，
+       * `checkout -b x` 只是把这根未出生分支改个名 —— 命令退出码是 0，但 `git branch`
+       * 一条 ref 都不会多出来（引用要等第一次提交才创建）。用户看到「新建成功」、
+       * 回头 `git branch` 却空白，就是这条。返回一句人话，让界面能当场说清。
+       */
+      const head = await gitAt(root, ['rev-parse', '--verify', 'HEAD'])
+      if (!head.ok) return jsonError(400, '这个仓库还没有任何提交：先提交一次再新建分支')
       const exists = await gitAt(root, ['show-ref', '--verify', '--quiet', `refs/heads/${name}`])
       if (exists.ok) return jsonError(400, `分支 ${name} 已经存在`)
       const res = await gitAt(root, from ? ['checkout', '-b', name, from] : ['checkout', '-b', name])
       if (!res.ok) return jsonError(400, res.stderr || '新建分支失败')
       return Response.json({ output: outputOf(res) })
+    }
+
+    case 'rename-branch': {
+      const from = (body.from ?? '').trim()
+      const to = (body.to ?? '').trim()
+      if (!from || !to) return jsonError(400, '分支名不能为空')
+      const bad = [from, to].find((n) => n.startsWith('-') || /\s/.test(n))
+      if (bad) return jsonError(400, `分支名不合法：${bad}`)
+      if (from === to) return jsonError(400, '新分支名和原名一样')
+      const hasFrom = await gitAt(root, ['show-ref', '--verify', '--quiet', `refs/heads/${from}`])
+      if (!hasFrom.ok) return jsonError(400, `本地分支 ${from} 不存在`)
+      const hasTo = await gitAt(root, ['show-ref', '--verify', '--quiet', `refs/heads/${to}`])
+      if (hasTo.ok) return jsonError(400, `本地分支 ${to} 已经存在`)
+      // `git branch -m` 对「当前所在分支」也成立：只改引用名，HEAD 指过去，工作区不动
+      const res = await gitAt(root, ['branch', '-m', from, to])
+      if (!res.ok) return jsonError(400, res.stderr || '重命名分支失败')
+      return Response.json({ output: `已把本地分支 ${from} 重命名为 ${to}` })
     }
 
     case 'delete-branch': {

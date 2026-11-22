@@ -186,7 +186,8 @@ function PickerNote({ className, ...props }: React.ComponentProps<'p'>) {
  * 行高 32px（`py-1.5` + 20px 行高）：与全局其它下拉 / 菜单项同一档。**别往回调到
  * `py-2.5`** —— 那是第一版照参考图放大的值，用户实测「单个菜单的高度有点高」。
  *
- * 勾用**固定占位**：有没有选中都不改行宽，切到名字最长的那一项时面板宽度才不会跳。
+ * 勾默认**固定占位**（有没有选中都不改行宽，切到名字最长的那一项时面板宽度才不会跳）；
+ * 分支清单那类行尾已经有动作按钮的列表可以传 `reserveCheck={false}`，没勾就不占位。
  * 必须在 `PickerPanel` 里用（它渲染的是 cmdk 的 item）。
  */
 function PickerItem({
@@ -194,6 +195,7 @@ function PickerItem({
   hint,
   action,
   active = false,
+  reserveCheck = true,
   className,
   children,
   ...props
@@ -209,6 +211,12 @@ function PickerItem({
    * 显隐由调用方控制（`group-hover:opacity-100` 即可，行本身带 `group`）。
    */
   action?: React.ReactNode
+  /**
+   * 那枚勾**没选中时也占一格**（默认 true）：切换选中项时行宽不跳，适合名称长度差异大的
+   * 列表（工作区 / 模型）。false = 只有选中那一行才画出勾，其它行不留空位
+   * （分支清单这类，右侧删除 / 改名按钮已经占着，勾位白留反而更碎）。
+   */
+  reserveCheck?: boolean
 }) {
   return (
     <CommandItem
@@ -225,9 +233,11 @@ function PickerItem({
         <span className="max-w-[45%] shrink-0 truncate text-xs text-muted-foreground">{hint}</span>
       ) : null}
       {action ? <span className="flex shrink-0 items-center">{action}</span> : null}
-      <span className="flex size-4 shrink-0 items-center justify-center">
-        {active ? <CheckIcon className="size-4 text-foreground" /> : null}
-      </span>
+      {reserveCheck || active ? (
+        <span className="flex size-4 shrink-0 items-center justify-center">
+          {active ? <CheckIcon className="size-4 text-foreground" /> : null}
+        </span>
+      ) : null}
     </CommandItem>
   )
 }

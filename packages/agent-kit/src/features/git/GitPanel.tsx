@@ -1107,6 +1107,9 @@ export function GitPanel({
               : app.gitAction(workspaceId, { action: 'delete-branch', name: target.name, force })
           )
         }
+        onRename={(from, to) =>
+          void run(() => app.gitAction(workspaceId, { action: 'rename-branch', from, to }))
+        }
       />
     )
   }

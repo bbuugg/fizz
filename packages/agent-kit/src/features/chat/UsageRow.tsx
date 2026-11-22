@@ -115,7 +115,8 @@ export function UsageRow({
                   : t("仅算模型生成的时间（工具执行与等待不计）")
               }
             >
-              {usage ? usage.tps : `≈${estimated?.tps ?? 0}`}
+              {/* 速度只显示整数：一位小数在那个字号下只是噪音（用户要求） */}
+              {usage ? Math.round(usage.tps) : `≈${Math.round(estimated?.tps ?? 0)}`}
             </span>
             <span className="text-muted-foreground">tok/s</span>
             {totalMs === undefined ? null : (

@@ -99,14 +99,26 @@ function BranchPill({ app, editable }: { app: AgentApp; editable: boolean }) {
       ? tr('当前分支：{branch}（会话中不能切分支）', { branch: label })
       : tr('会话中不能初始化仓库')
 
-  const loadBranches = (): void => {
+  /**
+   * 读分支清单。
+   *
+   * `silent` = 面板已经开着、手上有一份清单时用（改名 / 新建 / 删除 / 初始化之后）：
+   * **不置 loading、不清旧数据**，结果回来原地替换。否则面板会先缩成「读取分支…」
+   * 再长回列表 —— 高度跳一下（用户报过）。
+   */
+  const loadBranches = (silent = false): void => {
     if (!workspaceId) return
-    setLoading(true)
+    if (!silent) setLoading(true)
     void app
       .gitBranches(workspaceId)
       .then(setBranches)
-      .catch(() => setBranches(null))
-      .finally(() => setLoading(false))
+      .catch(() => {
+        // 静默刷新失败就保留旧清单（别把列表清成「读取分支…」）
+        if (!silent) setBranches(null)
+      })
+      .finally(() => {
+        if (!silent) setLoading(false)
+      })
   }
 
   /** 切 / 建 / 删之后重读真实分支名，写回当前面板（横条显示的是这份） */
@@ -133,13 +145,14 @@ function BranchPill({ app, editable }: { app: AgentApp; editable: boolean }) {
     }
   }
 
-  const createBranch = async (name: string): Promise<void> => {
+  const createBranch = async (name: string, from?: string): Promise<void> => {
     if (!workspaceId || !name) return
     setBusy(true)
     try {
-      await app.gitAction(workspaceId, { action: 'create-branch', name })
+      // `from` 不传 = 从当前 HEAD 切；面板里可以把起点改成任意本地 / 远端分支
+      await app.gitAction(workspaceId, { action: 'create-branch', name, ...(from ? { from } : {}) })
       await refreshBranch()
-      loadBranches()
+      loadBranches(true)
     } catch (err) {
       toast.error(
         tr('新建分支失败：{error}', {
@@ -159,7 +172,7 @@ function BranchPill({ app, editable }: { app: AgentApp; editable: boolean }) {
       await app.gitAction(workspaceId, { action: 'init' })
       // 面板不关：初始化完当场换成分支清单（不然会停在「没有可切换的分支」）
       await refreshBranch()
-      loadBranches()
+      loadBranches(true)
     } catch (err) {
       toast.error(
         tr('初始化仓库失败：{error}', {
@@ -188,11 +201,33 @@ function BranchPill({ app, editable }: { app: AgentApp; editable: boolean }) {
           ? { action: 'delete-remote-branch', remote: target.remote, branch: target.branch }
           : { action: 'delete-branch', name: target.name, force }
       )
-      loadBranches()
+      loadBranches(true)
       await refreshBranch()
     } catch (err) {
       toast.error(
         tr('删除分支失败：{error}', {
+          error: err instanceof Error ? err.message : String(err)
+        })
+      )
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * 本地分支改名（`git branch -m`）：只动引用名，提交与工作区内容都不变；当前分支也能改，
+   * HEAD 会跟着指向新名字。成功后面板不关，分支清单与横条上的当前分支都重读。
+   */
+  const renameBranch = async (from: string, to: string): Promise<void> => {
+    if (!workspaceId) return
+    setBusy(true)
+    try {
+      await app.gitAction(workspaceId, { action: 'rename-branch', from, to })
+      loadBranches(true)
+      await refreshBranch()
+    } catch (err) {
+      toast.error(
+        tr('重命名分支失败：{error}', {
           error: err instanceof Error ? err.message : String(err)
         })
       )
@@ -237,6 +272,7 @@ function BranchPill({ app, editable }: { app: AgentApp; editable: boolean }) {
       onCreate={createBranch}
       onInit={initRepo}
       onDelete={deleteBranch}
+      onRename={renameBranch}
       side="top"
       align="start"
     />

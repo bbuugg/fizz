@@ -32,6 +32,14 @@ import type { AgentStreamEvent } from '@fizz/contracts/types'
 /** 与服务端 `TPS_IDLE_GAP_MS` 一致：超过这个间隔就当模型没在吐字 */
 const IDLE_GAP_MS = 1000
 
+/**
+ * 对外显示的 `tps` 最短刷新间隔（毫秒）。
+ *
+ * 生成窗口与 token 数每来一帧都在变，但**显示值**没必要跟着每帧跳：一秒钟几十次改数字
+ * 只会晃眼。这里攒够 500ms 才重算一次（2 次/秒），中间各帧只累计内部量。
+ */
+const TPS_REFRESH_MS = 500
+
 export interface LiveTpsState {
   /** 已累计的生成窗口（毫秒），口径见文件头 */
   genMs: number
@@ -39,8 +47,10 @@ export interface LiveTpsState {
   lastAt: number | null
   /** 按字符估算的累计输出 token（含思考与工具入参） */
   outputTokens: number
-  /** 对外显示的 tok/s（保留一位小数；还没采到间隔时为 0） */
+  /** 对外显示的 tok/s（**整数**，每 `TPS_REFRESH_MS` 才重算一次） */
   tps: number
+  /** 上一次重算 `tps` 的时刻（0 = 还没算过） */
+  tpsAt: number
   /** 已经按增量计过入参的 toolCallId（完整 `tool-call` 到达时不再重复计） */
   streamedToolCalls: string[]
 }
@@ -123,6 +133,7 @@ export function advanceLiveTps(
     lastAt: null,
     outputTokens: 0,
     tps: 0,
+    tpsAt: 0,
     streamedToolCalls: []
   }
 
@@ -156,7 +167,12 @@ export function advanceLiveTps(
       break
   }
 
-  const tps =
-    genMs > 0 ? Math.round((outputTokens / (genMs / 1000)) * 10) / 10 : 0
-  return { genMs, lastAt: now, outputTokens, tps, streamedToolCalls }
+  // 显示值按 `TPS_REFRESH_MS` 节流（见常量注释）；整数，不保留小数
+  let tps = prev.tps
+  let tpsAt = prev.tpsAt
+  if (genMs > 0 && now - prev.tpsAt >= TPS_REFRESH_MS) {
+    tps = Math.round(outputTokens / (genMs / 1000))
+    tpsAt = now
+  }
+  return { genMs, lastAt: now, outputTokens, tps, tpsAt, streamedToolCalls }
 }

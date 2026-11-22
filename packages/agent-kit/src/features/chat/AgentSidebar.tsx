@@ -917,7 +917,8 @@ export function AgentSidebar({
               }
             }}
             onBlur={() => setRenamingId(null)}
-            className="h-6 min-w-0 flex-1 rounded px-1.5 py-0 text-sm"
+            // 行内编辑的描边用主题色：默认的 `--input` 灰在侧栏底色上几乎看不出来「正在改哪一行」
+            className="h-6 min-w-0 flex-1 rounded border-primary px-1.5 py-0 text-sm focus-visible:border-primary"
           />
         ) : (
           // 平时**不留**内边距（标题吃满整行宽度），只在浮层要压上来时才让出 `pe-20`。
@@ -1415,7 +1416,8 @@ export function AgentSidebar({
                   }
                 }}
                 onBlur={() => setRenamingId(null)}
-                className="h-6 min-w-0 flex-1 rounded px-1.5 py-0 text-sm"
+                // 与上面会话行内改名同一套：描边走主题色（默认 `--input` 灰看不清）
+                className="h-6 min-w-0 flex-1 rounded border-primary px-1.5 py-0 text-sm focus-visible:border-primary"
               />
             ) : (
               // `data-name-text`：被 `group-hover:pe-14` 挤成省略号时由 lib/hover-reveal.ts

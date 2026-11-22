@@ -196,6 +196,13 @@ export const CHAT: Record<string, string> = {
   '查找文件': 'Find files',
   '搜索内容': 'Search contents',
   '读取文件': 'Read file',
+  '重命名分支': 'Rename branch',
+  '重命名分支 {name}': 'Rename branch {name}',
+  '重命名分支失败：{error}': 'Failed to rename branch: {error}',
+  '选择从哪条分支创建（默认当前 HEAD）':
+    'Choose the base branch (current HEAD by default)',
+  '起点：{from}': 'Base: {from}',
+  '搜索起点分支': 'Search base branches',
   '{tps} tok/s': '{tps} tok/s',
   '实时输出速度（按字符估算）：{tps} tokens/秒。轮次结束后以服务端统计为准。':
     'Live output speed (estimated from characters): {tps} tokens/s. Replaced by server-side stats when the turn ends.',

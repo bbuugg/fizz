@@ -172,6 +172,14 @@ export type GitActionInput =
   /** 新建分支并切过去；`from` 不给 = 从当前 HEAD 切（可以是分支名、远端分支或提交 hash） */
   | { action: 'create-branch'; name: string; from?: string }
   /**
+   * **重命名本地分支**（`git branch -m <from> <to>`）：只改引用名，提交与工作区内容都不动；
+   * 当前所在分支也能改名（HEAD 会跟着指向新名字，不会切走）。
+   *
+   * 与 `create-branch` 同一套名字校验（非空、不以 `-` 开头、不含空白）；目标名已存在时
+   * 由服务端直接拒（`git branch -m` 报「already exists」的原话不够清楚）。
+   */
+  | { action: 'rename-branch'; from: string; to: string }
+  /**
    * **删除本地分支**（`git branch --delete`）。破坏性，界面必须二次确认。
    *
    * 默认只删**已合并**的分支（判定交给 git 做，不自己算 merge-base）：分支上还有没并进
