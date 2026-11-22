@@ -91,15 +91,6 @@ import {
   DropdownMenuTrigger
 } from '@fizz/ui/dropdown-menu'
 import { Input } from '@fizz/ui/input'
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectTrigger,
-  SelectValue
-} from '@fizz/ui/select'
 import { FileDiffView } from '@fizz/agent-kit/features/git/FileDiffView'
 import { ChangeTreeList } from '@fizz/agent-kit/features/git/GitChangeTree'
 import { BranchPicker } from '@fizz/agent-kit/features/chat/BranchPicker'
@@ -194,9 +185,6 @@ function gitToastError(message: string): void {
   toast.error(message, GIT_TOAST)
 }
 
-/** 「新建分支」里「起点 = 当前 HEAD」的哨兵值（Radix 的 SelectItem 不接受空字符串） */
-const NEW_BRANCH_HEAD = '__head__'
-
 /** 历史提交每页条数：点「加载更多」时按这个值用 `skip` 往后翻 */
 const HISTORY_PAGE_SIZE = 30
 
@@ -270,10 +258,6 @@ export function GitPanel({
   const [openKey, setOpenKey] = useState<string | null>(null)
   const [diff, setDiff] = useState<DiffHunk[] | null>(null)
   const [diffLoading, setDiffLoading] = useState(false)
-  /** 「新建分支」弹窗：分支名 + 起点（`NEW_BRANCH_HEAD` = 从当前 HEAD 切） */
-  const [newBranchOpen, setNewBranchOpen] = useState(false)
-  const [newBranchName, setNewBranchName] = useState('')
-  const [newBranchFrom, setNewBranchFrom] = useState(NEW_BRANCH_HEAD)
   /**
    * 「管理远端」弹窗：列出全部远端，可增 / 改地址 / 删。
    * 没有远端时点「推送」「拉取」会直接开到这儿 —— 省得用户去终端敲 remote add。
@@ -686,24 +670,6 @@ export function GitPanel({
   /** 贮藏栈（最近一次在前）；不是仓库 / 还没加载完时是空数组 */
   const stashes = status?.stashes ?? []
   const canCommit = !!message.trim() && stagedChanges.length > 0 && !busy
-  const canCreateBranch = newBranchName.trim().length > 0 && !busy
-
-  /** 从选中的起点切出一条新分支（起点不选 = 当前 HEAD，分离头指针下也能用） */
-  async function createBranch(): Promise<void> {
-    const name = newBranchName.trim()
-    if (!name) return
-    await run(async () => {
-      const output = await app.gitAction(workspaceId, {
-        action: 'create-branch',
-        name,
-        from: newBranchFrom === NEW_BRANCH_HEAD ? undefined : newBranchFrom
-      })
-      // 成功才关弹窗（失败时留着输入，让用户改个名字再来）
-      setNewBranchOpen(false)
-      setNewBranchName('')
-      return output
-    }, undefined, 'create-branch')
-  }
 
   /** 「管理远端」弹窗里那个表单能不能提交（改地址时名字是锁死的，不用再校验） */
   const canSaveRemote =
@@ -1089,13 +1055,17 @@ export function GitPanel({
         onCheckout={(ref) =>
           void run(() => app.gitAction(workspaceId, { action: 'checkout', ref }))
         }
-        // 新建分支的弹窗要选起点（当前 HEAD / 任意分支），比内联表单复杂：面板里的
-        // 「新建分支…」只负责把它开出来（原先挂在头部「更多」里，现在收进分支面板）
-        onRequestCreate={() => {
-          setNewBranchName('')
-          setNewBranchFrom(NEW_BRANCH_HEAD)
-          setNewBranchOpen(true)
-        }}
+        // 新建分支：与 composer 同一套内联表单（分支名 + 起点），不再另开弹窗 ——
+        // 两处长一样、行为也才一致（创建后面板不关，原地看到新分支）
+        onCreate={(name, from) =>
+          void run(() =>
+            app.gitAction(workspaceId, {
+              action: 'create-branch',
+              name,
+              ...(from ? { from } : {})
+            })
+          )
+        }
         onDelete={(target, force) =>
           void run(() =>
             target.kind === 'remote'
@@ -1650,83 +1620,6 @@ export function GitPanel({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      {/*
-        新建分支：从「当前 HEAD」或任意本地 / 远端分支切一条新分支出来并切过去。
-        这里用 Dialog 而不是在分支下拉里塞输入框 —— 下拉菜单是 modal 层，关闭时会收回
-        body 的 pointer-events，紧接着开另一个 modal 层容易点不动（经典竞态）。
-        起点用哨兵值而不是空字符串：Radix 的 SelectItem 不接受 value=""。
-      */}
-      <Dialog open={newBranchOpen} onOpenChange={setNewBranchOpen}>
-        <DialogContent className="sm:max-w-[380px]">
-          <DialogHeader>
-            <DialogTitle>{t('新建分支')}</DialogTitle>
-            <DialogDescription>
-              {t('从下面的起点切出一条新分支并切过去（当前未提交的改动会跟着带到新分支）。')}
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-2">
-            <Input
-              variant="muted"
-              value={newBranchName}
-              onChange={(e) => setNewBranchName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && canCreateBranch) {
-                  e.preventDefault()
-                  void createBranch()
-                }
-              }}
-              placeholder={t('分支名，如 feature/login')}
-              autoFocus
-            />
-            <Select value={newBranchFrom} onValueChange={setNewBranchFrom}>
-              <SelectTrigger variant="muted" className="w-full" title={t('从哪切出来')}>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent position="popper" className="max-h-72">
-                <SelectItem value={NEW_BRANCH_HEAD}>
-                  {branchLabel ? t('当前 HEAD（{branch}）', { branch: branchLabel }) : t('当前 HEAD')}
-                </SelectItem>
-                {branches?.branches.length ? (
-                  <SelectGroup>
-                    <SelectLabel>{t('本地分支')}</SelectLabel>
-                    {branches.branches.map((name) => (
-                      <SelectItem key={`local:${name}`} value={name}>
-                        {name}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                ) : null}
-                {branches?.remotes.length ? (
-                  <SelectGroup>
-                    <SelectLabel>{t('远端分支（会带上游跟踪）')}</SelectLabel>
-                    {branches.remotes.map((name) => (
-                      <SelectItem key={`remote:${name}`} value={name}>
-                        {name}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                ) : null}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <DialogFooter>
-            <Button data-dialog-dismiss="" variant="ghost" className="h-8!" onClick={() => setNewBranchOpen(false)}>
-              {t('取消')}
-            </Button>
-            <SpinnerButton
-              className="h-8!"
-              disabled={!canCreateBranch}
-              loading={busyAction === 'create-branch'}
-              onClick={() => void createBranch()}
-            >
-              {t('创建并切换')}
-            </SpinnerButton>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/*
         回退确认：丢掉未提交的内容是不可恢复的，所以**必须**由用户点过确认才动手。

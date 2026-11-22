@@ -133,11 +133,6 @@ export interface BranchPickerProps {
    * 不传 = 从当前 HEAD 切 —— 用户在表单里可以用「起点」那颗按钮改。
    */
   onCreate?: (name: string, from?: string) => void | Promise<void>
-  /**
-   * 底部「新建分支…」交给调用方自己开弹窗（`GitPanel` 的新建分支要选起点，比内联表单
-   * 复杂）。与 `onCreate` 二选一：给了 `onCreate` 就走内联表单。
-   */
-  onRequestCreate?: () => void
   /** 不是仓库时面板里的「初始化仓库」 */
   onInit?: () => void | Promise<void>
   /** 确认框点过「删除」之后调用；不传 = 不画垃圾桶 */
@@ -162,7 +157,6 @@ export function BranchPicker({
   onOpen,
   onCheckout,
   onCreate,
-  onRequestCreate,
   onInit,
   onDelete,
   onRename,
@@ -444,7 +438,7 @@ export function BranchPicker({
                   </div>
                 </form>
               </PickerFooter>
-            ) : !isRepo || !(onCreate || onRequestCreate) ? undefined : (
+            ) : !isRepo || !onCreate ? undefined : (
               /*
                 底部动作**始终占一行**（有提交时可用、还没有提交时禁用）：
                 分支清单是打开面板后才读回来的，若「要不要画这一行」跟着数据变，
@@ -457,16 +451,9 @@ export function BranchPicker({
                   disabled={busy || noCommits}
                   onClick={() => {
                     if (noCommits) return
-                    if (onCreate) {
-                      setNewFrom('')
-                      setPickingBase(false)
-                      setCreating(true)
-                      return
-                    }
-                    // 先关面板：调用方会开自己的弹窗（要选起点），留着只会两层叠在一起
-                    close()
-                    reset()
-                    onRequestCreate?.()
+                    setNewFrom('')
+                    setPickingBase(false)
+                    setCreating(true)
                   }}
                 >
                   {tr('新建分支…')}
