@@ -12,7 +12,7 @@
  * - **左**：抽屉开关（唯一的侧栏入口，见 `mobile-sidebar.ts`）；
  * - **中**：留白。会话名在**会话内容的工具条**里（`ConversationTab` 的 `ViewHeader`），
  *   这里再显示一遍就是同一行字出现两次；
- * - **右**：后台任务徽标、SFTP 传输徽标、命令面板、AI 助手开关（前两个有事才出现，见下）。
+ * - **右**：后台任务徽标、SFTP 传输徽标、AI 助手开关、命令面板（前两个有事才出现，见下）。
  *   命令面板是手机上唯一的入口 —— 正文的会话搜索、新建工作区、切主题都在那里面。
  *
  * ## 单标签：没有标签条，也没有标签列表
@@ -125,17 +125,6 @@ export function MobileAppBar({
       */}
       <TransferBadge side="bottom" contentClassName="w-[calc(100vw-1rem)]" />
 
-      {/* 命令面板：手机唯一入口（见上面 prop 的注释），与助手的触摸尺寸同一套 */}
-      <Button
-        variant="ghost"
-        className={BAR_BUTTON}
-        aria-label={tr('搜索')}
-        title={tr('搜索')}
-        onClick={onOpenCommandPalette}
-      >
-        <Search className="size-5" />
-      </Button>
-
       {/*
         AI 助手开关：颜色即状态（收起灰 / 展开主题色），
         与桌面那颗 `AiAssistantButton` 同一套语义，只是尺寸按手机的触摸目标放大。
@@ -150,6 +139,18 @@ export function MobileAppBar({
         onClick={() => setAssistantPanelOpen(!assistantOpen)}
       >
         <Sparkles className="size-5" />
+      </Button>
+
+      {/* 命令面板：手机唯一入口（见上面 prop 的注释），与助手的触摸尺寸同一套。
+          放在 AI 助手右边，是顶栏最右一颗（用户要求） */}
+      <Button
+        variant="ghost"
+        className={BAR_BUTTON}
+        aria-label={tr('搜索')}
+        title={tr('搜索')}
+        onClick={onOpenCommandPalette}
+      >
+        <Search className="size-5" />
       </Button>
     </header>
   )
