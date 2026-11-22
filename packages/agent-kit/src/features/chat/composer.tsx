@@ -840,12 +840,20 @@ export function Composer({
 
                     收起时按钮仍在 DOM 里，`inert` + `aria-hidden` 一起退场 ——
                     否则 Tab 还会停在那颗看不见的箭头上。
+
+                    **收起（点发送）不走补间、直接落定 0ms**：那一拍同时发生「输入框清空 →
+                    整卡高度重排」和「流式首帧开始 → 每帧重渲对话区」，宽度补间是主线程
+                    layout + 整套玻璃材质重绘，被挤在一起就掉帧（用户报过「动画卡顿」）。
+                    展开是空闲态、没有竞争，保留 200ms 补间。
                   */}
                   <span
                     aria-hidden={!showChooser || undefined}
                     inert={!showChooser || undefined}
-                    className="flex min-w-0 overflow-hidden transition-[width] duration-200 ease-out motion-reduce:transition-none"
-                    style={{ width: showChooser ? SPLIT_HALF_WIDTH : 0 }}
+                    className="flex min-w-0 overflow-hidden transition-[width] ease-out motion-reduce:transition-none"
+                    style={{
+                      width: showChooser ? SPLIT_HALF_WIDTH : 0,
+                      transitionDuration: showChooser ? '200ms' : '0ms'
+                    }}
                   >
                     <span className="flex shrink-0 items-stretch" style={{ width: SPLIT_HALF_WIDTH }}>
                       {/* 分隔线用前景半透明而不是 border 变量：药丸底是主色，描边色在暗色下几乎看不见 */}
