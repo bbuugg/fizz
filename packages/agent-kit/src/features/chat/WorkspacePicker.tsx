@@ -90,7 +90,7 @@ export interface WorkspacePickerProps {
 }
 
 /**
- * 标题句里那颗 token 的尺寸，全部按 `load.txt` 里 demo 的 CSS 折算成 em（原值按字号 48px）：
+ * 标题句里那颗 token 的尺寸，按原型 CSS 折算成 em（原型按字号 48px 给出）：
  *
  * | demo | 原值 | 这里 |
  * | --- | --- | --- |
@@ -172,8 +172,7 @@ export function WorkspacePicker({
   const close = (): void => setOpen(false)
 
   /**
-   * 标题句入口的宽度 —— **直接照抄** inline-text-morph 那颗 token 的做法（原实现见仓库
-   * 根目录 `load.txt` 的 `InlineTextMorphEngine` / `inlineMorph`）：宽度不走 CSS transition，
+   * 标题句入口的宽度 —— 沿用 inline-text-morph 那颗 token 的弹簧做法：宽度不走 CSS transition，
    * 而是每帧按弹簧积分推进：
    *
    *   velocity += ((target - width) * 600 - velocity * 34) * step   // 每帧 4 个子步
@@ -324,13 +323,13 @@ export function WorkspacePicker({
       <PopoverTrigger asChild>
         {variant === 'inline' ? (
           /*
-            标题句里的 token —— 长相照抄 `load.txt` 里 demo 的 `.itm-token`（尺寸见文件头常量表）：
+            标题句里的 token —— 长相沿用原型里的 `.itm-token`（尺寸见文件头常量表）：
 
             - 胶囊底不是铺满整颗 token：它只有 1.142em 高、中心再往下 0.066em，圆角 999px
-              （demo 用 `::before` 干这事，这里用一层绝对定位的 span）；
+              （原型用 `::before` 干这事，这里用一层绝对定位的 span）；
             - 左边一枚图标窗（1.354em），名字从 1.614em 处开始，右边留 0.28em；
             - 没选工作区时没有字，只剩图标与胶囊底 —— 不用下划线字符，换字体 / 换语言都不变形；
-            - 宽度由弹簧逐帧写进 `style.width`（demo 的 tick 积分），整句 flex 居中会自己重排；
+            - 宽度由弹簧逐帧写进 `style.width`（原型的 tick 积分），整句 flex 居中会自己重排；
             - 换工作区时图标弹一下（scale .4 → 1.1 → 1 / -16° → +5° → 0），名字逐字从下方顶上来。
           */
           <button

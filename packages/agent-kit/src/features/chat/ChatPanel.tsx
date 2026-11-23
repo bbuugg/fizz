@@ -767,6 +767,8 @@ function ChatPanelInner({
         }
         /* 工具卡里的文件名点开 → 右侧「文件」面板（见上面 workspaceFileOpener） */
         fileOpener={workspaceFileOpener}
+        /* 输入框上方「后台任务」入口要按会话拉在跑的命令（子智能体入口不走它） */
+        app={app}
       />
       {/* 消息区划选 → 浮出「引用」按钮。浮层自挂 body（fixed），放在渲染树哪一层都行 */}
       <MessageQuoteLayer onQuote={(q) => setQuotes((prev) => [...prev, q])} />

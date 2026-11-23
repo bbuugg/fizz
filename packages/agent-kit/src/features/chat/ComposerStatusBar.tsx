@@ -16,7 +16,7 @@
  * 那颗共用一份实现（见 `BranchPicker.tsx`）。这里只剩「composer 特有的那截」：读当前
  * 工作区的分支、按会话是否在跑决定置灰、以及四个写动作成功后的刷新与 toast。
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { GitBranch } from 'lucide-react'
 import { toast } from 'sonner'
 import { Skeleton } from '@fizz/ui/skeleton'
@@ -50,6 +50,8 @@ function BranchPill({ app, editable }: { app: AgentApp; editable: boolean }) {
   /** 切换工作区后、新仓库的分支读回来之前：显示骨架，别让旧分支名留在横条上 */
   const [branchLoading, setBranchLoading] = useState(false)
   const [busy, setBusy] = useState(false)
+  /** 分支清单请求的代次：换工作区后旧请求的结果必须丢掉（否则旧仓库的清单会晚到覆盖） */
+  const branchLoadGen = useRef(0)
 
   const applyStatus = (status: Awaited<ReturnType<typeof app.gitStatus>>): void => {
     patchActivePanel({
@@ -66,7 +68,17 @@ function BranchPill({ app, editable }: { app: AgentApp; editable: boolean }) {
    * effect 每帧重跑（项目里这条坑踩过多次）。
    */
   useEffect(() => {
-    if (!workspaceId) return
+    // 换工作区（或被删 / 取消选择）：旧仓库的分支清单、在途请求与 loading 都作废
+    branchLoadGen.current += 1
+    setBranches(null)
+    setLoading(false)
+    if (!workspaceId) {
+      // 上一次请求的 cleanup 会把它自己的 `finally` 置为不生效，这里必须自己收骨架屏；
+      // 横条上也不能继续挂着上一个工作区的分支名
+      setBranchLoading(false)
+      if (branch) patchActivePanel({ gitBranch: null })
+      return
+    }
     let cancelled = false
     setBranchLoading(true)
     void app
@@ -108,15 +120,20 @@ function BranchPill({ app, editable }: { app: AgentApp; editable: boolean }) {
    */
   const loadBranches = (silent = false): void => {
     if (!workspaceId) return
+    const gen = ++branchLoadGen.current
     if (!silent) setLoading(true)
     void app
       .gitBranches(workspaceId)
-      .then(setBranches)
+      .then((result) => {
+        if (branchLoadGen.current === gen) setBranches(result)
+      })
       .catch(() => {
         // 静默刷新失败就保留旧清单（别把列表清成「读取分支…」）
-        if (!silent) setBranches(null)
+        if (branchLoadGen.current === gen && !silent) setBranches(null)
       })
       .finally(() => {
+        // 只判 `silent`、不判代次：静默刷新若抢先返回，首个非静默请求的代次已过期，
+        // 再把 `setLoading(false)` 一起跳过就会永远停在「读取分支…」。
         if (!silent) setLoading(false)
       })
   }

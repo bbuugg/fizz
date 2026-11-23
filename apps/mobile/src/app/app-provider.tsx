@@ -15,6 +15,7 @@
  * - **主区域**：只渲染面板（`PanelView`），数据从 `useAppContext()` 拿。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import type { ShellDetectResult } from '@fizz/shells'
 import type { WorkspaceConfigSnapshot } from '@fizz/contracts/workspace-config'
 import { useAgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
@@ -25,8 +26,8 @@ import { useTerminalShell, getTerminalShell } from '@fizz/agent-kit/shared/lib/t
 import { toTerminalInput } from '@fizz/agent-kit/shared/lib/terminal-input'
 import { prunePanelWidths } from '@fizz/agent-kit/shared/lib/panel-width'
 import { setMobileSidebarOpen, useMobileSidebarOpen } from '@fizz/agent-kit/shared/lib/mobile-sidebar'
-import { allTabKeys, openTab, useIsTabOpen } from '@fizz/agent-kit/shared/lib/panel-store'
-import { NEW_TAB_KEY } from '@fizz/agent-kit/shared/lib/panel-tabs'
+import { allTabKeys, activeTabKey, openTab, useIsTabOpen } from '@fizz/agent-kit/shared/lib/panel-store'
+import { isConversationTabKey, NEW_TAB_KEY } from '@fizz/agent-kit/shared/lib/panel-tabs'
 import {
   aliveTabs,
   draftPanelKey,
@@ -34,6 +35,9 @@ import {
   isDraftPanelKey,
   isTabMounted,
   isTerminalTabKey,
+  mergeDraftPanel,
+  resolvePanelWorkspace,
+  resolveTerminalCwd,
   terminalTabKey,
   withSideTab,
   withoutMounted,
@@ -152,6 +156,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // 会话面板现场：**按会话常驻、隐藏不销毁**（状态在这里，跨导航存活）
   // ---------------------------------------------------------------------------
   const [panelSessions, setPanelSessions] = useState<Record<string, PanelSession>>({})
+  /**
+   * 最新面板现场的 ref：`openTerminalTabOf` 要在 **setState 之外**同步解析目录（见那边
+   * 的注释），又不能把 `panelSessions` 整个塞进 useCallback 依赖（每开一条终端都重建，
+   * 快捷命令 / 顶栏按钮会跟着换引用）。
+   */
+  const panelSessionsRef = useRef(panelSessions)
+  panelSessionsRef.current = panelSessions
   // 手机形态的侧栏抽屉：对话工具条的汉堡按钮和外壳都要读写。
   // ⚠️ 这份状态**只有一份**，而且不在这棵 React 树的 useState 里（模块级 + 落盘，
   // 见 `app/layout/mobile-sidebar.ts`）：活动栏竖条在不在是**从它派生**的
@@ -181,6 +192,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 const conversationIdList = app.conversations.map((c) => c.id).join('\n')
 const workspaceIdList = app.workspaces.map((w) => w.id).join('\n')
 /**
+ * 工作区 id + 目录（join 成字符串）：`cwd` 要跟着工作区目录变，光看 id 列表不够
+ * （新建 / 导入的项目会先出现在列表里、路径稍后才填上）。
+ */
+const workspacePathList = app.workspaces.map((w) => `${w.id}=${w.path ?? ''}`).join('\n')
+/**
  * 容器型项目的工作区 id（join 成字符串）：`openTerminalTabOf` 要用它判「默认该开哪种终端」，
  * 而 `app.workspaces` 每次渲染都是新引用 —— 用这个稳定串当依赖，内容不变就不重建回调。
  */
@@ -196,13 +212,18 @@ const containerWorkspaceIdList = app.workspaces
    * 按它自己所属的工作区建（否则文件树 / 终端会挂到错误的工作区上）。
    */
   function blankPanelFor(key: string): PanelSession {
-    const conv = app.conversations.find((c) => c.id === key)
-    const workspaceId = conv?.workspaceId ?? app.activeWorkspaceId ?? ''
-    const workspace = app.workspaces.find((w) => w.id === workspaceId)
+    // 工作区 / cwd 的解析统一走纯函数（列表没就绪时会得到 null，见下面补算的 effect）
+    const { workspaceId, cwd } = resolvePanelWorkspace(
+      key,
+      '',
+      app.conversations,
+      app.workspaces,
+      app.activeWorkspaceId
+    )
     return {
       id: `panel-${++panelSeq}`,
       workspaceId,
-      cwd: workspace?.path ?? null,
+      cwd,
       sideTab: null,
       lastSideTab: null,
       tabOrder: [],
@@ -237,10 +258,62 @@ const containerWorkspaceIdList = app.workspaces
         return { ...prev, [key]: next }
       })
     },
-    // blankPanelFor 每次渲染都是新引用，但它只读 app 的当前值 —— 用这几个驱动即可
+    // blankPanelFor 每次渲染都是新引用，但它只读 app 的当前值 —— 用这几条稳定串驱动即可
+    // （`workspacePathList` 也要在：路径晚于工作区 id 到达时，新建现场得拿到新路径）
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [conversationIdList, workspaceIdList, app.activeWorkspaceId]
+    [conversationIdList, workspaceIdList, workspacePathList, app.activeWorkspaceId]
   )
+
+  /**
+   * 工作区 / 会话列表比首屏晚到：`activeWorkspaceId` 是**同步**从 localStorage 恢复的，
+   * 首次渲染时 `app.workspaces` 还是空数组，`blankPanelFor` 于是把现场建成 `cwd: null`。
+   * 这个空路径会一直缓存在 `panelSessions` 里 —— 表现就是「刷新后停在某个工作区，点终端
+   * 没反应（`openTerminalTabOf` 拿不到 cwd 直接放弃）；切到别的工作区再切回来才好」
+   * （切回来时列表已经加载完，新现场能拿到路径）。
+   *
+   * 列表一到就把现场补算一次。两种情况要修：
+   * - `cwd` 为空（列表晚到 / 建现场那一刻还解析不出来）；
+   * - 现场绑的 `workspaceId` **已经不在清单里**（旧临时工作区被丢弃、项目被删）——
+   *   只看「cwd 非空就跳过」的话，这种现场会一直挂着一条死路径，点终端后 PTY 在
+   *   不存在的目录里起不来（用户看到的还是「打不开」）。
+   *
+   * ⚠️ 这段逻辑 web / desktop 的 `packages/agent-kit/src/shell/app-provider.tsx` 里也有
+   * 一份（手机壳的 Provider 是同一套实现）。改这里时两边一起改 —— 之前终端修复只改了
+   * 那边，手机端仍然是旧逻辑，于是「刷新后点终端打不开」在手机上一修就是好几天。
+   */
+  useEffect(() => {
+    setPanelSessions((prev) => {
+      const known = new Set(app.workspaces.map((w) => w.id))
+      let changed = false
+      const next: Record<string, PanelSession> = {}
+      for (const [key, panel] of Object.entries(prev)) {
+        if (panel.cwd && known.has(panel.workspaceId)) {
+          next[key] = panel
+          continue
+        }
+        const resolved = resolvePanelWorkspace(
+          key,
+          panel.workspaceId,
+          app.conversations,
+          app.workspaces,
+          app.activeWorkspaceId
+        )
+        if (!resolved.cwd) {
+          next[key] = panel
+          continue
+        }
+        if (resolved.cwd === panel.cwd && resolved.workspaceId === panel.workspaceId) {
+          next[key] = panel
+          continue
+        }
+        next[key] = { ...panel, workspaceId: resolved.workspaceId, cwd: resolved.cwd }
+        changed = true
+      }
+      return changed ? next : prev
+    })
+    // app 每次渲染都是新引用，用这几条稳定串驱动（内容不变就不重跑）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspacePathList, conversationIdList, app.activeWorkspaceId])
 
   /**
    * 关掉**指定会话**的某个标签（内容随之卸载：该条终端会话被掐、文件树的展开状态丢掉）。
@@ -394,13 +467,21 @@ const containerWorkspaceIdList = app.workspaces
    */
   const adoptDraftPanel = useCallback(
     (conversationId: string): void => {
-      const from = draftPanelKey(app.activeWorkspaceId)
       setPanelSessions((sessions) => {
-        const draft = sessions[from]
-        if (!draft || sessions[conversationId]) return sessions
+        /*
+         * `from` 按当前工作区算，但**不能只认它**：工作区列表晚到 / 当前工作区被纠正时，
+         * 草稿现场挂在旧 key 上；只按新 key 找会「找不到草稿」→ 草稿里开着的终端留在
+         * 没人认领的 key 上，下一拍被回收 effect 连 PTY 一起清掉。
+         */
+        const from = draftPanelKey(app.activeWorkspaceId)
+        const fromKey = sessions[from] ? from : Object.keys(sessions).find(isDraftPanelKey)
+        const draft = fromKey ? sessions[fromKey] : undefined
+        if (!draft) return sessions
         const next = { ...sessions }
-        delete next[from]
-        next[conversationId] = draft
+        if (fromKey) delete next[fromKey]
+        const existing = next[conversationId]
+        // 目标已有现场（后台 patch 建的空壳）时也把草稿那份并进来，别丢终端 / 文件现场
+        next[conversationId] = existing ? mergeDraftPanel(existing, draft) : draft
         return next
       })
     },
@@ -480,31 +561,53 @@ const containerWorkspaceIdList = app.workspaces
    * —— 容器项目里点终端自然该进容器，宿主 shell 在那个项目里没有意义。
    *
    * 默认 shell 按**目标会话自己所属的工作区**取（多标签 / 分屏下每个会话的工作区可能不同）。
+   *
+   * 返回 `null` = 目标现场没有可用目录、**没开成**。调用方要把 `null` 当失败提示，
+   * 不能像以前那样返回一个「看起来开成了」的 id —— 快捷命令会干等 5 秒再报超时。
    */
   const openTerminalTabOf = useCallback(
     (
       targetKey: string,
       shellId?: string | null,
       container?: { workspaceId: string; shell?: string }
-    ): string => {
+    ): string | null => {
+      /*
+        现场里的 cwd 可能是「工作区列表还没到」或「持久化的工作区已被丢弃」时留下的
+        空值 / 旧路径。**点击这一刻再按最新数据解析一次**，且在 setState 之外算好结果 ——
+        updater 里算的话，解析失败只能吞掉这次点击，调用方拿不到「没开成」。
+      */
+      const live = useAgentStore.getState()
+      const existing = panelSessionsRef.current[targetKey]
+      const resolved = resolveTerminalCwd(
+        targetKey,
+        existing?.workspaceId,
+        existing?.cwd,
+        live.conversations,
+        live.workspaces,
+        live.activeWorkspaceId
+      )
+      // 没有工作区目录开不出终端（虚拟工作区里连入口都不渲染）
+      if (!resolved) return null
       const id = `term-${++termSeqRef.current}`
       const tabKey = terminalTabKey(id)
       patchPanelOf(targetKey, (base) => {
-        // 没有工作区目录开不出终端（虚拟工作区里连入口都不渲染）
-        if (!base.cwd) return null
+        const panel: PanelSession =
+          resolved.cwd === base.cwd && resolved.workspaceId === base.workspaceId
+            ? base
+            : { ...base, workspaceId: resolved.workspaceId, cwd: resolved.cwd }
         // 显式选了宿主 shell 就尊重它，不进容器（用户可能是要 docker 命令本身）
         const containerTarget =
           container ??
           (shellId === undefined &&
-          !!base.workspaceId &&
-          containerWorkspaceIdList.split('\n').includes(base.workspaceId)
-            ? { workspaceId: base.workspaceId }
+          !!panel.workspaceId &&
+          containerWorkspaceIdList.split('\n').includes(panel.workspaceId)
+            ? { workspaceId: panel.workspaceId }
             : undefined)
         const resolvedShell = shellId !== undefined ? shellId : getTerminalShell()
         const tab: TerminalTab = {
           id,
           shellId: resolvedShell,
-          cwd: base.cwd,
+          cwd: resolved.cwd,
           ...(containerTarget
             ? {
                 containerWorkspaceId: containerTarget.workspaceId,
@@ -512,15 +615,29 @@ const containerWorkspaceIdList = app.workspaces
               }
             : {})
         }
-        return focusTab({ ...base, terminals: [...base.terminals, tab] }, tabKey)
+        return focusTab({ ...panel, terminals: [...panel.terminals, tab] }, tabKey)
       })
       return id
     },
     [patchPanelOf, containerWorkspaceIdList]
   )
+  /**
+   * 「当前该往哪份面板现场开终端」：按**焦点标签自己的**面板 key，而不是
+   * `activeConversationId` 派生的 `sessionKey` —— 刷新 / 恢复期间两者会短暂错位
+   * （草稿标签已挂出、当前会话还是旧的 / 反之），按 sessionKey 开终端会落进没挂出来的
+   * 面板，`onReady` 永远不来，快捷命令只能 5 秒超时报错。
+   *
+   * 工具标签 / 没有标签时沿用 `sessionKey`（那些页面没有自己的会话面板现场）。
+   */
+  const terminalTargetKey = useCallback((): string => {
+    const tab = activeTabKey()
+    if (tab === NEW_TAB_KEY) return draftPanelKey(useAgentStore.getState().activeWorkspaceId)
+    if (tab && isConversationTabKey(tab)) return tab
+    return sessionKey
+  }, [sessionKey])
   const openTerminalTab = useCallback(
-    (shellId?: string | null): string => openTerminalTabOf(sessionKey, shellId),
-    [openTerminalTabOf, sessionKey]
+    (shellId?: string | null): string | null => openTerminalTabOf(terminalTargetKey(), shellId),
+    [openTerminalTabOf, terminalTargetKey]
   )
 
   /**
@@ -544,13 +661,15 @@ const containerWorkspaceIdList = app.workspaces
         showSideTabOf(key, terminalTabKey(last.id))
         return
       }
-      openTerminalTabOf(key)
+      if (!openTerminalTabOf(key)) {
+        toast.error('这个工作区没有可用的目录，打不开终端')
+      }
     },
     [panelSessions, collapseSidePanelOf, showSideTabOf, openTerminalTabOf]
   )
   const toggleTerminalPanel = useCallback(
-    (): void => toggleTerminalPanelOf(sessionKey),
-    [toggleTerminalPanelOf, sessionKey]
+    (): void => toggleTerminalPanelOf(terminalTargetKey()),
+    [toggleTerminalPanelOf, terminalTargetKey]
   )
 
   /**
@@ -566,6 +685,11 @@ const containerWorkspaceIdList = app.workspaces
     async (command: string): Promise<void> => {
       if (!app.activeWorkspace?.path) throw new Error('没有选中的工作区')
       const id = openTerminalTab()
+      /*
+       * 没开成要说清原因：以前不管开没开成都返回一个 id，这里只会干等 5 秒再报
+       * 「终端打开超时」—— 真正的原因（工作区目录没了）被完全盖住。
+       */
+      if (!id) throw new Error('这个工作区没有可用的目录，打不开终端')
       if (!terminalProcsRef.current[id]) {
         await new Promise<void>((resolve, reject) => {
           terminalReadyRef.current[id] = resolve

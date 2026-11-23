@@ -6,7 +6,6 @@ import {
 } from "@fizz/agent-kit/features/chat/attachments";
 import { type ChatComposerProps } from "@fizz/agent-kit/features/chat/chat-surface";
 import { ConfirmQueue } from "@fizz/agent-kit/features/chat/ConfirmCard";
-import { BackgroundTaskDock } from "@fizz/agent-kit/features/chat/BackgroundTaskDock";
 import { ModelSelect } from "@fizz/agent-kit/features/chat/ModelSelect";
 import { QuotePreviewRow } from "@fizz/agent-kit/features/chat/quotes";
 import { usePromptInputController } from "@fizz/agent-kit/shared/ai-elements/prompt-input";
@@ -350,14 +349,19 @@ export function useMainComposerProps(
           </ComposerToolbar>
         )}
         {/*
-          会话自己的后台进程（agent 用 runInBackground 起的 dev server / watch）：
-          排在审批卡**之上** —— 审批是「现在必须答」的，任务只是「顺便看一眼」，
-          抢不到位置时就该它让位（面板自己在 min(200px,24vh) 内滚）。
-          没有会话、或这个会话没有后台任务时它自己返回 null，不占位。
+          会话自己的后台进程（agent 用 runInBackground 起的 dev server / watch）**不在这里**：
+          它和「运行中的子智能体」合成了一排入口药丸，挂在 `ChatSurface` 的 `above` 里
+          （见 `ComposerDock`）—— 两块本质是同一件事（「这个会话还有活在后台跑」），
+          分两处渲染就会出现「一排在工具栏上、一张卡在审批卡下」的错位。
+
+          位置：那一排**就贴在这一行的右端**（`ChatSurface` 的 `above` 壳用 `justify-between`
+          把工具栏和它排成一行），不是另起一行挂在下面。所以这一行返回 `null` 时（浏览器
+          没装、也没配 MCP）也要让壳保持满宽 —— 药丸量宽度靠的就是那条壳。
+
+          ⚠️ 上面那一整块在 `cover`（审批卡 / 提问卡）出现时**整块让位**（见
+          `ChatComposer`）：等答复期间发不出消息，工具条点不动，留着只会把「现在必须答」
+          的那张卡往下挤。`ComposerDock` 继承同一套让位规则。
         */}
-        {app.activeConversationId && !isAcp && (
-          <BackgroundTaskDock app={app} conversationId={app.activeConversationId} />
-        )}
       </>
     ),
     /**

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 
-// Adapted from the user-provided Dot Grid Loader in load.txt.
+// Adapted from a user-provided dot-grid loader.
 const SIZE = 360
 const ORBS = [
   { rx: 90, ry: 70, sx: 0.7, sy: 1.1, px: 0, py: 0, pulse: 0 },

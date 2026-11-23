@@ -65,6 +65,12 @@ export class LocalUploadAdapter implements UploadAdapter {
     return /^\/api\/uploads\/[0-9a-f-]{36}\.[a-z0-9]+$/.test(url)
   }
 
+  /** 取消恰好落在提交之后：把这条已经 rename 完成的文件删掉（由注册表在丢弃结果时调用） */
+  async remove(url: string): Promise<void> {
+    if (!this.owns(url)) return
+    await rm(join(uploadsDir(), url.slice('/api/uploads/'.length)), { force: true })
+  }
+
   resolveModelUrl(url: string, origin: string): string {
     const base = process.env.FIZZ_PUBLIC_BASE_URL?.trim().replace(/\/+$/, '') || origin.replace(/\/+$/, '')
     return `${base}${url}`

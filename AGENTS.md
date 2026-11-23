@@ -84,6 +84,7 @@ Fizz 是自托管的 AI Agent 工作台：**所有能力跑在一个 Node 进程
 - 开外链只有一条路：`openExternal`（`@fizz/agent-client`），**别裸调 `window.open`**；协议白名单只在 `agent-host/src/external-link.ts` 一份。
 - **`IconTip` 不能直接套自带 `data-state` 的 Radix 原语**（`Switch` / `Checkbox` / `Toggle`）：`TooltipTrigger asChild` 会注 `data-state="closed"`，而这些原语把外部 props 排在自带 `data-state` 之后 → `checked` 被盖掉、`data-checked:` 规则全失效，控件整个透明只剩 tooltip（2026-11-01 定时任务那颗启停开关就是这么「消失」的）。包一层 `<span className="inline-flex">` 再套。
 - 往终端写多行输入，行分隔符必须是裸回车 `\r`（用 `toTerminalInput()`）：PowerShell 的 LF 会把行插到上方，顺序整个反过来。
+- **面板现场 / 终端开合有两份手抄实现**：`packages/agent-kit/src/shell/app-provider.tsx`（web / desktop）与 `apps/mobile/src/app/app-provider.tsx`（手机壳），不是共享 hook。`panelSessions` / `openTerminalTabOf` / `adoptDraftPanel` / 回收补算这类逻辑**两边一起改**，可复用的判断抽到 `shared/lib/panel-session.ts`（如 `resolveTerminalCwd` / `mergeDraftPanel`）。只改一份的后果就是「刷新后点终端打不开」修了三天还在（手机端一直跑旧逻辑）。
 - 主题必须在首帧前定好（preload + `index.html` 内联脚本），**回落规则在 6 处，改一处必须六处同步**。
 - 文案**中文为源**，英文缺失自动回落，新增文案两边都补。
 

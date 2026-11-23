@@ -39,6 +39,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger
 } from '@fizz/ui/collapsible'
+import { LiquidGlassEdgeLight, useLiquidGlassLens } from '@fizz/ui/liquid-glass'
 import { useConversationOptional } from '@fizz/agent-kit/shared/ai-elements/conversation'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import {
@@ -234,6 +235,8 @@ function FollowupForm({
 
   /** 消息区的滚动上下文（输入框槽位里拿不到，退化成空操作） */
   const conversation = useConversationOptional()
+  /** 提问卡的边缘流光：与输入卡片 / 弹窗同一套 */
+  const lens = useLiquidGlassLens()
 
   /** 多题才有一题一屏 + 左右切换这套导航 */
   const multiple = questions.length > 1
@@ -400,7 +403,8 @@ function FollowupForm({
         aria-label={tr('展开提问卡')}
         title={tr('展开提问卡')}
         onClick={toggleCollapsed}
-        className="group flex w-full items-center gap-2 rounded-xl border border-border bg-card/70 px-3 py-2.5 text-left"
+        {...lens}
+        className="group relative isolate flex w-full items-center gap-2 rounded-xl border border-border bg-card/70 px-3 py-2.5 text-left"
       >
         {/* 左侧文字块：可能只有一行（没标题时就是题干），也可能两行。
             交给外层 `items-center` 让右边那组对**整条**居中，而不是对第一行文字居中对齐 */}
@@ -425,14 +429,16 @@ function FollowupForm({
           {countLabel}
           <ChevronUp className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-primary" />
         </span>
+        <LiquidGlassEdgeLight />
       </button>
     )
   }
 
   return (
     <div
+      {...lens}
       className={cn(
-        'flex max-h-[min(70vh,36rem)] flex-col rounded-xl border border-border bg-card/70 py-2.5',
+        'relative isolate flex max-h-[min(70vh,36rem)] flex-col rounded-xl border border-border bg-card/70 py-2.5',
         // 多题：高度只给下限 —— 选项多了跟着长，但整体高度有上限（见下）
         multiple && 'min-h-[18rem]',
         // 宽度：输入框槽位里撑满；消息流里多题钉死（翻页不左右跳）、单题随内容
@@ -667,6 +673,8 @@ function FollowupForm({
 
         </div>
       </div>
+      {/* 边缘流光：指针在卡片上移动时只亮边框那一圈（与输入卡片 / 弹窗同一套） */}
+      <LiquidGlassEdgeLight />
     </div>
   )
 }

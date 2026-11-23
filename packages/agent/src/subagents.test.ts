@@ -63,7 +63,11 @@ type DelegationTool = {
 
 type WaitTool = {
   description: string
-  execute: (input: { taskId: string }) => Promise<string>
+  execute: (input: {
+    taskIds?: string[]
+    taskId?: string
+    mode?: 'any' | 'all'
+  }) => Promise<string>
 }
 
 type CancelTool = {
@@ -240,6 +244,14 @@ function wait(built: Built, taskId = 'parent-1') {
   return (built.tools.task_wait as WaitTool).execute({ taskId })
 }
 
+/** 批量领取（不传 taskIds = 领取所有未领取的） */
+function waitMany(
+  built: Built,
+  input: { taskIds?: string[]; taskId?: string; mode?: 'any' | 'all' } = {}
+) {
+  return (built.tools.task_wait as WaitTool).execute(input)
+}
+
 /** 主模型主动结束后台子任务（单条也传数组） */
 function cancel(built: Built, input: { taskIds?: string[] } = { taskIds: ['parent-1'] }) {
   return (built.tools.task_cancel as CancelTool).execute(input)
@@ -338,6 +350,131 @@ describe('派活不阻塞父轮', () => {
     expect(out).toContain('没有这个 taskId')
     expect(out).toContain('parent-1')
     await built.settle()
+  })
+})
+
+/**
+ * 批量领取：派了几条就一次领回来。
+ *
+ * 防的是回退到「一次只领一个 taskId」：先领的那条要是很慢，另外两条早就跑完的结论
+ * 也只能陪着干等，三个 60 秒时间片叠起来把父轮拖成三分钟。
+ * 现在的契约：`task_wait` 收 `taskIds` 数组，默认 `any`（谁先好先交谁，并带回此刻
+ * 已就绪的全部），不传 taskIds 就是领取所有未领取的。
+ */
+describe('批量领取子任务结论', () => {
+  it('默认 any：已跑完的立刻交回，不为还在跑的那条干等', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const built = build({ ids: ['explorer', 'reviewer'] })
+    vi.mocked(streamText).mockReset()
+    vi.mocked(streamText)
+      .mockImplementationOnce(
+        ((args: { abortSignal?: AbortSignal }) => hangingStream(args.abortSignal)) as never
+      )
+      .mockReturnValueOnce(fakeStream('快结论：auth 在 src/auth.ts') as never)
+
+    await (built.tools['agent-explorer'] as DelegationTool).execute(
+      { task: '慢活', summary: '慢活' },
+      { toolCallId: 'p1' }
+    )
+    await (built.tools['agent-reviewer'] as DelegationTool).execute(
+      { task: '快活', summary: '快活' },
+      { toolCallId: 'p2' }
+    )
+
+    // 等 p2 自己落地（刻意不走 task_wait：要保持「未领取」）
+    await vi.waitFor(async () => {
+      expect(await listTasks(built)).toContain('已完成')
+    })
+
+    // p1 永远不结束：这里能在测试超时前返回，就说明没有为它等满 60 秒
+    const out = await waitMany(built, { taskIds: ['p1', 'p2'] })
+
+    expect(out).toContain('【已完成 1 条】')
+    expect(out).toContain('快结论：auth 在 src/auth.ts')
+    expect(out).toContain('【还在跑】')
+    expect(out).toContain('p1')
+    await built.settle()
+  })
+
+  it('不传 taskIds：一次领回所有还没领取的结论', async () => {
+    const built = build({ ids: ['explorer', 'reviewer'] })
+    vi.mocked(streamText).mockReset()
+    vi.mocked(streamText)
+      .mockReturnValueOnce(fakeStream('结论甲') as never)
+      .mockReturnValueOnce(fakeStream('结论乙') as never)
+
+    await (built.tools['agent-explorer'] as DelegationTool).execute(
+      { task: '甲', summary: '甲' },
+      { toolCallId: 'p1' }
+    )
+    await (built.tools['agent-reviewer'] as DelegationTool).execute(
+      { task: '乙', summary: '乙' },
+      { toolCallId: 'p2' }
+    )
+    await vi.waitFor(async () => {
+      expect((await listTasks(built)).match(/已完成/g)?.length).toBe(2)
+    })
+
+    const out = await waitMany(built)
+    expect(out).toContain('结论甲')
+    expect(out).toContain('结论乙')
+    // 两条都领走了：不传 taskIds 再来一次没有可领的
+    expect(await waitMany(built)).toContain('都已经领过了')
+    await built.settle()
+  })
+
+  it('mode=all：等到全部（或超时）才返回，超时也把已完成的带上', async () => {
+    vi.useFakeTimers()
+    const built = build({ ids: ['explorer', 'reviewer'] })
+    try {
+      vi.mocked(streamText).mockReset()
+      vi.mocked(streamText)
+        .mockImplementationOnce(
+          ((args: { abortSignal?: AbortSignal }) => hangingStream(args.abortSignal)) as never
+        )
+        .mockReturnValueOnce(fakeStream('快结论') as never)
+
+      await (built.tools['agent-explorer'] as DelegationTool).execute(
+        { task: '慢活', summary: '慢活' },
+        { toolCallId: 'p1' }
+      )
+      await (built.tools['agent-reviewer'] as DelegationTool).execute(
+        { task: '快活', summary: '快活' },
+        { toolCallId: 'p2' }
+      )
+
+      const pending = waitMany(built, { taskIds: ['p1', 'p2'], mode: 'all' })
+      // all 会一直等到慢的那条 —— 超时后仍要把已完成的结论交回
+      await vi.advanceTimersByTimeAsync(60_000)
+      const out = await pending
+
+      expect(out).toContain('快结论')
+      expect(out).toContain('还在跑')
+      expect(out).toContain('本次等待 1 分')
+    } finally {
+      vi.useRealTimers()
+    }
+    await built.settle()
+  })
+
+  it('批量里混入不存在的 id：能领的照常领，失配的单独说明', async () => {
+    const built = build()
+    vi.mocked(streamText).mockReset()
+    vi.mocked(streamText).mockReturnValue(fakeStream('结论在 src/auth.ts') as never)
+    await delegate(built)
+
+    const out = await waitMany(built, { taskIds: ['parent-1', 'nope'] })
+
+    expect(out).toContain('结论在 src/auth.ts')
+    expect(out).toContain('没有这些 taskId：nope')
+  })
+
+  it('工具说明写清了「一次可以传多个 / 默认谁先好先交谁」', () => {
+    const tool = build().tools.task_wait as WaitTool
+
+    expect(tool.description).toContain('多个 taskIds')
+    expect(tool.description).toContain('mode=any')
+    expect(tool.description).toContain('不是每条各 1 分钟')
   })
 })
 

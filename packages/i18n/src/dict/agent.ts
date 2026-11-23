@@ -331,6 +331,9 @@ export const AGENT: Record<string, string> = {
   '正在向上游要模型清单…': 'Requesting model list from upstream…',
   '筛选模型…': 'Filter models…',
   '{id}（已在列表中，取消勾选 = 保存后移出）': '{id} (already in list; uncheck to remove on save)',
+  '已在列表中，取消勾选 = 保存后移出': 'Already in list; uncheck to remove on save',
+  '手动添加：填模型 id（必填）。上游没返回的模型也可以直接加进来。':
+    'Manual add: enter a model id (required). You can also add models that upstream did not return.',
   '已在列表': 'Already in list',
   '保存后移出': 'Removed on save',
   '取消选择 {id}': 'Deselect {id}',

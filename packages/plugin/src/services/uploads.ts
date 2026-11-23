@@ -73,6 +73,11 @@ export interface UploadProviderSpec {
    * 只有「存的是相对地址、或需要拼临时签名」的适配器才需要。
    */
   resolveModelUrl?(url: string, origin: string): string
+  /**
+   * 删掉一条**已经 put 成功**的附件。只在客户端恰好在上传完成那一刻取消、服务端丢弃
+   * 结果时调用，用来收拾孤儿对象。缺省 = 不支持删除（服务端会留下这条对象）。
+   */
+  remove?(url: string): Promise<void>
 }
 
 /** 归一化后的注册项（服务端读这份） */
@@ -84,6 +89,7 @@ export interface UploadProviderRegistration {
   selectable: boolean
   put(input: UploadPutInput): Promise<{ url: string }>
   resolveModelUrl?: (url: string, origin: string) => string
+  remove?(url: string): Promise<void>
   /** 越大越优先；同名冲突时**只认第一条**（见 register 的说明） */
   priority: number
   origin: ToolOrigin
@@ -183,6 +189,7 @@ export class UploadsService extends Service {
       selectable: spec.selectable !== false,
       put: spec.put.bind(spec),
       resolveModelUrl: spec.resolveModelUrl?.bind(spec),
+      remove: spec.remove?.bind(spec),
       priority: opts.priority ?? 0,
       origin: opts.origin ?? 'plugin',
       source: opts.source ?? 'unknown'

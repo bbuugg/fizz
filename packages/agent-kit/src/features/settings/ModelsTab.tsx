@@ -476,8 +476,9 @@ export function ModelsTab({ app }: { app: AgentApp }) {
     const id = manualId.trim()
     if (!id) return
     setManualId('')
-    if (!(fetched ?? []).includes(id) && !manualIds.includes(id)) {
-      setManualIds((prev) => [...prev, id])
+    // 用函数式更新去重：连点两次时两次回调可能拿到同一份旧 `manualIds`
+    if (!(fetched ?? []).includes(id)) {
+      setManualIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
     }
     if ((pickingConfig?.models ?? []).some((model) => model.id === id)) {
       setUnpicked((prev) => prev.filter((m) => m !== id))

@@ -23,6 +23,7 @@ import { WorkBars } from '@fizz/agent-kit/shared/ai-elements/work-bars'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { useVoiceInput } from '@fizz/agent-kit/shared/hooks/useVoiceInput'
 import { useTheme } from '@fizz/agent-kit/shared/hooks/useTheme'
+import { usePrefersReducedMotion } from '@fizz/agent-kit/shared/hooks/usePrefersReducedMotion'
 import { APP_EVENTS } from '@fizz/agent-kit/shared/lib/app-events'
 import { permissionOption, permissionOptions } from '@fizz/agent-kit/shared/lib/permission'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
@@ -38,7 +39,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from '@fizz/ui/dropdown-menu'
-import { LiquidGlassButton, LiquidGlassSurface } from '@fizz/ui/liquid-glass'
+import { GLASS_PANEL_CLASS, LiquidGlassButton, LiquidGlassEdgeLight, LiquidGlassSurface, useLiquidGlassLens } from '@fizz/ui/liquid-glass'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@fizz/ui/select'
 import type { AiPermissionMode } from '@fizz/contracts/types'
 import {
@@ -56,7 +57,7 @@ import {
   Terminal
 } from 'lucide-react'
 import type { DragEvent as ReactDragEvent, ReactNode, RefObject } from 'react'
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 /**
  * 输入行里的 pill 样式（工作区 / 权限 / 模型三个共用一份）。
@@ -112,25 +113,6 @@ export const CHAT_ICON_PILL =
  * 改那几处 padding / 图标尺寸时这里要跟着改。
  */
 const SPLIT_HALF_WIDTH = 'calc(1.375rem + 1px)'
-
-/**
- * 系统「减少动态效果」。
- *
- * 流光是一条持续旋转的动画，在 `prefers-reduced-motion: reduce` 下应当停掉 —— 但别把
- * 状态也一起藏了：收音 / 拖拽仍然需要可见反馈，所以那边退回一圈静态内描边。
- * 用订阅而不是渲染时读一次：系统设置可以随时改，改完界面要跟上。
- */
-function usePrefersReducedMotion(): boolean {
-  return useSyncExternalStore(
-    (onChange) => {
-      const media = window.matchMedia('(prefers-reduced-motion: reduce)')
-      media.addEventListener('change', onChange)
-      return () => media.removeEventListener('change', onChange)
-    },
-    () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-    () => false
-  )
-}
 
 interface ComposerProps {
   value: string
@@ -598,6 +580,8 @@ export function Composer({
    */
   const beamRequested = voice.listening || dragActive
   const beamActive = beamRequested && !reducedMotion
+  /** 输入卡片的边缘流光：指针在卡片上移动时只亮边框那一圈 */
+  const lens = useLiquidGlassLens()
   return (
     <Popover open={paletteVisible}>
       {/*
@@ -614,9 +598,15 @@ export function Composer({
         <PopoverAnchor asChild>
           <div
             // 整张卡片是拖放区（不只 textarea）：拖到卡片任何位置都算「要加进这个输入框」；
-            // `relative` 供拖拽高亮浮层定位
+            // `relative isolate` 供拖拽高亮浮层与边缘流光定位 / 分层
+            {...lens}
             className={cn(
-              'relative rounded-xl border border-border bg-card/70 transition-colors',
+              // 边框与底与「模型选择」那颗 Popover 同一套（`GLASS_PANEL_CLASS`）：
+              // 实色 `--popover` 底 + 淡描边 + 景深投影，不再用半透明的 `bg-card/70`。
+              // ⚠️ 外面的 `BorderBeam` 自带 `overflow-hidden`，这里的投影会被裁掉一截
+              //    —— 勾边仍靠那条淡描边，够用。
+              'relative rounded-xl transition-colors',
+              GLASS_PANEL_CLASS,
               // 拖拽 / 收音的提示交给流光，不再额外改边框色
               // 减少动态效果时的静态替代：`inset` 描边不会被流光容器的 overflow 裁掉
               reducedMotion &&
@@ -895,6 +885,8 @@ export function Composer({
                 </LiquidGlassSurface>
               </div>
             </div>
+            {/* 边缘流光：指针在卡片上移动时只亮边框那一圈（与弹窗 / 选择面板同一套） */}
+            <LiquidGlassEdgeLight />
           </div>
         </PopoverAnchor>
       </BorderBeam>

@@ -317,6 +317,13 @@ export const CHAT: Record<string, string> = {
   '子任务结论': 'Sub-agent result',
   '查看子任务过程': 'View sub-agent process',
   '停止子任务': 'Stop sub-agent',
+  // 输入框上方的两枚活动入口：数量 + 名词拼成「3 个子智能体」，英文侧就是 "3 subagents"
+  '个子智能体': 'subagents',
+  '个后台任务': 'background tasks',
+  '收起子智能体': 'Collapse sub-agents',
+  '展开子智能体（{count} 个运行中）': 'Expand sub-agents ({count} running)',
+  '展开后台任务（{count} 个运行中）': 'Expand background tasks ({count} running)',
+  '展开后台任务（{count} 个已结束）': 'Expand background tasks ({count} finished)',
   '返回主会话': 'Back to conversation',
   '子任务 · {name}': 'Sub-agent · {name}',
   '运行中…': 'Running…',

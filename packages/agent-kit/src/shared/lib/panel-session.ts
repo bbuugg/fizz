@@ -193,6 +193,11 @@ export function isDraftPanelKey(key: string): boolean {
  * `cwd: null`（工作区还不在列表里）。这个空路径一旦写进现场就会被缓存，表现为
  * 「刷新后停在某个工作区，点终端没反应；切走再切回来才好」。工作区 / 会话列表到达后
  * 用本函数把缺目录的现场补算一次即可。
+ *
+ * ⚠️ 候选要**取第一个仍在清单里的**，不能只认优先级最高的那个：持久化的
+ * `activeWorkspaceId` / 现场里的 `workspaceId` 可能指向已经被删掉的工作区（旧临时
+ * 工作区被丢弃、项目被删）。只认最高优先级的话，解析结果永远是空路径 —— 补算也救不回来。
+ * 清单还没到（一个都不在）时保留最高优先级的 id，`cwd` 留给下一次补算。
  */
 export function resolvePanelWorkspace(
   key: string,
@@ -201,11 +206,91 @@ export function resolvePanelWorkspace(
   workspaces: readonly { id: string; path: string | null }[],
   activeWorkspaceId: string | null | undefined
 ): { workspaceId: string; cwd: string | null } {
-  // 会话自己的 workspaceId 优先；空串（历史数据）当作没有
-  const workspaceId =
-    conversations.find((c) => c.id === key)?.workspaceId || panelWorkspaceId || activeWorkspaceId || ''
+  // 候选按优先级排队；空串（历史数据）当作没有
+  const candidates = [
+    conversations.find((c) => c.id === key)?.workspaceId,
+    panelWorkspaceId,
+    activeWorkspaceId
+  ].filter((id): id is string => !!id)
+  const known = candidates.find((id) => workspaces.some((w) => w.id === id))
+  const workspaceId = known ?? candidates[0] ?? ''
   return {
     workspaceId,
     cwd: workspaces.find((w) => w.id === workspaceId)?.path ?? null
+  }
+}
+
+/**
+ * 把「新对话」草稿的面板现场并进目标会话的现场（目标已存在时**不能整份覆盖**）。
+ *
+ * 什么时候目标会有现场：刷新 / 切会话时，后台动作（典型是 `gitStatus` 回来后的
+ * `patchActivePanel`）可能先给目标会话建出一个**空壳**。旧实现遇到这种就直接放弃迁移
+ * （`if (sessions[conversationId]) return`），于是草稿里刚开出来的终端留在没人认领的
+ * 草稿 key 上，随后被回收 effect 连 PTY 一起清掉 —— 用户看到的就是「终端闪一下、
+ * 或者点了没反应」（刷新后点终端的主力现象）。
+ *
+ * 这里把草稿那份**合并**进来：终端按 id 去重拼接、挂出标记取并集、正看着的标签优先
+ * 用草稿的（用户刚在草稿里点开终端，要接着看它）。目录 / 归属只在目标还没有时补。
+ */
+export function mergeDraftPanel(existing: PanelSession, draft: PanelSession): PanelSession {
+  const terminals = [...existing.terminals]
+  for (const t of draft.terminals) {
+    if (!terminals.some((x) => x.id === t.id)) terminals.push(t)
+  }
+  const tabOrder = [...existing.tabOrder]
+  for (const k of draft.tabOrder) {
+    if (!tabOrder.includes(k)) tabOrder.push(k)
+  }
+  return {
+    ...existing,
+    ...(existing.cwd ? {} : { workspaceId: draft.workspaceId, cwd: draft.cwd }),
+    terminals,
+    tabOrder,
+    // 正看着的标签：草稿里开着终端 / 文件面板就接着看它，否则保持目标的
+    sideTab: draft.sideTab ?? existing.sideTab,
+    lastSideTab: draft.lastSideTab ?? existing.lastSideTab,
+    filesMounted: existing.filesMounted || draft.filesMounted,
+    gitMounted: existing.gitMounted || draft.gitMounted,
+    browserMounted: existing.browserMounted || draft.browserMounted,
+    previewMounted: existing.previewMounted || draft.previewMounted
+  }
+}
+
+/**
+ * 「点开终端」这一刻解析最终要用的目录（两条 provider，一个口径）。
+ *
+ * 为什么要单独一个函数：这条判断以前**在 `openTerminalTabOf` 的 setState updater 里**
+ * （`if (!base.cwd) return null`），而 `base` 是上次渲染建出来的现场 —— 刷新后工作区
+ * 列表还没落地时建成的现场会把 `cwd: null` **永久缓存**，于是之后每次点终端都静默
+ * 什么都不做、快捷命令等到 5 秒超时，用户看到的正是「刷新后终端打不开」。
+ *
+ * 现在改成**点击这一刻**按最新数据重算：
+ * - 先用 `resolvePanelWorkspace` 的优先级重新解析（会话自己的工作区 > 现场 > 当前选中）；
+ * - 解析不到新路径时退回现场里已有的 `panelCwd`（工作区列表暂时没到也别把点击吞掉）。
+ *
+ * 返回 `null` = **确实没有可用的目录**（虚拟工作区 / 工作区与目录都没了）。调用方必须
+ * 把 `null` 当「失败」并给出提示，绝不能静默返回 —— 那会退化成那个 5 秒超时。
+ */
+export function resolveTerminalCwd(
+  key: string,
+  panelWorkspaceId: string | null | undefined,
+  panelCwd: string | null | undefined,
+  conversations: readonly { id: string; workspaceId: string | null }[],
+  workspaces: readonly { id: string; path: string | null }[],
+  activeWorkspaceId: string | null | undefined
+): { workspaceId: string; cwd: string } | null {
+  const resolved = resolvePanelWorkspace(
+    key,
+    panelWorkspaceId,
+    conversations,
+    workspaces,
+    activeWorkspaceId
+  )
+  const cwd = resolved.cwd ?? panelCwd ?? null
+  if (!cwd) return null
+  // 只有解析出了新路径才认新的归属；退回现场 cwd 时保持现场的工作区不变
+  return {
+    workspaceId: resolved.cwd ? resolved.workspaceId : (panelWorkspaceId || resolved.workspaceId),
+    cwd
   }
 }

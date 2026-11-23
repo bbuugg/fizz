@@ -17,6 +17,14 @@ import { useAttachmentDraft } from "@fizz/agent-kit/features/chat/use-attachment
  * 附件与正式会话走**同一份**草稿（`useAttachmentDraft`）：截图 / 图片先行的对话是
  * 最常见的开场（「这是什么」），初始页少了回形针，用户只能先随便发一句把会话建出来。
  * 发送即建会话，附件随这一轮一起落库（`app.send` 的 `files` 参数本来就支持）。
+ *
+ * ## 居中必须是「安全居中」
+ *
+ * 手机键盘弹起会缩布局视口（见 `apps/mobile` 的 `interactive-widget=resizes-content`），
+ * 这个 `flex-1` 容器可能比「标题 + 输入框」还矮。用 `justify-center` 时，内容会**同时向
+ * 上下两侧溢出**：上沿画到 `ConversationTab` 的 `ViewHeader` 底下 —— header 是透明的，
+ * 两行字直接叠在一起。所以改成容器 `overflow-y-auto` + 子块 `my-auto`：空间够时居中，
+ * 不够时 auto margin 归零、内容从顶部开始并随容器滚动，永远不会越过 header。
  */
 export function NewTaskView({ app }: { app: AgentApp }) {
   const t = useT()
@@ -24,8 +32,9 @@ export function NewTaskView({ app }: { app: AgentApp }) {
   // 文案里的 `{workspace}` 由下面的工作区入口顶替（英文语序也靠这个占位符保持通顺）
   const [before, after] = t('在 {workspace} 里做点什么？').split('{workspace}')
   return (
-    <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-3 sm:px-6 pb-20">
-      <div className="w-full max-w-2xl">
+    <div className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-3 sm:px-6">
+      {/* `shrink-0`：空间不足时保持内容原高、交给外层滚动，别让 flex 把它压扁 */}
+      <div className="my-auto w-full max-w-2xl shrink-0 pb-20 pt-4">
         <div className="mb-3 flex flex-wrap items-baseline justify-center gap-x-1 text-center text-xl font-semibold">
           <span>{before.trim()}</span>
           <WorkspaceSelect app={app} variant="inline" />

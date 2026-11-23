@@ -99,8 +99,11 @@ export interface AppContextValue {
   /**
    * 新开一条终端标签并切过去，返回它的标签 id（进程表 / 就绪桥按它索引）。
    * `shellId` 不传 = 用上次打开终端时记住的 shell（没有就平台默认）；显式传（含 null）就用它。
+   *
+   * 返回 `null` = 目标现场没有可用的目录（虚拟工作区 / 目录已不存在），**没开成**。
+   * 调用方必须把 `null` 当失败提示，别当成「开了但 id 是空」。
    */
-  openTerminalTab: (shellId?: string | null) => string
+  openTerminalTab: (shellId?: string | null) => string | null
   /** 顶栏「终端」主按钮：正看着某个终端就收起；否则回到最后一个终端，一条都没有就新开一条 */
   toggleTerminalPanel: () => void
   /** 收起面板（一个标签都不关） */
@@ -144,7 +147,7 @@ export interface AppContextValue {
   /** 收起 / 恢复指定会话的面板（回到上次看的那个标签） */
   toggleSidePanelOf: (key: string) => void
   /**
-   * 在指定会话里新开一条终端并切过去，返回标签 id。
+   * 在指定会话里新开一条终端并切过去，返回标签 id；`null` = 没有可用目录、没开成。
    *
    * `shellId` 显式给了 = 要宿主那个 shell；`container` 给了 = 要容器内终端；
    * 两个都不给 = 按项目类型默认（容器型项目进容器，其余走宿主默认 shell）。
@@ -153,7 +156,7 @@ export interface AppContextValue {
     key: string,
     shellId?: string | null,
     container?: { workspaceId: string; shell?: string }
-  ) => string
+  ) => string | null
   /** 指定会话的顶栏「终端」主按钮语义 */
   toggleTerminalPanelOf: (key: string) => void
   /**

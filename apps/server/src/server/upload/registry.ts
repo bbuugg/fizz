@@ -65,6 +65,8 @@ interface ResolvedProvider extends UploadProviderView {
   /** `put` 交回来的 URL 是否在它自己的声明范围内（内置走适配器的 owns()） */
   ownsGeneratedUrl(url: string): boolean
   resolveModelUrl?: (url: string, origin: string) => string
+  /** 丢弃「已 put 成功、但结果没人要」的附件时用来清理；缺省 = 不支持删除 */
+  remove?: (url: string) => Promise<void>
   /** 声明的前缀（内置为空：它的地址是相对路径，靠 owns() 判） */
   urlPrefixes: string[]
 }
@@ -109,7 +111,8 @@ function builtinProvider(): ResolvedProvider {
     urlPrefixes: [],
     put: (input) => adapter.put(input),
     ownsGeneratedUrl: (url) => adapter.owns(url),
-    resolveModelUrl: (url, origin) => adapter.resolveModelUrl(url, origin)
+    resolveModelUrl: (url, origin) => adapter.resolveModelUrl(url, origin),
+    ...(adapter.remove ? { remove: (url: string) => adapter.remove!(url) } : {})
   }
 }
 
@@ -128,7 +131,8 @@ function resolvePluginProvider(reg: UploadProviderRegistration): ResolvedProvide
     urlPrefixes: prefixes,
     put: (input) => reg.put(input),
     ownsGeneratedUrl: (url) => matchesUploadPrefix(url, prefixes),
-    resolveModelUrl: reg.resolveModelUrl
+    resolveModelUrl: reg.resolveModelUrl,
+    ...(reg.remove ? { remove: (url: string) => reg.remove!(url) } : {})
   }
 }
 
@@ -243,7 +247,7 @@ export async function getUploadProviders(opts: {
   workspacePath?: string
 }): Promise<UploadProviderView[]> {
   const entry = await ensureEntry(opts.workspaceId, opts.workspacePath)
-  return entry.providers.map(({ put: _put, ownsGeneratedUrl: _owns, resolveModelUrl: _r, urlPrefixes: _p, ...view }) => view)
+  return entry.providers.map(({ put: _put, ownsGeneratedUrl: _owns, resolveModelUrl: _r, remove: _rm, urlPrefixes: _p, ...view }) => view)
 }
 
 /** 解析出这次要用哪个上传源：显式 id 优先，缺省 = `isDefault` 那个（内置） */
@@ -337,6 +341,18 @@ export async function putWithProvider(opts: {
       `上传源「${provider.title}」返回的 URL 不在它声明的范围内，已拒绝：${url}` +
         `（声明：${provider.urlPrefixes.join('、') || '（无）'}）`
     )
+  }
+  /*
+    取消恰好落在 put 返回之后：结果没人要。尽力清掉已经落盘的对象，否则它会成为
+    「没有签发记录、也没人引用」的孤儿（远端存储尤其明显，本地也会一直堆文件）。
+  */
+  if (opts.signal?.aborted) {
+    try {
+      await provider.remove?.(url)
+    } catch (err) {
+      console.warn(`[upload] 取消后清理已上传对象失败：${url}`, err)
+    }
+    throw new DOMException('上传已取消', 'AbortError')
   }
   return { url, providerId: provider.id }
 }

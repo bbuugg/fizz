@@ -33,7 +33,6 @@ import {
   Loader2,
   MessageSquare,
   RotateCw,
-  Square,
   Unplug
 } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
@@ -55,6 +54,7 @@ import { Skeleton } from '@fizz/ui/skeleton'
 import { Popover, PopoverContent, PopoverTrigger } from '@fizz/ui/popover'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { isTouchOnlyInput } from '@fizz/agent-kit/shared/hooks/useVirtualKeyBar'
+import { ComposerDock, collectRunningSubagents } from '@fizz/agent-kit/features/chat/ComposerDock'
 import { MessageOutline } from '@fizz/agent-kit/features/chat/MessageOutline'
 import { ChatFind } from '@fizz/agent-kit/features/chat/chat-find'
 import { ContextCompactionCard } from '@fizz/agent-kit/features/chat/ContextCompactionCard'
@@ -70,8 +70,8 @@ import {
 import { waitingIndicatorSlot } from '@fizz/agent-kit/shared/lib/waiting-indicator'
 import type { AgentChatMessage } from '@fizz/contracts/agent-api'
 import type { AgentConfirmRequest } from '@fizz/contracts/types'
-import { toolLabel } from '@fizz/agent-kit/shared/lib/parts'
 import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
+import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import type { ContextCompactionState } from '@fizz/agent-kit/shared/lib/stores/slices/conversation'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 
@@ -1114,6 +1114,13 @@ export interface ChatSurfaceProps {
    * ⚠️ 引用必须稳定：它是 context 的值，一变整列 memo 过的 `PartView` 都会白重渲。
    */
   fileOpener?: WorkspaceFileOpener | null
+  /**
+   * 应用状态：输入框上方「后台任务」那枚入口要靠 `app.api` 拉**当前会话**名下在跑的命令。
+   *
+   * 不传（容器侧的片段渲染 / 项目管理助手）就只剩子智能体那枚入口 —— 那边本来也没有
+   * 本会话的后台任务语义。子智能体入口不依赖它（数据来自 `list.messages`）。
+   */
+  app?: AgentApp
 }
 
 /**
@@ -1138,7 +1145,7 @@ export interface ChatSurfaceProps {
  * （见下面的 `findDelegation`），流式期就能跟着往下走。找不到（消息被删 / 切了会话）
  * 就退回打开时的快照，不会白屏。
  */
-export function ChatSurface({ list, composer, between, fileOpener }: ChatSurfaceProps) {
+export function ChatSurface({ list, composer, between, fileOpener, app }: ChatSurfaceProps) {
   /** 正在看的子任务：工具调用 id + 兜底快照 */
   const [viewing, setViewing] = useState<{
     toolCallId: string
@@ -1178,7 +1185,7 @@ export function ChatSurface({ list, composer, between, fileOpener }: ChatSurface
   }, [viewing])
 
   /**
-   * 当前会话里**还在跑**的子任务（输入框上方那排 chip 的数据源）。
+   * 当前会话里**还在跑**的子任务（输入框上方那枚「子智能体」入口的数据源）。
    *
    * 每次渲染现扫消息：子任务每帧都会重建 `delegation`，缓存下来的只会是过期快照。
    * 消息量级是「一轮对话几十条 part」，扫一遍比维护一份同步状态便宜且不会漏。
@@ -1201,17 +1208,26 @@ export function ChatSurface({ list, composer, between, fileOpener }: ChatSurface
       <ChatComposer
         {...composer}
         /*
-         * 运行中的子任务钉在**输入框上方**，不进消息流：派活卡随时会滚出屏幕、或者
-         * 一直处在折叠状态，而「现在有几个后台活在跑、点进去看」应当是常驻可见的。
-         * 挂 `above` 与队列卡 / 待答复卡同一处，滚动时不动。
+         * 会话活动入口（子智能体 / 后台任务）与工具栏**同一行、靠右**：两者都是「这个
+         * 会话现在还有什么」的常驻状态，各占一行会白吃掉输入框上方 32px。左手是
+         * 「这一轮装什么能力」（浏览器 / MCP），右手是「后台还有几个活在跑」。
+         *
+         * `justify-between` 只有一个子项时退回靠左 —— 浏览器没装、也没配 MCP 时
+         * `ComposerToolbar` 整条不渲染（返回 null），这时药丸不该孤零零飘在右边。
+         *
+         * ⚠️ 这一行同时是 `ComposerDock` **量宽度的地方**（它取父元素宽度算「输入框的
+         * 一半」），所以它必须铺满与输入框卡片同宽的那条壳，别给它加 `w-fit` / 居中。
          */
         above={
-          <>
-            {runningSubagents.length ? (
-              <RunningSubagents items={runningSubagents} onOpen={openSubagent} />
-            ) : null}
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
             {composer.above}
-          </>
+            <ComposerDock
+              app={app}
+              conversationId={conversationId}
+              subagents={runningSubagents}
+              onOpenSubagent={openSubagent}
+            />
+          </div>
         }
       />
       {viewing ? (
@@ -1252,159 +1268,6 @@ function findDelegation(
     }
   }
   return null
-}
-
-/** 输入框上方那排「运行中的子任务」里的一个 */
-interface RunningSubagentItem {
-  toolCallId: string
-  delegation: SubagentDelegation
-  /** 子 agent 此刻正在用的工具（`read` 之类）；还没动手时没有 */
-  tool?: string
-}
-
-/**
- * 收集当前会话里**还在跑**的子任务。
- *
- * `live`（本轮是否还在流式）是必需的门：进程被杀 / 断电时，落盘的派活记录会一直停在
- * `running`，重启后照它画 chip 就是一条永不结束的「正在运行」。子任务真的在跑时主轮
- * 必然还在流式 —— 子 run 的 signal 与父轮取或（见 `subagents.ts`）。
- */
-function collectRunningSubagents(
-  messages: AgentChatMessage[],
-  live: boolean
-): RunningSubagentItem[] {
-  if (!live) return []
-  const items: RunningSubagentItem[] = []
-  for (const message of messages) {
-    for (const part of message.parts) {
-      if (part.type !== 'tool-call') continue
-      const delegation = part.delegation
-      if (!delegation || delegation.status !== 'running') continue
-      items.push({ toolCallId: part.toolCallId, delegation, tool: part.subagentTool })
-    }
-  }
-  return items
-}
-
-/** 每秒提一次的「现在」，只给运行时长用；`enabled` 为假时不起 interval */
-function useNow(enabled: boolean): number {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (!enabled) return
-    // 挂上时先对齐一次：chip 往往是流式期间才出现的，别等到下一个整秒还是 0s
-    setNow(Date.now())
-    const timer = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [enabled])
-  return now
-}
-
-/**
- * 输入框上方那排「运行中的子任务」chip：点左半进那个子任务的消息流，点右半**只停这一个**。
- *
- * ## 为什么是这个位置
- *
- * 子任务全程只表现为消息流里一张**收起**的卡：跑起来之后用户既看不到它在干什么，
- * 也没有入口进去看（那张卡可能早就滚出屏幕）。这一排是「此刻有 N 个后台活在跑」的
- * 常驻信号，钉在输入框上方，长会话翻到哪儿都看得见。
- *
- * ## 为什么停止钮要挂在这里
- *
- * 派活卡上也有停止钮，但那张卡随时会滚出屏幕、也多半是收起态。用户看到「这个子任务在
- * 白跑」（方向错了 / 派重了）时，手边最近的入口就是这排 chip —— 要停必须**就地能停**，
- * 而不是先翻回去找卡，或者狠心停掉整轮。
- *
- * 走的是与派活卡**同一个** action（`stopCommand(toolCallId)`，服务端查 run 的停止表
- * abort 这一个子 run，父轮继续），所以两边不存在语义差异。
- *
- * ## 为什么只列运行中的
- *
- * 跑完的子任务留在派活卡内容区（`PartView` 的 `SubagentProcessEntry`）—— 那是**回看**，
- * 要翻到那条消息才看，不该在输入框上方常驻占位。
- */
-function RunningSubagents({
-  items,
-  onOpen
-}: {
-  items: RunningSubagentItem[]
-  onOpen: OpenSubagent
-}) {
-  const tr = useT()
-  const now = useNow(items.length > 0)
-  /**
-   * 只停**这一条**子任务的通道 —— 与派活卡头部那颗停止钮是同一个 action。
-   *
-   * 从 store 拿而不是从 props 一路透传：`stopCommand(toolCallId)` 内部自己取当前会话
-   * 在跑那轮的 requestId（见 `createRunActions.stopCommand`），调用方只需要 toolCallId。
-   */
-  const stopCommand = useAgentStore((s) => s.stopCommand)
-  /** 已点、服务端还没回：那颗钮换成转圈并禁用，免得连点（子 run 收尾有几十毫秒的窗口） */
-  const [stopping, setStopping] = useState<ReadonlySet<string>>(() => new Set())
-  if (!items.length) return null
-
-  const stop = (toolCallId: string): void => {
-    setStopping((prev) => new Set(prev).add(toolCallId))
-    // 幂等：子任务刚好在这时自己结束 = 服务端 `{ stopped: false }`，静默收场即可，
-    // 不值得为它弹错误（chip 随之消失，用户看到的就是「停掉了」）
-    void stopCommand(toolCallId)
-  }
-
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {items.map((item) => {
-        const meta = SUBAGENT_META[item.delegation.subagentId]
-        const displayName = item.delegation.name ?? meta?.name ?? item.delegation.subagentId
-        const seconds = Math.max(0, Math.floor((now - item.delegation.startedAt) / 1000))
-        const isStopping = stopping.has(item.toolCallId)
-        return (
-          /*
-           * 分段胶囊：左半进过程视图、右半停止。
-           *
-           * ⚠️ 必须是**两个平级 button**，不能把停止钮塞进「进过程」那颗里面：
-           * `<button>` 套 `<button>` 是非法 HTML，浏览器会把内层拍平 —— 点停止会连带
-           * 进过程视图，还会嵌套触发一次。外壳那个 `span` 只负责画出药丸外观。
-           */
-          <span
-            key={item.toolCallId}
-            className="inline-flex h-7 max-w-full min-w-0 items-stretch overflow-hidden rounded-full border border-border bg-background text-xs text-foreground shadow-xs"
-          >
-            <button
-              type="button"
-              className="flex min-w-0 items-center gap-1.5 px-2.5 transition-colors hover:bg-accent/60"
-              title={tr('查看子任务过程')}
-              aria-label={tr('查看子任务过程')}
-              onClick={() => onOpen(item.toolCallId, item.delegation)}
-            >
-              <Loader2 className="size-3.5 shrink-0 animate-spin" />
-              <span className="shrink-0">
-                {tr('子任务 · {name}', { name: displayName })}
-              </span>
-              {item.tool ? (
-                <span className="min-w-0 truncate text-muted-foreground">
-                  {tr('· 正在 {tool}', { tool: toolLabel(item.tool) })}
-                </span>
-              ) : null}
-              <span className="shrink-0 text-muted-foreground tabular-nums">{seconds}s</span>
-            </button>
-            <button
-              type="button"
-              disabled={isStopping}
-              aria-label={tr('停止子任务')}
-              title={tr('停止子任务')}
-              onClick={() => stop(item.toolCallId)}
-              className="flex w-6 shrink-0 items-center justify-center border-l border-border text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:pointer-events-none disabled:opacity-60"
-            >
-              {isStopping ? (
-                <Loader2 className="size-3 animate-spin" />
-              ) : (
-                <Square className="size-3" />
-              )}
-            </button>
-          </span>
-        )
-      })}
-    </div>
-  )
 }
 
 /**

@@ -398,8 +398,8 @@ export function resolveDataDir(): string {
 /**
  * 临时工作区在数据目录里的落点：`<数据目录>/conversations/<年月日>/<会话 id>`（如 `20261122`）。
  *
- * 新建（`ensureScratchWorkspace`）与历史目录迁移（`migrateScratchWorkspaceDirs`）共用这一份，
- * 别再各写一份格式 —— 两份漂移就会出现「搬过去了，工作区 path 却对不上」。
+ * 建临时工作区（`ensureScratchWorkspace`）按这条规则拼路径；旧布局的丢弃逻辑以它为准 ——
+ * `conversations/` 下一层的 `<id>` 目录一律视为旧布局（见 `discardLegacyScratchWorkspaces`）。
  *
  * 日期用**本地时间**（用户看的是本机日历）；月 / 日补零保证排序。
  */

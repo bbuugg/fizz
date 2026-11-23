@@ -19,6 +19,7 @@ import { gsap } from 'gsap'
 import { Slider } from '@fizz/ui/slider'
 import type { AiReasoningEffort } from '@fizz/contracts/types'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
+import { usePrefersReducedMotion } from '@fizz/agent-kit/shared/hooks/usePrefersReducedMotion'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import '@fizz/agent-kit/features/chat/reasoning-effort.css'
 
@@ -354,24 +355,6 @@ function createEffortMotion(
       field.dispose()
     },
   }
-}
-
-function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(
-    () =>
-      typeof window !== 'undefined' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  )
-
-  useEffect(() => {
-    const media = window.matchMedia('(prefers-reduced-motion: reduce)')
-    const update = () => setReduced(media.matches)
-    update()
-    media.addEventListener('change', update)
-    return () => media.removeEventListener('change', update)
-  }, [])
-
-  return reduced
 }
 
 interface DragGesture {

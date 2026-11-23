@@ -10,6 +10,7 @@ vi.mock('node:fs/promises', () => ({
 }))
 vi.mock('@fizz/workspace', () => ({ resolveDataDir: () => '/test-data' }))
 
+import { join } from 'node:path'
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { LocalUploadAdapter } from './local'
 
@@ -23,7 +24,8 @@ describe('LocalUploadAdapter.put cancellation', () => {
       bytes: new Uint8Array([1, 2, 3])
     })
 
-    expect(mkdir).toHaveBeenCalledWith('/test-data/uploads', { recursive: true })
+    // 同上：`path.join` 在 Windows 下是反斜杠
+    expect(mkdir).toHaveBeenCalledWith(join('/test-data', 'uploads'), { recursive: true })
     expect(writeFile).toHaveBeenCalledOnce()
     expect(rename).toHaveBeenCalledOnce()
     expect(result.url).toMatch(/^\/api\/uploads\/[0-9a-f-]{36}\.png$/)
@@ -50,5 +52,26 @@ describe('LocalUploadAdapter.put cancellation', () => {
     await expect(upload).rejects.toMatchObject({ name: 'AbortError' })
     expect(rename).not.toHaveBeenCalled()
     expect(rm).toHaveBeenCalledWith(expect.stringMatching(/\.tmp$/), { force: true })
+  })
+})
+
+/** 取消恰好落在提交之后：注册表会拿这条 URL 来删掉已落盘的文件（防孤儿对象）。 */
+describe('LocalUploadAdapter.remove', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('deletes the committed file for a URL it owns', async () => {
+    await new LocalUploadAdapter().remove(
+      '/api/uploads/00000000-0000-0000-0000-000000000000.png'
+    )
+    // 实现走 `path.join`，Windows 下分隔符是 `\`：期望值也用它拼，别写死 POSIX 路径
+    expect(rm).toHaveBeenCalledWith(
+      join('/test-data', 'uploads', '00000000-0000-0000-0000-000000000000.png'),
+      { force: true }
+    )
+  })
+
+  it('ignores URLs outside its own namespace', async () => {
+    await new LocalUploadAdapter().remove('https://cdn.example.com/other.png')
+    expect(rm).not.toHaveBeenCalled()
   })
 })

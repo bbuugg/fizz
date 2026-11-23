@@ -20,4 +20,9 @@ export interface UploadAdapter {
   resolveModelUrl(url: string, origin: string): string
   /** 读回字节；缺省 = 该适配器不支持读回（当前没有调用方，先留口子） */
   get?(url: string): Promise<{ mediaType: string; bytes: Uint8Array } | null>
+  /**
+   * 删掉一条**已落盘**的附件。只在「上传成功、但结果被丢弃」（客户端恰好在这一刻取消）
+   * 时由注册表调用，用来收拾孤儿对象。缺省 = 不支持删除，服务端保持现状。
+   */
+  remove?(url: string): Promise<void>
 }

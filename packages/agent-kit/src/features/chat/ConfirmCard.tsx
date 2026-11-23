@@ -59,6 +59,7 @@
 import { useState, type ReactNode } from 'react'
 import { ArrowRight, ChevronLeft, ChevronRight, ShieldAlert } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
+import { LiquidGlassEdgeLight, useLiquidGlassLens } from '@fizz/ui/liquid-glass'
 import { toolLabel } from '@fizz/agent-kit/shared/lib/parts'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
@@ -190,14 +191,20 @@ function ConfirmBody({
 }
 
 /**
- * 审批卡的外壳：与提问卡同一套（圆角 + 描边 + `bg-card/70` + 高度上限）。
+ * 审批卡的外壳：与提问卡同一套（圆角 + 描边 + `bg-card/70` + 高度上限 + 跟随指针的边缘流光）。
  *
  * 卡片自己不带左右内边距：题干、命令块、选项区各自 `px-3`，全部对齐同一条线。
  */
 function ConfirmShell({ children }: { children: ReactNode }) {
+  const lens = useLiquidGlassLens()
   return (
-    <div className="flex max-h-[min(70vh,36rem)] w-full flex-col rounded-xl border border-border bg-card/70 py-2.5">
+    <div
+      {...lens}
+      className="relative isolate flex max-h-[min(70vh,36rem)] w-full flex-col rounded-xl border border-border bg-card/70 py-2.5"
+    >
       {children}
+      {/* 边缘流光：指针在卡片上移动时只亮边框那一圈（与提问卡 / 输入卡片同一套） */}
+      <LiquidGlassEdgeLight />
     </div>
   )
 }

@@ -577,6 +577,7 @@ var COMMON = {
 	"编辑": "Edit",
 	"确定": "OK",
 	"确认": "Confirm",
+	"执行": "Run",
 	"返回": "Back",
 	"复制": "Copy",
 	"已复制": "Copied",
@@ -742,6 +743,9 @@ var COMMON = {
 	"打开设置": "Open settings",
 	"切换主题（当前{theme}）": "Toggle theme (currently {theme})",
 	"返回命令列表": "Back to command list",
+	"选择文件夹、从 Git 导入、连接远端服务器或新建容器型项目": "Choose a folder, import from Git, connect to a remote server, or create a container project",
+	"筛选新建方式…": "Filter add options…",
+	"没有匹配的新建方式。": "No matching options.",
 	"未分组": "Ungrouped",
 	"搜索会话…": "Search conversations…",
 	"更多功能区": "More activities",
@@ -1408,6 +1412,8 @@ var AGENT = {
 	"正在向上游要模型清单…": "Requesting model list from upstream…",
 	"筛选模型…": "Filter models…",
 	"{id}（已在列表中，取消勾选 = 保存后移出）": "{id} (already in list; uncheck to remove on save)",
+	"已在列表中，取消勾选 = 保存后移出": "Already in list; uncheck to remove on save",
+	"手动添加：填模型 id（必填）。上游没返回的模型也可以直接加进来。": "Manual add: enter a model id (required). You can also add models that upstream did not return.",
 	"已在列表": "Already in list",
 	"保存后移出": "Removed on save",
 	"取消选择 {id}": "Deselect {id}",
@@ -1481,6 +1487,10 @@ var AGENT = {
 	"下一项": "Next",
 	"全部允许": "Allow all",
 	"全部拒绝": "Deny all",
+	"允许一次": "Allow once",
+	"始终允许此命令": "Always allow this command",
+	"拒绝一次": "Deny once",
+	"始终拒绝此命令": "Always deny this command",
 	"到点自动起一轮会话 · 共 {total} 条 · {enabledCount} 条启用中": "Starts a conversation automatically on schedule · {total} total · {enabledCount} enabled",
 	"新建定时任务": "New scheduled task",
 	"立即运行": "Run now",
@@ -1618,6 +1628,9 @@ var CHAT = {
 	"（这条消息没有文字）": "(This message has no text)",
 	"会话加载失败": "Failed to load conversation",
 	"本轮用量": "This turn usage",
+	"本轮用量（估算）": "This turn usage (estimated)",
+	"按流式输出估算（只累计有输出增量的时间片）": "Estimated from streamed output (only slices with output deltas count)",
+	"ACP agent 不上报 token 用量，以上按流式输出估算：只有输出与速度，输入 / 合计 / 缓存未知。": "ACP agents do not report token usage. The figures above are estimated from streamed output: only output and speed are available; input / total / cache are unknown.",
 	"整轮耗时 {time}": "Turn duration {time}",
 	"仅算模型生成的时间（工具执行与等待不计）": "Generation time only (tool runs and waits excluded)",
 	"合计": "Total",
@@ -1753,6 +1766,14 @@ var CHAT = {
 	"查找文件": "Find files",
 	"搜索内容": "Search contents",
 	"读取文件": "Read file",
+	"重命名分支": "Rename branch",
+	"重命名分支 {name}": "Rename branch {name}",
+	"重命名分支失败：{error}": "Failed to rename branch: {error}",
+	"选择从哪条分支创建（默认当前 HEAD）": "Choose the base branch (current HEAD by default)",
+	"起点：{from}": "Base: {from}",
+	"搜索起点分支": "Search base branches",
+	"{tps} tok/s": "{tps} tok/s",
+	"实时输出速度（按字符估算）：{tps} tokens/秒。轮次结束后以服务端统计为准。": "Live output speed (estimated from characters): {tps} tokens/s. Replaced by server-side stats when the turn ends.",
 	"写入文件": "Write file",
 	"编辑文件": "Edit file",
 	"删除文件": "Delete file",
@@ -1880,6 +1901,7 @@ var CHAT = {
 	"下载图片": "Download image",
 	"正在运行": "Running",
 	"未指定工作区": "No workspace",
+	"在 {workspace} 里做点什么？": "What would you like to do in {workspace}?",
 	"（目录不存在）": " (directory missing)",
 	"工作区：Agent 只能读写这个目录里的东西": "Workspace: the agent can only read and write inside this directory",
 	"浏览器工具：已开启（点击关闭）": "Browser tools: on (click to turn off)",
@@ -1981,6 +2003,7 @@ var CHAT = {
 	"正在生成参数": "Preparing input",
 	"执行中": "Running",
 	"等待审批": "Awaiting approval",
+	"等待你在下方审批": "Waiting for your approval below",
 	"已审批": "Approved",
 	"出错": "Error",
 	"已拒绝": "Denied",
@@ -2231,6 +2254,7 @@ var WORKSPACE = {
 	"这里列的是服务端上的目录（Agent 就跑在那台机器上）。选中的目录会登记为项目。": "These are directories on the server (where the agent runs). The selected directory will be registered as a project.",
 	"选择文件夹…": "Choose folder…",
 	"选择目录": "Choose directory",
+	"在服务端目录里挑一个文件夹": "Pick a folder on the server",
 	"选择远端目录": "Choose remote directory",
 	"只列出目录；选中的目录会作为这个远端工作区的根。": "Only directories are listed; the selected one becomes the root of this remote workspace.",
 	"绝对路径，回车跳转": "Absolute path — press Enter to go",
@@ -2242,16 +2266,27 @@ var WORKSPACE = {
 	"从 Git 导入…": "Import from Git…",
 	"新建容器型项目…": "New container project…",
 	"连接远端服务器…": "Connect to a remote server…",
+	"连接远端服务器": "Connect to a remote server",
+	"在磁盘上选一个文件夹": "Browse a folder on disk",
+	"从远端仓库克隆一份": "Clone from a remote repository",
+	"目录在 SSH 主机上，Agent 经 SFTP 读写": "The directory lives on an SSH host; the agent reads and writes it over SFTP",
+	"目录由服务端建在容器里": "The server creates the directory inside a container",
 	"搜索工作区": "Search workspaces",
 	"没有匹配的工作区": "No matching workspaces",
 	"添加远端工作区": "Add remote workspace",
 	"Agent 的文件读写与命令都在这台 SSH 主机上的目录里执行。会话历史仍保存在本机。": "The agent reads, writes, and runs commands in a directory on this SSH host. Conversation history stays on this machine.",
 	"还没有 SSH 主机：先在「主机」里添加一台，再回来选它。": "No SSH hosts yet: add one under “Hosts”, then come back and pick it.",
 	"SSH 主机": "SSH host",
+	"搜索远端主机…": "Search SSH hosts…",
+	"选一台 SSH 主机，接下来在它的文件系统里选一个目录": "Pick an SSH host, then choose a directory on its file system",
+	"选中的目录会作为这个远端工作区的根，项目名默认取目录名。": "The chosen directory becomes the root of this remote workspace; the project name defaults to the directory name.",
 	"选择一台主机": "Choose a host",
 	"远端目录（绝对路径）": "Remote directory (absolute path)",
 	"请填写以 / 开头的绝对路径。": "Enter an absolute path starting with /.",
 	"上一级": "Up one level",
+	"目录": "Directories",
+	"进入": "Open",
+	"使用系统文件选择器": "Use the system file picker",
 	"正在读取…": "Reading…",
 	"这里没有子目录": "No subdirectories here",
 	"留空 = 用目录名": "Empty = use the directory name",
@@ -2609,6 +2644,23 @@ var WORKSPACE = {
 	"当前 HEAD": "Current HEAD",
 	"当前 HEAD（{branch}）": "Current HEAD ({branch})",
 	"创建并切换": "Create and switch",
+	"当前 git 分支：{branch}，点击切换或新建": "Current git branch: {branch}; click to switch or create one",
+	"当前工作区还不是 Git 仓库，点击初始化": "This workspace is not a Git repository yet; click to initialize",
+	"当前工作区还不是 Git 仓库": "This workspace is not a Git repository yet",
+	"搜索分支": "Search branches",
+	"远端分支": "Remote branches",
+	"读取分支…": "Loading branches…",
+	"没有匹配的分支": "No matching branches",
+	"没有可切换的分支": "No branches to switch to",
+	"删除分支": "Delete branch",
+	"删除分支 {name}": "Delete branch {name}",
+	"先选择工作区": "Select a workspace first",
+	"当前分支：{branch}（会话中不能切分支）": "Current branch: {branch} (cannot switch while running)",
+	"会话中不能初始化仓库": "Cannot initialize a repository while running",
+	"切换分支失败：{error}": "Failed to switch branch: {error}",
+	"新建分支失败：{error}": "Failed to create branch: {error}",
+	"初始化仓库失败：{error}": "Failed to initialize repository: {error}",
+	"删除分支失败：{error}": "Failed to delete branch: {error}",
 	"提交信息（Ctrl / ⌘ + Enter 提交）": "Commit message (Ctrl / ⌘ + Enter to commit)",
 	"提交已暂存的改动": "Commit the staged changes",
 	"先在「已暂存的更改」里暂存改动": "Stage changes under “Staged changes” first",
@@ -9400,10 +9452,20 @@ var MAX_CONSECUTIVE_FAILURES = 3;
 * 这不是「子任务最长能跑多久」（那是步数上限管的），而是「一次等待最多占住父轮多久」：
 * 超时就把话轮交回父模型 —— 它可以先去做别的、过一会儿再领，或者自己把那件事做完。
 *
+* ⚠️ 时间片是**整次调用共用一个**，不是每个 taskId 各 60 秒：一次领三条、每条各等一分钟，
+* 父轮会被拖成三分钟，而其中两条的结论可能早就落地了。
+*
 * 不设上限的话，一个卡在 provider 上的子任务会让主对话彻底没动静：派活卡在转，
 * 用户不知道它是在等还是卡死了。
 */
 var WAIT_SLICE_MS = 6e4;
+/**
+* 一次 `task_wait` 最多带回多少字符的结论（多条合并时）。
+*
+* 批量领取是「一次 tool result 带回多条」，不设上限的话三条长结论会把父上下文顶掉一半。
+* 超出的条目**留在未领取状态**，下一次 `task_wait` 还能领到，不会丢。
+*/
+var MAX_GATHER_CHARS = 8e3;
 /**
 * 父轮收尾时等子任务响应 abort 的上限。
 *
@@ -9429,6 +9491,10 @@ function formatElapsed(ms) {
 	const rest = minutes % 60;
 	return rest > 0 ? `${hours} 小时 ${rest} 分` : `${hours} 小时`;
 }
+/** 一条派活在父上下文里的短标签（`task_wait` / `task_cancel` 共用一套说法） */
+function taskLabel(task) {
+	return `「${task.name}」${task.summary ? `（${task.summary}）` : ""}`;
+}
 /**
 * 派活的一句话说明。
 *
@@ -9447,10 +9513,10 @@ function shortTaskLabel(task) {
 * - 「立即返回」：模型照老习惯以为工具返回的就是结论，不等就开写 → 幻觉；
 * - 「结论靠 task_wait 领 + 收尾前必须领回」：不写的话它派完就去收尾，结论白跑一趟。
 */
-var DELEGATION_TOOL_SUFFIX = "\n\n调用后**立即返回**一个 taskId（不会等它跑完）：派完你可以继续做自己的事，需要结论时调 `task_wait`（同一个 taskId）领取。**收尾前必须把派出去的活都领回来**，否则本轮结束时会把它中止。同一批 tool-call 里派多个子任务是真的并行；派了多条时用 `task_list` 看各自的状态与进度。";
+var DELEGATION_TOOL_SUFFIX = "\n\n调用后**立即返回**一个 taskId（不会等它跑完）：派完你可以继续做自己的事，需要结论时调 `task_wait` 领取（可以一次传多个 taskId）。**收尾前必须把派出去的活都领回来**，否则本轮结束时会把它中止。同一批 tool-call 里派多个子任务是真的并行；派了多条时用 `task_list` 看各自的状态与进度。领取也**一次就能领回来**：`task_wait` 传多个 taskIds，或者不传（领取所有还没领取的）；默认谁先跑完先交谁，不会为最慢的那条干等。";
 /** 派活句柄交回父上下文的文案：要让模型自己接得上 `task_wait`，并说清「别干等」 */
 function handleText(name, taskId) {
-	return `${DELEGATION_HANDLE_PREFIX}${name}」（taskId: ${taskId}）。它在后台跑，进度看派活卡。\n你可以继续做自己的事；需要它的结论时调 task_wait（taskId 填 ${taskId}）。不需要了可以调 task_cancel 提前结束；收尾前记得领回结论，否则本轮结束时它会被中止。`;
+	return `${DELEGATION_HANDLE_PREFIX}${name}」（taskId: ${taskId}）。它在后台跑，进度看派活卡。\n你可以继续做自己的事；需要它的结论时调 task_wait（taskId 填 ${taskId}；派了多条可以一次传多个 taskIds，或者不传直接领取所有未领取的）。不需要了可以调 task_cancel 提前结束；收尾前记得领回结论，否则本轮结束时它会被中止。`;
 }
 /**
 * 「确实被取消」：`cancelled` 只表示**请求过**取消。abort 可能晚于它自己收尾
@@ -9461,25 +9527,24 @@ function cancelledForReal(task) {
 	return task.cancelled && task.outcome === "aborted";
 }
 /**
-* 等子任务落地，最多 `WAIT_SLICE_MS`；超时返回 null（调用方把话轮交回模型）。
+* 等目标子任务落地，最多 `WAIT_SLICE_MS`；返回本次实际等了多久。
 *
-* 同时返回**本次实际等了多久**：调用方要把它和「子任务总共跑了多久」一起说清，
-* 否则模型只看到「已等 60 秒」，会误以为子任务也只跑了 60 秒。
+* `any`：任意一条落地就返回（`Promise.race`）；`all`：全部落地才返回。
+* 时间片整次调用共用一个（见 `WAIT_SLICE_MS` 的注释）。
 */
-async function waitSettled(task) {
+async function waitTargets(pending, mode) {
 	const startedWaiting = Date.now();
 	let timer;
 	const timeout = new Promise((resolve) => {
-		timer = setTimeout(() => resolve(null), WAIT_SLICE_MS);
+		timer = setTimeout(resolve, WAIT_SLICE_MS);
 	});
+	const settled = mode === "all" ? Promise.all(pending.map((task) => task.settled)) : Promise.race(pending.map((task) => task.settled));
 	try {
-		return {
-			result: await Promise.race([task.settled, timeout]),
-			waitedMs: Date.now() - startedWaiting
-		};
+		await Promise.race([settled, timeout]);
 	} finally {
 		if (timer) clearTimeout(timer);
 	}
+	return Date.now() - startedWaiting;
 }
 var SUBAGENT_SPECS = {
 	explorer: {
@@ -9624,7 +9689,7 @@ async function collectImages(refs, backend, sources) {
 			});
 			continue;
 		}
-		if (/^[a-z][a-z0-9+.-]*:/i.test(ref)) {
+		if (!/^[a-z]:[\\/]/i.test(ref) && /^[a-z][a-z0-9+.-]*:/i.test(ref)) {
 			skipped.push(`${ref}（只支持工作区路径或本轮上传的图片）`);
 			continue;
 		}
@@ -9799,7 +9864,7 @@ function buildDelegationTools(ids, opts) {
 				if (spec.readsImages) {
 					if (!supportsImages) return RESULT_TEXT_NO_VISION;
 					const explicit = (Array.isArray(input?.images) ? input.images : []).filter((v) => typeof v === "string");
-					const picked = await collectImages(explicit.length > 0 ? explicit : (opts.images?.attachments ?? []).map((a) => a.name || a.url), imageBackend, opts.images);
+					const picked = await collectImages(explicit.length > 0 ? explicit : (opts.images?.attachments ?? []).map((a) => a.url), imageBackend, opts.images);
 					if (picked.images.length === 0) return picked.skipped.length > 0 ? `${RESULT_TEXT_NO_IMAGE}\n没能读取的：${picked.skipped.join("；")}` : RESULT_TEXT_NO_IMAGE;
 					imageParts.push(...picked.images);
 					if (picked.skipped.length > 0) taskForRun = `${task}\n\n（以下图片没能附上，需要的话在结论里说明：${picked.skipped.join("；")}）`;
@@ -9864,7 +9929,7 @@ function buildDelegationTools(ids, opts) {
 				/**
 				* 真正的子 run。**调用方不 await**：`execute` 要立刻把 taskId 交回去，结论由
 				* `task_wait` 在模型真正需要的时候领。这里只保证「一定 resolve 成一份结论」，
-				* 绝不 reject —— `settle` / `waitSettled` 的 race 都建立在这一点上。
+				* 绝不 reject —— `settle` / `waitTargets` 的 race 都建立在这一点上。
 				*/
 				const runSubagent = async () => {
 					try {
@@ -10039,26 +10104,90 @@ function buildDelegationTools(ids, opts) {
 	* 交出去了，必须等这一步的工具**全部** resolve 才能发下一次请求。派活挂在那里，模型那句
 	* 「同时我自己看这个文件」就只能排队在子任务后面 —— 明明能并行的事被串成了一条线。
 	* 拆成「立即返回句柄 + 需要时再领」，等的时机就交回模型自己定了。
+	*
+	* 支持**批量领取**（`taskIds` 数组，或不传 = 所有未领取的）：从前只能一次一个 taskId，
+	* 三条子任务就得领三次；先领的那条要是很慢，另外两条早就跑完的结论也只能一起干等。
+	* 默认 `any` 语义 —— 谁先跑完先交谁，并且把此刻已经跑完的**全部**一起带回，
+	* 一次 tool result 就能收多条。`all` 留给「我本来就没别的事干」。
 	*/
 	out.task_wait = {
-		description: "领取后台子任务的结论。派活工具（agent-*）会立即返回一个 taskId；子任务跑完后，结论由这个工具交回。**收尾前必须把派出去的活都领回来**。\n子任务还在跑时最多等 1 分钟：超时会返回「还在跑」（带它总共跑了多久），你可以先做别的、过一会儿再领，或者用 task_cancel 直接结束它。",
-		inputSchema: z.object({ taskId: z.string().describe("派活时返回的 taskId（照抄，不要改）") }),
+		description: "领取后台子任务的结论。派活工具（agent-*）会立即返回一个 taskId；子任务跑完后，结论由这个工具交回。**收尾前必须把派出去的活都领回来**。\n一次可以传多个 taskIds；不传就领取本轮所有还没领取的（包括还在跑的）—— 派了几条不必一条一条领。\n默认 mode=any：任意一条跑完就返回，并把此刻已跑完的**全部**结论一起交回；mode=all 才等全部跑完。\n子任务还在跑时整次调用最多等 1 分钟（不是每条各 1 分钟）：超时会返回「还在跑」（带各自总共跑了多久），你可以先做别的、过一会儿再领，或者用 task_cancel 直接结束它。",
+		inputSchema: z.object({
+			taskIds: z.array(z.string()).optional().describe("要领取的 taskId 列表；省略 = 本轮所有还没领取的"),
+			taskId: z.string().optional().describe("单个 taskId（与 taskIds 等价，旧写法）"),
+			mode: z.enum(["any", "all"]).optional().describe("any（默认）：任意一条跑完就返回已跑完的全部；all：等全部跑完")
+		}),
 		execute: async (input) => {
-			const taskId = (input?.taskId ?? "").trim();
-			const entry = tasks.get(taskId);
-			if (!entry) {
-				const alive = [...tasks.values()].filter((t) => !t.isFinished());
-				return alive.length ? `没有这个 taskId。当前在跑的派活：${alive.map((t) => `${t.id}（${t.name}：${t.summary}）`).join("、")}。` : "没有这个 taskId。当前没有在跑的派活 —— 派活工具会返回它的 taskId，照抄过来。";
-			}
-			const { result, waitedMs } = await waitSettled(entry);
-			if (!result)
- /**
-			* 两个时长都要说：模型只看到「已等 60 秒」会误以为子任务也只跑了 60 秒，
-			* 实际它可能已经跑了十分钟 —— 那正是应该取消而不是继续等的时候。
+			/** 去重 + 去空白：模型偶尔会把同一个 id 写两遍 / 带空格 */
+			const requested = [...new Set([...input?.taskIds ?? [], input?.taskId ?? ""].map((id) => (id ?? "").trim()).filter(Boolean))];
+			const mode = input?.mode === "all" ? "all" : "any";
+			const missing = requested.filter((id) => !tasks.has(id));
+			/**
+			* 没点名 = 本轮所有还没领取的（含还在跑的）。这是「派了几条、一次领回来」的入口：
+			* 模型不必记住每个 taskId。已取消的没有结论，不放进目标集合。
 			*/
-			return `「${entry.name}」${entry.summary ? `（${entry.summary}）` : ""}还在跑（已运行 ${formatElapsed(Date.now() - entry.startedAt)}，本次等待 ${formatElapsed(waitedMs)}）。先做别的，过一会儿再 task_wait（taskId: ${entry.id}）；也可以自己把这件事做完，或者用 task_cancel 直接结束它。`;
-			entry.claimed = true;
-			return result.text;
+			const targets = requested.length ? requested.map((id) => tasks.get(id)).filter((task) => task !== void 0) : [...tasks.values()].filter((task) => !task.claimed && !cancelledForReal(task));
+			if (targets.length === 0) {
+				if (missing.length === 0) {
+					if (tasks.size === 0) return "本轮还没有派过子任务。";
+					return [...tasks.values()].filter(cancelledForReal).length === tasks.size ? "本轮派出的子任务都已取消，没有结论可领。" : "本轮派出去的结论都已经领过了。";
+				}
+				if (missing.length === 1 && requested.length === 1) {
+					const alive = [...tasks.values()].filter((task) => !task.isFinished());
+					return alive.length ? `没有这个 taskId。当前在跑的派活：${alive.map((t) => `${t.id}（${t.name}：${t.summary}）`).join("、")}。` : "没有这个 taskId。当前没有在跑的派活 —— 派活工具会返回它的 taskId，照抄过来。";
+				}
+				return `没有这些 taskId：${missing.join("、")}。`;
+			}
+			/**
+			* `any` 且已经有跑完的：立刻交回，不为还在跑的那几条多等一秒。
+			* 这是批量领取的关键 —— 慢任务不该扣住已经就绪的结论。
+			*/
+			const running = targets.filter((task) => !task.isFinished());
+			const hasReady = running.length < targets.length;
+			let waitedMs = 0;
+			if (running.length > 0 && !(mode === "any" && hasReady)) waitedMs = await waitTargets(running, mode);
+			/** 只点名一条且都认识：保留原来的单条文案（超时 / 未知 id 的说明最干净） */
+			if (targets.length === 1 && missing.length === 0) {
+				const entry = targets[0];
+				if (!entry) return "没有可领取的结论。";
+				if (!entry.isFinished())
+ /**
+				* 两个时长都要说：模型只看到「已等 60 秒」会误以为子任务也只跑了 60 秒，
+				* 实际它可能已经跑了十分钟 —— 那正是应该取消而不是继续等的时候。
+				*/
+				return `${taskLabel(entry)}还在跑（已运行 ${formatElapsed(Date.now() - entry.startedAt)}，本次等待 ${formatElapsed(waitedMs)}）。先做别的，过一会儿再 task_wait（taskId: ${entry.id}）；也可以自己把这件事做完，或者用 task_cancel 直接结束它。`;
+				entry.claimed = true;
+				return (await entry.settled).text;
+			}
+			const finished = targets.filter((task) => task.isFinished());
+			const cancelledNow = finished.filter(cancelledForReal);
+			const stillRunning = targets.filter((task) => !task.isFinished());
+			/** 谁先跑完谁先交（完成时刻升序）：与默认 any 的语义一致 */
+			const claimable = finished.filter((task) => !cancelledForReal(task)).sort((a, b) => (a.finishedAt ?? a.startedAt) - (b.finishedAt ?? b.startedAt));
+			const blocks = [];
+			const deferred = [];
+			let used = 0;
+			for (const entry of claimable) {
+				const result = await entry.settled;
+				const body = result.text.length > MAX_GATHER_CHARS ? `${result.text.slice(0, MAX_GATHER_CHARS)}\n\n…（此处截断，完整结论在派活卡里）` : result.text;
+				if (blocks.length > 0 && used + body.length > MAX_GATHER_CHARS) {
+					deferred.push(entry);
+					continue;
+				}
+				used += body.length;
+				entry.claimed = true;
+				blocks.push(`【${entry.id} · ${entry.name}${entry.summary ? `（${entry.summary}）` : ""} · 用时 ${formatElapsed((entry.finishedAt ?? Date.now()) - entry.startedAt)}】\n${body}`);
+			}
+			for (const entry of cancelledNow) entry.claimed = true;
+			const lines = [];
+			if (blocks.length > 0) lines.push(`【已完成 ${blocks.length} 条】`, blocks.join("\n\n"));
+			if (cancelledNow.length > 0) lines.push(`【已取消，没有结论】${cancelledNow.map((t) => t.id).join("、")}`);
+			if (stillRunning.length > 0) lines.push(`【还在跑】${stillRunning.map((t) => `${t.id}（${t.name}${t.summary ? `：${t.summary}` : ""}，已运行 ${formatElapsed(Date.now() - t.startedAt)}）`).join("、")}`);
+			if (waitedMs > 0) lines.push(`本次等待 ${formatElapsed(waitedMs)}。`);
+			if (deferred.length > 0) lines.push(`还有 ${deferred.length} 条已完成的结论超出本次长度预算（${deferred.map((t) => t.id).join("、")}），再调一次 task_wait 领取。`);
+			if (stillRunning.length > 0) lines.push("先做别的，过一会儿再 task_wait（不传 taskIds 就是领取所有未领取的）；也可以用 task_cancel 结束它们。");
+			if (missing.length > 0) lines.push(`没有这些 taskId：${missing.join("、")}`);
+			return lines.length > 0 ? lines.join("\n") : "没有可领取的结论。";
 		}
 	};
 	/**
@@ -10117,11 +10246,10 @@ function buildDelegationTools(ids, opts) {
 				alreadyDone.push(entry);
 			}
 			const cancelledNow = cancelled.filter((entry) => entry.cancelled);
-			const label = (t) => `「${t.name}」${t.summary ? `（${t.summary}）` : ""}`;
 			if (requested.length === 1 && cancelledNow.length === 1) {
 				const entry = cancelledNow[0];
 				if (!entry) return "没有可结束的子任务。";
-				return entry.isFinished() ? `已结束${label(entry)}（运行 ${formatElapsed((entry.finishedAt ?? Date.now()) - entry.startedAt)}）。` : `已请求结束${label(entry)}，它正在收尾。`;
+				return entry.isFinished() ? `已结束${taskLabel(entry)}（运行 ${formatElapsed((entry.finishedAt ?? Date.now()) - entry.startedAt)}）。` : `已请求结束${taskLabel(entry)}，它正在收尾。`;
 			}
 			if (requested.length === 1 && alreadyDone.length === 1) {
 				const entry = alreadyDone[0];
@@ -10131,7 +10259,7 @@ function buildDelegationTools(ids, opts) {
 			const lines = [];
 			if (cancelledNow.length > 0) {
 				lines.push(`已结束 ${cancelledNow.length} 个子任务：`);
-				for (const t of cancelledNow) lines.push(t.isFinished() ? `- ${label(t)}：运行 ${formatElapsed((t.finishedAt ?? Date.now()) - t.startedAt)}` : `- ${label(t)}：已请求结束，正在收尾`);
+				for (const t of cancelledNow) lines.push(t.isFinished() ? `- ${taskLabel(t)}：运行 ${formatElapsed((t.finishedAt ?? Date.now()) - t.startedAt)}` : `- ${taskLabel(t)}：已请求结束，正在收尾`);
 			}
 			if (alreadyDone.length > 0) lines.push(`已经跑完、结论还在（用 task_wait 领取）：${alreadyDone.map((t) => `${t.id}（${t.name}）`).join("、")}`);
 			if (missing.length > 0) lines.push(`没有这些 taskId：${missing.join("、")}`);

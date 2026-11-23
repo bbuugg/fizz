@@ -76,6 +76,23 @@ const GLASS_RIM_ACCENT = `border border-white/35 dark:border-white/25 ${GLASS_SH
 /** 危险色块上的描边：白色淡描边，与红色底拉开边界 */
 const GLASS_RIM_DANGER = `border border-white/35 dark:border-white/25 ${GLASS_SHADOW}`
 
+/** 底色档位：玻璃按钮与玻璃表面共用同一张表 */
+type GlassTone = "default" | "contrast" | "accent" | "danger"
+
+function glassTint(tone: GlassTone): string {
+  if (tone === "contrast") return GLASS_TINT_CONTRAST
+  if (tone === "accent") return GLASS_TINT_ACCENT
+  if (tone === "danger") return GLASS_TINT_DANGER
+  return GLASS_TINT
+}
+
+function glassRim(tone: GlassTone): string {
+  if (tone === "contrast") return GLASS_RIM_CONTRAST
+  if (tone === "accent") return GLASS_RIM_ACCENT
+  if (tone === "danger") return GLASS_RIM_DANGER
+  return GLASS_RIM
+}
+
 const GLASS_BLUR = "backdrop-blur-[22px] backdrop-saturate-[180%]"
 
 /** 跟随指针的 1.5px 描边光圈（见 `.liquid-lens::before` 的配方） */
@@ -122,24 +139,10 @@ export function LiquidGlassButton({
    * 底色档位：`default` 适合压在深色内容上（终端悬浮球）；
    * `contrast` 给白色 popover / 顶栏用 —— 纯白玻璃在白底上会隐形。
    */
-  tone?: "default" | "contrast" | "accent" | "danger"
+  tone?: GlassTone
 }) {
-  const tint =
-    tone === "contrast"
-      ? GLASS_TINT_CONTRAST
-      : tone === "accent"
-        ? GLASS_TINT_ACCENT
-        : tone === "danger"
-          ? GLASS_TINT_DANGER
-          : GLASS_TINT
-  const rim =
-    tone === "contrast"
-      ? GLASS_RIM_CONTRAST
-      : tone === "accent"
-        ? GLASS_RIM_ACCENT
-        : tone === "danger"
-          ? GLASS_RIM_DANGER
-          : GLASS_RIM
+  const tint = glassTint(tone)
+  const rim = glassRim(tone)
   /** 指针位置 → CSS 变量（`.liquid-lens` 的配方）；触摸设备跳过，光圈是纯装饰 */
   const trackLens = (event: React.PointerEvent<HTMLButtonElement>): void => {
     // 拖动中（`frosted={false}`）不要每帧读 getBoundingClientRect()：那是强制回流，
@@ -255,24 +258,10 @@ export function LiquidGlassSurface({
    * 底色档位：白色 popover / 顶栏上用 `contrast`，主操作上用 `accent`，
    * 破坏性动作（停止 / 删除）用 `danger` —— 与 `LiquidGlassButton` 的四档一一对应。
    */
-  tone?: "default" | "contrast" | "accent" | "danger"
+  tone?: GlassTone
 }) {
-  const tint =
-    tone === "contrast"
-      ? GLASS_TINT_CONTRAST
-      : tone === "accent"
-        ? GLASS_TINT_ACCENT
-        : tone === "danger"
-          ? GLASS_TINT_DANGER
-          : GLASS_TINT
-  const rim =
-    tone === "contrast"
-      ? GLASS_RIM_CONTRAST
-      : tone === "accent"
-        ? GLASS_RIM_ACCENT
-        : tone === "danger"
-          ? GLASS_RIM_DANGER
-          : GLASS_RIM
+  const tint = glassTint(tone)
+  const rim = glassRim(tone)
   return (
     <div
       className={cn(
@@ -397,35 +386,67 @@ const EDGE_LIGHT_WHITE: React.CSSProperties = {
     "radial-gradient(180px circle at var(--lens-x, 50%) var(--lens-y, 50%), rgba(255,255,255,0.95), rgba(255,255,255,0.7) 20%, rgba(255,255,255,0.1) 46%, rgba(255,255,255,0) 62%)",
 }
 
-/** 材质层与边缘光圈共用的定位外壳（大小 / 圆角跟着宿主容器走） */
-const PANEL_LAYER = "pointer-events-none absolute inset-0 rounded-[inherit]"
+/** 边缘光圈层共用的定位外壳（大小 / 圆角跟着宿主容器走，`z-10` 压在内容之上） */
+const EDGE_LIGHT_LAYER = 'pointer-events-none absolute inset-0 z-10 rounded-[inherit] transition-opacity duration-200 ease-out'
 
 /**
- * 面板级液态玻璃的**边缘光圈**：给命令面板 / Dialog / AlertDialog 用，渲染在
- * `GLASS_PANEL_CLASS` 容器的第一颗子节点即可。
+ * 通用的**边缘流光**：任意圆角容器都能挂（输入卡片 / 权限 pill / 提问卡 …），
+ * 只有边框内侧亮一圈，光标底下没有扫光 / 光斑。
  *
- * 面板底（实色 `--popover`）、描边与景深投影都由容器的 `GLASS_PANEL_CLASS` 提供，这里
- * 只管那圈跟随指针的光：**只有边框内侧亮一圈**，光标底下没有扫光 / 光斑。
- *
- * 光圈层用 `z-10` 而不是排在子节点最后：容器是 `isolate` 的，正 z 会压在内容之上 ——
- * 命令面板那种 `p-0` 满铺、或底栏自带一层薄雾的场景，贴边的那圈光也不会被盖掉。
- *
- * 指针位置由宿主写进容器的 `--lens-x` / `--lens-y` / `--lens-opacity`（`trackLiquidLens`
- * / `clearLiquidLens`）；触摸设备没有「指向」，光圈保持隐藏。
+ * 宿主要做三件事，缺一不可：
+ * 1. `relative isolate`：`z-10` 的这层要能压在内容之上、又不能漏到外面去；
+ * 2. 圆角类（`rounded-xl` / `rounded-full` …）：光圈按 `rounded-[inherit]` 跟着走；
+ * 3. 用 `useLiquidGlassLens()` 返回的指针处理器（写 `--lens-*` 变量）。
  */
-export function LiquidGlassPanel() {
+export function LiquidGlassEdgeLight({ className }: { className?: string }) {
   return (
     <>
       <span
         aria-hidden
-        className={cn(PANEL_LAYER, "z-10 transition-opacity duration-200 ease-out dark:hidden")}
+        className={cn(EDGE_LIGHT_LAYER, "dark:hidden", className)}
         style={EDGE_LIGHT_PRIMARY}
       />
       <span
         aria-hidden
-        className={cn(PANEL_LAYER, "z-10 hidden transition-opacity duration-200 ease-out dark:block")}
+        className={cn(EDGE_LIGHT_LAYER, "hidden dark:block", className)}
         style={EDGE_LIGHT_WHITE}
       />
     </>
   )
+}
+
+/**
+ * 边缘流光的指针处理器：直接展开到宿主要素上即可，例如
+ *
+ * ```tsx
+ * <div className="relative isolate rounded-xl" {...useLiquidGlassLens()}>
+ *   <LiquidGlassEdgeLight />
+ * </div>
+ * ```
+ *
+ * 宿主已有同名处理器时自己包一层（`trackLiquidLens(event)` + 原回调），这里不替你合并。
+ */
+export function useLiquidGlassLens(): {
+  onPointerEnter: React.PointerEventHandler<HTMLElement>
+  onPointerMove: React.PointerEventHandler<HTMLElement>
+  onPointerLeave: React.PointerEventHandler<HTMLElement>
+} {
+  return React.useMemo(
+    () => ({
+      onPointerEnter: (event: React.PointerEvent<HTMLElement>) => trackLiquidLens(event),
+      onPointerMove: (event: React.PointerEvent<HTMLElement>) => trackLiquidLens(event),
+      onPointerLeave: (event: React.PointerEvent<HTMLElement>) => clearLiquidLens(event)
+    }),
+    []
+  )
+}
+
+/**
+ * 面板级液态玻璃的**边缘光圈**（弹窗 / 命令面板用）：就是 `LiquidGlassEdgeLight`。
+ *
+ * 面板底（实色 `--popover`）、描边与景深投影由容器的 `GLASS_PANEL_CLASS` 提供，
+ * 这里只管那圈跟随指针的光。
+ */
+export function LiquidGlassPanel() {
+  return <LiquidGlassEdgeLight />
 }
