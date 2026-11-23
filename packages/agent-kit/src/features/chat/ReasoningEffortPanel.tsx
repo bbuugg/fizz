@@ -21,6 +21,7 @@ import type { AiReasoningEffort } from '@fizz/contracts/types'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { usePrefersReducedMotion } from '@fizz/agent-kit/shared/hooks/usePrefersReducedMotion'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { criticallyDampedEase } from '@fizz/agent-kit/features/chat/effort-spring'
 import '@fizz/agent-kit/features/chat/reasoning-effort.css'
 
 /** `null` = 默认（不向 provider 下发 reasoning）；其余按强度递增。 */
@@ -84,22 +85,14 @@ function glideEase(progress: number): number {
   return y0 + ((y1 - y0) * (progress - x0)) / (x1 - x0)
 }
 
-/** 阻尼弹簧曲线（gsap 的 ease 接口）：果冻回弹用它，比 cubic 更有余韵 */
-function springEase(stiffness: number, damping: number, duration: number) {
-  const decay = damping / 2
-  const frequency = Math.sqrt(stiffness - decay * decay)
-  return (progress: number): number => {
-    if (progress === 0 || progress === 1) return progress
-    const time = progress * duration
-    return (
-      1 -
-      Math.exp(-decay * time) *
-        (Math.cos(frequency * time) + (decay / frequency) * Math.sin(frequency * time))
-    )
-  }
-}
-
-const returnEase = springEase(400, 23, 0.72)
+/**
+ * 果冻形变的回正曲线（松手 / 拖动中停住都走它）。
+ *
+ * 必须单调收敛：欠阻尼弹簧会在原地来回过冲，看起来就是「滑块在抖」（见
+ * `effort-spring.ts` 的文件头与用例）。形变的**发生**仍然跟手走，只有回正是
+ * 「一到就停」的。
+ */
+const settleEase = criticallyDampedEase(400, 0.6)
 
 /**
  * 星空画布：底色是一条从深灰到档位色相的渐变，上面铺 7 条缓慢起伏的亮带和 64 颗
@@ -275,9 +268,15 @@ function createEffortMotion(
       const next = Math.min(1, Math.max(0, ratio))
       targetRatio = next
       ratioTween?.kill()
+      ratioTween = null
+      if (immediate || reduced || Math.abs(next - state.ratio) < 1e-4) {
+        state.ratio = next
+        paint()
+        return
+      }
       ratioTween = gsap.to(state, {
         ratio: next,
-        duration: immediate || reduced ? 0 : 0.5,
+        duration: 0.24,
         ease: glideEase,
         onUpdate: paint,
       })
@@ -300,7 +299,7 @@ function createEffortMotion(
       shapeTween = gsap
         .timeline({ onUpdate: paint })
         .to(state, { body: deformation, lean, duration: 0.09, ease: 'power2.out' })
-        .to(state, { body: 0, lean: 0, duration: 0.72, ease: returnEase }, '>0.07')
+        .to(state, { body: 0, lean: 0, duration: 0.6, ease: settleEase }, '>0.07')
       boostTween?.kill()
       boostTween = gsap.to(state, {
         boost: 1 + Math.min(2.2, 0.55 + speed * 0.6),
@@ -320,8 +319,8 @@ function createEffortMotion(
       shapeTween = gsap.to(state, {
         body: 0,
         lean: 0,
-        duration: reduced ? 0 : 0.72,
-        ease: returnEase,
+        duration: reduced ? 0 : 0.6,
+        ease: settleEase,
         onUpdate: paint,
       })
       boostTween?.kill()
@@ -481,7 +480,14 @@ export function ReasoningEffortPanel({
     gesture.current = null
     draggingRef.current = false
     setDragging(false)
-    updatePreview(Math.round(previewRef.current))
+    const snapped = Math.round(previewRef.current)
+    updatePreview(snapped)
+    /*
+     * 吸附必须在松手这一帧就落地：改成滑行的话，低帧率下（弹层里有背景模糊，一帧
+     * 可能上百毫秒）松手后那段位移是一串台阶，看起来就是拇指在抖。位置直接对齐，
+     * 回弹只留给果冻形变的收尾。
+     */
+    motion.current?.moveTo(MAX_INDEX ? snapped / MAX_INDEX : 0, true)
     motion.current?.release()
   }
 
@@ -515,7 +521,11 @@ export function ReasoningEffortPanel({
           step={0.001}
           value={[preview]}
           onValueChange={([next]) => updatePreview(next ?? 0)}
-          onValueCommit={([next]) => commit(next ?? 0)}
+          /*
+           * 吸附只认**最新指针位置**（previewRef）：Radix 回调里的值是它上一次渲染的
+           * 快照，快速甩动时会比指针落后一两步。两处各自取整还会「先吸到 A 再漂到 B」。
+           */
+          onValueCommit={() => commit(previewRef.current)}
           onPointerDownCapture={onPointerDownCapture}
           onPointerMoveCapture={onPointerMoveCapture}
           onPointerUpCapture={onPointerUpCapture}

@@ -115,7 +115,7 @@ function BranchPill({ app, editable }: { app: AgentApp; editable: boolean }) {
    * 读分支清单。
    *
    * `silent` = 面板已经开着、手上有一份清单时用（改名 / 新建 / 删除 / 初始化之后）：
-   * **不置 loading、不清旧数据**，结果回来原地替换。否则面板会先缩成「读取分支…」
+   * **不置 loading、不清旧数据**，结果回来原地替换。否则面板会先切回骨架屏
    * 再长回列表 —— 高度跳一下（用户报过）。
    */
   const loadBranches = (silent = false): void => {
@@ -128,12 +128,12 @@ function BranchPill({ app, editable }: { app: AgentApp; editable: boolean }) {
         if (branchLoadGen.current === gen) setBranches(result)
       })
       .catch(() => {
-        // 静默刷新失败就保留旧清单（别把列表清成「读取分支…」）
+        // 静默刷新失败就保留旧清单（别把列表清成骨架屏）
         if (branchLoadGen.current === gen && !silent) setBranches(null)
       })
       .finally(() => {
         // 只判 `silent`、不判代次：静默刷新若抢先返回，首个非静默请求的代次已过期，
-        // 再把 `setLoading(false)` 一起跳过就会永远停在「读取分支…」。
+        // 再把 `setLoading(false)` 一起跳过就会永远停在骨架屏。
         if (!silent) setLoading(false)
       })
   }

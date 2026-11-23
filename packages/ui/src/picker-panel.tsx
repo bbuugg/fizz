@@ -54,7 +54,11 @@ import { PopoverContent } from './popover'
 import { SearchField } from './search-field'
 
 /**
- * 面板外壳：`PopoverContent` + 内部的 `Command` 根 + 底部固定槽。
+ * 面板外壳：`PopoverContent` + 内部的 `Command` 根 + 顶部 / 底部固定槽。
+ *
+ * `header` 是**面板最上方固定的一条**（不进 `Command`）：二级视图的「返回 + 标题」、
+ * 分组标题这类不进列表滚动、也不参与 cmdk 键盘遍历的内容放这里。
+ * 不传就什么都不画（工作区 / 分支那些选择器不需要）。
  *
  * 高度上限**必须吃 Radix 算出来的可用高度**（`--radix-popper-available-height`，由
  * `Popper.Content` 以内联变量给出，已扣掉 `collisionPadding`），再与 26rem 取小：
@@ -72,11 +76,14 @@ import { SearchField } from './search-field'
  */
 function PickerPanel({
   children,
+  header,
   footer,
   className,
   onOpenAutoFocus,
   ...props
 }: React.ComponentProps<typeof PopoverContent> & {
+  /** 顶部固定区（二级的「返回 + 标题」这类）；不传 = 没有这一块 */
+  header?: React.ReactNode
   /** 底部固定区（`PickerFooter`）；不传 = 没有这一块 */
   footer?: React.ReactNode
 }) {
@@ -116,6 +123,7 @@ function PickerPanel({
       )}
     >
       <LiquidGlassPanel />
+      {header}
       <Command shouldFilter={false} className="h-auto min-h-0 flex-1 gap-0 bg-transparent">
         {children}
       </Command>
@@ -169,14 +177,17 @@ function PickerList({ className, ...props }: React.ComponentProps<'div'>) {
  * 分组小标题：列表按来源（某个模型配置 / 某个 Agent）分段时用。
  *
  * 它**不可点、不进方向键的遍历范围**（不是 cmdk item）—— 拍平后的列表只靠它分段，
- * 不再用二级菜单。`action` 放行尾的入口（设置齿轮那类）。
+ * 不再用二级菜单。`action` 放行尾的入口（设置齿轮那类）；
+ * `icon` 放标题左侧的品牌标志（ACP agent 才有），没有就什么都不画。
  */
 function PickerLabel({
   className,
+  icon,
   action,
   children
 }: {
   className?: string
+  icon?: React.ReactNode
   action?: React.ReactNode
   children: React.ReactNode
 }) {
@@ -187,7 +198,10 @@ function PickerLabel({
         className
       )}
     >
-      <span className="min-w-0 truncate">{children}</span>
+      <span className="flex min-w-0 items-center gap-1.5">
+        {icon}
+        <span className="truncate">{children}</span>
+      </span>
       {action}
     </div>
   )

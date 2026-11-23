@@ -6,6 +6,12 @@ import { cn } from "cn"
 import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react"
 import { Select as SelectPrimitive } from "radix-ui"
 import { useDismissFocusGuard } from "./focus-dismiss"
+import {
+  clearLiquidLens,
+  GLASS_PANEL_CLASS,
+  LiquidGlassPanel,
+  trackLiquidLens,
+} from "./liquid-glass"
 import { resolveCollisionPadding } from "./safe-area"
 
 function Select({
@@ -130,27 +136,47 @@ function SelectContent({
         }}
         onCloseAutoFocus={(event) => dismissFocus.closeAutoFocus(event, onCloseAutoFocus)}
         className={cn(
-          // 弹出面板（select 的「二级」下拉）：浅边框 + 圆角 + 投影。
-          // ⚠️ light 主题下 --popover 与 --background 都是纯白，仅靠投影在纯白页面上仍偏虚，
-          // 所以补一层 `border-border`（light 0.922 / dark 白 10%）当浅描边，边界更实。
-          // 圆角比按钮那档（rounded-md）更大，与 Dialog / AlertDialog 的 rounded-xl 对齐。
+          // 弹出面板（select 的「二级」下拉）：与 Dialog / AlertDialog / 选择器面板同一套
+          // 液态玻璃外壳 —— 实色面板底、淡描边与景深投影都来自 `GLASS_PANEL_CLASS`，
+          // 跟随指针的边缘光圈由 `LiquidGlassPanel` 铺在内容之上。
+          // ⚠️ 别再往这里加 `bg-*` / `border-*` / `shadow-*`：会把玻璃材质换掉。
+          //
+          // 滚动交给 `Select.Viewport`（它自带 `flex:1` + `overflow:hidden auto`，Radix 的
+          // 上下滚动按钮读的也是它的 `scrollTop`）：Content 只当 `flex flex-col` 的定高外壳，
+          // 这样边缘光圈是相对**面板**定位的，不会跟着列表一起滚走。
+          //
           // 尺寸兜底（窄窗口 / 小屏）：
           // - 高度取「Radix 给的可用高度」与「视口高度 - 2rem」的**较小者**，超了就面板内滚；
           // - 宽度封顶到视口宽 - 1rem：否则 `min-w-*` / 长选项会把面板撑出视口，
           //   超出去的那截被浏览器直接裁掉（用户看到的就是「菜单一半被 hidden」）。
-          "relative z-50 max-h-[min(var(--radix-select-content-available-height),calc(100vh_-_2rem))] max-w-[calc(100vw_-_1rem)] min-w-[8rem] origin-(--radix-select-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-xl border border-border bg-popover text-popover-foreground data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 shadow-lg",
+          "relative z-50 flex max-h-[min(var(--radix-select-content-available-height),calc(100vh_-_2rem))] max-w-[calc(100vw_-_1rem)] min-w-[8rem] origin-(--radix-select-content-transform-origin) flex-col overflow-hidden rounded-xl text-popover-foreground data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
           position === "popper" &&
             "data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1",
+          GLASS_PANEL_CLASS,
           className
         )}
         position={position}
         align={align}
         {...props}
+        // 玻璃的边缘光圈：指针位置写到容器自身的 CSS 变量上，由 `LiquidGlassPanel` 读取
+        onPointerEnter={(event) => {
+          trackLiquidLens(event)
+          props.onPointerEnter?.(event)
+        }}
+        onPointerMove={(event) => {
+          trackLiquidLens(event)
+          props.onPointerMove?.(event)
+        }}
+        onPointerLeave={(event) => {
+          clearLiquidLens(event)
+          props.onPointerLeave?.(event)
+        }}
       >
+        <LiquidGlassPanel />
         {header ? (
           <div
             data-slot="select-header"
-            className="border-b border-border px-4 pt-3.5 pb-3"
+            className="shrink-0 border-b border-border px-4 pt-3.5 pb-3"
           >
             {header}
           </div>
@@ -161,9 +187,12 @@ function SelectContent({
             // 有 header = 「富面板」（权限那两颗），内边距放宽一档：选中项的灰底要离面板
             // 边缘留出气口，4px 会贴边显得像被裁掉。
             header ? "p-2" : "p-1",
+            // Viewport 是面板里唯一的滚动区（Radix 自带 `flex:1` + `overflow:hidden auto`）：
+            // 必须能收缩到内容以下才滚得起来，否则会把 Content 顶高、把面板撑出视口。
+            "min-h-0",
             position === "popper" &&
-              // `min-h-` 而不是 `h-`：锁死成触发器高度的话，多出来的选项会溢出 Viewport
-              // 却又不进 Content 的滚动区 —— 视觉上就是「只有第一项，其余看不见」
+              // `min-h-` 而不是 `h-`：锁死成触发器高度的话，多出来的选项在 Viewport 里放不下，
+              // 面板看起来就只剩「第一项」，其余看不见
               "min-h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)] scroll-my-1"
           )}
         >

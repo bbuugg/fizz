@@ -24,7 +24,7 @@
   background: color-mix(in srgb, var(--foreground) 10%, var(--background));
 }
 
-/* 已填充部分：裁到拇指右缘（左右各留 16px = 拇指宽度的一半） */
+/* 已填充部分：裁到拇指右缘（与拇指同一套 16px 内缩：两端各留半个拇指） */
 .reasoning-effort-fill {
   position: absolute;
   inset: 0;
@@ -60,6 +60,8 @@
   opacity: 0;
 }
 
+/* `touch-action` 不用写：Slider 基类已带 `touch-none`（手指手势会发 pointercancel
+ * 停掉拖动、表现为拖到一半弹回原档位，见 `ResizeHandle` 的同一条教训）。 */
 .reasoning-effort-input {
   cursor: grab;
 }
@@ -68,7 +70,9 @@
   cursor: grabbing;
 }
 
-/* 装饰拇指：真正接事件的 Radix thumb 是透明的，视觉位置由 ratio 算出 */
+/* 装饰拇指：真正接事件的 Radix thumb 是透明的，视觉位置由 ratio 算出。
+ * 左右各留 16px = 拇指半径：与 Radix 的 `getThumbInBoundsOffset` 同一条内缩规则，
+ * 装饰拇指与那颗透明命中区必须同心，否则抓的位置不是看到的那个。 */
 .reasoning-effort-thumb {
   position: absolute;
   left: calc((100% - 32px) * var(--effort-ratio) + 3px);

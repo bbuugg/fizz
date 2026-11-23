@@ -217,6 +217,8 @@ export const AGENT: Record<string, string> = {
   '移除模型 {name}': 'Remove model {name}',
   '检测已安装': 'Detect installed',
   '添加 ACP agent': 'Add ACP agent',
+  '预设 agent（点击填入默认命令与参数，保存前可以修改）':
+    'Preset agents (click to fill in the default command and arguments; you can edit them before saving)',
   '运行中的 ACP 进程': 'Running ACP processes',
   '空闲超过 10 分钟会自动回收；有轮次在跑的不回收。':
     'Idle processes are reclaimed after 10 minutes; processes with a running turn are never reclaimed.',
@@ -240,7 +242,6 @@ export const AGENT: Record<string, string> = {
   '「完全放行」时的答复：缺省「仅允许一次」（下次仍会询问）；选「永久记住」后由 agent 自己记着不再问，届时切回「确认」也要不回询问': 'Reply for “allow all”: defaults to “allow once” (asks again next time); with “remember forever” the agent stops asking and switching back to “confirm” will not restore prompts',
   '仅允许一次（推荐，下次仍会询问）': 'Allow once (recommended; asks again next time)',
   '允许并永久记住（agent 侧不再询问）': 'Allow and remember forever (agent stops asking)',
-  '这个命令（含参数）已经被别的条目占了，换个命令或参数。': 'This command (including arguments) is already used by another entry; change the command or arguments.',
   '检测已安装的 ACP agent': 'Detected ACP agents',
   '这些是服务端 PATH 上找到的命令。勾选要添加的条目，点「添加」一次写进去；已经添加过的会自动勾上并标注。': 'These commands were found on the server PATH. Check the ones to add and click “Add”; already-added ones are checked and marked.',
   '探测失败：{error}': 'Detection failed: {error}',
@@ -481,7 +482,6 @@ export const AGENT: Record<string, string> = {
   '选一个触发时刻：一次性任务必须知道「什么时候」跑':
     'Choose a trigger time: a one-time task must know when to run',
   '每天巡检依赖': 'Daily dependency check',
-  '选择模型 / Agent': 'Choose model / agent',
   '触发时用什么跑：内置模型（配置 → 模型），或外部 Agent（ACP，可跟随它自己的默认模型）':
     'What to run with: a built-in model (config → model), or an external agent (ACP, which may use its own default model)',
   '这个工作区的目录已不存在（{path}），保存会被拒绝：请重新选择工作区，或改用「每次运行自动创建」。':

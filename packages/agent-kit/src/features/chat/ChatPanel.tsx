@@ -260,6 +260,9 @@ function ChatPanelInner({
 
   // acp 会话的消息在 agent 侧：编辑 / 删除这类「本地历史」操作没有对象，只给「复制」
   const activeIsAcp = activeConversationIsAcp(app);
+  // 引用浮层的栏根节点：分屏下两栏各挂一套浮层，必须按它区分「选区落在谁家」
+  const panelRootRef = useRef<HTMLDivElement>(null);
+
   // 队列「编辑」把消息写回输入框后，聚焦到 textarea 让用户接着改
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -465,11 +468,12 @@ function ChatPanelInner({
   // 不绑项目直接聊 —— 多出去一屏拦一道，手机上是白占一屏。
   // 也正因为不再有那道 gate，「项目清单还没拉回来」不会被误判成「没有项目」，
   // 骨架屏（`NewTaskSkeleton`）随之没用，一并删了。
-  if (!app.activeConversationId) return <NewTaskView app={app} />;
+  if (!app.activeConversationId) return <NewTaskView app={app} voiceScope={panelKey} />;
 
   return (
     <>
       <ChatSurface
+        rootRef={panelRootRef}
         list={{
           messages,
           // 多智能体协作的实时回复：本轮结束前挂在末尾，不挂操作行
@@ -760,18 +764,23 @@ function ChatPanelInner({
           // 消息目录：用户消息各占一段，悬停预览、点击跳转
           outline: true,
         }}
-        composer={
-          mentionCandidates.length
-            ? { ...composer, mentionCandidates }
-            : composer
-        }
+        composer={{
+          ...composer,
+          ...(mentionCandidates.length ? { mentionCandidates } : {}),
+          // 语音快捷键只开**本标签**的麦：分屏时两栏的 Composer 都挂着监听（见 Composer 的 voiceScope）
+          voiceScope: panelKey
+        }}
         /* 工具卡里的文件名点开 → 右侧「文件」面板（见上面 workspaceFileOpener） */
         fileOpener={workspaceFileOpener}
         /* 输入框上方「后台任务」入口要按会话拉在跑的命令（子智能体入口不走它） */
         app={app}
       />
-      {/* 消息区划选 → 浮出「引用」按钮。浮层自挂 body（fixed），放在渲染树哪一层都行 */}
-      <MessageQuoteLayer onQuote={(q) => setQuotes((prev) => [...prev, q])} />
+      {/* 消息区划选 → 浮出「引用」按钮。浮层自挂 body（fixed），放在渲染树哪一层都行；
+          `scopeRef` 让它只认**本栏**消息（分屏时两栏都监听同一个全局选区） */}
+      <MessageQuoteLayer
+        scopeRef={panelRootRef}
+        onQuote={(q) => setQuotes((prev) => [...prev, q])}
+      />
       <ForkDialog
         app={app}
         messageId={forkTarget}

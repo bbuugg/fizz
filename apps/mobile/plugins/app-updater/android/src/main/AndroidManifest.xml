@@ -1,0 +1,22 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 安卓不允许静默安装：本权限只让系统安装器愿意被拉起，用户仍需在系统弹窗里确认 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application>
+        <!--
+            共享下载目录（getExternalFilesDir(DIRECTORY_DOWNLOADS)）里的 APK 交给系统安装器。
+            FileProvider 是 android:exported=false 的，只有拿到本进程授予的临时读权限才能被安装器打开。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fizzupdater.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/fizz_updater_paths" />
+        </provider>
+    </application>
+
+</manifest>

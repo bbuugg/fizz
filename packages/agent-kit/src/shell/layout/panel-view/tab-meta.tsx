@@ -28,6 +28,7 @@ import { conversationTitle } from '@fizz/agent-kit/shared/lib/conversation-title
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { usePluginSurfaces } from '@fizz/agent-kit/shared/lib/plugin-surfaces'
 import { TypingBubble } from '@fizz/agent-kit/features/chat/TypingBubble'
+import { AcpAgentIcon } from '@fizz/agent-kit/shared/components/AcpAgentIcon'
 import { getActivity, useActivities } from '@fizz/agent-kit/shared/lib/conversation-activity'
 import {
   getTabDecoration,
@@ -296,14 +297,31 @@ export function useTabMeta(): (key: string) => TabMeta {
         }
       }
       const conversation = app.conversations.find((c) => c.id === key)
+      // ACP 会话的标签用绑定 agent 的品牌图标（与侧栏会话行一致；认不出 → Bot）
+      const acpAgent =
+        conversation?.backend === 'acp'
+          ? app.acpAgents.find((a) => a.id === conversation.configId)
+          : undefined
       return {
         // 默认标题（`新会话`）按当前语言显示，用户起过的名字原样
         label: conversationTitle(conversation?.title) || t('对话'),
         title: conversationTitle(conversation?.title) || key,
-        icon: <MessageSquare className="size-3.5 shrink-0" />
+        icon: acpAgent ? (
+          <AcpAgentIcon command={acpAgent.command} className="size-3.5" />
+        ) : (
+          <MessageSquare className="size-3.5 shrink-0" />
+        )
       }
     },
-    [app.conversations, app.sshHosts, app.apiRequests, app.scripts, pluginSurfaces, language]
+    [
+      app.conversations,
+      app.acpAgents,
+      app.sshHosts,
+      app.apiRequests,
+      app.scripts,
+      pluginSurfaces,
+      language
+    ]
   )
 
   /**

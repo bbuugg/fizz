@@ -3,8 +3,8 @@
  *
  * 职责只有三件，别往这里加第四件：
  * 1. 把 `app` 里的清单灌给 `ModelPicker`（`models` / `acpAgents` / 默认窗口）；
- * 2. 按**活动会话**算出「该不该锁后端」：acp 会话只显示它绑定的那个 agent，
- *    已有 内置会话时不出 ACP 组（换类型 = 新建会话）；
+ * 2. 按**活动会话**算出「该不该锁后端」：会话已创建时 `agentLocked` 让面板直接进二级
+ *    （内置会话 → 内置模型，ACP 会话 → 它绑定的那个 agent），一级不再出现；
  * 3. 读写 `chatTarget`（`setChatTarget` 会顺手探 ACP 档位、把目标持久化到会话目录）。
  *    思考强度面板也在这里挂到下拉底部：它和 `chatTarget` 同源，选完模型要立刻跟着变。
  *
@@ -76,8 +76,10 @@ export function ModelSelect({ app }: { app: AgentApp }) {
       acpAgents={app.acpAgents}
       value={app.chatTarget}
       onChange={app.setChatTarget}
+      // 会话已创建：一级（内置 / 哪个 ACP agent）锁死，打开直接进二级
+      agentLocked={!!activeConversation}
       {...(lockedAgent ? { lockedAgent } : {})}
-      // 内置会话 / 空态之外不出 ACP 组：有会话就换不了类型
+      // 一级里出不出 ACP 组：空态（还没建会话）才有得选
       showAcp={!activeConversation}
       {...(acpDisabledReason ? { acpDisabledReason } : {})}
       emptyTitle={t('这一轮用哪个模型 / 哪个外部 Agent（下一轮生效）')}

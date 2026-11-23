@@ -43,6 +43,7 @@
  */
 import type { AgentChatMessage } from '@fizz/contracts/agent-api'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { LiquidGlassEdgeLight, clearLiquidLens, trackLiquidLens } from '@fizz/ui/liquid-glass'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { textOf } from '@fizz/agent-kit/shared/lib/parts'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
@@ -243,8 +244,8 @@ export function MessageOutline({
     >
       {/*
         展开动画：**宽度**从 20px 长到 288px，背景 / 阴影 / 内边距一起过渡。
-        `max-h-full` + `overflow-y-auto`：几十轮的长会话里卡片不能顶出消息区，
-        超出就让卡片自己滚（滚条照例藏掉，见 `.no-scrollbar`）。
+        `max-h-full`：几十轮的长会话里卡片不能顶出消息区，超出就让**里面那层列表**滚
+        （滚条照例藏掉，见 `.no-scrollbar`；为什么滚动不放这一层见下方的注释）。
 
         ⚠️ `w-5`（20px）时**不能有 padding**：内宽就 20px，padding 一进来横杠会被挤窄，
         于是「未展开」和「展开」的横杠右缘对不上，视觉上会横跳一下。
@@ -257,18 +258,20 @@ export function MessageOutline({
         ref={cardRef}
         className={cn(
           // `touch-manipulation`：去掉移动端点击的 300ms 双击缩放等待，且不拦卡片内滑动滚动
-          // `gap-1.5` 服务的是**展开态**那张列表（一条摘要挨一条，太密读不动）；
-          // 收起态那列横杠的松紧由行高管（见按钮上的 `h-3.5`），这里不需要为它再调
-          'pointer-events-auto flex max-h-full max-w-[calc(100%-1.5rem)] touch-manipulation flex-col items-stretch gap-1.5 overflow-y-auto no-scrollbar rounded-2xl',
+          // `relative isolate`：边缘流光的 `z-10` 要压在内容之上、又不能漏到卡片外面
+          'pointer-events-auto relative isolate flex max-h-full max-w-[calc(100%-1.5rem)] touch-manipulation flex-col rounded-2xl',
           'transition-[width,background-color,box-shadow,padding] duration-200 ease-out',
           open ? 'w-72 bg-popover p-2 shadow-lg ring-1 ring-border' : 'w-5'
         )}
         onPointerEnter={(event) => {
+          trackLiquidLens(event)
           // 触屏在按下时也会补发 enter/leave（`pointerType === 'touch'`）：不判类型就会
           // 「一碰就开、抬手就关」，手指永远看不清摘要
           if (event.pointerType === 'mouse') setOpen(true)
         }}
+        onPointerMove={(event) => trackLiquidLens(event)}
         onPointerLeave={(event) => {
+          clearLiquidLens(event)
           if (event.pointerType === 'mouse') setOpen(false)
         }}
         onClick={() => {
@@ -283,17 +286,29 @@ export function MessageOutline({
           if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false)
         }}
       >
-        {items.map((item) => (
-          <OutlineBar
-            key={item.id}
-            id={item.id}
-            text={item.text}
-            active={item.id === activeId}
-            open={open}
-            onSelect={select}
-            onPointerType={rememberPointerKind}
-          />
-        ))}
+        {/*
+          滚动放在**内层**：边缘流光那两层是 `absolute inset-0`，放在滚动容器里会跟着
+          列表一起滚走（长会话滚到中段时边框就不亮了）。外层只管尺寸与流光，内容自己滚。
+
+          `gap-1.5` 服务的是**展开态**那张列表（一条摘要挨一条，太密读不动）；
+          收起态那列横杠的松紧由行高管（见按钮上的 `h-3.5`），这里不需要为它再调。
+        */}
+        <div className="no-scrollbar flex min-h-0 flex-1 flex-col items-stretch gap-1.5 overflow-y-auto">
+          {items.map((item) => (
+            <OutlineBar
+              key={item.id}
+              id={item.id}
+              text={item.text}
+              active={item.id === activeId}
+              open={open}
+              onSelect={select}
+              onPointerType={rememberPointerKind}
+            />
+          ))}
+        </div>
+        {/* 边缘流光：与审批卡 / 输入卡片同一套，指针在卡片上移动时只亮边框那一圈。
+            收起态（20px 窄带）不挂：那时它是一根细长的发光条，不是卡片。 */}
+        {open ? <LiquidGlassEdgeLight /> : null}
       </div>
     </div>
   )

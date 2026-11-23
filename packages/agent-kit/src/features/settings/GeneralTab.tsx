@@ -12,8 +12,8 @@
  *   这里只管偏好与能力探测。
  * - 系统监控：状态栏左侧那条服务器性能监控的总开关（服务端全局一份）。关掉后
  *   服务端**连采样一起停**、状态栏也不再渲染监控条。
- * - 软件更新（desktop 专属）：应用自身的自动更新入口，见 `AppUpdateSection`。
- *   静默只检查、**下载必须用户点**（产品约定）。
+ * - 软件更新（打包版专属：desktop 安装包 / 安卓 APK）：应用自身的自动更新入口，
+ *   见 `AppUpdateSection`。静默只检查、**下载必须用户点**（产品约定）。
  */
 import { useEffect, useState, type ReactNode } from 'react'
 import { Activity, Bell, Copy, ExternalLink, Globe, Languages, Mic, Sun } from 'lucide-react'

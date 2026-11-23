@@ -95,6 +95,7 @@ import '@milkdown/crepe/theme/common/style.css'
  */
 import { installBlockDragDropFallback } from '@fizz/agent-kit/shared/components/block-drag-drop'
 import '@fizz/agent-kit/shared/components/markdown-editor.css'
+import { activeTabKey } from '@fizz/agent-kit/shared/lib/panel-store'
 // 源码模式的编辑器：与文件面板**同一份** Monaco（loader / 主题 / 等宽字体 / CSP worker 壳
 // 都在那边了）。`shared → features` 方向在本包内已有先例（`shared/lib/plugin-surfaces.ts`）。
 import MonacoEditor from '@fizz/agent-kit/features/files/MonacoEditor'
@@ -494,6 +495,12 @@ export function MarkdownEditor({
     if (!active) return
     const onKeyDown = (event: KeyboardEvent): void => {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 's') return
+      /*
+        分屏：`active` 只表示「本组里的活动标签」，两栏各有一个活动标签、会同时为 true。
+        再判一次「本标签就是**焦点组**正在显示的那个」，否则一次 Ctrl+S 会把另一栏的
+        编辑器也一起存了（静默写盘）。
+      */
+      if (activeTabKey() !== tabKey) return
       event.preventDefault()
       void submit()
     }
@@ -507,7 +514,7 @@ export function MarkdownEditor({
     */
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [active, submit])
+  }, [active, submit, tabKey])
 
   const editSource = useCallback((next: string): void => {
     setSource(next)

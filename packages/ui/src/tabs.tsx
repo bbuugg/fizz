@@ -84,7 +84,18 @@ function TabsContent({
   return (
     <TabsPrimitive.Content
       data-slot="tabs-content"
-      className={cn("flex-1 text-sm outline-none", className)}
+      className={cn(
+        "flex-1 text-sm outline-none",
+        /*
+          切页签时 Radix 的 `Presence` 会把**旧页**多留一帧：`hidden` 要等下一次 commit 才
+          置上，那一帧里新旧两个 panel 同时可见、同时参与布局。外层「按内容撑高度」的容器
+          （如 `DialogContent` 的 `useHeightTransition`）会先量到两者之和 —— 弹窗先被撑大、
+          下一帧旧页卸载再缩回，看起来就是「弹跳」（主题编辑器切页签时用户报过）。
+          按 `data-state` 立刻隐藏旧页：它本来就是 inactive，不该参与这一帧的布局。
+        */
+        "data-[state=inactive]:hidden",
+        className
+      )}
       {...props}
     />
   )

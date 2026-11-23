@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    <external-files-path> 对应 Context.getExternalFilesDir(null)（即 .../files/），
+    DownloadManager 的 setDestinationInExternalFilesDir(DIRECTORY_DOWNLOADS) 落在它下面的 Download/。
+-->
+<paths>
+    <external-files-path name="downloads" path="Download/" />
+</paths>

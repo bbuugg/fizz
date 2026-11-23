@@ -26,7 +26,14 @@ import { useAttachmentDraft } from "@fizz/agent-kit/features/chat/use-attachment
  * 两行字直接叠在一起。所以改成容器 `overflow-y-auto` + 子块 `my-auto`：空间够时居中，
  * 不够时 auto margin 归零、内容从顶部开始并随容器滚动，永远不会越过 header。
  */
-export function NewTaskView({ app }: { app: AgentApp }) {
+export function NewTaskView({
+  app,
+  voiceScope
+}: {
+  app: AgentApp
+  /** 语音快捷键的作用域（本标签 key，空态是 `__new__`）：见 `Composer` 的 `voiceScope` */
+  voiceScope?: string | null
+}) {
   const t = useT()
   const draft = useAttachmentDraft(app)
   // 文案里的 `{workspace}` 由下面的工作区入口顶替（英文语序也靠这个占位符保持通顺）
@@ -42,6 +49,7 @@ export function NewTaskView({ app }: { app: AgentApp }) {
         </div>
         {/* 草稿在「确认开跑」后才清：建 ACP 会话要先起外部进程，失败时输入框必须还在 */}
         <ChatComposer
+          voiceScope={voiceScope}
           {...useMainComposerProps(app, {
             attachments: draft.attachments,
             onPickFiles: draft.onPickFiles,

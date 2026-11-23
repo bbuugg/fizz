@@ -17,6 +17,7 @@ import { useThemeColor } from '@fizz/agent-kit/shared/hooks/useTheme'
 import { App } from '@/app/App'
 import { useAndroidAppResume, useAndroidBackButton } from '@/app/android-back'
 import { useBootSplash } from '@/app/boot-splash'
+import { scheduleSilentAppUpdateCheck } from '@/update/mobile-update'
 
 /**
  * 状态栏图标（时间 / 电量 / 信号）用深色还是浅色。
@@ -62,5 +63,9 @@ export function ClientRoot() {
   useAndroidBackButton()
   // 从后台回来时重建状态 WS（切后台久了连接会半死，界面看起来像「暂停」）
   useAndroidAppResume()
+  // 静默检查新版本（只在 APK 里生效：首查延迟 8s，之后每 6h / 回前台补查；失败无声）
+  useEffect(() => {
+    scheduleSilentAppUpdateCheck()
+  }, [])
   return <App />
 }

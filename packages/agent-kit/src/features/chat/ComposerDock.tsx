@@ -660,7 +660,9 @@ export function ComposerDock({
           </BorderBeam>
           <PickerPanel
             side="top"
-            align="start"
+            // 右缘与药丸右缘对齐（面板从右边往左铺）：药丸在整行最右边，面板再往右长
+            // 就会出界、被碰撞避让推回来 —— 看起来就像贴错了地方
+            align="end"
             sideOffset={6}
             collisionPadding={8}
             style={{ width: panelWidth }}
@@ -772,7 +774,8 @@ export function ComposerDock({
           </BorderBeam>
           <PickerPanel
             side="top"
-            align="start"
+            // 与子智能体那块同一条：右缘对齐药丸右缘
+            align="end"
             sideOffset={6}
             collisionPadding={8}
             style={{ width: panelWidth }}

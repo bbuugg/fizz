@@ -1,0 +1,14 @@
+{
+  "name": "@fizz/capacitor-app-updater",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Fizz 安卓壳的应用内更新：DownloadManager 下载 APK，FileProvider + 系统安装器完成安装",
+  "files": [
+    "android/"
+  ],
+  "capacitor": {
+    "android": {
+      "src": "android"
+    }
+  }
+}

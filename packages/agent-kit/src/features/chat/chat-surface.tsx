@@ -983,6 +983,12 @@ export interface ChatComposerProps {
   variant?: ChatComposerVariant
   /** 紧凑输入框（初始高度一行）—— 窄面板里的助手用，见 Composer 的 compact */
   compact?: boolean
+  /**
+   * 语音快捷键的作用域（本输入框所属的标签 key）：`voiceStart / Stop` 广播里带着
+   * 焦点组当前标签的 key，只有对得上的输入框开麦 —— 分屏时两栏不能一起收音。
+   * 见 `Composer` 的 `voiceScope`；不传的宿主退回「焦点在自己卡片里」。
+   */
+  voiceScope?: string | null
 }
 
 /**
@@ -1017,7 +1023,8 @@ export function ChatComposer({
   slashContext,
   mentionCandidates,
   variant = 'page',
-  compact
+  compact,
+  voiceScope
 }: ChatComposerProps) {
   const panel = variant === 'panel'
   return (
@@ -1076,6 +1083,7 @@ export function ChatComposer({
             slashContext={slashContext}
             mentionCandidates={mentionCandidates}
             compact={compact}
+            voiceScope={voiceScope}
           />
         )}
         {below ? <div className="flex min-w-0 items-center gap-2 px-1 bg-sidebar/60 rounded-b-lg mx-3">{below}</div> : null}
@@ -1102,6 +1110,13 @@ export interface ChatSurfaceProps {
     renderActions?: (args: MessageActionArgs) => ReactNode
   }
   composer: ChatComposerProps
+  /**
+   * 这棵会话视图的根节点。
+   *
+   * 给 `MessageQuoteLayer` 用：分屏时两栏同时挂着浮层，必须按「选区落在谁家」区分，
+   * 否则两栏都会弹、点下去写进另一栏的输入框（见 `quotes.tsx` 的 `scopeRef`）。
+   */
+  rootRef?: React.Ref<HTMLDivElement>
   /** 消息列表与输入框之间的内容（错误条之类） */
   between?: ReactNode
   /**
@@ -1145,7 +1160,14 @@ export interface ChatSurfaceProps {
  * （见下面的 `findDelegation`），流式期就能跟着往下走。找不到（消息被删 / 切了会话）
  * 就退回打开时的快照，不会白屏。
  */
-export function ChatSurface({ list, composer, between, fileOpener, app }: ChatSurfaceProps) {
+export function ChatSurface({
+  list,
+  composer,
+  between,
+  fileOpener,
+  app,
+  rootRef
+}: ChatSurfaceProps) {
   /** 正在看的子任务：工具调用 id + 兜底快照 */
   const [viewing, setViewing] = useState<{
     toolCallId: string
@@ -1193,7 +1215,7 @@ export function ChatSurface({ list, composer, between, fileOpener, app }: ChatSu
   const runningSubagents = collectRunningSubagents(list.messages, list.streaming)
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
+    <div ref={rootRef} className="relative flex min-h-0 flex-1 flex-col">
       {/*
         工具卡里那截文件路径的「点开」能力由宿主递下去（见 `features/files/open-file.ts`）：
         只有宿主知道这个视图的面板 key 与会话所属的工作区，消息流深处拿不到。

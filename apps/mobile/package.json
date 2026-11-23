@@ -25,6 +25,7 @@
     "@capacitor/status-bar": "^8.0.4",
     "@fizz/agent-client": "*",
     "@fizz/agent-kit": "*",
+    "@fizz/capacitor-app-updater": "file:./plugins/app-updater",
     "@fizz/contracts": "*",
     "@fizz/shells": "*",
     "@fizz/ui": "*",

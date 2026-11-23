@@ -3,14 +3,15 @@
  *
  * 原先是 `ComposerStatusBar` 里的私有 `BranchPill`：切分支、新建、删除、确认框全写在
  * 那一颗里。`GitPanel` 头部那颗分支下拉是另一套（Radix `DropdownMenu`，不能搜、不分组、
- * 也没有面板的高度动画），两边越走越不像。现在把整块面板抽到这里，两处共用：
+ * 也没有面板的高度动画），两边越走越不像。现在把整块面板抽到这里：
  *
- * - `ComposerStatusBar` 传 `variant="pill"`（输入卡片下方横条那颗）；
- * - `GitPanel` 传 `variant="header"`（面板头部那颗幽灵按钮）。
+ * - `GitPanel` 传 `variant="header"`（面板头部那颗幽灵按钮）；
+ * - `variant="pill"` 是原先 composer 输入条下面那颗的长相 —— composer 已不再挂分支入口
+ *   （底栏 `StatusBarNodes` 有常驻入口），这一档留着只当受控组件的样式选项。
  *
  * 数据仍由调用方管：分支清单、当前分支、loading / busy、以及四个动作（检出 / 新建 /
- * 初始化仓库 / 删除）都从 props 进 —— 调用方各自有自己的刷新与错误 toast（`GitPanel`
- * 走 `run()`，composer 自己 toast），本文件只负责面板长相与交互。
+ * 初始化仓库 / 删除）都从 props 进 —— 调用方各自有自己的刷新与错误处理（`GitPanel`
+ * 走 `run()`），本文件只负责面板长相与交互。
  *
  * 面板长相来自 `@fizz/ui/picker-panel`（搜索 + 列表 + 底部固定动作），与工作区 / 模型
  * 选择器同一套，高度动画由 `PickerPanel` 自带（`useHeightTransition`）。
@@ -38,6 +39,7 @@ import { Button } from '@fizz/ui/button'
 import { Checkbox } from '@fizz/ui/checkbox'
 import { Input } from '@fizz/ui/input'
 import { Popover, PopoverTrigger } from '@fizz/ui/popover'
+import { Skeleton } from '@fizz/ui/skeleton'
 import {
   PickerAction,
   PickerEmpty,
@@ -106,13 +108,45 @@ function BranchName({ name }: { name: string }) {
   )
 }
 
+/**
+ * 读分支 / 空结果占位区的共用高度（px）：一行分组标题（`pt-2` + 12px 条 + `pb-1` = 24）
+ * 加三行 32px 的行高。
+ *
+ * 两个状态都按它占位：加载完发现一条分支都没有时，面板高度不动，不会「啪」地缩成一截
+ * （用户报过：加载中的骨架屏和空态之间高度跳变）。骨架屏加行、改行高时这里要跟着改。
+ */
+const BRANCH_PLACEHOLDER_HEIGHT = 24 + 3 * 32
+
+/**
+ * 读分支清单时的骨架屏：按 `PickerItem` 的几何摆几行（32px 行高、16px 图标位、文字条），
+ * 数据到了原地替换 —— 比一行「读取分支…」更像列表正在长出来。
+ *
+ * 总高度必须等于 `BRANCH_PLACEHOLDER_HEIGHT`（空态按同一个数占位）。
+ * 文字条宽度刻意错落：几根等长的条看着像加载失败的占位，不像分支名。
+ */
+function BranchListSkeleton() {
+  return (
+    <div aria-busy="true" aria-hidden="true">
+      <div className="px-2.5 pt-2 pb-1">
+        <Skeleton className="h-3 w-16 rounded" />
+      </div>
+      {['w-[70%]', 'w-[52%]', 'w-[84%]'].map((width) => (
+        <div key={width} className="flex h-8 items-center gap-2.5 px-2.5 py-1.5">
+          <Skeleton className="size-4 shrink-0 rounded" />
+          <Skeleton className={cn('h-3.5 rounded', width)} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export interface BranchPickerProps {
   /** 当前分支名（`null` = 分离头指针 / 非仓库）；用于「当前项打勾」与「不能删自己」 */
   branch: string | null
   isRepo: boolean
   /** 分支清单；`null` = 还没读到 */
   branches: GitBranchesResult | null
-  /** 正在读分支清单（面板里显示「读取分支…」） */
+  /** 正在读分支清单（面板里显示骨架屏） */
   loading?: boolean
   /** 有写操作在跑：触发器与行内动作一起禁用 */
   busy?: boolean
@@ -536,16 +570,27 @@ export function BranchPicker({
                   </PickerItem>
                 ))}
               </TooltipProvider>
-            ) : loading ? (
-              <PickerEmpty>{tr('读取分支…')}</PickerEmpty>
+            ) : loading && branches === null ? (
+              // 只在「手上还没有任何清单」时摆骨架屏：重开面板刷新时旧清单原样留着、
+              // 数据到了原地替换 —— 否则每次打开都先切骨架屏再长回列表，高度来回跳。
+              <BranchListSkeleton />
             ) : local.length === 0 && remote.length === 0 ? (
-              <PickerEmpty>
-                {noCommits
-                  ? tr('还没有任何分支（先提交一次）')
-                  : keyword
-                    ? tr('没有匹配的分支')
-                    : tr('没有可切换的分支')}
-              </PickerEmpty>
+              // 搜索没命中按一行显示（用户正敲字，面板跟着缩是预期）；
+              // 其余空态按骨架屏的高度占位 —— 加载完没分支时面板高度不变。
+              !keyword || noCommits ? (
+                <div
+                  className="flex items-center justify-center"
+                  style={{ minHeight: BRANCH_PLACEHOLDER_HEIGHT }}
+                >
+                  <PickerEmpty className="py-0">
+                    {noCommits
+                      ? tr('还没有任何分支（先提交一次）')
+                      : tr('没有可切换的分支')}
+                  </PickerEmpty>
+                </div>
+              ) : (
+                <PickerEmpty>{tr('没有匹配的分支')}</PickerEmpty>
+              )
             ) : (
               /* 一颗 provider 管整张列表：提示只在名字真被截断时才挂（见 `BranchName`），
                  `delayDuration` 给 400ms —— 鼠标扫过一行不该立刻冒气泡 */

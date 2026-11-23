@@ -23,10 +23,10 @@
  *    后台任务 / 传输徽标）同一层「外壳常驻 chrome」。而 desktop 的 renderer 只剩 `ClientRoot`
  *    薄包装 + 窗口级 UI
  *    （`TitleBar` / `SettingsWindow`），外壳内部没有它的挂载点。
- * 2. **「只有 desktop 会弹」是靠宿主能力探测表达的，不是靠文件位置**：能力定义在
+ * 2. **「谁会弹」是靠宿主能力探测表达的，不是靠文件位置**：能力定义在
  *    `@fizz/agent-client/host` 的可选 `appUpdate` 上。desktop 的宿主实现了它（`renderer/host.ts`
- *    转给主进程），web 的宿主没有；mobile 用的是 `apps/mobile/src/app/app-shell.tsx` 那份
- *    自己的外壳，压根不挂这个组件。所以 web 下 `useAppUpdateStatus()` 恒为 `null` →
+ *    转给主进程），安卓壳也在宿主里实现（`apps/mobile/src/host.ts` → 本地 Capacitor 插件），
+ *    web 的宿主没有。各端外壳各自挂一份；web 下 `useAppUpdateStatus()` 恒为 `null` →
  *    恒走最后那句 `toast.dismiss()`，连一次 IPC 都不会发（`app-update.ts` 的 `bind()` 直接 return）。
  * 3. **同一份状态有三个消费点，全在共享包**：`shell/layout/AppUpdateBadge`（状态栏徽章）、
  *    设置页的 `AppUpdateSection`、以及这条 toast，判据都是 `appUpdateAvailable()` /
@@ -44,10 +44,13 @@ import {
   useAppUpdateStatus,
   useUpdateNotifyEnabled
 } from '@fizz/agent-kit/shared/lib/app-update'
+import { isNativeShell } from '@fizz/agent-kit/shared/lib/native-notify'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 
 const TOAST_ID = 'app-update'
 
 export function AppUpdateNotifier() {
+  const tr = useT()
   const status = useAppUpdateStatus()
   const notifyEnabled = useUpdateNotifyEnabled()
   const state = status?.state ?? 'idle'
@@ -79,11 +82,16 @@ export function AppUpdateNotifier() {
     }
 
     if (state === 'downloaded') {
+      // 安卓没有「重启安装」：下载完只是调起系统安装器，重启由安装器自己做
+      const native = isNativeShell()
       toast(`新版本 v${latest} 已就绪`, {
         id: TOAST_ID,
         duration: Infinity,
-        description: '重启应用后生效',
-        action: { label: '重启并安装', onClick: () => void installAppUpdate() },
+        description: native ? tr('下载完成，点「打开安装器」完成安装') : '重启应用后生效',
+        action: {
+          label: native ? tr('打开安装器') : '重启并安装',
+          onClick: () => void installAppUpdate()
+        },
         cancel: { label: '稍后', onClick: () => toast.dismiss(TOAST_ID) }
       })
       return

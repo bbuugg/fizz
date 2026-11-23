@@ -3,6 +3,12 @@ import { cn } from "cn"
 import { CheckIcon, ChevronRightIcon, CircleIcon } from "lucide-react"
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui"
 import { useDismissFocusGuard } from "./focus-dismiss"
+import {
+  clearLiquidLens,
+  GLASS_PANEL_CLASS,
+  LiquidGlassPanel,
+  trackLiquidLens,
+} from "./liquid-glass"
 import { resolveCollisionPadding } from "./safe-area"
 import { stopPortalClick } from "./portal-click-guard"
 
@@ -33,6 +39,7 @@ function DropdownMenuTrigger({
 
 function DropdownMenuContent({
   className,
+  children,
   sideOffset = 4,
   onPointerDown,
   onPointerDownOutside,
@@ -65,16 +72,39 @@ function DropdownMenuContent({
         }}
         onCloseAutoFocus={(event) => dismissFocus.closeAutoFocus(event, onCloseAutoFocus)}
         className={cn(
-          // 弹出面板：浅边框 + 圆角 + 投影。
-          // （light 主题下 --popover 与 --background 同为纯白，仅靠投影在纯白页面上偏虚，
-          // 补一层 `border-border` 当浅描边；圆角与 Dialog / AlertDialog 的 rounded-xl 对齐）。
+          // 与 Dialog / AlertDialog / Select / 选择器面板同一套液态玻璃外壳：实色面板底、
+          // 淡描边与景深投影都来自 `GLASS_PANEL_CLASS`，跟随指针的边缘光圈由
+          // `LiquidGlassPanel` 铺在内容之上。
+          // ⚠️ 别再往这里加 `bg-*` / `border-*` / `shadow-*`：会把玻璃材质换掉。
+          //
+          // 滚动放在内层那圈 `overflow-y-auto` 上（见下面），Content 只当定高的 flex 外壳：
+          // 边缘光圈是相对**面板**定位的，不会跟着菜单项一起滚走。
           //
           // 尺寸兜底（窄窗口 / 小屏）：高度取 Radix 可用高度与视口高 - 2rem 的较小者（超了内滚），
           // 宽度封顶视口宽 - 1rem —— 不封顶的话长菜单会撑出视口，多出来的那截被浏览器直接裁掉。
-          "z-50 max-h-[min(var(--radix-dropdown-menu-content-available-height),calc(100vh_-_2rem))] max-w-[calc(100vw_-_1rem)] min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-xl border border-border bg-popover p-1 text-popover-foreground data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 shadow-lg!",
+          "relative z-50 flex max-h-[min(var(--radix-dropdown-menu-content-available-height),calc(100vh_-_2rem))] max-w-[calc(100vw_-_1rem)] min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) flex-col overflow-hidden rounded-xl text-popover-foreground data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
+          GLASS_PANEL_CLASS,
           className
         )}
-      />
+        // 玻璃的边缘光圈：指针位置写到容器自身的 CSS 变量上，由 `LiquidGlassPanel` 读取
+        onPointerEnter={(event) => {
+          trackLiquidLens(event)
+          props.onPointerEnter?.(event)
+        }}
+        onPointerMove={(event) => {
+          trackLiquidLens(event)
+          props.onPointerMove?.(event)
+        }}
+        onPointerLeave={(event) => {
+          clearLiquidLens(event)
+          props.onPointerLeave?.(event)
+        }}
+      >
+        <LiquidGlassPanel />
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1">
+          {children}
+        </div>
+      </DropdownMenuPrimitive.Content>
     </DropdownMenuPrimitive.Portal>
   )
 }
@@ -252,6 +282,7 @@ function DropdownMenuSubTrigger({
 
 function DropdownMenuSubContent({
   className,
+  children,
   onClick,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
@@ -267,11 +298,30 @@ function DropdownMenuSubContent({
         onClick?.(event)
       }}
       className={cn(
-        // 子菜单面板与主面板同一套观感（浅边框 + 大圆角 + 投影）
-        "z-50 min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-xl border border-border bg-popover p-1 text-popover-foreground data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
+        // 与主面板同一套液态玻璃外壳 + 边缘流光（滚动同样下放到内层）：
+        // 子菜单是**另一个组件**（DropdownMenuSubContent），不会跟着 Content 一起改。
+        "relative z-50 flex min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) flex-col overflow-hidden rounded-xl text-popover-foreground data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
+        GLASS_PANEL_CLASS,
         className
       )}
-    />
+      onPointerEnter={(event) => {
+        trackLiquidLens(event)
+        props.onPointerEnter?.(event)
+      }}
+      onPointerMove={(event) => {
+        trackLiquidLens(event)
+        props.onPointerMove?.(event)
+      }}
+      onPointerLeave={(event) => {
+        clearLiquidLens(event)
+        props.onPointerLeave?.(event)
+      }}
+    >
+      <LiquidGlassPanel />
+      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1">
+        {children}
+      </div>
+    </DropdownMenuPrimitive.SubContent>
   )
 }
 

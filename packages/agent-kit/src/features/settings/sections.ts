@@ -137,7 +137,7 @@ function allSettingsGroups(app: AgentApp): SettingsGroup[] {
         // 意图），不是用户口味；「偏好」那种叫法会让人以为里面是主题 / 字号之类的个人口味。
         { id: 'ai-prefs', label: t('通用'), icon: SlidersHorizontal },
         { id: 'models', label: t('模型 ({count})', { count: app.models.length }), icon: Cpu },
-        { id: 'acp', label: t('ACP agent ({count})', { count: app.acpAgents.length }), icon: Bot },
+        { id: 'acp', label: t('Agents ({count})', { count: app.acpAgents.length }), icon: Bot },
         { id: 'mcp', label: t('MCP ({count})', { count: app.mcpServers.length }), icon: Plug },
         // 内置浏览器（Playwright headless shell）的检测 / 安装 / 卸载。跟着 MCP 排：
         // 两者回答的是同一类问题「这台机器上有什么能替我操作网页」，而且这里是

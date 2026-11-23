@@ -17,6 +17,8 @@
 import type { AiPermissionMode } from '@fizz/contracts/agent-api'
 import { normalizeServerBase, type Connection } from '@fizz/agent-client/api'
 import { getServerBaseOverride, type AgentHost } from '@fizz/agent-client/host'
+import { isNativeShell } from '@fizz/agent-kit/shared/lib/native-notify'
+import { mobileAppUpdate } from '@/update/mobile-update'
 
 /**
  * 语音输入能力：`SpeechRecognition` 构造器存在、且页面处于安全上下文时才算有。
@@ -156,6 +158,14 @@ export const mobileHost: AgentHost = {
     localMediaFetch: false,
     webview: false
   },
+  /*
+   * 应用内更新：**只有 APK（原生壳）有**。hosted `/m/` 跑在浏览器里，装不了包，
+   * 露出来只会让「软件更新」分区多一段不可用说明，所以按运行时探测挂或不挂
+   * （设置页的 `AppUpdateSection` 靠桥存在与否决定显示）。
+   * 状态机在 `@/update/mobile-update`，与 desktop 的 updater 同一套约定：
+   * 静默只查、下载 / 安装都要用户点。
+   */
+  appUpdate: isNativeShell() ? mobileAppUpdate : undefined,
   /*
    * 终端 = 服务端 PTY（WS），与 web 端同一条通道 —— **刻意不在这里实现**。
    *

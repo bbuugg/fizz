@@ -525,7 +525,7 @@ function TriggerForm({
                   onChange={setModelTarget}
                   // 「配置 · 模型」：表单比聊天工具条宽，带上配置名少一次猜
                   showProvider
-                  emptyLabel={t('选择模型 / Agent')}
+                  emptyLabel={t('选择 Agent')}
                   emptyTitle={t(
                     '触发时用什么跑：内置模型（配置 → 模型），或外部 Agent（ACP，可跟随它自己的默认模型）'
                   )}

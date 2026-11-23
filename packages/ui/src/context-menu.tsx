@@ -5,6 +5,12 @@ import { ChevronRightIcon, CheckIcon } from "lucide-react"
 import { useDismissFocusGuard } from "./focus-dismiss"
 import { resolveCollisionPadding } from "./safe-area"
 import { stopPortalClick } from "./portal-click-guard"
+import {
+  clearLiquidLens,
+  GLASS_PANEL_CLASS,
+  LiquidGlassPanel,
+  trackLiquidLens,
+} from "./liquid-glass"
 
 function ContextMenu({
   ...props
@@ -60,6 +66,7 @@ function ContextMenuRadioGroup({
 
 function ContextMenuContent({
   className,
+  children,
   onPointerDown,
   onPointerDownOutside,
   onCloseAutoFocus,
@@ -91,8 +98,36 @@ function ContextMenuContent({
           onPointerDownOutside?.(event)
         }}
         onCloseAutoFocus={(event) => dismissFocus.closeAutoFocus(event, onCloseAutoFocus)}
-        className={cn("z-50 max-h-[min(var(--radix-context-menu-content-available-height),calc(100vh_-_2rem))] max-w-[calc(100vw_-_1rem)] min-w-36 origin-(--radix-context-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 duration-100 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95", className )}
-      />
+        className={cn(
+          // 与 DropdownMenu / Dialog / 选择器面板同一套液态玻璃外壳：实色面板底、淡描边与
+          // 景深投影都来自 `GLASS_PANEL_CLASS`，跟随指针的边缘流光由 `LiquidGlassPanel` 铺。
+          // ⚠️ 别再往这里加 `bg-*` / `border-*` / `shadow-*`：会把玻璃材质换掉。
+          //
+          // 滚动下放到内层 `overflow-y-auto`（见下面）：外壳只当定高的 flex，
+          // 流光相对面板定位，不会跟着菜单项滚走。
+          "relative z-50 flex max-h-[min(var(--radix-context-menu-content-available-height),calc(100vh_-_2rem))] max-w-[calc(100vw_-_1rem)] min-w-36 origin-(--radix-context-menu-content-transform-origin) flex-col overflow-hidden rounded-xl text-popover-foreground duration-100 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          GLASS_PANEL_CLASS,
+          className
+        )}
+        // 边缘流光：指针位置写到容器自身的 CSS 变量上，由 `LiquidGlassPanel` 读取
+        onPointerEnter={(event) => {
+          trackLiquidLens(event)
+          props.onPointerEnter?.(event)
+        }}
+        onPointerMove={(event) => {
+          trackLiquidLens(event)
+          props.onPointerMove?.(event)
+        }}
+        onPointerLeave={(event) => {
+          clearLiquidLens(event)
+          props.onPointerLeave?.(event)
+        }}
+      >
+        <LiquidGlassPanel />
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1">
+          {children}
+        </div>
+      </ContextMenuPrimitive.Content>
     </ContextMenuPrimitive.Portal>
   )
 }
@@ -146,6 +181,7 @@ function ContextMenuSubTrigger({
 
 function ContextMenuSubContent({
   className,
+  children,
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.SubContent>) {
   // 子菜单没有 `onCloseAutoFocus`（Radix 的 SubContent 不挂 FocusScope），
@@ -154,8 +190,30 @@ function ContextMenuSubContent({
     <ContextMenuPrimitive.SubContent
       {...props}
       data-slot="context-menu-sub-content"
-      className={cn("z-50 min-w-32 origin-(--radix-context-menu-content-transform-origin) overflow-hidden rounded-lg border bg-popover p-1 text-popover-foreground shadow-lg duration-100 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95", className )}
-    />
+      // 与一级菜单同一套玻璃外壳 + 边缘流光（滚动同样下放到内层）
+      className={cn(
+        "relative z-50 flex min-w-32 origin-(--radix-context-menu-content-transform-origin) flex-col overflow-hidden rounded-xl text-popover-foreground duration-100 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+        GLASS_PANEL_CLASS,
+        className
+      )}
+      onPointerEnter={(event) => {
+        trackLiquidLens(event)
+        props.onPointerEnter?.(event)
+      }}
+      onPointerMove={(event) => {
+        trackLiquidLens(event)
+        props.onPointerMove?.(event)
+      }}
+      onPointerLeave={(event) => {
+        clearLiquidLens(event)
+        props.onPointerLeave?.(event)
+      }}
+    >
+      <LiquidGlassPanel />
+      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1">
+        {children}
+      </div>
+    </ContextMenuPrimitive.SubContent>
   )
 }
 

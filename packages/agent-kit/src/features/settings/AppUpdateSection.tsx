@@ -1,9 +1,10 @@
 /**
- * 软件更新（desktop 打包版专属）：检查 / 下载 / 安装应用自身的更新。
+ * 软件更新（打包版专属：desktop 安装包 / 安卓 APK）：检查 / 下载 / 安装应用自身的更新。
  *
  * 与 dogi 的同一套约定：**静默只检查，下载必须用户点**，装也要用户点。
  * 界面按主进程那份状态机的六个档位渲染（`available` = 有新版本等你点下载），
  * 状态来自 `shared/lib/app-update.ts`（模块级一份订阅，与状态栏指示条 / 应用内提示共用）。
+ * 安卓壳没有「重启安装」这一步（下载完调起系统安装器），文案按 `isNativeShell()` 换。
  *
  * 两个渲染纪律：
  *
@@ -28,6 +29,7 @@ import {
   useUpdateNotifyEnabled
 } from '@fizz/agent-kit/shared/lib/app-update'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
+import { isNativeShell } from '@fizz/agent-kit/shared/lib/native-notify'
 
 export function AppUpdateSection() {
   const tr = useT()
@@ -41,6 +43,8 @@ export function AppUpdateSection() {
 
   const state = status?.state ?? 'idle'
   const percent = status?.percent ?? 0
+  /** 安卓壳里安装 = 调起系统安装器（没有「重启安装」这一步），文案要跟着换 */
+  const native = isNativeShell()
 
   /** 包一层：把 busy 开关收在一个地方，免得每个按钮各写一遍 */
   const run = async (action: () => Promise<unknown>): Promise<void> => {
@@ -133,11 +137,14 @@ export function AppUpdateSection() {
             {state === 'downloaded' && (
               <>
                 <span className="text-xs text-foreground">
-                  {tr('新版本')} <code>v{status.latest ?? '?'}</code> {tr('已下载，重启后生效')}
+                  {tr('新版本')} <code>v{status.latest ?? '?'}</code>{' '}
+                  {native
+                    ? tr('已下载，点「打开安装器」完成安装')
+                    : tr('已下载，重启后生效')}
                 </span>
                 <Button size="sm" disabled={busy} onClick={() => void run(installAppUpdate)}>
                   <RotateCw />
-                  {tr('重启并安装')}
+                  {native ? tr('打开安装器') : tr('重启并安装')}
                 </Button>
               </>
             )}
@@ -171,7 +178,9 @@ export function AppUpdateSection() {
 
           {state === 'downloaded' && (
             <p className="text-xs leading-4 text-muted-foreground">
-              {tr('会退出应用，安装完成后自动打开。')}
+              {native
+                ? tr('会打开系统安装器，确认后完成安装。')
+                : tr('会退出应用，安装完成后自动打开。')}
             </p>
           )}
         </>

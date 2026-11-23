@@ -43,8 +43,14 @@ import {
   TooltipContent,
   TooltipTrigger
 } from '@fizz/ui/tooltip'
+import { AcpAgentIcon } from '@fizz/agent-kit/shared/components/AcpAgentIcon'
 import { ConfirmDeleteDialog } from '@fizz/agent-kit/shared/components/ConfirmDeleteDialog'
 import { ModelIdInfo } from '@fizz/agent-kit/features/settings/ModelIdInfo'
+import {
+  ACP_AGENT_PRESETS,
+  findAcpPreset,
+  type AcpAgentPreset
+} from '@fizz/agent-kit/shared/lib/acp-agent-presets'
 import {
   Dialog,
   DialogContent,
@@ -189,6 +195,15 @@ export function AcpTab({ app }: { app: AgentApp }) {
    * 但那是一条红字报错，能在点下去之前说清就别让人撞上去。
    */
   const addedKeys = new Set(app.acpAgents.map((a) => acpAgentKey(a)))
+  /**
+   * 预设卡片上的「已添加」标记：按**命令**（不看参数）判 —— 用户可能改过启动参数，
+   * 但它仍然是同一个 agent，不该再让他从预设里加一份几乎一样的配置。
+   */
+  const addedPresetIds = new Set(
+    app.acpAgents
+      .map((a) => findAcpPreset(a.command)?.id)
+      .filter((id): id is string => Boolean(id))
+  )
   /**
    * 判重用的身份集合：**编辑时把自己排除掉**。名称不参与判重，编辑时只改个名字 → key 还是
    * 自己那一个，拿全量集合去比会把自己挡下来（保存按钮永远禁用）。
@@ -339,6 +354,21 @@ export function AcpTab({ app }: { app: AgentApp }) {
   }
 
   /**
+   * 从预设打开新增表单：只把默认命令 / 参数 / 类型**填进表单**，不直接落库 ——
+   * 用户往往要先改参数（比如 Gemini 的 `--skip-trust`、Codex 的 profile），
+   * 保存前必须能看见并编辑。
+   */
+  const openPresetForm = (preset: AcpAgentPreset): void => {
+    setEditingId(null)
+    setAcpName(preset.name)
+    setAcpCommand(preset.command)
+    setAcpArgs(formatCommandArgs(preset.args))
+    setAcpType(preset.type ?? 'generic')
+    setAcpAllow('once')
+    setAdding(true)
+  }
+
+  /**
    * 保存表单：带 id 走更新、不带 id 走新建（服务端同一个 POST 路由）。
    *
    * 编辑时刻意**不传 models** —— 服务端约定「不传就沿用原有」。否则这里得把模型清单原样回传，
@@ -438,6 +468,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
         return (
           <div key={agent.id} className="rounded-md border border-border/60">
             <div className="flex items-center gap-2 px-3 py-2">
+              <AcpAgentIcon command={agent.command} className="size-4" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
                   <span className="truncate text-sm">{agent.name}</span>
@@ -532,6 +563,42 @@ export function AcpTab({ app }: { app: AgentApp }) {
         <Button size="sm" variant="outline" className="flex-1" onClick={() => openAcpForm()}>
           <Plus className="size-3.5" /> {tr('添加 ACP agent')}
         </Button>
+      </div>
+
+      {/*
+        预设清单：常见外部 agent 都带一份默认命令 / 参数，点一下只是**填进新增表单**，
+        保存前可以改。已添加过的按命令置灰 —— 再点一次只会造出一条重复配置。
+      */}
+      <div className="space-y-1.5">
+        <div className="text-xs text-muted-foreground">
+          {tr('预设 agent（点击填入默认命令与参数，保存前可以修改）')}
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {ACP_AGENT_PRESETS.map((preset) => {
+            const added = addedPresetIds.has(preset.id)
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                disabled={added}
+                title={`${preset.command} ${preset.args.join(' ')}`.trim()}
+                onClick={() => openPresetForm(preset)}
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-md border border-border/60 px-2 py-1 text-xs transition-colors',
+                  added ? 'cursor-default opacity-60' : 'hover:bg-foreground/5'
+                )}
+              >
+                <AcpAgentIcon presetId={preset.id} className="size-3.5" />
+                <span>{preset.name}</span>
+                {added && (
+                  <span className="rounded bg-secondary px-1 py-0.5 text-[0.625rem] text-muted-foreground">
+                    {tr('已添加')}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
       </div>
 
       {/* 常驻进程诊断：只在展开时拉取，5 秒轮询一次；空闲回收由 @fizz/acp 自己负责 */}
@@ -709,11 +776,6 @@ export function AcpTab({ app }: { app: AgentApp }) {
                 </SelectContent>
               </Select>
             </div>
-            {duplicate && (
-              <p className="text-xs text-muted-foreground">
-                {tr('这个命令（含参数）已经被别的条目占了，换个命令或参数。')}
-              </p>
-            )}
             <DialogFooter className="pt-1">
               <Button data-dialog-dismiss="" type="button" size="sm" variant="ghost" onClick={closeAcpForm}>
                 {tr('取消')}
@@ -779,6 +841,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
                     >
                       {checked && <Check className="size-2.5" />}
                     </span>
+                    <AcpAgentIcon command={item.command} className="size-4" />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm">{item.name}</span>
                       <span className="block truncate font-mono text-[0.6875rem] text-muted-foreground">

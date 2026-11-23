@@ -6,7 +6,7 @@
  * 引用状态与发送拼装归调用方（`ChatPanel`），这里只收 state + 回调 ——
  * 与 `attachments.tsx` 的分工一致。
  */
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, Copy, Quote, X } from 'lucide-react'
 import { LiquidGlassSurface } from '@fizz/ui/liquid-glass'
@@ -118,7 +118,20 @@ const TOOLBAR_BUTTON =
  * - 不在输入框 / contenteditable 里（那是用户在自己写东西）；
  * - 有几何（`getBoundingClientRect` 全零 = 选区不可见，例如折叠起来的区域）。
  */
-export function MessageQuoteLayer({ onQuote }: { onQuote: (quote: MessageQuote) => void }) {
+export function MessageQuoteLayer({
+  onQuote,
+  scopeRef
+}: {
+  onQuote: (quote: MessageQuote) => void
+  /**
+   * 这一栏会话视图的根节点：分屏时两栏各挂一套浮层，而选区事件是**全局**的 ——
+   * 必须只认「落在这棵子树里」的消息，否则两栏同时弹（叠在一起），顶层那颗按钮
+   * 点下去就写进了另一栏的输入框。
+   *
+   * 不传 = 不限制（单栏 / 片段渲染场景）。
+   */
+  scopeRef?: RefObject<HTMLElement | null>
+}) {
   /**
    * 浮层落点（选区边缘中点的视口坐标）+ 在选区上方还是下方；null = 已从 DOM 摘掉。
    *
@@ -234,6 +247,13 @@ export function MessageQuoteLayer({ onQuote }: { onQuote: (quote: MessageQuote) 
       if (!el || el.closest('input, textarea, [contenteditable="true"]')) return null
       const messageEl = el.closest('[data-message-id]')
       if (!messageEl) return null
+      /*
+        分屏：两个 `ChatPanel` 的浮层都在监听同一个全局选区。只认**自己这一栏**里的
+        消息元素 —— 否则两栏都会 `reveal`、toolbar 叠在同一处，点上面那颗「引用」写进
+        的是另一栏（用户报过：在左边选字，引用跑到右边输入框）。
+      */
+      const scope = scopeRef?.current
+      if (scope && !scope.contains(messageEl)) return null
       const rect = range.getBoundingClientRect()
       if (!rect.width && !rect.height) return null
       // 选区已经被滚出视口：收掉（位置重算得再准也没意义）
@@ -416,7 +436,8 @@ export function MessageQuoteLayer({ onQuote }: { onQuote: (quote: MessageQuote) 
       window.removeEventListener('resize', schedule)
       window.removeEventListener('blur', onWindowBlur)
     }
-  }, [])
+    // `scopeRef` 是稳定的 ref 对象；换栏（split 里拖动标签）时元素可能换，但对象不变
+  }, [scopeRef])
 
   /**
    * 收浮层 + 清选区（两颗按钮的收尾动作只有这一份）。
@@ -485,15 +506,27 @@ export function MessageQuoteLayer({ onQuote }: { onQuote: (quote: MessageQuote) 
         `starting:`（Tailwind 4.1+ 的 `@starting-style`）给「元素刚插入的那一帧」一个
         起点值 —— 少了它，挂上就是终态、过渡不播。这也是不用 `animate-in` 的原因：
         那套要额外等一帧，而且它的 `transform` 会盖掉定位层的居中位移。
+
+        ⚠️ **出现动画只缩不放透明度**（`starting:opacity-0` 已移除，别加回来）：
+        透明度小于 1 的祖先会成为新的 **backdrop root**，里面 `LiquidGlassSurface` 的
+        `backdrop-filter` 就只能采样到这个透明组本身、而不是背后的正文 —— 整段淡入期间
+        浮层是一层没有磨砂的透明色，动画走完（opacity 回到 1、组消失）才「啪」地变成
+        液态玻璃（用户报的「先透明，再变玻璃」）。终端悬浮球展开时那几颗动作球也踩过
+        同一个坑，靠的同样是「别让玻璃待在 opacity 动画里」。
+        消失方向不受影响（淡出时本来就该越来越透），所以 `opacity` 只留在收起态的
+        过渡里 —— 展开只过渡 `scale`，收起才过渡 `scale + opacity`。
       */}
       <div
         className={cn(
-          'transition-[opacity,scale] duration-150 ease-out',
-          'starting:scale-90 starting:opacity-0 motion-reduce:transition-none',
+          'duration-150 ease-out',
+          open
+            ? 'transition-[scale]'
+            : 'pointer-events-none transition-[scale,opacity]',
+          'starting:scale-90 motion-reduce:transition-none',
           // 收缩 / 展开的原点贴着选区那一侧：在上方就从底边冒出来，在下方就从头冒出来
           at.below ? 'origin-top' : 'origin-bottom',
           // 关闭态还要摘掉点击：退出过渡那 `EXIT_MS` 里浮层仍在 DOM 上
-          open ? 'scale-100 opacity-100' : 'pointer-events-none scale-90 opacity-0'
+          open ? 'scale-100 opacity-100' : 'scale-90 opacity-0'
         )}
       >
         {/*

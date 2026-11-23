@@ -440,6 +440,8 @@ export function ConversationTab({
             app={app}
             workspaceId={workspaceId}
             visible={gitVisible}
+            // 推送快捷键要再判一次「本标签是不是焦点组正在显示的那个」（分屏防重复推送）
+            tabKey={key}
             // 面板刷完把改动数 + 当前分支回报到**本会话**的面板上
             onChanges={(info) =>
               patchPanelOf(key, (base) => ({

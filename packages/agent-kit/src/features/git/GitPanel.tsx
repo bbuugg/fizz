@@ -94,6 +94,7 @@ import { Input } from '@fizz/ui/input'
 import { FileDiffView } from '@fizz/agent-kit/features/git/FileDiffView'
 import { ChangeTreeList } from '@fizz/agent-kit/features/git/GitChangeTree'
 import { BranchPicker } from '@fizz/agent-kit/features/chat/BranchPicker'
+import { activeTabKey } from '@fizz/agent-kit/shared/lib/panel-store'
 import { NotARepoState } from '@fizz/agent-kit/features/git/NotARepoState'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { ChangeRow } from '@fizz/agent-kit/features/git/ChangeRow'
@@ -192,6 +193,7 @@ export function GitPanel({
   app,
   workspaceId,
   visible,
+  tabKey,
   onChanges
 }: {
   app: AgentApp
@@ -207,6 +209,13 @@ export function GitPanel({
    * 隐藏时不跑 git（不起轮询、不刷新），变可见时刷新一次。
    */
   visible: boolean
+  /**
+   * 本面板所属**标签的 key**（会话 id / 终端 key）。
+   *
+   * 推送快捷键另外还要判一次「这个标签是不是**焦点组**正在显示的那个」
+   * （`activeTabKey()`）：分屏时两栏可以同时 `visible`，不判就会一次推两个仓库。
+   */
+  tabKey?: string
   /** 每次刷新完状态回报改动数量（给入口图标的 badge 用）；null = 不是仓库。
    *  同时回报当前分支（切分支 / 检出后，让会话名下的分支显示跟着变）。 */
   onChanges?: (info: { count: number; truncated: boolean; branch: string | null } | null) => void
@@ -763,6 +772,9 @@ export function GitPanel({
       if (isShortcutRecording()) return
       const hit = findShortcutByEvent(shortcuts, e)
       if (!hit || hit.action !== 'git-push') return
+      // 分屏：两栏的 Git 面板可能同时 visible；只让**焦点组**正在显示的那个标签响应，
+      // 否则一次按键会推两个仓库（非焦点栏那个也不该动）。
+      if (tabKey && activeTabKey() !== tabKey) return
       e.preventDefault()
       e.stopPropagation()
       // 正在跑别的 git 操作时不吃这一下（与「更多」菜单里那条禁用同义）
@@ -1036,9 +1048,9 @@ export function GitPanel({
   }
 
   /**
-   * 分支选择（头部那一行）：与 composer 输入条下面那颗**同一份实现**（`BranchPicker`）——
-   * 搜索、本地 / 远端分组、hover 删除、删除确认都在那边；这里只把 GitPanel 的数据与
-   * `run()`（成功 toast + 刷新）接进去。不是仓库（含加载中）时返回 null。
+   * 分支选择（头部那一行）：搜索、本地 / 远端分组、hover 删除、删除确认都在
+   * `BranchPicker` 里；这里只把 GitPanel 的数据与 `run()`（成功 toast + 刷新）接进去。
+   * 不是仓库（含加载中）时返回 null。
    */
   function branchDropdown(): ReactNode {
     if (!status?.isRepo) return null
@@ -1055,8 +1067,7 @@ export function GitPanel({
         onCheckout={(ref) =>
           void run(() => app.gitAction(workspaceId, { action: 'checkout', ref }))
         }
-        // 新建分支：与 composer 同一套内联表单（分支名 + 起点），不再另开弹窗 ——
-        // 两处长一样、行为也才一致（创建后面板不关，原地看到新分支）
+        // 新建分支：内联表单（分支名 + 起点），不另开弹窗 —— 创建后面板不关，原地看到新分支
         onCreate={(name, from) =>
           void run(() =>
             app.gitAction(workspaceId, {

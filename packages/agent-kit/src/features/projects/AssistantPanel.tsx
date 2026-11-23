@@ -507,6 +507,9 @@ export function AssistantPanel({
               emptyTitle="未选时由服务端取第一份可用模型（下一轮生效）"
             />
           ),
+          // 语音快捷键：嵌在终端标签里时，作用域就是那条终端标签（分屏 / 后台标签不跟风开麦）；
+          // 全局项目助手没有标签归属（不传）—— Composer 退回「焦点在自己卡片里」那一档
+          voiceScope: boundTerminalTabKey,
           // 待答复的审批：与主会话同一张卡、同一个答复端点；**顶替输入卡片**（同主会话）
           cover: session && session.pendingConfirms.length > 0 ? (
             <ConfirmQueue

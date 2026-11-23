@@ -24,7 +24,7 @@ import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { useVoiceInput } from '@fizz/agent-kit/shared/hooks/useVoiceInput'
 import { useTheme } from '@fizz/agent-kit/shared/hooks/useTheme'
 import { usePrefersReducedMotion } from '@fizz/agent-kit/shared/hooks/usePrefersReducedMotion'
-import { APP_EVENTS } from '@fizz/agent-kit/shared/lib/app-events'
+import { APP_EVENTS, type VoiceShortcutDetail } from '@fizz/agent-kit/shared/lib/app-events'
 import { permissionOption, permissionOptions } from '@fizz/agent-kit/shared/lib/permission'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { t } from '@fizz/i18n'
@@ -206,6 +206,17 @@ interface ComposerProps {
    * 高度用 `1lh + 内边距` 表达，与正文行高天然一致 —— 空态和刚敲一个字不会差几像素。
    */
   compact?: boolean
+  /**
+   * 语音快捷键的作用域：本输入框所属的**标签 key**（会话标签的 key 就是会话 id，
+   * 空态是 `__new__`，终端等工具标签是各自的前缀 key）。
+   *
+   * app-shell 广播 `voiceStart / voiceStop` 时会带上焦点组正在显示的那个 key
+   * （见 `app-events` 的 `VoiceShortcutDetail`），只有对得上的 Composer 才开麦 ——
+   * 分屏时两栏都挂着 window 监听，不判就会两边一起收音、两栏草稿一起进字。
+   *
+   * 不传（项目管理助手这类没有标签归属的宿主）：改判「焦点是否落在本输入卡片里」。
+   */
+  voiceScope?: string | null
 }
 
 /**
@@ -236,7 +247,8 @@ export function Composer({
   slashCommands,
   slashContext,
   mentionCandidates,
-  compact = false
+  compact = false,
+  voiceScope
 }: ComposerProps) {
   // 订阅语言：下面这些文案都在渲染期求值（`t()`）
   const tr = useT()
@@ -372,15 +384,29 @@ export function Composer({
    * 会话进行中（streaming）也能用：麦克风按钮不再禁用，按住说的字并进草稿、本轮结束自动发。
    */
   const voiceStartedByShortcutRef = useRef(false)
+  /** 输入卡片本体：没有 `voiceScope` 的宿主靠「焦点在不在卡片里」判断语音广播归谁 */
+  const rootRef = useRef<HTMLDivElement>(null)
+  /**
+   * 这条语音快捷键广播是不是发给本输入框的。
+   *
+   * 有作用域：比对焦点组的活动标签 key；没作用域（项目管理助手 / 容器片段）：
+   * 只认焦点落在自己这张卡片里 —— 按住说话时焦点本来就在输入框里。
+   */
+  const wantsVoiceShortcut = (event: Event): boolean => {
+    const detail = (event as CustomEvent<VoiceShortcutDetail | undefined>).detail
+    if (voiceScope !== undefined) return (detail?.tabKey ?? null) === voiceScope
+    return !!rootRef.current?.contains(document.activeElement)
+  }
   useEffect(() => {
-    const onStart = (): void => {
-      if (disabled) return
+    const onStart = (event: Event): void => {
+      if (disabled || !wantsVoiceShortcut(event)) return
       // start() 返回 false = 本来就在听（比如已用按钮开着的麦），此时不接管，
       // 松手时也就不会去关掉别人的麦。start() 内部用同步镜像判断，不依赖这里
       // 可能过期的 voice.listening（事件 effect 只在 disabled/textareaRef 变化时重建）。
       if (voice.start()) voiceStartedByShortcutRef.current = true
     }
-    const onStop = (): void => {
+    const onStop = (event: Event): void => {
+      if (!wantsVoiceShortcut(event)) return
       if (!voiceStartedByShortcutRef.current) return
       voiceStartedByShortcutRef.current = false
       voice.stop()
@@ -392,9 +418,9 @@ export function Composer({
       window.removeEventListener(APP_EVENTS.voiceStart, onStart)
       window.removeEventListener(APP_EVENTS.voiceStop, onStop)
     }
-    // voice 每次渲染重建函数但只读内部 ref，旧闭包照样可用；textareaRef 是稳定 ref 对象
+    // voice 每次渲染重建函数但只读内部 ref，旧闭包照样可用；textareaRef / rootRef 是稳定 ref
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [disabled, textareaRef])
+  }, [disabled, textareaRef, voiceScope])
 
   /**
    * 右下角这颗（或这两颗）圆钮显示什么。
@@ -597,6 +623,7 @@ export function Composer({
       >
         <PopoverAnchor asChild>
           <div
+            ref={rootRef}
             // 整张卡片是拖放区（不只 textarea）：拖到卡片任何位置都算「要加进这个输入框」；
             // `relative isolate` 供拖拽高亮浮层与边缘流光定位 / 分层
             {...lens}

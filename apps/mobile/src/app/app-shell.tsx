@@ -62,6 +62,7 @@ import {
 import { NEW_TAB_KEY } from "@fizz/agent-kit/shared/lib/panel-tabs";
 import type { NewInWorkspaceKind } from "@fizz/agent-kit/shared/lib/new-in-workspace";
 import { CommandPalette } from "@fizz/agent-kit/shell/CommandPalette";
+import { AppUpdateNotifier } from "@fizz/agent-kit/shell/AppUpdateNotifier";
 import {
   setCommandPaletteOpener,
   type CommandPaletteEntry,
@@ -660,6 +661,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         */}
             {/* 顶栏那颗搜索是手机上命令面板的唯一入口（抽屉里那颗已移除，见 MobileAppBar） */}
             <MobileAppBar onOpenCommandPalette={openCommandPalette} />
+            {/*
+              应用内更新提示：只在「有新版本待下载 / 已下载待安装」时弹一条常驻 toast。
+              手机上宿主同样实现了 `appUpdate`（hosted `/m/` 没有，组件自己空转），
+              与桌面共用这一份，文案里的「安装器」由组件按原生壳切换。
+            */}
+            <AppUpdateNotifier />
             {/* 工作行：`min-h-0 flex-1` 才让里面的侧栏 / 主区各自滚动，不被内容撑高 */}
             <div className="flex min-h-0 flex-1">
               {/*

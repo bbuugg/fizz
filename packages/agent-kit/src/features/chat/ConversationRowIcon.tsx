@@ -15,6 +15,7 @@
  */
 import { Bot, MessageCircleQuestion, MessageSquare, Network, ShieldQuestion } from 'lucide-react'
 import { Loader } from '@fizz/agent-kit/shared/ai-elements/loader'
+import { AcpAgentIcon } from '@fizz/agent-kit/shared/components/AcpAgentIcon'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { TypingBubble } from '@fizz/agent-kit/features/chat/TypingBubble'
@@ -26,6 +27,7 @@ const ICON = 'size-4 shrink-0'
 export function ConversationRowIcon({
   backend,
   kind,
+  acpCommand,
   waiting = null,
   running = false,
   loading = false,
@@ -34,6 +36,8 @@ export function ConversationRowIcon({
 }: {
   backend?: 'builtin' | 'acp'
   kind?: 'chat' | 'collab'
+  /** ACP 会话绑定的 agent 启动命令：用来画它的品牌图标（认不出时回落到 Bot） */
+  acpCommand?: string
   /** 运行态：正在等用户回应（有它就不看 `running`） */
   waiting?: ConversationWaiting | null
   /** 运行态：有一轮正在跑（已由调用方与 `waiting` 做过去重） */
@@ -66,6 +70,18 @@ export function ConversationRowIcon({
     return <TypingBubble className={className} />
   }
   if (backend === 'acp') {
+    // 知道是哪个 agent 就画它的品牌图标（认不出 / 已被删 → 通用 Bot）
+    if (acpCommand) {
+      return (
+        <span
+          role="img"
+          aria-label={t('ACP 会话')}
+          className={cn('inline-flex shrink-0 items-center justify-center', className)}
+        >
+          <AcpAgentIcon command={acpCommand} className="size-4" />
+        </span>
+      )
+    }
     return (
       <Bot className={cn(ICON, 'text-muted-foreground', className)} aria-label={t('ACP 会话')} />
     )

@@ -25,7 +25,7 @@ import {
 } from "@fizz/agent-kit/shared/lib/sidebar-collapsed";
 import { toggleAssistantPanel, useAssistantPanelOpen } from "@fizz/agent-kit/shared/lib/assistant-panel";
 import { AssistantPanel } from "@fizz/agent-kit/features/projects/AssistantPanel";
-import { APP_EVENTS } from "@fizz/agent-kit/shared/lib/app-events";
+import { APP_EVENTS, type VoiceShortcutDetail } from "@fizz/agent-kit/shared/lib/app-events";
 import {
   findShortcutByEvent,
   isShortcutRecording,
@@ -54,7 +54,7 @@ import {
   useDirtyTabCountSync,
   useExternalFileOpen,
 } from "@fizz/agent-kit/shell/layout/use-external-file-open";
-import { openTab } from "@fizz/agent-kit/shared/lib/panel-store";
+import { activeTabKey, openTab } from "@fizz/agent-kit/shared/lib/panel-store";
 import { NEW_TAB_KEY } from "@fizz/agent-kit/shared/lib/panel-tabs";
 /*
  * 标签手势（切 / 关 / 聚焦）→ 「当前会话」的同步只有这一份实现，在 `useGroupActions` 里。
@@ -364,6 +364,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    *  不依赖 keyup 重新匹配组合（松开瞬间修饰键状态可能已变，重匹配会漏发 voiceStop，
    *  导致麦克风卡在开启、后续再按被 Composer 的 listening 守卫拦掉）。 */
   const voiceHeldRef = useRef<string | null>(null);
+  /**
+   * 按下快捷键那一刻焦点组的活动标签 key —— `voiceStop` 要用**同一个**值广播。
+   *
+   * 按住说话期间用户可能拖动分屏、切标签（`activeGroupId` / 活动标签都会变），
+   * 松手时再读一次就可能停到另一栏的麦上。按下时记下来，松手照抄。
+   */
+  const voiceTabKeyRef = useRef<string | null>(null);
   /** 语音输入快捷键（按住说话）当前是否可用 —— desktop 宿主缺语音服务，收掉（见下面 onKey） */
   const voiceShortcutAvailable = getAgentHost().capabilities.voice;
 
@@ -616,7 +623,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         e.preventDefault();
         e.stopPropagation();
         voiceHeldRef.current = e.code;
-        window.dispatchEvent(new CustomEvent(APP_EVENTS.voiceStart));
+        // 焦点组此刻显示的那个标签：只有它的 Composer 该开麦（分屏时另一栏不能跟着开）
+        const tabKey = activeTabKey();
+        voiceTabKeyRef.current = tabKey;
+        window.dispatchEvent(
+          new CustomEvent<VoiceShortcutDetail>(APP_EVENTS.voiceStart, { detail: { tabKey } })
+        );
         return;
       }
       e.preventDefault();
@@ -638,7 +650,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       voiceHeldRef.current = null;
       e.preventDefault();
       e.stopPropagation();
-      window.dispatchEvent(new CustomEvent(APP_EVENTS.voiceStop));
+      // 收麦必须回到**按下时**那一栏：中途拖分屏 / 切标签后现读会停到别的麦上
+      const tabKey = voiceTabKeyRef.current;
+      voiceTabKeyRef.current = null;
+      window.dispatchEvent(
+        new CustomEvent<VoiceShortcutDetail>(APP_EVENTS.voiceStop, { detail: { tabKey } })
+      );
     };
     window.addEventListener("keydown", onKey, true);
     window.addEventListener("keyup", onKeyUp, true);

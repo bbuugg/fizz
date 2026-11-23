@@ -4,8 +4,15 @@ import { useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import { Button } from "@fizz/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@fizz/ui/popover";
+import {
+  clearLiquidLens,
+  GLASS_PANEL_CLASS,
+  LiquidGlassPanel,
+  trackLiquidLens,
+} from "@fizz/ui/liquid-glass";
 import { IconTip } from "@fizz/agent-kit/shared/components/IconTip";
 import { CHAT_ICON_PILL } from "@fizz/agent-kit/features/chat/composer";
+import { cn } from "@fizz/agent-kit/shared/lib/utils";
 import type { AgentApp } from "@fizz/agent-kit/shared/hooks/useAgentApp";
 import { useT } from "@fizz/agent-kit/shared/lib/language";
 import {
@@ -319,20 +326,25 @@ export function ContextRing({ app }: { app: AgentApp }) {
         </span>
       </IconTip>
       {/*
-        与「模型 / 权限」那几个下拉保持一套外观：圆角、实边框、离视口边缘留白。
-        ⚠️ `PopoverContent` 默认只有 `ring-foreground/5`，在 `contrast` 主题下
-        （`--popover` 与 `--background` 同色、边框才是纯黑 / 纯白）等于没有边；
-        而且圆环在输入行偏右，`align="end"` 在窄屏上会把 256px 的卡片顶到视口左缘，
-        没有 `collisionPadding` 就紧贴屏幕边。两处都照 DropdownMenuContent 来。
+        与「模型 / 权限」那几个下拉保持一套外观：液态玻璃外壳（`GLASS_PANEL_CLASS` 给
+        实色底 + 描边 + 景深投影，`LiquidGlassPanel` 给跟随指针的边缘光圈），
+        不再自己写 `border-border` —— 那层描边在 contrast 主题下等于没有边。
+        圆环在输入行偏右，`align="end"` 在窄屏上会把 256px 的卡片顶到视口左缘，
+        没有 `collisionPadding` 就紧贴屏幕边。
+        `overflow-hidden` 让光圈钉在面板上；超高时由内部那层自己滚。
       */}
       <PopoverContent
         side="top"
         align="end"
         sideOffset={6}
         collisionPadding={8}
-        className="w-64 rounded-xl border border-border"
+        className={cn("w-64 overflow-hidden rounded-xl ring-0", GLASS_PANEL_CLASS)}
+        onPointerEnter={(event) => trackLiquidLens(event)}
+        onPointerMove={(event) => trackLiquidLens(event)}
+        onPointerLeave={(event) => clearLiquidLens(event)}
       >
-        <div className="space-y-2 text-xs">
+        <LiquidGlassPanel />
+        <div className="max-h-[calc(100vh_-_4rem)] space-y-2 overflow-y-auto text-xs">
           <div className="flex items-center gap-1.5 font-medium text-foreground">
             <Gauge className="size-3.5" />
             {t("上下文用量")}
