@@ -7,9 +7,15 @@
         <!--
             共享下载目录（getExternalFilesDir(DIRECTORY_DOWNLOADS)）里的 APK 交给系统安装器。
             FileProvider 是 android:exported=false 的，只有拿到本进程授予的临时读权限才能被安装器打开。
+
+            ⚠️ `android:name` 必须是**自己的子类**（`FizzUpdaterFileProvider`），不能写
+            `androidx.core.content.FileProvider`：宿主 App 模板里已经有一个同名 provider，
+            清单合并器按 `android:name` 做键，同名会让两边的 `authorities` 与
+            `FILE_PROVIDER_PATHS` 的 `resource` 互撞（CI 的 processReleaseMainManifest
+            就是这么红的）。子类为空即可，运行期仍然按 authority 反查 paths。
         -->
         <provider
-            android:name="androidx.core.content.FileProvider"
+            android:name="cn.codeemo.fizz.updater.FizzUpdaterFileProvider"
             android:authorities="${applicationId}.fizzupdater.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">
