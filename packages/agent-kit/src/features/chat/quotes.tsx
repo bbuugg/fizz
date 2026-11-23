@@ -13,15 +13,16 @@ import { LiquidGlassSurface } from '@fizz/ui/liquid-glass'
 import { nextQuoteId, type MessageQuote } from '@fizz/agent-kit/shared/lib/quotes'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 
-/** 浮层与选区之间的间距（px）：按钮底边停在选区顶边上方这么远 */
+/** 浮层与选区之间的间距（px）：贴在选区下方时，按钮顶边停在选区底边下方这么远 */
 const TOOLBAR_GAP = 8
 
 /**
  * 浮层自身的高度估算（px）。
  *
- * 用来判断「选区上方还剩多少空间」——空间不够就把浮层翻到选区**下方**，
- * 而不是让它飘到消息区之外（那会压到标签条 / 面板 chrome 上，见下面的说明）。
- * 按 `py-1 + text-xs` 的实测高度给，宁可略大：差几像素只是判定保守一点。
+ * 用来判断「选区下方 / 上方还剩多少空间」——浮层**优先贴在选区下方**（不挡正在读的
+ * 那句话），下方放不下才翻到上方，两边都放不下就收掉，别让它飘到消息区之外（那会压到
+ * 标签条 / 面板 chrome 上，见下面的说明）。按 `py-1 + text-xs` 的实测高度给，宁可略大：
+ * 差几像素只是判定保守一点。
  */
 const TOOLBAR_HEIGHT = 30
 
@@ -133,7 +134,8 @@ export function MessageQuoteLayer({
   scopeRef?: RefObject<HTMLElement | null>
 }) {
   /**
-   * 浮层落点（选区边缘中点的视口坐标）+ 在选区上方还是下方；null = 已从 DOM 摘掉。
+   * 浮层落点（选区边缘中点的视口坐标）+ 在选区下方还是上方（**下方优先**，放不下才翻上去）；
+   * null = 已从 DOM 摘掉。
    *
    * 与 `open` 分开：`at` 管「在不在 DOM 里」，`open` 管「看不看得见」。消失动画要求
    * 关闭后再留一小会儿（`EXIT_MS`），直接置 null 就没有过渡可播。
@@ -259,25 +261,30 @@ export function MessageQuoteLayer({
       // 选区已经被滚出视口：收掉（位置重算得再准也没意义）
       if (rect.bottom < 0 || rect.top > window.innerHeight) return null
       /**
-       * 浮层必须待在**消息区**里（见 `scrollParentOf`）：上方放不下就翻到选区下面。
-       * 不这么判的话，选区滚到顶部时浮层会飘进标签条 —— 而它是 body 上的 `fixed`
-       * 浮层，一定画在 chrome 之上，看起来就是「浮层压住了标签页」。
+       * 浮层**优先贴在选区下方**（不挡正在读的那句话）；下方放不下（选区贴到消息区底边、
+       * 或者选区一直选到末尾）才翻到上方。两边都放不下（选区几乎占满可视区）时收掉。
+       *
+       * 浮层必须待在**消息区**里（见 `scrollParentOf`）：不这么判的话，选区滚到顶部时
+       * 浮层会飘进标签条 —— 而它是 body 上的 `fixed` 浮层，一定画在 chrome 之上，
+       * 看起来就是「浮层压住了标签页」。
        */
       const container = scrollParentOf(messageEl)
       const bounds = container?.getBoundingClientRect()
       boundsRef.current = bounds ? { left: bounds.left, right: bounds.right } : null
       const topLimit = bounds ? bounds.top : 0
       const bottomLimit = bounds ? bounds.bottom : window.innerHeight
-      const above = rect.top - TOOLBAR_GAP - TOOLBAR_HEIGHT >= topLimit
-      // 上面放不下、下面也放不下（选区几乎占满可视区）：这时没有合法位置，收掉
-      if (!above && rect.bottom + TOOLBAR_GAP + TOOLBAR_HEIGHT > bottomLimit) return null
+      const fitsBelow = rect.bottom + TOOLBAR_GAP + TOOLBAR_HEIGHT <= bottomLimit
+      const fitsAbove = rect.top - TOOLBAR_GAP - TOOLBAR_HEIGHT >= topLimit
+      // 下方优先；下方放不下才翻到上面，两边都没空间就收掉
+      if (!fitsBelow && !fitsAbove) return null
+      const below = fitsBelow
       return {
         text,
         role: messageEl.getAttribute('data-role') === 'user' ? 'user' : 'assistant',
         pos: {
           x: Math.round(rect.left + rect.width / 2),
-          y: Math.round(above ? rect.top - TOOLBAR_GAP : rect.bottom + TOOLBAR_GAP),
-          below: !above
+          y: Math.round(below ? rect.bottom + TOOLBAR_GAP : rect.top - TOOLBAR_GAP),
+          below
         }
       }
     }
@@ -567,7 +574,7 @@ export function MessageQuoteLayer({
               onPointerDown={(e) => e.preventDefault()}
               onClick={copy}
               // ⚠️ 文案**不换**（只换图标）：换了文字浮层会变宽，而它是 `-translate-x-1/2`
-              // 居中的，一宽就整体横移几像素 —— 一个飘在选区上方的小浮层原地跳一下很显眼
+              // 居中的，一宽就整体横移几像素 —— 一个贴着选区的小浮层原地跳一下很显眼
               title={copied ? '已复制' : '复制选中的文字'}
               aria-label={copied ? '已复制' : '复制选中的文字'}
               className={TOOLBAR_BUTTON}
