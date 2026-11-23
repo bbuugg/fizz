@@ -394,7 +394,7 @@ export function ModelPicker({
    * 回落到通用 Bot —— 与设置页、会话列表保持一致。
    */
   const presetIcon = (agent: AcpAgentView, className = 'size-4'): ReactNode => (
-    <AcpAgentIcon command={agent.command} className={className} />
+    <AcpAgentIcon presetId={agent.preset} command={agent.command} className={className} />
   )
 
   /** 内置 Agent 的图标：用应用自己的 logo（与顶栏品牌同一份资产） */

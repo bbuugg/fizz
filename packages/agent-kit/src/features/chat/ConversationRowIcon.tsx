@@ -28,6 +28,7 @@ export function ConversationRowIcon({
   backend,
   kind,
   acpCommand,
+  acpPreset,
   waiting = null,
   running = false,
   loading = false,
@@ -36,8 +37,10 @@ export function ConversationRowIcon({
 }: {
   backend?: 'builtin' | 'acp'
   kind?: 'chat' | 'collab'
-  /** ACP 会话绑定的 agent 启动命令：用来画它的品牌图标（认不出时回落到 Bot） */
+  /** ACP 会话绑定的 agent 启动命令（`preset` 缺失时的老数据兜底） */
   acpCommand?: string
+  /** ACP 会话绑定 agent 的预设身份：改过命令也仍用同一张图标 */
+  acpPreset?: string
   /** 运行态：正在等用户回应（有它就不看 `running`） */
   waiting?: ConversationWaiting | null
   /** 运行态：有一轮正在跑（已由调用方与 `waiting` 做过去重） */
@@ -71,14 +74,14 @@ export function ConversationRowIcon({
   }
   if (backend === 'acp') {
     // 知道是哪个 agent 就画它的品牌图标（认不出 / 已被删 → 通用 Bot）
-    if (acpCommand) {
+    if (acpCommand || acpPreset) {
       return (
         <span
           role="img"
           aria-label={t('ACP 会话')}
           className={cn('inline-flex shrink-0 items-center justify-center', className)}
         >
-          <AcpAgentIcon command={acpCommand} className="size-4" />
+          <AcpAgentIcon presetId={acpPreset} command={acpCommand} className="size-4" />
         </span>
       )
     }

@@ -30,8 +30,13 @@ export function useHeightTransition<T extends HTMLElement>(
   ref: React.RefObject<T | null>,
   duration = DEFAULT_DURATION
 ): void {
-  /** 首帧（浮层刚挂上）不接动画，只记下初始高度 */
-  const firstRender = React.useRef(true)
+  /**
+   * 上一次量高度的那个节点。浮层关闭时**外层组件往往还挂着**（`<Dialog open>` 里的
+   * `DialogContent` 每次都会执行），只有里面的 portal 节点被卸载；等下次打开，
+   * 节点是新的，但这个 hook 的 ref 还留着上一次的 `lastHeight` —— 不按节点身份重置的话，
+   * 重新打开会拿「上一次弹窗的高度」当起点，第一下输入就莫名跳一段。
+   */
+  const lastEl = React.useRef<T | null>(null)
   /** 上一段动画的目标高度：没有动画在跑时它就是当前高度 */
   const lastHeight = React.useRef<number | null>(null)
   const timer = React.useRef<number | null>(null)
@@ -41,9 +46,14 @@ export function useHeightTransition<T extends HTMLElement>(
     const el = ref.current
     if (!el) return
 
-    if (firstRender.current) {
-      firstRender.current = false
+    // 新节点（浮层刚打开）：首帧不动画，只记下初始高度（Radix 自己还有入场动画）
+    if (lastEl.current !== el) {
+      lastEl.current = el
       lastHeight.current = el.offsetHeight
+      if (timer.current !== null) {
+        window.clearTimeout(timer.current)
+        timer.current = null
+      }
       return
     }
 

@@ -830,9 +830,9 @@ export function AgentSidebar({
       (activity.running || !!runningConversations[conversation.id]);
     /** 外部 ACP agent 驱动的会话：行尾「更多」里的重启 / 重新加载只给它 */
     const isAcp = conversation.backend === "acp";
-    /** 行首图标：ACP 会话用它绑定的那个 agent 的品牌图标（认不出 / 已删除 → Bot） */
-    const acpCommand = isAcp
-      ? app.acpAgents.find((a) => a.id === conversation.configId)?.command
+    /** 行首图标：ACP 会话用它绑定的那个 agent 的品牌图标（预设身份优先，已删除 → Bot） */
+    const acpAgent = isAcp
+      ? app.acpAgents.find((a) => a.id === conversation.configId)
       : undefined;
     /** 正在重新加载：行首转圈 + 更多菜单里那一项也禁用，避免重复点 */
     const reloading = reloadingIds.has(conversation.id);
@@ -897,7 +897,8 @@ export function AgentSidebar({
         <ConversationRowIcon
           backend={conversation.backend}
           kind={conversation.kind}
-          acpCommand={acpCommand}
+          acpCommand={acpAgent?.command}
+          acpPreset={acpAgent?.preset}
           waiting={waiting}
           running={running}
           loading={reloading || restarting}

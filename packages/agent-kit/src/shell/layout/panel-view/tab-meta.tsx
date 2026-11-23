@@ -307,7 +307,7 @@ export function useTabMeta(): (key: string) => TabMeta {
         label: conversationTitle(conversation?.title) || t('对话'),
         title: conversationTitle(conversation?.title) || key,
         icon: acpAgent ? (
-          <AcpAgentIcon command={acpAgent.command} className="size-3.5" />
+          <AcpAgentIcon presetId={acpAgent.preset} command={acpAgent.command} className="size-3.5" />
         ) : (
           <MessageSquare className="size-3.5 shrink-0" />
         )

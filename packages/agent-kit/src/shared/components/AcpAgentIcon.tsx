@@ -423,8 +423,8 @@ const MONO_PRESET_IDS = new Set([
 /**
  * 画一个外部 ACP agent 的图标。
  *
- * - 传 `presetId` 直接用预设图标（列表行已经知道是哪一个时）；
- * - 只传 `command` 时按命令反查预设（`C:\…\gemini.cmd` 也能认出来）；
+ * - 传 `presetId`（落盘在 `AcpAgentConfig.preset`）直接用预设图标，改命令也不变；
+ * - 没有 `presetId` 时才按 `command` 反查预设（老数据 / 探测候选）；
  * - 都认不出（自定义 agent）回落到 `Bot`。
  *
  * `className` 负责尺寸（如 `size-4`），图标会填满这个盒子。
@@ -438,7 +438,10 @@ export function AcpAgentIcon({
   command?: string
   className?: string
 }) {
-  const id = presetId ?? (command ? findAcpPreset(command)?.id : undefined)
+  // 预设身份优先（落盘后与命令参数脱钩）；没有或已失效时才按命令反查。
+  const id =
+    (presetId && PRESET_ICONS[presetId] ? presetId : undefined) ??
+    (command ? findAcpPreset(command)?.id : undefined)
   const Icon = id ? PRESET_ICONS[id] : undefined
   if (!Icon) {
     return <Bot className={cn('size-4 shrink-0 text-muted-foreground', className)} />

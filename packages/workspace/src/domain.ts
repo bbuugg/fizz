@@ -1786,6 +1786,8 @@ export class AgentDomain {
     const type = input.type ?? existing?.type
     // 「完全放行」的答复策略：同上，不传沿用旧值
     const allowStrategy = input.allowStrategy ?? existing?.allowStrategy
+    // 预设身份（图标等）：不传沿用旧值 —— 之后改命令 / 参数不改变它
+    const preset = input.preset ?? existing?.preset
     const command = input.command.trim()
     const args = input.args ?? existing?.args ?? []
     // 同一个 agent 只留一条：命令 + 参数完全相同就算同一条（名称不参与判重）。
@@ -1803,6 +1805,7 @@ export class AgentDomain {
       command,
       args,
       ...(type ? { type } : {}),
+      ...(preset ? { preset } : {}),
       ...(allowStrategy ? { allowStrategy } : {}),
       ...(models ? { models } : {})
     }

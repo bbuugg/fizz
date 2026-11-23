@@ -2415,6 +2415,11 @@ export type AcpAgentInput = {
   /** 风格（见 `AcpAgentType`）：决定模式 UI 的语义与位置；不传 = 沿用原有 */
   type?: AcpAgentType;
   /**
+   * 新增时选的预设 id（`ACP_AGENT_PRESETS[].id`）。图标等「身份」信息认它，
+   * 不认命令参数 —— 之后改命令 / 参数仍然是同一个 agent。不传 = 沿用原有。
+   */
+  preset?: string;
+  /**
    * 「完全放行」时怎么答复权限请求（见 `AcpAllowStrategy`）；不传 = 沿用原有，
    * 新建缺省 `once`（只允许一次，下次仍会问）。
    */

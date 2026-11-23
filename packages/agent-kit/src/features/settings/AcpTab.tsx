@@ -92,6 +92,11 @@ export function AcpTab({ app }: { app: AgentApp }) {
   const [acpType, setAcpType] = useState<AcpAgentType>('generic')
   /** 表单里的「完全放行答复」：`once` = 只允许一次（下次仍问）；`always` = 让 agent 永久记住 */
   const [acpAllow, setAcpAllow] = useState<AcpAllowStrategy>('once')
+  /**
+   * 表单里这条配置的「预设身份」：新增时从预设带上，之后改命令 / 参数也不变。
+   * 自定义 agent 为 null（图标回落 Bot）。
+   */
+  const [acpPresetId, setAcpPresetId] = useState<string | null>(null)
   /** 新增 / 编辑共用的表单弹窗是否打开 */
   const [adding, setAdding] = useState(false)
   /** 表单弹窗正在编辑哪个 agent（null = 新增） */
@@ -196,12 +201,12 @@ export function AcpTab({ app }: { app: AgentApp }) {
    */
   const addedKeys = new Set(app.acpAgents.map((a) => acpAgentKey(a)))
   /**
-   * 预设卡片上的「已添加」标记：按**命令**（不看参数）判 —— 用户可能改过启动参数，
-   * 但它仍然是同一个 agent，不该再让他从预设里加一份几乎一样的配置。
+   * 预设卡片上的「已添加」标记：认落盘的 `preset`（老数据没有就按命令兜底）——
+   * 用户改过命令 / 参数也还是同一个 agent，不该再让他从预设里加一份。
    */
   const addedPresetIds = new Set(
     app.acpAgents
-      .map((a) => findAcpPreset(a.command)?.id)
+      .map((a) => a.preset ?? findAcpPreset(a.command)?.id)
       .filter((id): id is string => Boolean(id))
   )
   /**
@@ -327,15 +332,6 @@ export function AcpTab({ app }: { app: AgentApp }) {
     await app.saveAcpAgentModels(agent.id, remaining)
   }
 
-  /** 清空表单草稿（只有保存成功、或重新打开表单时才动它） */
-  const resetAcpDraft = (): void => {
-    setAcpName('')
-    setAcpCommand('')
-    setAcpArgs('')
-    setAcpType('generic')
-    setAcpAllow('once')
-  }
-
   /** 打开表单弹窗：给了 `agent` 就是编辑（预填它当前的配置），不给就是新增（空表单） */
   const openAcpForm = (agent?: AcpAgentView): void => {
     setEditingId(agent?.id ?? null)
@@ -344,13 +340,20 @@ export function AcpTab({ app }: { app: AgentApp }) {
     setAcpArgs(formatCommandArgs(agent?.args ?? []))
     setAcpType(agent?.type ?? 'generic')
     setAcpAllow(agent?.allowStrategy ?? 'once')
+    // 老数据没有 `preset`：按命令补一次，之后这条配置的身份就固定了
+    setAcpPresetId(agent ? agent.preset ?? findAcpPreset(agent.command)?.id ?? null : null)
     setAdding(true)
   }
 
-  /** 关表单：只收起，不清草稿（见下方 Dialog 上的注释） */
+  /**
+   * 关表单：**只收起，不动任何表单状态**。
+   *
+   * 退出动画期间 `DialogContent` 还挂着，这时候清 `editingId` 会让标题 / 描述瞬间从
+   * 「编辑」闪成「添加」（用户报过「关闭时文案闪了一下、高度也跟着变」）。
+   * 字段的复位交给下一次 `openAcpForm` / `openPresetForm` —— 它们每次都会把每个字段重写一遍。
+   */
   const closeAcpForm = (): void => {
     setAdding(false)
-    setEditingId(null)
   }
 
   /**
@@ -365,6 +368,8 @@ export function AcpTab({ app }: { app: AgentApp }) {
     setAcpArgs(formatCommandArgs(preset.args))
     setAcpType(preset.type ?? 'generic')
     setAcpAllow('once')
+    // 身份随预设一起定下来：之后在表单里改命令 / 参数，它仍然是这个 agent
+    setAcpPresetId(preset.id)
     setAdding(true)
   }
 
@@ -382,13 +387,12 @@ export function AcpTab({ app }: { app: AgentApp }) {
       command: acpCommand.trim(),
       args: draftArgs,
       type: acpType,
+      ...(acpPresetId ? { preset: acpPresetId } : {}),
       allowStrategy: acpAllow
     })
-    // 成功才清空 + 关弹窗；失败（服务端也会拦重复）保留草稿，别让人重敲一遍
-    if (ok) {
-      closeAcpForm()
-      resetAcpDraft()
-    }
+    // 成功才关弹窗；失败（服务端也会拦重复）保留草稿，别让人重敲一遍。
+    // 关的那一下不重置字段 —— 退出动画期间清空会让输入框当场闪一下。
+    if (ok) closeAcpForm()
   }
 
   /** 关检测弹窗：连结果一起清掉，下次点是重新扫（PATH 可能刚装完东西） */
@@ -440,10 +444,13 @@ export function AcpTab({ app }: { app: AgentApp }) {
       for (const key of picked) {
         const item = detected.find((d) => acpAgentKey(d) === key)
         if (!item) continue
+        // 探测到的候选都是内置预设：把身份一并落盘，之后改命令也不会丢图标
+        const presetId = findAcpPreset(item.command)?.id
         const ok = await app.saveAcpAgent({
           name: item.name,
           command: item.command,
-          args: item.args
+          args: item.args,
+          ...(presetId ? { preset: presetId } : {})
         })
         if (!ok) return
         setPicked((p) => p.filter((k) => k !== key))
@@ -468,7 +475,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
         return (
           <div key={agent.id} className="rounded-md border border-border/60">
             <div className="flex items-center gap-2 px-3 py-2">
-              <AcpAgentIcon command={agent.command} className="size-4" />
+              <AcpAgentIcon presetId={agent.preset} command={agent.command} className="size-4" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
                   <span className="truncate text-sm">{agent.name}</span>
@@ -699,7 +706,8 @@ export function AcpTab({ app }: { app: AgentApp }) {
 
       {/*
         新增与编辑共用这一个弹窗（`editingId` 为空 = 新增）。
-        关掉只收起、不清草稿：误点遮罩 / Esc 不该把刚填的命令弄丢（只有保存成功才清）。
+        关闭时**不动任何可见状态**（`editingId` / 字段全部保留到下一次打开再重写）：
+        退出动画期间 `DialogContent` 还挂着，清状态会让标题 / 描述当场闪成另一套文案。
       */}
       <Dialog
         open={adding}

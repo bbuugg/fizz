@@ -694,7 +694,8 @@ export function ModelsTab({ app }: { app: AgentApp }) {
               void saveConfig()
             }}
           >
-            <div className="grid gap-2 sm:grid-cols-2">
+            {/* 名称与提供商类型上下排：并排两列时右侧控件与下面几行的右缘对不齐 */}
+            <>
               <Input
                 variant="muted"
                 placeholder={tr('名称（可选）')}
@@ -702,7 +703,7 @@ export function ModelsTab({ app }: { app: AgentApp }) {
                 onChange={(e) => setName(e.target.value)}
               />
               <Select value={kind} onValueChange={(v) => setKind(v as AiProviderKind)}>
-                <SelectTrigger variant="muted">
+                <SelectTrigger variant="muted" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -713,7 +714,7 @@ export function ModelsTab({ app }: { app: AgentApp }) {
                   ))}
                 </SelectContent>
               </Select>
-            </div>
+            </>
             <Input
               variant="muted"
               placeholder={tr('Base URL（OpenAI 兼容网关才需要），如 http://127.0.0.1:7919/v1')}

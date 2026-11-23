@@ -37,6 +37,13 @@ export interface AcpAgentConfig {
   args: string[]
   /** 风格（见 `AcpAgentType`）；缺省 = `generic`（不显示模式 UI） */
   type?: AcpAgentType
+  /**
+   * 新增时选的预设 id（`ACP_AGENT_PRESETS[].id`）：决定图标这类**身份**信息。
+   *
+   * 一旦落盘就与 `command` / `args` 脱钩 —— 用户之后改启动命令或参数，它仍然是
+   * 同一个 agent，图标不会跟着命令变。自定义 agent 没有这一项（图标回落 Bot）。
+   */
+  preset?: string
   /** 「完全放行」的答复策略（见 `AcpAllowStrategy`）；缺省 = `once`（只允许一次） */
   allowStrategy?: AcpAllowStrategy
   /**
