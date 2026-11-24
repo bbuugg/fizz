@@ -11,6 +11,7 @@ import { useT } from "@fizz/agent-kit/shared/lib/language";
 import type { ToolUIPart } from "ai";
 import {
   ArrowRightLeftIcon,
+  BookOpenIcon,
   BrainIcon,
   CheckCircleIcon,
   CheckIcon,
@@ -26,6 +27,7 @@ import {
   FileXIcon,
   FolderTreeIcon,
   GlobeIcon,
+  ListChecksIcon,
   SearchIcon,
   Square,
   SquareTerminalIcon,
@@ -408,6 +410,12 @@ const TOOL_HEAD_ICONS: Record<string, LucideIcon> = {
   edit: FilePenIcon,
   glob: FileSearchIcon,
   grep: SearchIcon,
+  // 抓网页：与 ACP 的 `fetch` 类别同一颗地球，扫流时「联网取资料」一眼可辨
+  web_fetch: GlobeIcon,
+  // 待办清单：与 `ListChecks` 字形一致，一眼看出这是在维护任务列表
+  todowrite: ListChecksIcon,
+  // 读取技能说明：书本，与「读文件」的文件字形分开
+  skill: BookOpenIcon,
   run_in_terminal: SquareTerminalIcon,
   read_terminal_output: SquareTerminalIcon,
   send_keys: SquareTerminalIcon,

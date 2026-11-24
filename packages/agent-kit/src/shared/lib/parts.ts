@@ -536,9 +536,8 @@ export const TOOL_LABELS: Record<string, string> = {
   read_terminal_output: '读取终端输出',
   send_keys: '发送按键',
   list_terminal_sessions: '列出终端会话',
-  // Agent 维护的任务清单（`todo` 是 2026-11 之前的旧名，老会话历史里还在用，别删）
+  // Agent 维护的任务清单（`todo` 是 2026-11 之前的旧名，界面不再兼容）
   todowrite: '更新待办清单',
-  todo: '更新待办清单',
   // 全局只读工具：不依赖工作区，任何会话（含未绑定目录的「任务」会话）都可用
   web_fetch: '抓取网页',
   screenshot: '网页截图',
