@@ -21,6 +21,7 @@ import type {
   AskFollowupAnswer,
   CollabSettings,
   CollabState,
+  CommandSandboxMode,
   QueuedMessage,
 } from "@fizz/contracts/types";
 import { type BrowserSettings } from "@fizz/contracts";
@@ -339,6 +340,8 @@ export interface ConversationSlice {
   blankIntent: boolean;
   /** 切换命令执行权限（存本地；下一轮生效） */
   permissionMode: AiPermissionMode;
+  /** 命令沙箱开关（off / workspace-write；显式开启，下一轮生效） */
+  sandboxMode: CommandSandboxMode;
   /** confirm 审批超时（分钟；0 = 不超时）。随每轮请求带给服务端 */
   confirmTimeoutMin: number;
   /** 模型请求自动重试次数（0 = 不限制）。随每轮请求带给服务端 */
@@ -436,6 +439,8 @@ export interface ConversationSlice {
     scope?: string | null,
   ) => void;
   setPermissionMode: (mode: AiPermissionMode, scope?: string | null) => void;
+  /** 命令沙箱开关（存本地；下一轮生效，不影响正在跑的那轮） */
+  setSandboxMode: (mode: CommandSandboxMode) => void;
   /**
    * 设置**某条 ACP 会话**的权限答复策略（`confirm` = 逐次问；`allow` = 应用层自动放行）。
    * 按会话持久化到 `config.json`；没有会话时什么都不做（新任务页没有会话可绑）。

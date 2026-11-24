@@ -19,6 +19,22 @@ import { summarizeLongOutput } from './output-log'
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }))
 
 /**
+ * 沙箱提供方也换成假的：真跑 bwrap / sandbox-exec 属于「起真实进程」，单测不许。
+ * 只替掉 `sandbox` 单例，`classifyRunnerFailure` / `matchesSignature` 保留真实现 ——
+ * 归因逻辑本身在 sandbox/classify.test.ts 里测。
+ */
+vi.mock('./sandbox', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./sandbox')>()
+  return {
+    ...actual,
+    sandbox: {
+      availability: () => ({ available: true, runner: 'bwrap' as const }),
+      confine: vi.fn()
+    }
+  }
+})
+
+/**
  * 搜索 / 查找的 **rg 分支在这里关掉**，强制走 JS 遍历：
  * - 单测不许 spawn 真实进程（仓库约定），本文件又把 `child_process` 整体 mock 了；
  * - 下面两个用例守的是 JS 那套语义（忽略规则、glob 匹配、显式点名文件），
@@ -165,6 +181,8 @@ describe('createLocalBackend · 命令执行', () => {
   beforeEach(async () => {
     root = await fs.mkdtemp(join(tmpdir(), 'fizz-backend-'))
     vi.mocked(spawn).mockReset()
+    const { sandbox } = await import('./sandbox')
+    vi.mocked(sandbox.confine).mockReset()
     vi.spyOn(process, 'kill').mockImplementation(() => true)
   })
 
@@ -219,6 +237,73 @@ describe('createLocalBackend · 命令执行', () => {
     const pending = backend.exec('nope')
     child.emit('error', new Error('spawn ENOENT'))
     await expect(pending).resolves.toMatchObject({ reason: 'error', error: 'spawn ENOENT' })
+  })
+
+  it('带沙箱策略时 spawn 的是包装后的 argv，并标记「被拒绝」', async () => {
+    const { sandbox } = await import('./sandbox')
+    vi.mocked(sandbox.confine).mockResolvedValue({
+      argv: ['bwrap', '--ro-bind', '/', '/', '--', '/bin/bash', '-lc', 'rm /etc/x'],
+      enforcement: 'full',
+      denialSignatures: ['read-only file system'],
+      runnerFailureRules: []
+    })
+    const child = fakeChild()
+    vi.mocked(spawn).mockReturnValue(child as never)
+    const backend = createLocalBackend(root)
+    const pending = backend.exec('rm /etc/x', {
+      cwd: root,
+      sandbox: { mode: 'workspace-write', workspaceRoot: root }
+    })
+    await vi.waitFor(() => expect(vi.mocked(spawn)).toHaveBeenCalled())
+    child.stderr.emit('data', Buffer.from('bash: /etc/x: Read-only file system\n'))
+    child.emit('exit', 1)
+
+    expect(vi.mocked(spawn)).toHaveBeenCalledWith(
+      'bwrap',
+      ['--ro-bind', '/', '/', '--', '/bin/bash', '-lc', 'rm /etc/x'],
+      expect.objectContaining({ cwd: root })
+    )
+    await expect(pending).resolves.toMatchObject({
+      exitCode: 1,
+      sandbox: { mode: 'workspace-write', denied: true }
+    })
+  })
+
+  it('沙箱不可用时命令不启动（fail closed）', async () => {
+    const { sandbox } = await import('./sandbox')
+    vi.mocked(sandbox.confine).mockRejectedValue(new Error('bwrap 不可用'))
+    const backend = createLocalBackend(root)
+    await expect(
+      backend.exec('echo hi', {
+        cwd: root,
+        sandbox: { mode: 'workspace-write', workspaceRoot: root }
+      })
+    ).resolves.toMatchObject({ reason: 'error', error: 'bwrap 不可用' })
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled()
+  })
+
+  it('沙箱返回的额外环境变量会合并进 spawn（Electron 的 ELECTRON_RUN_AS_NODE）', async () => {
+    const { sandbox } = await import('./sandbox')
+    vi.mocked(sandbox.confine).mockResolvedValue({
+      argv: ['runner.exe', '--', '/bin/bash', '-lc', 'ls'],
+      enforcement: 'partial',
+      denialSignatures: [],
+      runnerFailureRules: [],
+      env: { ELECTRON_RUN_AS_NODE: '1' }
+    })
+    const child = fakeChild()
+    vi.mocked(spawn).mockReturnValue(child as never)
+    const backend = createLocalBackend(root)
+    const pending = backend.exec('ls', {
+      cwd: root,
+      sandbox: { mode: 'workspace-write', workspaceRoot: root }
+    })
+    await vi.waitFor(() => expect(vi.mocked(spawn)).toHaveBeenCalled())
+    child.emit('exit', 0)
+    await pending
+
+    const options = vi.mocked(spawn).mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv }
+    expect(options.env?.ELECTRON_RUN_AS_NODE).toBe('1')
   })
 })
 

@@ -450,3 +450,77 @@ export function useLiquidGlassLens(): {
 export function LiquidGlassPanel() {
   return <LiquidGlassEdgeLight />
 }
+
+/** 调用方自己的指针处理器（有就传进来，Hook 会先写光圈位置再调它） */
+export interface GlassPanelHandlers {
+  onPointerEnter?: React.PointerEventHandler<HTMLElement>
+  onPointerMove?: React.PointerEventHandler<HTMLElement>
+  onPointerLeave?: React.PointerEventHandler<HTMLElement>
+}
+
+/**
+ * 面板级玻璃外壳的**一次封装**：类名、边缘流光层、指针追踪三样一起给。
+ *
+ * 给「不能换成普通 div」的容器用（Radix 的 `PopoverContent` / `DialogContent` / `SelectContent`）：
+ *
+ * ```tsx
+ * const glass = useGlassPanel(props)   // props 里的同名指针处理器会自动串起来
+ * <PopoverContent {...props} {...glass.handlers} className={cn(glass.className, 'flex ...')}>
+ *   {glass.edge}
+ *   {children}
+ * </PopoverContent>
+ * ```
+ *
+ * 普容器（本身就是一个 div）直接用 {@link GlassPanel}，连展开都不用写。
+ */
+export function useGlassPanel(handlers: GlassPanelHandlers = {}): {
+  /** 玻璃外壳的类（实色底 + 淡描边 + 景深投影） */
+  className: string
+  /** 展开到容器上：先写 `--lens-*`，再调调用方自己的处理器 */
+  handlers: GlassPanelHandlers
+  /** 边缘流光层，放在容器内容最前面 */
+  edge: React.ReactNode
+} {
+  const { onPointerEnter, onPointerMove, onPointerLeave } = handlers
+  const merged = React.useMemo<GlassPanelHandlers>(
+    () => ({
+      onPointerEnter: (event) => {
+        trackLiquidLens(event)
+        onPointerEnter?.(event)
+      },
+      onPointerMove: (event) => {
+        trackLiquidLens(event)
+        onPointerMove?.(event)
+      },
+      onPointerLeave: (event) => {
+        clearLiquidLens(event)
+        onPointerLeave?.(event)
+      }
+    }),
+    [onPointerEnter, onPointerMove, onPointerLeave]
+  )
+  return React.useMemo(
+    () => ({ className: GLASS_PANEL_CLASS, handlers: merged, edge: <LiquidGlassPanel /> }),
+    [merged]
+  )
+}
+
+/**
+ * 普通 `div` 容器的面板级玻璃外壳：类名、边缘流光、指针追踪一次到位。
+ *
+ * ```tsx
+ * <GlassPanel className="absolute left-2 top-2 w-72 ...">…</GlassPanel>
+ * ```
+ *
+ * ⚠️ 容器自己要有定位（`absolute` / `fixed`；Radix 的 popper 容器自带 `position: absolute`）：
+ * 边缘流光层是 `absolute inset-0`，宿主没定位就会跑到外层祖先上去。
+ */
+export function GlassPanel({ className, children, ...props }: React.ComponentProps<'div'>) {
+  const glass = useGlassPanel(props)
+  return (
+    <div {...props} {...glass.handlers} className={cn(glass.className, className)}>
+      {glass.edge}
+      {children}
+    </div>
+  )
+}

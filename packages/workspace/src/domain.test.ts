@@ -16,6 +16,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { JsonStore } from './store'
 import { AgentDomain, sameWorkspacePath } from './domain'
+import { acpAgentKey } from '@fizz/contracts/agent-api'
 
 let dataDir: string
 let store: JsonStore
@@ -419,5 +420,77 @@ describe('临时工作区目录', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+/**
+ * 防的回归：检测结果（health）落错地方。
+ *
+ * - 写进配置后，刷新 / 换客户端要能读到；
+ * - 命令没变时保存配置（比如只改名字）不能把检测结论冲掉；
+ * - 命令一变，旧结论必须清空；
+ * - 检测是异步的，跑完时命令已经变了就不能再写旧结果。
+ */
+describe('ACP agent 检测状态', () => {
+  function addAgent(): ReturnType<AgentDomain['saveAcpAgent']> {
+    return domain.saveAcpAgent({ name: 'Codex', command: 'codex-acp', args: [] })
+  }
+
+  it('health 与模型清单一次写入，并能从列表读回', () => {
+    const agent = addAgent()
+
+    const next = domain.recordAcpAgentCheck(agent.id, {
+      expectedKey: acpAgentKey(agent),
+      health: { status: 'ok', checkedAt: 123 },
+      models: [{ value: 'gpt-5', name: 'GPT-5' }]
+    })
+
+    expect(next.health).toEqual({ status: 'ok', checkedAt: 123 })
+    expect(next.models).toEqual([{ value: 'gpt-5', name: 'GPT-5' }])
+    const stored = domain.listAcpAgents().find((item) => item.id === agent.id)
+    expect(stored?.health).toEqual({ status: 'ok', checkedAt: 123 })
+  })
+
+  it('命令没变时保存配置保留 health；改了命令就清空', () => {
+    const agent = addAgent()
+    domain.recordAcpAgentCheck(agent.id, {
+      expectedKey: acpAgentKey(agent),
+      health: { status: 'ok', checkedAt: 123 }
+    })
+
+    const renamed = domain.saveAcpAgent({
+      id: agent.id,
+      name: 'Codex 改名',
+      command: agent.command,
+      args: agent.args
+    })
+    expect(renamed.health?.status).toBe('ok')
+
+    const changed = domain.saveAcpAgent({
+      id: agent.id,
+      name: 'Codex',
+      command: 'gemini',
+      args: ['--acp']
+    })
+    expect(changed.health).toBeUndefined()
+  })
+
+  it('检测期间命令被改掉：拒绝写入旧结果', () => {
+    const agent = addAgent()
+    const oldKey = acpAgentKey(agent)
+    domain.saveAcpAgent({
+      id: agent.id,
+      name: 'Codex',
+      command: 'gemini',
+      args: ['--acp']
+    })
+
+    expect(() =>
+      domain.recordAcpAgentCheck(agent.id, {
+        expectedKey: oldKey,
+        health: { status: 'error', checkedAt: 456, error: '旧命令的结果' }
+      })
+    ).toThrow('已被修改')
+    expect(domain.listAcpAgents().find((item) => item.id === agent.id)?.health).toBeUndefined()
   })
 })

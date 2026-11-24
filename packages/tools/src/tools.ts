@@ -32,6 +32,7 @@ import type {
   WorkspaceSearchFile
 } from '@fizz/contracts/workspace'
 import { tr } from '@fizz/i18n'
+import type { CommandSandboxMode } from '@fizz/contracts/types'
 import { stripAnsi } from './ansi'
 import { createOutputDecoder } from './output-decoder'
 import {
@@ -40,6 +41,16 @@ import {
   MAX_SEARCH_FILE_SIZE,
   resolveShellSpawn
 } from './backend'
+import {
+  classifyRunnerFailure,
+  matchesSignature,
+  resolveCommandSandbox,
+  resolveSandboxEscalation,
+  sandbox,
+  sandboxPolicyForMode
+} from './sandbox'
+import type { ConfinedArgv } from './sandbox'
+import type { SandboxMode, SandboxPolicy } from '@fizz/contracts/workspace'
 import { summarizeLongOutput } from './output-log'
 
 export type AgentPermissionMode = 'full' | 'confirm' | 'readonly'
@@ -58,6 +69,9 @@ const READ_LIMIT = 2000
 const READ_MAX_LINE_LENGTH = 2000
 /** 一次 read 最多返回多少字节（UTF-8，含行间的换行） */
 const READ_MAX_BYTES = 50 * 1024
+
+/** 后台命令收场归因只看 stderr 的最后这么多字符（只为挡异常输出，不是日志缓冲） */
+const STDERR_TAIL_CHARS = 8_000
 
 /** grep 一次最多保留多少条命中 */
 const GREP_MAX_MATCHES = 250
@@ -83,10 +97,25 @@ export interface AgentToolOptions {
    * **每次工具调用现取**，中途切换立刻生效。不传 = 退回静态快照（行为与从前一致）。
    */
   getPermissionMode?: () => AgentPermissionMode
+  /**
+   * 命令沙箱开关（设置 → AI → 偏好，默认 `off`）。开启后 `bash` 经平台沙箱执行，
+   * 只允许写工作区与临时目录；**只作用于本地工作区**（远端首期不隔离）。
+   *
+   * 与权限档正交：权限档决定「要不要问」，它决定「批准之后能写哪」。
+   */
+  sandboxMode?: CommandSandboxMode
   requestConfirm?: (req: {
     toolCallId: string
     toolName: string
     command: string
+    /** 模型对这一步的意图（审批卡的标题位） */
+    intent?: string
+    /**
+     * 沙箱提权申请（模型带了 `sandbox_permissions` + `justification`）：审批卡要把
+     * **理由与目标档**显示出来，否则用户不知道这张卡和普通「允许执行」差在哪。
+     */
+    sandboxJustification?: string
+    sandboxRequestedMode?: SandboxMode
   }) => Promise<boolean>
   /**
    * `bash` 每次**启动命令前**调用：`stop` 由调用方持有，调用即杀
@@ -103,7 +132,16 @@ export interface AgentToolOptions {
    * `bash` 带 `run_in_background: true` 时调用：把它登记成一条**后台任务**。
    * 不传 = 没有后台执行能力（工具会如实回绝）。
    */
-  onBackgroundCommand?: (req: { command: string; cwd: string; title: string }) => Promise<{
+  onBackgroundCommand?: (req: {
+    command: string
+    cwd: string
+    title: string
+    /**
+     * 这条后台命令该跑的沙箱档（含本次提权结果）。不传 = 调用方按自己的偏好解析
+     * （服务端读设置里的 `fizz.web.sandboxMode`）。
+     */
+    sandboxMode?: SandboxMode
+  }) => Promise<{
     id: string
   }>
   /** 可用技能：给了才挂 `skill`（否则模型拿着一份空清单乱试） */
@@ -267,6 +305,10 @@ export interface BackgroundShellExit {
   error?: string
   /** 是不是被 `kill()` / `signal` 停掉的（任务登记表据此判「已取消」而不是「失败」） */
   killed: boolean
+  /** 被命令沙箱挡了（写越界 / 只读） */
+  denied?: boolean
+  /** 沙箱 runner 自己失败：命令根本没跑 */
+  runnerFailed?: string
 }
 
 export interface BackgroundShellHandle {
@@ -287,7 +329,7 @@ export interface BackgroundShellHandle {
  * 为什么这个函数在 tools 里而不是在服务端：shell 探测（Git Bash / pwsh / bash）是这一层
  * 的知识，服务端不该再抄一份 —— 抄出来的第二份迟早在 Windows 上和这一份对不上。
  */
-export function spawnBackgroundShell(
+export async function spawnBackgroundShell(
   command: string,
   cwd: string,
   opts: {
@@ -295,13 +337,28 @@ export function spawnBackgroundShell(
     onOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void
     /** 外部停止信号（任务被取消 / 应用退出） */
     signal?: AbortSignal
+    /** 命令沙箱策略（同 `AgentToolOptions.sandboxMode`）；不传 = 不隔离 */
+    sandbox?: SandboxPolicy
   } = {}
-): BackgroundShellHandle {
-  const { shellCmd, shellArgs, env, isWin } = resolveShellSpawn(command)
+): Promise<BackgroundShellHandle> {
+  const { shellCmd, shellArgs, env, isWin } = resolveShellSpawn(command, {
+    sandboxed: opts.sandbox !== undefined
+  })
+  /**
+   * 沙箱与前台同一条口径：包完整 argv，拿不到后端就抛（调用方把任务标失败，
+   * 而不是让它在「以为隔离了」的情况下继续跑）。
+   */
+  let argv = [shellCmd, ...shellArgs]
+  let facts: ConfinedArgv | undefined
+  if (opts.sandbox) {
+    facts = await sandbox.confine(argv, opts.sandbox, opts.signal ? { signal: opts.signal } : {})
+    argv = facts.argv
+  }
   let killed = false
-  const child = spawn(shellCmd, shellArgs, {
+  const child = spawn(argv[0], argv.slice(1), {
     cwd,
-    env,
+    // runner 需要的额外环境（Electron 打包态要 ELECTRON_RUN_AS_NODE）
+    env: facts?.env ? { ...env, ...facts.env } : env,
     windowsHide: true,
     // POSIX 自成进程组：kill(-pid) 才能一次带走 `npm run` 派生出来的整棵树
     ...(isWin ? {} : { detached: true })
@@ -331,13 +388,20 @@ export function spawnBackgroundShell(
   // 命令里 powershell 的 GBK 输出污染，而它还要进面板日志、落盘给模型读
   const decodeStdout = createOutputDecoder()
   const decodeStderr = createOutputDecoder()
+  /**
+   * 只留 stderr 的尾巴用于收场归因：后台日志本身由调用方持有（不在这层缓存），
+   * 但「被拒绝 / runner 失败」必须能从最后几行看出来。上限只为挡异常输出。
+   */
+  let stderrTail = ''
   child.stdout?.on('data', (d: Buffer) => {
     const chunk = decodeStdout.decode(d)
     if (chunk) opts.onOutput?.('stdout', chunk)
   })
   child.stderr?.on('data', (d: Buffer) => {
     const chunk = decodeStderr.decode(d)
-    if (chunk) opts.onOutput?.('stderr', chunk)
+    if (!chunk) return
+    stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_CHARS)
+    opts.onOutput?.('stderr', chunk)
   })
 
   const done = new Promise<BackgroundShellExit>((resolve) => {
@@ -354,8 +418,24 @@ export function spawnBackgroundShell(
       const tailOut = decodeStdout.flush()
       if (tailOut) opts.onOutput?.('stdout', tailOut)
       const tailErr = decodeStderr.flush()
-      if (tailErr) opts.onOutput?.('stderr', tailErr)
-      settle({ code: code ?? null, killed })
+      if (tailErr) {
+        stderrTail = (stderrTail + tailErr).slice(-STDERR_TAIL_CHARS)
+        opts.onOutput?.('stderr', tailErr)
+      }
+      // 与前台同一套归因：runner 失败优先于「被拒绝」
+      const runnerFailure =
+        facts && !killed ? classifyRunnerFailure(code ?? null, stderrTail, facts.runnerFailureRules) : undefined
+      const denied =
+        facts !== undefined &&
+        !killed &&
+        runnerFailure === undefined &&
+        matchesSignature(code ?? null, stderrTail, facts.denialSignatures)
+      settle({
+        code: code ?? null,
+        killed,
+        ...(denied ? { denied: true } : {}),
+        ...(runnerFailure ? { runnerFailed: runnerFailure.detail } : {})
+      })
     })
   })
 
@@ -391,6 +471,10 @@ async function formatBashOutput(
   // 先剥 ANSI：`npm run` 会给脚本注入 FORCE_COLOR，vite / tsc / jest 照样吐颜色
   const out = stripAnsi(result.stdout)
   const err = stripAnsi(result.stderr)
+  // 沙箱 runner 没起来 = 命令根本没执行，重试同一条命令没有意义
+  if (result.sandbox?.runnerFailed) {
+    throw new Error(`sandbox runner failed: ${result.sandbox.runnerFailed}`)
+  }
   if (result.reason === 'error') {
     throw new Error(`command failed to start: ${result.error ?? 'unknown error'}`)
   }
@@ -409,6 +493,15 @@ async function formatBashOutput(
   if (result.reason === 'exit' && result.exitCode !== 0) {
     markers.push(`[exit code: ${result.exitCode}]`)
   }
+  if (result.sandbox?.denied) {
+    // 模型看不到内核语义，必须直说「是沙箱挡的」以及能做什么，否则只会反复重试
+    markers.push(
+      tr(
+        '[沙箱：workspace-write 下这条命令的写入被拒绝] 只能写工作区与临时目录；需要越界时请用户关闭「命令沙箱」，或把操作挪进工作区。',
+        '[sandbox: file access denied under workspace-write] Only the workspace and temp dirs are writable; ask the user to turn off the command sandbox or move the work inside the workspace.'
+      )
+    )
+  }
   const full = markers.length ? `${body.trimEnd()}\n${markers.join('\n')}` : body.trimEnd()
   return summarizeLongOutput(full, {
     backend,
@@ -423,16 +516,25 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
   const currentMode = (): AgentPermissionMode => opts.getPermissionMode?.() ?? opts.permissionMode
   // 文件 / 搜索 / 命令一律经后端：不传 = 本地（行为与从前一致），远端由服务端注入
   const backend = opts.backend ?? createLocalBackend(root)
+  // 命令沙箱策略：开关关着 / 远端工作区就是 undefined（走原来的直跑路径）
+  const sandboxPolicy = resolveCommandSandbox(opts.sandboxMode, backend)
   // 工具描述必须如实描述执行环境，模型才会放心用对应风格的命令
   const isWin = process.platform === 'win32'
-  const bashPath = isWin ? gitBashPath() : null
+  /**
+   * 沙箱开着的 Windows 用不了 Git Bash（MSYS2 在限制性令牌下起不来，后端已换成 PowerShell）。
+   * 提示词必须跟着换，否则模型照旧写 `ls | grep` 然后一条条失败。
+   */
+  const winSandboxShell = isWin && backend.kind === 'local' && sandboxPolicy !== undefined
+  const bashPath = isWin && !winSandboxShell ? gitBashPath() : null
   const shellNote =
     backend.kind === 'remote'
       ? '命令运行在远端 Linux 主机的 POSIX shell（bash/sh）中：可以用 ls / grep / sed / find / cat、管道与 Unix 语法；路径是远端主机上的绝对路径。'
       : isWin
         ? bashPath
           ? '命令运行在 Git Bash（POSIX）环境：可以用 ls / grep / sed / find / cat / 管道等 Unix 工具与语法；Windows 路径建议写成 C:/xxx 或 /c/xxx 形式。'
-          : '命令运行在 PowerShell 环境（未检测到 Git Bash）。'
+          : winSandboxShell
+            ? '命令运行在 PowerShell（文件沙箱下 Git Bash 无法启动，只能用 PowerShell）：用 Get-ChildItem / Get-Content / Select-String / Copy-Item 与管道；不要用 ls / grep / sed / awk / cat、`&&`、`2>/dev/null`；串联多步命令用 `;`，路径写成 C:/xxx。'
+            : '命令运行在 PowerShell 环境（未检测到 Git Bash）。'
         : '命令运行在 bash 环境。'
   const shellNoteEn =
     backend.kind === 'remote'
@@ -440,8 +542,21 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
       : isWin
         ? bashPath
           ? 'Commands run in Git Bash (POSIX): you can use ls / grep / sed / find / cat, pipes, and Unix syntax. For Windows paths prefer C:/xxx or /c/xxx.'
-          : 'Commands run in PowerShell (Git Bash not detected).'
+          : winSandboxShell
+            ? 'Commands run in PowerShell (Git Bash cannot start inside the file sandbox, so PowerShell is the only option): use Get-ChildItem / Get-Content / Select-String / Copy-Item and pipes; do not use ls / grep / sed / awk / cat, `&&`, or `2>/dev/null`; chain steps with `;` and write paths as C:/xxx.'
+            : 'Commands run in PowerShell (Git Bash not detected).'
         : 'Commands run in bash.'
+
+  /**
+   * 沙箱提示：模型不会自己意识到「批准了也不等于能写系统目录」。不说清的话，
+   * 它会把内核的 permission denied 当成命令写错，换个写法反复重试。
+   */
+  const sandboxNote = sandboxPolicy
+    ? '\n本次命令在文件沙箱中执行：只能写工作区与临时目录，越界写入会被系统拒绝；确实需要越界时，带 sandbox_permissions + justification 申请一次放宽（会弹卡片问用户）。'
+    : ''
+  const sandboxNoteEn = sandboxPolicy
+    ? '\nCommands run in a file sandbox: only the workspace and temp dirs are writable; writes elsewhere are denied. If a write outside is genuinely required, ask once via sandbox_permissions + justification (the user gets a confirmation card).'
+    : ''
 
   /**
    * 观察表：本次工具集生命周期内「模型读过哪些文件、读到的版本是什么」。
@@ -778,14 +893,16 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
             '需要在**本轮结束后继续跑**的进程（dev server / watch / 长构建）把 run_in_background 设为 true：' +
             '调用会立刻返回一个后台任务 id，它不受本轮超时与停止影响，输出显示在输入框上方的任务面板里；' +
             '当前这一轮就要用它的输出时**不要**开这个开关。' +
-            shellNote,
+            shellNote +
+            sandboxNote,
           'Run a shell command in the workspace and return stdout + stderr. Use it for builds, tests, git, installing dependencies, starting services, etc. Default timeout is 120 seconds. ' +
             'If output exceeds one tool result, the full text is saved under .fizz/tool-output/ and the result includes the relative path, total lines, and which lines were returned; ' +
             'read the rest with read offset/limit on that path, or search it with grep (common for full build/test logs). ' +
             'This is a real execution environment: explain the impact before deleting, overwriting, or running dangerous commands (rm -rf, git push --force, etc.). ' +
             'Set run_in_background: true for processes that must keep running after this turn (dev servers, watchers, long builds): the call returns a background task id immediately, ' +
             'it is not affected by this turn\'s timeout or stop, and its output shows in the task panel above the input box; do NOT set it when the current turn needs the output.' +
-            shellNoteEn
+            shellNoteEn +
+            sandboxNoteEn
         ),
       inputSchema: z.object({
         // 不设 description：「这一步做什么」统一由引擎注入的 `intent` 表达，
@@ -806,6 +923,18 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
           .optional()
           .describe(
             'Run in the background and return a job id immediately. No timeout applies. Do not set it when this turn needs the output.'
+          ),
+        sandbox_permissions: z
+          .enum(['workspace-write', 'danger-full-access'])
+          .optional()
+          .describe(
+            'Only together with `justification`: ask the user to widen the command sandbox for THIS call, after a write was denied. Omit it when the work can stay inside the workspace.'
+          ),
+        justification: z
+          .string()
+          .optional()
+          .describe(
+            'Required with `sandbox_permissions`: one short sentence for the user explaining why this exact command must write outside the workspace.'
           )
       }),
       execute: async (input, options) => {
@@ -814,13 +943,56 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
         const runInBackground = input.run_in_background ?? false
         const cwd = input.workdir ?? ''
 
-        const refused = await guardWrite('命令未运行', {
+        const guardRequest = {
           toolCallId: options.toolCallId,
           toolName: 'bash',
           command,
           intent: intentOf(input)
-        })
-        if (refused) return refused
+        }
+
+        /**
+         * 沙箱提权：参数配对 / 阶梯校验必须在**弹任何卡之前** —— 参数写错不该让用户
+         * 先看一张莫名其妙的审批卡；沙箱没开时也直接纠正模型，而不是问「要不要放宽」。
+         */
+        const effectiveSandboxMode: SandboxMode = sandboxPolicy?.mode ?? 'danger-full-access'
+        const escalation = resolveSandboxEscalation(
+          input.sandbox_permissions,
+          input.justification,
+          effectiveSandboxMode
+        )
+        let callSandbox = sandboxPolicy
+        if (escalation) {
+          // 只读档没有「放宽」可谈：照旧走 guardWrite 回绝（那里不弹卡，只回一句说明）
+          if (currentMode() === 'readonly') {
+            const refused = await guardWrite('命令未运行', guardRequest)
+            if (refused) return refused
+          }
+          /*
+           * 提权卡**同时就是这一次的执行审批**：用户点「允许一次」=「允许这条命令，且这一次
+           * 放宽沙箱」。不再先过 guardWrite 那张卡 —— 否则一次提权要连点两张同义卡。
+           */
+          // 提权必须有确认通道：没有就按拒绝（与 guardWrite 同一条 fail-closed 口径）
+          if (opts.requestConfirm === undefined) {
+            return '「bash」需要用户确认，但当前环境没有可用的确认通道（无界面 / 未接入审批），已取消这次调用。请告诉用户这次没有执行，不要重试。'
+          }
+          const approved = await opts.requestConfirm({
+            ...guardRequest,
+            sandboxJustification: escalation.justification,
+            sandboxRequestedMode: escalation.mode
+          })
+          if (!approved) {
+            return (
+              '用户拒绝了放宽沙箱的申请，命令**没有**执行。请告诉用户，并尽量在沙箱允许的范围内' +
+              '（只写工作区与临时目录）完成这一步，不要反复申请。'
+            )
+          }
+          // 只在**这一次调用**内放宽：不写设置、不记「始终允许」
+          callSandbox = sandboxPolicyForMode(escalation.mode, backend.root)
+        } else {
+          const refused = await guardWrite('命令未运行', guardRequest)
+          if (refused) return refused
+        }
+        const callSandboxMode: SandboxMode = callSandbox?.mode ?? 'danger-full-access'
 
         const execDir = backend.resolve(cwd)
         const stat = await backend.stat(execDir)
@@ -846,7 +1018,9 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
           const started = await opts.onBackgroundCommand({
             command,
             cwd: execDir,
-            title: command
+            title: command,
+            // 后台与前台同一条沙箱口径（含本次提权结果）
+            sandboxMode: callSandboxMode
           })
           return [
             `已在后台启动：${command}`,
@@ -874,7 +1048,8 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
             cwd: execDir,
             timeoutMs: t,
             signal: ctrl.signal,
-            onOutput: (stream, chunk) => opts.onCommandOutput?.(toolCallId, stream, chunk)
+            onOutput: (stream, chunk) => opts.onCommandOutput?.(toolCallId, stream, chunk),
+            ...(callSandbox ? { sandbox: callSandbox } : {})
           })
           return await formatBashOutput(backend, command, result, t)
         } finally {

@@ -810,6 +810,22 @@ export function resolveProbeCwd(path?: string): string {
 }
 
 /**
+ * ACP 启动失败：`message` 只放一行结论，完整命令 / 工作目录留在 `detail`。
+ *
+ * 模型选择器位置窄，把路径塞进 message 会变成「加载失败 + 启动失败 + 路径」三截；
+ * 设置页检测 / 排查时再把 detail 展开。
+ */
+export class AcpSpawnError extends Error {
+  readonly detail: string;
+
+  constructor(message: string, detail: string) {
+    super(message);
+    this.name = "AcpSpawnError";
+    this.detail = detail;
+  }
+}
+
+/**
  * spawn 失败时把「命令 + 工作目录」补进报错里。
  *
  * Node 对 `spawn(xxx)` 只给一句 `spawn xxx ENOENT`，而 ENOENT 有两种完全不同的原因：
@@ -828,10 +844,11 @@ export function describeSpawnError(
   } catch {
     cwdExists = false;
   }
-  return new Error(
+  return new AcpSpawnError(
     cwdExists
-      ? `启动 ${command} 失败：命令不存在或无法执行（工作目录 ${cwd}）`
-      : `启动 ${command} 失败：工作目录不存在（${cwd}）`,
+      ? `启动 ${command} 失败：命令不存在或无法执行`
+      : `启动 ${command} 失败：工作目录不存在`,
+    `命令：${command}\n工作目录：${cwd}`,
   );
 }
 

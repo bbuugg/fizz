@@ -5,7 +5,7 @@
  * 队列缓存不是「老实现遗留」：打开会话时要先拿它渲染（否则列表先闪一下空），服务端 / 网络
  * 不可用时也照旧能用，只是不跨端。
  */
-import type { QueuedMessage } from "@fizz/contracts/types";
+import type { CommandSandboxMode, QueuedMessage } from "@fizz/contracts/types";
 import {
   readPref,
   removePref,
@@ -144,8 +144,22 @@ export function saveToolIntent(value: boolean): void {
 }
 
 /**
+ * 命令沙箱开关：默认 **off**（与加这个开关之前完全一致）。
+ *
+ * 显式开启才隔离 —— 没有可用后端的平台（Windows / 缺 bwrap 的容器）开着会让
+ * bash 直接失败，所以不能替用户默认打开。
+ */
+const SANDBOX_MODE_KEY = "fizz.web.sandboxMode";
+export function loadSandboxMode(): CommandSandboxMode {
+  return lsGet(SANDBOX_MODE_KEY) === "workspace-write" ? "workspace-write" : "off";
+}
+export function saveSandboxMode(value: CommandSandboxMode): void {
+  lsSet(SANDBOX_MODE_KEY, value);
+}
+
+/**
  * 「设置 → AI → 通用」里那批**每轮请求都会带**的偏好（重试次数 / 并发 / 步数 / 意图 /
- * 审批超时），一次读齐 —— 专给跨窗口同步用（见 `watchConversationPrefs`）。
+ * 审批超时 / 命令沙箱），一次读齐 —— 专给跨窗口同步用（见 `watchConversationPrefs`）。
  */
 export interface ConversationPrefs {
   /** confirm 审批超时（分钟；0 = 不超时） */
@@ -158,6 +172,8 @@ export interface ConversationPrefs {
   toolCallConcurrency: number;
   /** 工具卡是否带「意图」 */
   toolIntent: boolean;
+  /** 命令沙箱开关（off / workspace-write） */
+  sandboxMode: CommandSandboxMode;
 }
 
 export function loadConversationPrefs(): ConversationPrefs {
@@ -167,6 +183,7 @@ export function loadConversationPrefs(): ConversationPrefs {
     maxSteps: loadMaxSteps(),
     toolCallConcurrency: loadToolCallConcurrency(),
     toolIntent: loadToolIntent(),
+    sandboxMode: loadSandboxMode(),
   };
 }
 
@@ -176,6 +193,7 @@ const PREF_KEYS = new Set([
   MAX_STEPS_KEY,
   TOOL_CONCURRENCY_KEY,
   TOOL_INTENT_KEY,
+  SANDBOX_MODE_KEY,
 ]);
 
 /**

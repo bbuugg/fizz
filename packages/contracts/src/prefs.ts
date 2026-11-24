@@ -42,6 +42,8 @@ export const PREF_KEYS = [
   // ---- A：服务端执行语义（agent 循环读数；改完立刻影响下一轮，不用重启） ----
   /** 权限档：full / confirm / readonly */
   'fizz.web.permissionMode',
+  /** 命令沙箱：off（默认）/ workspace-write（Linux bwrap / macOS sandbox-exec） */
+  'fizz.web.sandboxMode',
   /** 审批超时（**分钟**，0 = 一直等）；前端存分钟，服务端用时再换成毫秒 */
   'fizz.web.confirmTimeout',
   /** 模型请求自动重试次数（0..50） */
@@ -154,6 +156,8 @@ const shellId: PrefCodec = (raw) => {
  */
 const CODECS: Record<PrefKey, PrefCodec> = {
   'fizz.web.permissionMode': oneOf(['full', 'confirm', 'readonly']),
+  // 沙箱是**显式开启**的能力：默认 off，且没有可用后端的平台保持 off（见 CommandSandboxMode）
+  'fizz.web.sandboxMode': oneOf(['off', 'workspace-write']),
   // 上限刻意放宽：设置页是自由输入（只有 `min={0}`），用户填 7 天 / 100 次这种也该原样生效，
   // 这里的区间只用来挡 `Infinity` / 负数 / 天文数字，不做体验上的「替用户决定」
   'fizz.web.confirmTimeout': intInRange(0, 365 * 24 * 60),
@@ -184,6 +188,7 @@ const CODECS: Record<PrefKey, PrefCodec> = {
  */
 export const DEFAULT_PREFS: PrefsSnapshot = {
   'fizz.web.permissionMode': 'confirm',
+  'fizz.web.sandboxMode': 'off',
   'fizz.web.confirmTimeout': '10',
   'fizz.web.maxRetries': '2',
   'fizz.web.maxSteps': '80',

@@ -141,8 +141,18 @@ async function check(manual: boolean): Promise<AppUpdateStatus> {
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    if (manual) setState('idle', { error: t('检查更新失败：{reason}', { reason: message }) })
-    else {
+    if (manual) {
+      /*
+       * 403 几乎都是 `api.github.com` 的匿名限流（60 次/小时/IP，手机走运营商 NAT 时
+       * 一个出口被很多设备共享）或被网络拦截 —— 发布页兜底也失败时给一句能看懂的话，
+       * 别把「HTTP 403」原样甩给用户。
+       */
+      setState('idle', {
+        error: /HTTP 403/.test(message)
+          ? t('GitHub 接口被限流或被网络拦截（HTTP 403），请稍后重试。')
+          : t('检查更新失败：{reason}', { reason: message })
+      })
+    } else {
       console.warn('[app-update] 静默检查失败：', message)
       setState('idle', { error: null })
     }

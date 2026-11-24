@@ -291,6 +291,12 @@ export interface WorkspaceExecOptions {
   maxBytes?: number
   /** 实时增量（已解码，未剥 ANSI 之外的清洗由调用方做） */
   onOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void
+  /**
+   * 本次命令的沙箱策略（见 `SandboxPolicy`）。不传 = 不套沙箱。
+   *
+   * 远端工作区首期忽略它：远端要在**远端主机**上包 bwrap，属于另一个阶段的能力。
+   */
+  sandbox?: SandboxPolicy
 }
 
 export interface WorkspaceExecResult {
@@ -301,6 +307,51 @@ export interface WorkspaceExecResult {
   /** `reason === 'error'` 时的可读原因（启动失败 / 连接断开） */
   error?: string
   truncated: boolean
+  /**
+   * 只有当次命令真的套了沙箱才有：告诉调用方「这次是不是被策略挡了」。
+   * `runnerFailed` 有值代表沙箱自己没起来、命令根本没跑（不是任务失败）。
+   */
+  sandbox?: {
+    mode: SandboxMode
+    denied: boolean
+    runnerFailed?: string
+  }
+}
+
+/**
+ * 命令的**文件效果**策略（见仓库根的 `sandbox-conclusion.md`）。
+ *
+ * 词汇与 DeepSeek Harness 的 `SandboxMode` 一致，但语义只有一条：**只约束子进程
+ * 写文件**。网络、进程可见性、syscall、设备都不在范围内 —— `curl` 照样能发请求，
+ * 它只会拦「往哪里写」。
+ *
+ * - `read-only`：除 `/dev/null` 这类必需接收器外一律只读；
+ * - `workspace-write`：可写 `workspaceRoot` 与平台临时目录；
+ * - `danger-full-access`：不套沙箱，原始 argv 直接执行。
+ *
+ * ⚠️ 策略是**逐次调用**的，不是全局开关：同一时刻不同会话 / 不同工具可以跑在不同
+ * 档位上，用户批准的一次提权重试也是「换一份更宽的策略再跑一次」。
+ */
+export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access'
+
+/** 能交给沙箱提供方的模式 —— `danger-full-access` 的消费方直接 spawn，不调提供方 */
+export type ConfinedSandboxMode = Exclude<SandboxMode, 'danger-full-access'>
+
+/**
+ * 一次能力调用解析出来的完整策略。
+ *
+ * `workspaceRoot` 在 `danger-full-access` 下也照样带着：消费方先解析一次，
+ * 再决定走不走进沙箱，不用为两种形态维护两份解析逻辑。
+ */
+export interface SandboxExecutionPolicy {
+  mode: SandboxMode
+  /** `workspace-write` 允许写入的根目录（绝对路径） */
+  workspaceRoot: string
+}
+
+/** 要交给沙箱提供方的策略：模式一定是可以隔离的那两档 */
+export interface SandboxPolicy extends SandboxExecutionPolicy {
+  mode: ConfinedSandboxMode
 }
 
 export interface WorkspaceSearchHit {

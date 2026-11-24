@@ -5,12 +5,7 @@ import { Dialog as DialogPrimitive } from "radix-ui"
 import { Button } from "./button"
 import { orderDialogActions } from "./dialog-actions"
 import { useHeightTransition } from "./height-transition"
-import {
-  clearLiquidLens,
-  GLASS_PANEL_CLASS,
-  LiquidGlassPanel,
-  trackLiquidLens,
-} from "./liquid-glass"
+import { useGlassPanel } from "./liquid-glass"
 import { XIcon } from "lucide-react"
 
 function Dialog({
@@ -75,6 +70,8 @@ function DialogContent({
    * ⚠️ 高度由 CSS 定死的弹窗（`h-[32rem]` 那种）不受影响：量出来和原来一样，直接落定。
    */
   useHeightTransition(contentRef)
+  // 液态玻璃外壳（实色底 / 淡描边 / 景深投影 + 跟随指针的边缘光圈）与指针追踪
+  const glass = useGlassPanel(props)
 
   return (
     <DialogPortal>
@@ -88,25 +85,13 @@ function DialogContent({
           // 遮罩本来就不压暗，所以弹窗必须自带不透明底，边界靠描边与投影勾出来。
           // ⚠️ 别再往这里加 `bg-*`：会把实色底换成别的（透明）颜色。
           "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl p-4 text-sm text-popover-foreground outline-none duration-100 sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
-          GLASS_PANEL_CLASS,
+          glass.className,
           className
         )}
         {...props}
-        // 玻璃的边缘光圈：指针位置写到容器自身的 CSS 变量上，由 `LiquidGlassPanel` 读取
-        onPointerEnter={(event) => {
-          trackLiquidLens(event)
-          props.onPointerEnter?.(event)
-        }}
-        onPointerMove={(event) => {
-          trackLiquidLens(event)
-          props.onPointerMove?.(event)
-        }}
-        onPointerLeave={(event) => {
-          clearLiquidLens(event)
-          props.onPointerLeave?.(event)
-        }}
+        {...glass.handlers}
       >
-        <LiquidGlassPanel />
+        {glass.edge}
         {children}
         {showCloseButton && (
           <DialogPrimitive.Close data-slot="dialog-close" asChild>

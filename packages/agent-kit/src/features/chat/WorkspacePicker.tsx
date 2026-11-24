@@ -187,6 +187,8 @@ export function WorkspacePicker({
   const measureRef = useRef<HTMLSpanElement>(null)
   const widthRef = useRef<HTMLButtonElement>(null)
   const spring = useRef({ width: BLANK_WIDTH, target: BLANK_WIDTH, velocity: 0, raf: 0, last: 0 })
+  /** 上一次设定的目标宽度：量宽重算（字体 / 可见性 / 根字号变化）时同值不重播弹簧 */
+  const lastTarget = useRef<number | null>(null)
   /** 名字超过胶囊上限：文字层改用 `truncate`（末尾省略号），逐字素动画对超长名字没意义 */
   const [nameOverflows, setNameOverflows] = useState(false)
 
@@ -247,17 +249,50 @@ export function WorkspacePicker({
     }
   }, [])
 
-  useLayoutEffect(() => {
-    // 名字宽 + 图标窗 + 左右内边距（后两者是 em，按当前字号折成 px）；上限 14rem
+  /** `recompute` 每次渲染都是新的（闭包了当前 `current`），异步回调只取最新这份 */
+  const recomputeRef = useRef<() => void>(() => {})
+  /** 量不到（标签还藏着）时的重试状态：每帧一次，最多约 2 秒 */
+  const measureRetry = useRef({ raf: 0, count: 0 })
+
+  /**
+   * 量名字宽并推进弹簧。
+   *
+   * 宽度取 `getBoundingClientRect()` 的**小数**再 `ceil`：`scrollWidth` 是取整的，比真实
+   * 字宽小半个像素时，文字层（`overflow-hidden`）正好把最后一个字削掉一条边。
+   */
+  const recompute = (): void => {
     const el = widthRef.current
-    const fontSize = el ? Number.parseFloat(getComputedStyle(el).fontSize) || 16 : 16
+    if (!el) return
+    // 名字宽 + 图标窗 + 左右内边距（后两者是 em，按当前字号折成 px）；上限 14rem
+    const fontSize = Number.parseFloat(getComputedStyle(el).fontSize) || 16
     const chrome = (TOKEN_TEXT_LEFT + TOKEN_PAD_RIGHT) * fontSize
     const maxText = Math.max(1, TOKEN_MAX_WIDTH - chrome)
-    const rawWidth = measureRef.current?.scrollWidth ?? 0
+    const rawWidth = measureRef.current?.getBoundingClientRect().width ?? 0
+    /*
+      所在标签还没真正布局（非活跃标签是 `hidden`，即 `display:none`）时量到的是 0。
+      `current` 有名字却量到 0 = 还没布置好：拿它算出的宽度会把名字整段裁掉 ——
+      正是「偶尔宽度异常、内容被遮挡」。这一帧先不动宽度，下一帧再试；
+      标签被点开时尺寸从 0 变正常，ResizeObserver 也会再触发一次。
+    */
+    if (current && current.name.length > 0 && rawWidth < 1) {
+      const retry = measureRetry.current
+      if (retry.raf === 0 && retry.count < 120) {
+        retry.count += 1
+        retry.raf = requestAnimationFrame(() => {
+          retry.raf = 0
+          recomputeRef.current()
+        })
+      }
+      return
+    }
+    measureRetry.current.count = 0
     // 名字放不下：文字层换 `truncate` 收尾省略号（只影响渲染方式，宽度照旧钉在上限）
     setNameOverflows(rawWidth > maxText + 0.5)
     // 没选工作区时给一段更长的空位（只画图标会像一颗纯图标按钮，看不出「还没填」）
-    const target = current ? Math.min(rawWidth, maxText) + chrome : BLANK_WIDTH
+    const target = current ? Math.min(Math.ceil(rawWidth), maxText) + chrome : BLANK_WIDTH
+    // 同值不重播（量宽会在字体加载 / 可见性变化时被重复触发）
+    if (lastTarget.current !== null && Math.abs(lastTarget.current - target) < 0.01) return
+    lastTarget.current = target
     /*
       选工作区会让**整块新对话页重挂** —— 草稿面板的 key 是 `draft:<工作区>`
       （`panel-session.ts` 的 `draftPanelKey`），ChatPanel 拿它当 Provider 的 key。
@@ -265,9 +300,24 @@ export function WorkspacePicker({
       弹簧从空位长度（`spring` 的初始 width）弹到名字宽度，动画才会出现。
     */
     springTo(target, false)
-    // `springTo` / `tickSpring` 每次渲染都是新的，但这里只吃名字与字体版本
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }
+  recomputeRef.current = recompute
+
+  useLayoutEffect(() => {
+    recomputeRef.current()
   }, [current?.name, fontEpoch])
+
+  /*
+    量宽副本自身的尺寸变化都要重新量一次：字体晚到、根字号随手机端 / 系统字号变化、
+    以及所在标签从 `display:none` 恢复（这几种都不会改 `current.name`，依赖数组看不见）。
+  */
+  useLayoutEffect(() => {
+    const node = measureRef.current
+    if (!node || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => recomputeRef.current())
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
 
   /** 图标的弹入层（demo 的 `renderIcon`：scale .4 → 1.1 → 1、rotate -16° → +5° → 0） */
   const iconRef = useRef<HTMLSpanElement>(null)
@@ -310,6 +360,9 @@ export function WorkspacePicker({
     const s = spring.current
     if (s.raf) cancelAnimationFrame(s.raf)
     s.raf = 0
+    const retry = measureRetry.current
+    if (retry.raf) cancelAnimationFrame(retry.raf)
+    retry.raf = 0
   }, [])
 
   return (

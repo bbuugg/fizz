@@ -55,6 +55,7 @@ import type {
   AgentBackend,
   AgentStreamEvent,
   AcpAgentInput,
+  AcpAgentCheckResult,
   AcpAgentView,
   AcpProcessInfo,
   AcpTranscriptResult,
@@ -272,6 +273,8 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    /** 服务端错误体里的排查细节（不是所有接口都有）；界面只折叠展示，不进主文案 */
+    readonly detail?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -328,10 +331,21 @@ export function httpErrorMessage(status: number, body: string): string {
   return hint ? `HTTP ${status} ${hint}` : `HTTP ${status}`;
 }
 
-/** 统一解析错误体（server 的错误形状就是 `{ error }`） */
+/** 统一解析错误体（server 的错误形状就是 `{ error }`，排查细节可选 `{ detail }`） */
 async function toError(res: Response): Promise<ApiError> {
   const text = await res.text().catch(() => "");
-  return new ApiError(httpErrorMessage(res.status, text), res.status);
+  let detail: string | undefined;
+  if (text) {
+    try {
+      const parsed = JSON.parse(text) as { detail?: unknown };
+      if (typeof parsed.detail === "string" && parsed.detail.trim()) {
+        detail = parsed.detail;
+      }
+    } catch {
+      /* 非 JSON：主文案已经由状态码兜底，detail 保持缺失 */
+    }
+  }
+  return new ApiError(httpErrorMessage(res.status, text), res.status, detail);
 }
 
 /**
@@ -1757,6 +1771,16 @@ export function createApi(
       }),
     /** 扫服务端 PATH 上已装的 ACP agent（只读探测） */
     detectAcpAgents: () => request<DetectedAcpAgent[]>(API_ROUTES.acpDetect),
+    /**
+     * 检测某个 ACP agent 能否正常启动并完成握手。
+     *
+     * 与拉模型共用一次探针：成功会顺带刷新 `models`，结果（含失败原因）落进
+     * `AcpAgentConfig.health`，所以刷新页面后仍能看到上一次结论。
+     */
+    checkAcpAgent: (id: string) =>
+      request<AcpAgentCheckResult>(API_ROUTES.acpAgentCheck.replace(":id", id), {
+        method: "POST",
+      }),
 
     // ---------- MCP server（配置在服务端，Agent 在服务端连这些 server：stdio / http / sse） ----------
     listMcpServers: () => request<McpServerConfig[]>(API_ROUTES.mcpServers),

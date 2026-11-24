@@ -14,7 +14,12 @@ import { Tooltip as TooltipPrimitive } from "radix-ui"
  *
  * 用 `useSyncExternalStore` 而不是 effect + state：首帧就要定下来，否则触屏上会先挂上
  * Radix Trigger、effect 跑完再拆掉，第一次点按仍可能被吃掉。
+ *
+ * 极少数列表确实需要「触屏也能看提示」（模型清单的完整 id），这些地方在 Tooltip 根上
+ * 传 `allowTouch` 显式放行 —— 默认仍然禁用，不能全局打开，否则又回到「每个图标点两下」。
  */
+const AllowTouchTooltipContext = React.createContext(false)
+
 const TOUCH_QUERY = "(hover: none), (pointer: coarse)"
 
 function subscribeTouchQuery(onChange: () => void): () => void {
@@ -59,14 +64,20 @@ function TooltipProvider({
  */
 function Tooltip({
   disableHoverableContent = true,
+  allowTouch = false,
+  children,
   ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Root>) {
+}: React.ComponentProps<typeof TooltipPrimitive.Root> & { allowTouch?: boolean }) {
   return (
-    <TooltipPrimitive.Root
-      data-slot="tooltip"
-      disableHoverableContent={disableHoverableContent}
-      {...props}
-    />
+    <AllowTouchTooltipContext.Provider value={allowTouch}>
+      <TooltipPrimitive.Root
+        data-slot="tooltip"
+        disableHoverableContent={disableHoverableContent}
+        {...props}
+      >
+        {children}
+      </TooltipPrimitive.Root>
+    </AllowTouchTooltipContext.Provider>
   )
 }
 
@@ -76,7 +87,7 @@ function TooltipTrigger({
   onFocus,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
-  const touch = useTouchUi()
+  const touch = useTouchUi() && !React.useContext(AllowTouchTooltipContext)
   if (touch) {
     // `asChild` 是绝大多数用法：直接把子元素还回去，不套 Radix 的事件处理器。
     if (asChild) return children as React.ReactElement
@@ -120,7 +131,7 @@ function TooltipContent({
   children,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Content>) {
-  const touch = useTouchUi()
+  const touch = useTouchUi() && !React.useContext(AllowTouchTooltipContext)
   if (touch) return null
   return (
     <TooltipPrimitive.Portal>

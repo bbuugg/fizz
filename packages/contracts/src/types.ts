@@ -11,6 +11,7 @@
  */
 import type { AcpToolCallContent } from '@fizz/acp'
 import type { BrowserSettings } from './browser'
+import type { SandboxMode } from './workspace'
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 
@@ -347,6 +348,19 @@ export function resolveContextWindow(
  * 默认是 `confirm`：宁可多问一句，也不要让 Agent 静默改盘。
  */
 export type AiPermissionMode = 'full' | 'confirm' | 'readonly'
+
+/**
+ * 命令沙箱开关（设置 → AI → 偏好，默认 `off`）：
+ *
+ * - `off`：不套沙箱，命令按原样执行（与加这个开关之前完全一致）；
+ * - `workspace-write`：命令经平台沙箱（Linux bwrap / macOS sandbox-exec）包一层，
+ *   只允许写工作区与临时目录，越界写入被内核拒绝。
+ *
+ * 与 {@link AiPermissionMode} **正交**：权限档决定「要不要问」，沙箱决定「批准之后能写哪」。
+ * 单独成开关而不是跟着权限档走，是因为没有可用后端的平台必须明确停在「不隔离」，
+ * 不能假装隔离了。只看文件写入效果（不拦网络 / 进程）。
+ */
+export type CommandSandboxMode = 'off' | 'workspace-write'
 
 /**
  * AI Agent 后端：
@@ -2457,6 +2471,20 @@ export interface AgentConfirmRequest {
    * 给了它，界面就渲染这组选项让用户挑（答复带 optionId）；不给则是内置的「允许 / 拒绝」。
    */
   options?: AgentConfirmOption[]
+  /**
+   * 命令沙箱提权：模型申请把**这一次**命令放宽到更宽的档位。
+   * 有值时审批卡要显示申请理由，用户才知道这张卡与普通「允许执行」的区别。
+   */
+  sandboxRequestedMode?: SandboxMode
+  /** 提权理由（模型写的一句话，原样展示） */
+  sandboxJustification?: string
+  /**
+   * 自动拒绝的到期时刻（epoch ms）。只有审批超时 > 0 时才下发；0 = 一直等，不带这个字段。
+   *
+   * 用**绝对时刻**而不是「还剩多少秒」：审批卡会排队（`ConfirmQueue` 一屏一项），
+   * 第 2、3 张如果按收到时刻重新计时，用户看到的时间会比服务端真实剩余时间长。
+   */
+  expiresAt?: number
 }
 
 /**
@@ -2473,6 +2501,10 @@ export interface AgentConfirmInput {
   /** 多智能体协作：发起这次审批的子 Agent（主智能体 / 普通会话不填） */
   agentId?: string
   agentName?: string
+  /** 命令沙箱提权：目标档（`sandbox_permissions`），与理由成对 */
+  sandboxRequestedMode?: SandboxMode
+  /** 命令沙箱提权：申请理由（模型写的一句话） */
+  sandboxJustification?: string
   /**
    * ACP 的权限选项（`session/request_permission` 里 agent 广告的原样透传）。
    * 内置工具的审批不给它 —— 界面渲染通用的「允许 / 拒绝」两颗按钮。

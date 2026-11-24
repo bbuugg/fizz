@@ -531,6 +531,8 @@ function TriggerForm({
                   )}
                   defaultContextWindow={defaultContextWindow}
                   onOpenSettings={onOpenSettings}
+                  // ACP 模型清单：首次进入某个 agent 时拉一次并落盘（刷新在标题行尾）
+                  onLoadAcpModels={app.loadAcpModels}
                   // 与「新建对话」那颗同一条：选完模型不关面板，底部思考强度要能接着调
                   closeOnSelect={false}
                   {...(showReasoningEffort

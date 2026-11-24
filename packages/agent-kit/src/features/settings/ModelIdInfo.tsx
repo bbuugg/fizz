@@ -15,6 +15,8 @@ import { useT } from '@fizz/agent-kit/shared/lib/language'
 export function ModelIdInfo({ value, description }: { value: string; description?: string }) {
   const tr = useT()
   if (!isTouchOnlyInput()) return null
+  // 空串 / 纯空白的描述不占一行（agent 有时会广告一个只有空白的 description）
+  const desc = description?.trim()
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -28,8 +30,8 @@ export function ModelIdInfo({ value, description }: { value: string; description
       </PopoverTrigger>
       <PopoverContent side="top" align="end" sideOffset={6} className="w-auto max-w-72 text-xs">
         <div className="break-all font-mono">{value}</div>
-        {description ? (
-          <div className="mt-1 text-muted-foreground">{description}</div>
+        {desc ? (
+          <div className="mt-1 text-muted-foreground">{desc}</div>
         ) : null}
       </PopoverContent>
     </Popover>

@@ -115,6 +115,13 @@ describe('normalizePrefs（读侧 / 落盘）', () => {
     expect(DEFAULT_PREFS['fizz.web.voiceSilenceTimeout']).toBe('60')
   })
 
+  it('命令沙箱只认 off / workspace-write（默认 off）', () => {
+    expect(DEFAULT_PREFS['fizz.web.sandboxMode']).toBe('off')
+    expect(normalizePref('fizz.web.sandboxMode', 'workspace-write')).toBe('workspace-write')
+    // 拼错的开关不能悄悄变成「开」
+    expect(normalizePref('fizz.web.sandboxMode', 'on')).toBe('off')
+  })
+
   it('每个白名单 key 都有默认值（加 key 忘了补默认会在这里炸）', () => {
     for (const key of PREF_KEYS) expect(DEFAULT_PREFS[key]).toBeTypeOf('string')
     expect(Object.keys(DEFAULT_PREFS).sort()).toEqual([...PREF_KEYS].sort())

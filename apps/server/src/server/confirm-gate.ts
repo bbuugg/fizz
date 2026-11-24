@@ -50,6 +50,17 @@ export const BUILTIN_CONFIRM_OPTIONS: AgentConfirmOption[] = [
 ]
 
 /**
+ * 沙箱提权卡的选项：**只有一次性**。
+ *
+ * 绝不能出现「始终允许」：那会把「这条命令可以跑」记成「这条命令可以永远绕过沙箱」——
+ * 用户当时批准的是**这一次**越界写入，不是给这条命令发放永久全盘写权限。
+ */
+export const ESCALATION_CONFIRM_OPTIONS: AgentConfirmOption[] = [
+  { optionId: 'allow_once', name: '允许一次', kind: 'allow_once' },
+  { optionId: 'reject_once', name: '拒绝一次', kind: 'reject_once' }
+]
+
+/**
  * 内存记忆:ownerKey → (命令 → 决定)。存「始终拒绝」与**没有落盘目标时**的
  * 「始终允许」(虚拟工作区 / 项目助手);有落盘目标的允许走 workspace.json,
  * 不进这张表 —— 否则手删文件里的条目后,内存里那份还会继续放行。
@@ -103,6 +114,11 @@ export function createConfirmGate(input: {
     req: AgentConfirmInput
   ): Promise<{ approved: boolean; optionId?: string }> => {
     const id = randomUUID()
+    /**
+     * 自动拒绝的到期时刻。0 = 一直等，连字段都不带 —— 前端据此决定要不要画倒计时。
+     * 下发**绝对时刻**：排队中的卡按自己收到的时刻重新计时会比真实剩余时间更长。
+     */
+    const expiresAt = confirmTimeoutMs > 0 ? Date.now() + confirmTimeoutMs : undefined
     const confirm: AgentConfirmRequest = {
       id,
       requestId: run.requestId,
@@ -112,6 +128,10 @@ export function createConfirmGate(input: {
       ...(req.intent ? { intent: req.intent } : {}),
       ...(req.agentId ? { agentId: req.agentId } : {}),
       ...(req.agentName ? { agentName: req.agentName } : {}),
+      // 沙箱提权：卡片要显示「放宽到哪一档 + 模型给的理由」
+      ...(req.sandboxRequestedMode ? { sandboxRequestedMode: req.sandboxRequestedMode } : {}),
+      ...(req.sandboxJustification ? { sandboxJustification: req.sandboxJustification } : {}),
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
       ...(input.workspace ? { workspaceId: input.workspace.id, workspaceName: input.workspace.name } : {}),
       // ACP 权限请求会把 agent 给的选项带上来:原样放进帧,前端照单渲染
       ...(req.options?.length ? { options: req.options } : {})
@@ -165,8 +185,8 @@ export function createConfirmGate(input: {
         resolve(reply)
       }
       const timer =
-        confirmTimeoutMs > 0
-          ? setTimeout(() => settle({ approved: false }), confirmTimeoutMs)
+        expiresAt !== undefined
+          ? setTimeout(() => settle({ approved: false }), Math.max(0, expiresAt - Date.now()))
           : null
       /*
        * 命令还没起跑，但工具卡头部的停止钮**已经在了**：`isStoppableToolRunning` 的判据是
@@ -187,6 +207,20 @@ export function createConfirmGate(input: {
   }
 
   const requestConfirm = async (req: AgentConfirmInput): Promise<boolean> => {
+    /**
+     * 沙箱提权：**不走「始终允许此命令」的记忆，也不写白名单**。
+     *
+     * 用户在这一张卡上批准的是「这一次越界写入」，不是「这条命令以后都能绕过沙箱」。
+     * 一旦落盘，同一条命令以后的提权连卡都不弹，等于把沙箱关掉了一半。
+     */
+    if (req.sandboxJustification !== undefined) {
+      const escalationOptions = ESCALATION_CONFIRM_OPTIONS.map((option) => ({
+        ...option,
+        name: t(option.name)
+      }))
+      const reply = await waitForConfirmReply({ ...req, options: escalationOptions })
+      return reply.approved
+    }
     /*
      * 记忆键 = **这行命令本身**(审批卡上显示的原文,trim 后精确匹配)。
      * 曾经按工具名记:点一次「始终允许」等于放行该工具的一切调用(bash

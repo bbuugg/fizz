@@ -6,12 +6,7 @@ import { cn } from "cn"
 import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react"
 import { Select as SelectPrimitive } from "radix-ui"
 import { useDismissFocusGuard } from "./focus-dismiss"
-import {
-  clearLiquidLens,
-  GLASS_PANEL_CLASS,
-  LiquidGlassPanel,
-  trackLiquidLens,
-} from "./liquid-glass"
+import { useGlassPanel } from "./liquid-glass"
 import { resolveCollisionPadding } from "./safe-area"
 
 function Select({
@@ -121,6 +116,8 @@ function SelectContent({
 }) {
   // 指针关闭不回焦（否则触发器会被 :focus-visible 描成主色边框），见 focus-dismiss.ts
   const dismissFocus = useDismissFocusGuard()
+  // 液态玻璃外壳与指针追踪（边缘光圈）由 Hook 统一给
+  const glass = useGlassPanel(props)
   return (
     <SelectPrimitive.Portal>
       <SelectPrimitive.Content
@@ -152,27 +149,15 @@ function SelectContent({
           "relative z-50 flex max-h-[min(var(--radix-select-content-available-height),calc(100vh_-_2rem))] max-w-[calc(100vw_-_1rem)] min-w-[8rem] origin-(--radix-select-content-transform-origin) flex-col overflow-hidden rounded-xl text-popover-foreground data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
           position === "popper" &&
             "data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1",
-          GLASS_PANEL_CLASS,
+          glass.className,
           className
         )}
         position={position}
         align={align}
         {...props}
-        // 玻璃的边缘光圈：指针位置写到容器自身的 CSS 变量上，由 `LiquidGlassPanel` 读取
-        onPointerEnter={(event) => {
-          trackLiquidLens(event)
-          props.onPointerEnter?.(event)
-        }}
-        onPointerMove={(event) => {
-          trackLiquidLens(event)
-          props.onPointerMove?.(event)
-        }}
-        onPointerLeave={(event) => {
-          clearLiquidLens(event)
-          props.onPointerLeave?.(event)
-        }}
+        {...glass.handlers}
       >
-        <LiquidGlassPanel />
+        {glass.edge}
         {header ? (
           <div
             data-slot="select-header"

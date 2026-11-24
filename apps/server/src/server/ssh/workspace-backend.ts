@@ -34,9 +34,17 @@ import {
   type WorkspaceSearchOptions,
   type WorkspaceStat
 } from '@fizz/contracts/workspace'
-import { MAX_LINE_CHARS, buildSearchContext } from '@fizz/tools'
+import {
+  BWRAP_DENIAL_SIGNATURES,
+  BWRAP_RUNNER_FAILURE_RULES,
+  MAX_LINE_CHARS,
+  buildSearchContext,
+  classifyConfinedRun
+} from '@fizz/tools'
 import { sftpService } from './sftp'
 import { remoteExecService } from './exec'
+import { buildConfinedScript } from './remote-command'
+import { remoteSandboxAvailability } from './sandbox'
 import {
   buildFindCommand,
   buildGrepCommand,
@@ -172,7 +180,45 @@ export function createRemoteBackend(hostId: string, rawRoot: string): WorkspaceB
   ): Promise<WorkspaceExecResult> => {
     // 执行目录也必须落在工作区内：`resolveInsidePosix` 对绝对路径同样做越界检查
     const cwd = opts.cwd ? resolveInsidePosix(base, opts.cwd) : base
-    return remoteExecService.exec(hostId, command, { ...opts, cwd })
+    const { sandbox: policy, ...rest } = opts
+    if (!policy) return remoteExecService.exec(hostId, command, { ...rest, cwd })
+
+    /**
+     * 沙箱：包装在**远端主机**上做（本地怎么包都没有意义 —— 命令根本不在这里跑）。
+     * 拿不到 bwrap 时按 fail closed 返回「没启动」，与本地 backend 同一条口径。
+     */
+    const availability = await remoteSandboxAvailability(hostId)
+    if (!availability.available) {
+      return {
+        stdout: '',
+        stderr: '',
+        exitCode: null,
+        reason: 'error',
+        error:
+          `远端主机没有可用的 bwrap（${availability.reason}）。` +
+          '请在远端安装 bubblewrap（并确保 user namespace 可用），或在设置里关闭「命令沙箱」。',
+        truncated: false
+      }
+    }
+    const result = await remoteExecService.exec(hostId, buildConfinedScript(policy, command), {
+      ...rest,
+      cwd
+    })
+    if (result.reason !== 'exit') return result
+    const outcome = classifyConfinedRun(
+      result.exitCode,
+      result.stderr,
+      BWRAP_DENIAL_SIGNATURES,
+      BWRAP_RUNNER_FAILURE_RULES
+    )
+    return {
+      ...result,
+      sandbox: {
+        mode: policy.mode,
+        denied: outcome.denied,
+        ...(outcome.runnerFailed ? { runnerFailed: outcome.runnerFailed } : {})
+      }
+    }
   }
 
   const readGitignore = async (): Promise<(rel: string, isDir: boolean) => boolean> => {

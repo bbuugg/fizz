@@ -15,7 +15,8 @@
     "build:main": "vite build -c vite.main.mts",
     "build:preload": "vite build -c vite.preload.mts",
     "build:renderer": "vite build -c vite.config.ts",
-    "build": "npm run build:main && npm run build:preload && npm run build:renderer",
+    "build:win-sandbox": "node ../../packages/win-sandbox/build.mjs --out ./out/win-sandbox",
+    "build": "npm run build:main && npm run build:preload && npm run build:renderer && npm run build:win-sandbox",
     "start": "electron .",
     "pack:dir": "npm run build:web --prefix ../.. && npm run build:mobile:hosted --prefix ../.. && npm run build && electron-builder --dir",
     "pack": "npm run build:web --prefix ../.. && npm run build:mobile:hosted --prefix ../.. && npm run build && electron-builder --publish never",
@@ -39,6 +40,7 @@
     "iconv-lite": "^0.6.3",
     "jiti": "^2.7.0",
     "js-yaml": "^4.1.0",
+    "koffi": "^3.1.1",
     "node-pty": "^1.1.0",
     "playwright": "^1.56.0",
     "simple-git": "^4.0.2",
@@ -176,7 +178,11 @@
     "asarUnpack": [
       "**/*.node",
       "**/node_modules/node-pty/**",
-      "**/node_modules/@vscode/ripgrep*/**"
+      "**/node_modules/@vscode/ripgrep*/**",
+      "**/node_modules/@koromix/**",
+      "**/node_modules/koffi/**",
+      "**/node_modules/yaml/**",
+      "**/out/win-sandbox/**"
     ],
     "win": {
       "target": [

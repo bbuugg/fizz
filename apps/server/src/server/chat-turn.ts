@@ -35,6 +35,8 @@ import {
   buildAskFollowupTool,
   buildBrowserToolSet,
   resolveBrowserChannel,
+  resolveCommandSandbox,
+  sandboxPolicyForMode,
   spawnBackgroundShell
 } from '@fizz/tools'
 import { getAcpImageSupport, runAcpAgent } from '@fizz/acp'
@@ -981,6 +983,8 @@ async function startTurnReserved(
       skills,
       projectDoc,
       permissionMode,
+      // 命令沙箱：显式开启时 bash 才经平台沙箱执行（默认 off，见 CommandSandboxMode）
+      sandboxMode: prefs.sandboxMode,
       ...(backend === 'builtin' && reasoningEffort ? { reasoningEffort } : {}),
       // 运行中活取权限档：用户在整轮中途切档时闸门立刻按新档裁决（改档端点改的就是 run 上这个字段）
       getPermissionMode: () => run.permissionMode,
@@ -1009,7 +1013,12 @@ async function startTurnReserved(
       ...(remoteWorkspace
         ? {}
         : {
-            onBackgroundCommand: async ({ command, cwd, title }: { command: string; cwd: string; title: string }) => {
+            onBackgroundCommand: async ({ command, cwd, title, sandboxMode }) => {
+              // 工具会带上本次实际档位（含提权结果）；没带就退回设置里的开关。
+              // 远端工作区也返回策略：包装由远端后端在远端主机上做（P4）。
+              const backgroundSandbox = sandboxMode !== undefined
+                ? sandboxPolicyForMode(sandboxMode, workspace.path)
+                : resolveCommandSandbox(prefs.sandboxMode, { root: workspace.path })
               const handle = startBackgroundTask({
                 sessionId: conversation.id,
                 kind: 'agent-command',
@@ -1024,9 +1033,10 @@ async function startTurnReserved(
                     pending[stream] = parts.pop() ?? ''
                     for (const line of parts) log(line)
                   }
-                  const shell = spawnBackgroundShell(command, cwd, {
+                  const shell = await spawnBackgroundShell(command, cwd, {
                     signal,
-                    onOutput: (stream, chunk) => write(stream, chunk)
+                    onOutput: (stream, chunk) => write(stream, chunk),
+                    ...(backgroundSandbox ? { sandbox: backgroundSandbox } : {})
                   })
                   const exit = await shell.done
                   for (const stream of ['stdout', 'stderr'] as const) {
@@ -1034,7 +1044,9 @@ async function startTurnReserved(
                   }
                   // 三种收场都要让登记表知道为什么结束（它据此判 done / failed / canceled）
                   if (exit.error) throw new Error(`启动失败：${exit.error}`)
+                  if (exit.runnerFailed) throw new Error(`沙箱启动失败：${exit.runnerFailed}`)
                   if (exit.killed) throw new Error('已停止')
+                  if (exit.denied) throw new Error('命令被沙箱拒绝（workspace-write 只允许写工作区）')
                   if (exit.code !== 0) throw new Error(`退出码 ${exit.code}`)
                 }
               })

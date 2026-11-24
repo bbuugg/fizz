@@ -331,6 +331,7 @@ export function gitBashPath(): string | null {
  *
  * Windows 上**优先 Git Bash**（拿到 POSIX 工具链，与主流编码代理一致）；没有 Git Bash 才退回
  * PowerShell 7（`pwsh`，启动更快、UTF-8 默认行为更少坑），再没装就退到系统自带的 5.1。
+ * 传 `{ noMsys: true }`（命令要进沙箱时）则跳过 Git Bash —— MSYS2 在限制性令牌下起不来。
  * POSIX 恒为 `/bin/bash`。
  *
  * ⚠️ 与 `resolveShell()` 的关键区别：**这里不做「认不出来就回落默认」**；调用方用的是
@@ -338,7 +339,23 @@ export function gitBashPath(): string | null {
  * 而 `powershell.exe` 与 `bash.exe`（随 Git 安装）都一定存在。**也不看用户选的终端 shell** ——
  * 那是交互式终端的选择，与 agent 跑命令用什么是两件事。
  */
-export function commandShellPath(): string {
+export function commandShellPath(options: CommandShellOptions = {}): string {
   if (process.platform !== 'win32') return '/bin/bash'
-  return gitBashPath() ?? findPwsh() ?? 'powershell.exe'
+  if (options.noMsys !== true) {
+    const bash = gitBashPath()
+    if (bash !== null) return bash
+  }
+  return findPwsh() ?? 'powershell.exe'
+}
+
+export interface CommandShellOptions {
+  /**
+   * 禁用 MSYS2（Git Bash），直接选 PowerShell。
+   *
+   * Windows 的限制性令牌沙箱里 MSYS2 运行时**必然**启动失败：cygheap 初始化要改自己
+   * 令牌的 DefaultDacl（`NtSetInformationToken` → 0xC0000022），随后建 signal pipe
+   * 又被拒（`couldn't create signal pipe, Win32 error 5`）。不是权限配错，无解 ——
+   * 所以命令一旦要进沙箱，就只能在 PowerShell 里跑。
+   */
+  noMsys?: boolean
 }

@@ -4,12 +4,7 @@ import { useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import { Button } from "@fizz/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@fizz/ui/popover";
-import {
-  clearLiquidLens,
-  GLASS_PANEL_CLASS,
-  LiquidGlassPanel,
-  trackLiquidLens,
-} from "@fizz/ui/liquid-glass";
+import { useGlassPanel } from "@fizz/ui/liquid-glass";
 import { IconTip } from "@fizz/agent-kit/shared/components/IconTip";
 import { CHAT_ICON_PILL } from "@fizz/agent-kit/features/chat/composer";
 import { cn } from "@fizz/agent-kit/shared/lib/utils";
@@ -56,6 +51,8 @@ import { turnIsAcp } from "@fizz/agent-kit/features/chat/session-backend";
 export function ContextRing({ app }: { app: AgentApp }) {
   const t = useT();
   const isAcp = turnIsAcp(app);
+  // 弹出面板的液态玻璃外壳与边缘光圈（指针追踪）由 Hook 统一给
+  const glass = useGlassPanel();
   const conversation = app.conversations.find(
     (c) => c.id === app.activeConversationId,
   );
@@ -338,12 +335,10 @@ export function ContextRing({ app }: { app: AgentApp }) {
         align="end"
         sideOffset={6}
         collisionPadding={8}
-        className={cn("w-64 overflow-hidden rounded-xl ring-0", GLASS_PANEL_CLASS)}
-        onPointerEnter={(event) => trackLiquidLens(event)}
-        onPointerMove={(event) => trackLiquidLens(event)}
-        onPointerLeave={(event) => clearLiquidLens(event)}
+        className={cn("w-64 overflow-hidden rounded-xl ring-0", glass.className)}
+        {...glass.handlers}
       >
-        <LiquidGlassPanel />
+        {glass.edge}
         <div className="max-h-[calc(100vh_-_4rem)] space-y-2 overflow-y-auto text-xs">
           <div className="flex items-center gap-1.5 font-medium text-foreground">
             <Gauge className="size-3.5" />

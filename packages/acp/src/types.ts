@@ -47,13 +47,32 @@ export interface AcpAgentConfig {
   /** 「完全放行」的答复策略（见 `AcpAllowStrategy`）；缺省 = `once`（只允许一次） */
   allowStrategy?: AcpAllowStrategy
   /**
-   * **会话模型下拉里暴露哪几个模型**（设置 → 外部 Agent 里挑的，来自 agent 自己
-   * 广告的 `configOptions`；一个 agent 往往能选十几二十个模型，全列出来太吵）。
+   * agent 广告的模型清单（会话模型下拉的候选）。
    *
-   * 空 / 未设置 = 一个都不列（会话里只能用「它的默认模型」）；
-   * 每个会话再从中选一个用（存在 `AgentConversation.modelId`）。
+   * 由**模型选择器**在首次打开时、或设置页的「检测」拉一次并落盘，之后直接用缓存；
+   * 用户点刷新才重新探测。
+   * 字段缺失 = 从来没加载过（新加的 / 老数据），选择器会自动拉一次；
+   * 空数组 = 加载过、但这个 agent 没有可选模型 —— 两者不能混（否则每次打开都白起一个进程）。
    */
   models?: AcpModelOption[]
+  /**
+   * 最近一次「检测可用性」的结果（设置页的检测按钮写入）。
+   *
+   * 与 `models` 同一条探针：能正常启动并完成 `session/new` 才算 `ok`，否则记 `error`。
+   * 缺字段 = 从未检测；改命令 / 参数时清空，避免旧结果套在新配置上。
+   */
+  health?: AcpAgentHealth
+}
+
+/** 一次 ACP agent 可用性检测的结果（落盘，随 `AcpAgentView` 返回） */
+export interface AcpAgentHealth {
+  status: 'ok' | 'error'
+  /** 检测完成的时刻（毫秒） */
+  checkedAt: number
+  /** `status === 'error'` 时的错误摘要（一行，已截断，不含原始 stderr 全文） */
+  error?: string
+  /** 排查细节（启动失败时的完整命令 / 工作目录）；界面折叠在 tooltip 里 */
+  detail?: string
 }
 
 /** 本地 PATH 中检测到的已知 ACP agent */

@@ -8,8 +8,10 @@ import { describe, expect, it } from 'vitest'
 import {
   buildCdLine,
   buildCleanupScript,
+  buildConfinedScript,
   buildExecScript,
   buildKillScript,
+  buildSandboxProbeScript,
   parseTerminalCwd,
   pidFileFor,
   shellQuote
@@ -108,5 +110,49 @@ describe('buildCdLine', () => {
   it('单引号转义并用裸回车收尾', () => {
     expect(buildCdLine('/srv/my app')).toBe(`cd -- '/srv/my app'\r`)
     expect(buildCdLine(`/srv/a'b`)).toBe(`cd -- '/srv/a'\\''b'\r`)
+  })
+})
+
+/**
+ * 远端沙箱脚本：SSH 只能传字符串，所以这里是**唯一**的转义点。
+ *
+ * 防的回归：命令原文里的单引号把 `sh -c` 提前闭合（等于在远端执行了另一条命令），
+ * 以及 `--` 被漏掉（命令被当成 bwrap 的参数吞掉）。
+ */
+describe('buildConfinedScript', () => {
+  it('按 bwrap profile 包装，`--` 后是内层 sh -c 与命令原文', () => {
+    const script = buildConfinedScript(
+      { mode: 'workspace-write', workspaceRoot: '/srv/my app' },
+      'echo hi'
+    )
+    expect(script.startsWith('bwrap ')).toBe(true)
+    expect(script).toContain(`'--ro-bind'`)
+    expect(script).toContain(`'--bind' '/srv/my app' '/srv/my app'`)
+    expect(script).toContain(`'--' 'sh' '-c' 'echo hi'`)
+  })
+
+  it('命令里的单引号被正确转义（不会提前闭合）', () => {
+    const script = buildConfinedScript(
+      { mode: 'read-only', workspaceRoot: '/srv/app' },
+      `echo 'a b'`
+    )
+    // 单引号内不能再出现未转义的单引号：`echo 'a b'` → 'echo '\''a b'\''' 形态
+    expect(script).toContain(`'echo '\\''a b'\\'''`)
+  })
+
+  it('read-only 不开写口', () => {
+    const script = buildConfinedScript({ mode: 'read-only', workspaceRoot: '/srv/app' }, 'ls')
+    expect(script).not.toContain(`'--bind'`)
+    expect(script).not.toContain(`'--tmpfs'`)
+  })
+})
+
+describe('buildSandboxProbeScript', () => {
+  it('只读档跑 true，不绑定工作区', () => {
+    const script = buildSandboxProbeScript()
+    expect(script.startsWith('bwrap ')).toBe(true)
+    expect(script).toContain(`'--ro-bind'`)
+    expect(script).not.toContain(`'--bind'`)
+    expect(script.endsWith(`'--' 'true'`)).toBe(true)
   })
 })

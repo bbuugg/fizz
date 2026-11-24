@@ -83,11 +83,30 @@ import type {
   GitDiffResult,
   GitStatusResult
 } from '@fizz/git'
-import type { AcpModelOption } from '@fizz/acp'
 import type { ShellDetectResult } from '@fizz/shells'
 import type { StateCreator } from 'zustand'
 import { errorMessage } from '@fizz/agent-kit/shared/lib/stores/shared'
+import type { AcpModelLoadError } from '@fizz/agent-kit/shared/lib/acp-models'
 import type { AgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
+
+/**
+ * 正在进行的 ACP 模型清单拉取（按 agent 去重）。
+ *
+ * 选择器打开会自动拉一次，用户又连点刷新时不能再起第二个 agent 进程 ——
+ * 一次探测要 spawn 一次外部 agent，代价远高于普通接口。
+ */
+const acpModelLoads = new Map<string, Promise<AcpModelLoadError | null>>()
+
+/**
+ * 正在跑的可用性检测（按 agent id）。
+ *
+ * 与 `acpModelLoads` 同一理由：检测要 spawn 一次外部 agent，连点 / 两个客户端
+ * 同时点都不该叠进程。服务端也有一层去重，这里再挡一次省掉重复请求。
+ */
+const acpChecks = new Map<
+  string,
+  Promise<{ ok: boolean; error?: string; persisted: boolean }>
+>()
 
 /**
  * 文件树写操作（删除 / 复制）的结果。
@@ -221,8 +240,21 @@ export interface ServerListsSlice {
   // ---------- 配置类动作（写成功刷一遍全量列表，失败写 error） ----------
   saveAcpAgent: (input: AcpAgentInput) => Promise<boolean>
   deleteAcpAgent: (id: string) => Promise<boolean>
-  /** 保存「这个 ACP agent 的模型白名单」（设置页挑的哪几个进会话下拉） */
-  saveAcpAgentModels: (agentId: string, models: AcpModelOption[]) => Promise<boolean>
+  /**
+   * 拉一次某个 ACP agent 的模型清单并**落盘**（`models`）。
+   *
+   * 模型选择器在首次打开某个 agent 时调它；「刷新」按钮传 `force`。已拉过且不强制时
+   * 直接成功（不起进程）。失败返回一行结论 + 可选排查细节（成功 `null`）——
+   * 不写全局 error，下拉里就地显示。
+   */
+  loadAcpModels: (agentId: string, force?: boolean) => Promise<AcpModelLoadError | null>
+  /**
+   * 检测某个 ACP agent 能否正常启动并完成握手，**结果由服务端落盘**。
+   *
+   * 成功时会顺带刷新模型缓存；返回 `ok` 与失败原因，错误同时写进该 agent 的
+   * `health`（界面刷新后仍能恢复）。不走全局 error：设置页在行内展示。
+   */
+  checkAcpAgent: (agentId: string) => Promise<{ ok: boolean; error?: string; persisted: boolean }>
   saveMcpServer: (input: McpServerInput) => Promise<boolean>
   deleteMcpServer: (id: string) => Promise<boolean>
   saveSshHost: (input: HostInput) => Promise<boolean>
@@ -859,18 +891,74 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
     // ---------- 配置类动作 ----------
     saveAcpAgent: (input) => withRefresh(() => requireApi().saveAcpAgent(input)),
     deleteAcpAgent: (id) => withRefresh(() => requireApi().deleteAcpAgent(id)),
-    saveAcpAgentModels: (agentId, models) => {
+    loadAcpModels: (agentId, force = false) => {
       const agent = get().acpAgents.find((a) => a.id === agentId)
-      if (!agent) return Promise.resolve(false)
-      return withRefresh(() =>
-        requireApi().saveAcpAgent({
-          id: agent.id,
-          name: agent.name,
-          command: agent.command,
-          args: agent.args,
-          models
-        })
-      )
+      if (!agent) {
+        return Promise.resolve({ message: '这个 Agent 已经不在清单里了' } satisfies AcpModelLoadError)
+      }
+      // 拉过且不强制：直接用缓存（模型选择器每次打开都探一次 agent 进程太贵）。
+      // 「拉过」= models 字段在（空数组也算），缺失才是从来没加载过。
+      if (!force && agent.models !== undefined) return Promise.resolve(null)
+      const pending = acpModelLoads.get(agentId)
+      if (pending) return pending
+      const task = (async (): Promise<AcpModelLoadError | null> => {
+        try {
+          const api = requireApi()
+          const choices = await api.probeAcpModels(agentId)
+          await api.saveAcpAgent({
+            id: agent.id,
+            name: agent.name,
+            command: agent.command,
+            args: agent.args,
+            models: choices.options
+          })
+          await get().refresh()
+          return null
+        } catch (err) {
+          const detail = (err as { detail?: unknown } | null)?.detail
+          return {
+            message: errorMessage(err),
+            ...(typeof detail === 'string' && detail.trim() ? { detail } : {})
+          }
+        } finally {
+          acpModelLoads.delete(agentId)
+        }
+      })()
+      acpModelLoads.set(agentId, task)
+      return task
+    },
+    checkAcpAgent: (agentId) => {
+      const pending = acpChecks.get(agentId)
+      if (pending) return pending
+      const task = (async (): Promise<{
+        ok: boolean
+        error?: string
+        persisted: boolean
+      }> => {
+        try {
+          const result = await requireApi().checkAcpAgent(agentId)
+          // 只替换这一行：检测结果里已经是最新的 models + health，不需要再刷全量清单
+          set({
+            acpAgents: get().acpAgents.map((agent) =>
+              agent.id === result.agent.id ? result.agent : agent
+            )
+          })
+          return result.ok
+            ? { ok: true, persisted: true }
+            : {
+                ok: false,
+                persisted: true,
+                ...(result.error ? { error: result.error } : {})
+              }
+        } catch (err) {
+          // 连请求都没跑完：服务端没机会写 health，界面只能就地提示
+          return { ok: false, error: errorMessage(err), persisted: false }
+        } finally {
+          acpChecks.delete(agentId)
+        }
+      })()
+      acpChecks.set(agentId, task)
+      return task
     },
     saveMcpServer: (input) => withRefresh(() => requireApi().saveMcpServer(input)),
     deleteMcpServer: (id) => withRefresh(() => requireApi().deleteMcpServer(id)),

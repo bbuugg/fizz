@@ -216,6 +216,16 @@ export const AGENT: Record<string, string> = {
   '删除 ACP agent {name}': 'Delete ACP agent {name}',
   '移除模型 {name}': 'Remove model {name}',
   '检测已安装': 'Detect installed',
+  '检测 ACP agent {name}': 'Check ACP agent {name}',
+  '重新检测 ACP agent {name}': 'Recheck ACP agent {name}',
+  '检测这个 Agent 能否正常启动并完成 ACP 握手':
+    'Check whether this agent can start and complete the ACP handshake',
+  '正在检测…': 'Checking…',
+  '检测失败': 'Check failed',
+  '检测失败：{error}': 'Check failed: {error}',
+  '点击重试': 'Click to retry',
+  '检测正常': 'Check passed',
+  '上次检测：{time}': 'Last checked: {time}',
   '添加 ACP agent': 'Add ACP agent',
   '预设 agent（点击填入默认命令与参数，保存前可以修改）':
     'Preset agents (click to fill in the default command and arguments; you can edit them before saving)',
@@ -418,6 +428,12 @@ export const AGENT: Record<string, string> = {
   '始终允许此命令': 'Always allow this command',
   '拒绝一次': 'Deny once',
   '始终拒绝此命令': 'Always deny this command',
+  // 审批卡的自动拒绝倒计时（超时为 0 时不显示）
+  '剩余 {time} 后自动拒绝': 'Auto-denies in {time}',
+  // 命令沙箱提权卡（一次性批准；不提供「始终允许」）
+  '放宽「命令沙箱」到{level}，仅这一次：{reason}':
+    'Widen the command sandbox to {level}, this once: {reason}',
+  '仅工作区': 'Workspace only',
 
   // ---------- 定时任务（Scheduled tasks） ----------
   '到点自动起一轮会话 · 共 {total} 条 · {enabledCount} 条启用中':

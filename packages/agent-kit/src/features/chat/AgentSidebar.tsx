@@ -12,7 +12,8 @@
  * 2. 两块**可折叠的内容组**（`SidebarGroup`）：任务（临时会话）→ 工作区（项目树）。
  *    顺序固定、各自独立展开（与 VSCode 侧栏一致，展开不会重排）；展开组用
  *    `size="fill"` 吃剩余高度，于是只展开上面那组时下面那组的标题被挤到底部；
- *    两组都展开时按上次的位置分（没拖过就 1:1），交界处可拖动改比例。
+ *    两组都展开时按上次的位置分（拖过就按记住的像素，落 localStorage、刷新恢复；
+ *    没拖过 1:1），交界处可拖动改比例。
  *    组内自己滚，外层仍留一个滚动容器，只作窗口过矮时的兜底。
  *
  * 动作区与内容组这两个组件在 `shared/components/SidebarGroups`，**主机侧栏用的是同一份**
@@ -318,6 +319,34 @@ const DefaultShell = ({
   </SidebarScaffold>
 );
 
+/**
+ * 任务组拖出来的像素高度（刷新恢复）。
+ *
+ * 只存**高度**，不存折叠态：折叠态落盘后，改默认值 / 挪走内容会把东西永久藏起来
+ * （见 `StackedSections` 文件头的教训）。读回时只认正数，坏数据当「没拖过」。
+ */
+const TASKS_HEIGHT_KEY = "fizz.web.agentSidebarTasksHeight";
+
+function readStoredTasksHeight(): number | undefined {
+  try {
+    const raw = localStorage.getItem(TASKS_HEIGHT_KEY);
+    if (raw === null) return undefined;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function storeTasksHeight(height: number | undefined): void {
+  try {
+    if (height === undefined) localStorage.removeItem(TASKS_HEIGHT_KEY);
+    else localStorage.setItem(TASKS_HEIGHT_KEY, String(Math.round(height)));
+  } catch {
+    // localStorage 不可用 / 配额满：本次会话内仍然生效
+  }
+}
+
 export function AgentSidebar({
   app,
   onOpenChatView,
@@ -418,6 +447,14 @@ export function AgentSidebar({
   >(null);
   /** 展开了**项目子树**的项目 id 列表（子树里是该项目的会话列表） */
   const [expanded, setExpanded] = useState<string[]>([]);
+  /**
+   * 项目子树展开动画结束的计数（滚动定位靠它再跑一次）。
+   *
+   * 子树收起后**仍挂载**（只是裁到 0 高 + `inert`，见 `renderWorkspaceRow` 的过渡）：
+   * 于是「选中会话所在的项目刚被撑开」时，行这一拍就查得到，但外层 `scrollHeight`
+   * 还没长到位 —— 那次 effect 先不滚，等 `onTransitionEnd` 把这里 +1 再补算一次。
+   */
+  const [subtreeSettledTick, setSubtreeSettledTick] = useState(0);
   /**
    * 待确认移除的工作区（null = 没有弹窗）。
    *
@@ -520,12 +557,27 @@ export function AgentSidebar({
       `[data-conversation-id="${CSS.escape(id)}"]`,
     );
     if (!scroller || !node) return;
+    /*
+     * 行所在的项目子树还在收起 / 展开动画里：此刻外层 scrollHeight 还没长到位，
+     * 现在滚会滚错位置。收着就等它展开（那次 effect 会因为 `expanded` 变化重跑），
+     * 展开中则等 `onTransitionEnd` 推 `subtreeSettledTick` 再来。
+     */
+    for (let el = node.parentElement; el; el = el.parentElement) {
+      if (el.hasAttribute("data-subtree")) {
+        if (el.dataset.open !== "true") return;
+        const box = el.firstElementChild as HTMLElement | null;
+        if (box && box.scrollHeight > box.clientHeight + 1) return;
+      }
+      if (el === scroller) break;
+    }
     pendingScrollRef.current = null;
     // `block: 'nearest'` 的等价物：行在可视区内就不动，越出哪条边就补哪条的差额。
     // 逐层向上（组内滚动容器 → 外层列表），到 `scroller` 为止就停 —— 再往上就是
     // 侧栏外壳那条窄条，横向一跳就是上面说的老 bug。
     for (let el = node.parentElement; el; el = el.parentElement) {
-      if (el.scrollHeight > el.clientHeight + 1) {
+      // 子树那条裁剪盒不是滚动容器：高度动画期间它只是暂时装不下内容，别把 scrollTop
+      // 打到它上面（会把子树整体滚偏）
+      if (!el.hasAttribute("data-subtree-box") && el.scrollHeight > el.clientHeight + 1) {
         const box = el.getBoundingClientRect();
         const row = node.getBoundingClientRect();
         if (row.top < box.top) el.scrollTop += row.top - box.top;
@@ -534,7 +586,12 @@ export function AgentSidebar({
       }
       if (el === scroller) break;
     }
-  }, [app.activeConversationId, expanded, app.conversations]);
+  }, [
+    app.activeConversationId,
+    expanded,
+    app.conversations,
+    subtreeSettledTick,
+  ]);
 
   /**
    * 按工作区归类**未归档**会话，组内按最近更新排序（最近在用的在最上面）。
@@ -602,17 +659,31 @@ export function AgentSidebar({
    * 1:1，不是「谁刚展开谁拿 3/4」）—— 且因为 basis 不变、只变 grow，展开动画单调，
    * 不会先冲高再缩回。
    *
-   * **只存内存、不落盘**：折叠态一旦持久化，改默认值或挪走内容之后老数据会把东西
-   * 永久藏起来，而入口可能已经不在（`StackedSections` 文件头记着这个教训）。
+   * **高度落盘、折叠态只存内存**：拖出来的任务组高度写到 localStorage（刷新恢复）；
+   * 折叠态不持久化 —— 改默认值 / 挪走内容之后老数据会把东西永久藏起来，而入口可能
+   * 已经不在（`StackedSections` 文件头记着这个教训）。
    */
   const [tasksOpen, setTasksOpen] = useState(true);
   const [workspacesOpen, setWorkspacesOpen] = useState(true);
-  const [tasksHeight, setTasksHeight] = useState<number | undefined>(undefined);
+  const [tasksHeight, setTasksHeight] = useState<number | undefined>(readStoredTasksHeight);
   /**
    * 正在拖「工作区」的标题行：任务组才是被改高度的那组，据此关掉它的高度过渡。
    * 手势发生在下面那组上，所以这份状态只能放在父组件这一层。
    */
   const [groupsResizing, setGroupsResizing] = useState(false);
+  /**
+   * 拖动中的最新高度：松手那一刻才落盘。每帧写 localStorage 会拖慢指针，而
+   * `onResizeDraggingChange(false)` 只告诉你「结束了」，不带最终值。
+   */
+  const tasksHeightRef = useRef<number | undefined>(tasksHeight);
+  const resizeTasks = (height: number): void => {
+    tasksHeightRef.current = height;
+    setTasksHeight(height);
+  };
+  const handleGroupsResizingChange = (dragging: boolean): void => {
+    setGroupsResizing(dragging);
+    if (!dragging) storeTasksHeight(tasksHeightRef.current);
+  };
   /** 只有两组都展开时，任务组才需要「固定高度 + 可拖标题行」（只剩它时吃满剩余高度） */
   const tasksResizable = tasksOpen && workspacesOpen;
 
@@ -1476,6 +1547,7 @@ export function AgentSidebar({
             <button
               type="button"
               aria-label={isExpanded ? t("收起项目") : t("展开项目")}
+              aria-expanded={isExpanded}
               onClick={(e) => {
                 e.stopPropagation();
                 toggleExpand(workspace.id);
@@ -1777,9 +1849,41 @@ export function AgentSidebar({
 
           最后再递归渲染这个项目下的 **worktree 子项目**（每个自己又是一整行 + 子树），
           于是侧栏天然形成「项目 → worktree → 会话」三级；缩进靠 DOM 嵌套的 pl-3 累积。
+
+          展开 / 收起走 `grid-template-rows: 0fr ↔ 1fr` 的轨道过渡：内容高度由会话行
+          撑开、事先量不到，而 `height: auto` 不参与过渡。子树收起后**仍挂载**（裁到
+          0 高 + `inert` + `aria-hidden`，见 `SidebarGroups` 的同一套做法），收起的
+          动画才能真的播出来。⚠️ 收起后仍挂载意味着「定位到当前会话」那一拍会把行查到，
+          所以滚动 effect 要先等子树展开到位（`data-subtree` 判断 + `onTransitionEnd`）。
         */}
-        {isExpanded && (
-          <div className={cn("mb-1 mt-0.5", subList)}>
+        <div
+          data-subtree=""
+          data-open={isExpanded ? "true" : "false"}
+          inert={!isExpanded}
+          aria-hidden={!isExpanded}
+          onTransitionEnd={(e) => {
+            // 只认本层轨道过渡结束（子树的 transitionend 会冒泡上来）
+            if (e.target !== e.currentTarget || e.propertyName !== "grid-template-rows") return;
+            // 展开落定：把「待滚动」的补算推一次，这一刻外层 scrollHeight 才是终值
+            if (isExpanded) setSubtreeSettledTick((v) => v + 1);
+          }}
+          onTransitionCancel={(e) => {
+            // 动画被打断（快速连点）：同样推一次，免得待滚动的行一直排着
+            if (e.target !== e.currentTarget || e.propertyName !== "grid-template-rows") return;
+            if (isExpanded) setSubtreeSettledTick((v) => v + 1);
+          }}
+          className={cn(
+            "grid transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none",
+            isExpanded ? "opacity-100" : "opacity-0",
+          )}
+          style={{ gridTemplateRows: isExpanded ? "1fr" : "0fr" }}
+        >
+          <div
+            data-subtree-box=""
+            // 子树与上下行的间距与会话行之间保持同一档（父级 gap-0.5 = 2px）：
+            // 这里再补 `mb-*` 会让两个工作区之间明显比两个任务之间松
+            className={cn("mt-0.5 min-h-0 overflow-hidden", subList)}
+          >
             {list.map((conversation) =>
               renderConversationRow(conversation, workspace.id),
             )}
@@ -1790,7 +1894,7 @@ export function AgentSidebar({
               </div>
             )}
           </div>
-        )}
+        </div>
       </div>
     );
   };
@@ -1878,8 +1982,8 @@ export function AgentSidebar({
       // 展开时吃剩余高度、超出才在组内滚；任务组拖高度时由它吸收差额
       size="fill"
       // 两组都展开时，本组标题行就是交界处的抓手：上下拖改任务组的高度
-      resizeAbove={tasksResizable ? setTasksHeight : undefined}
-      onResizeDraggingChange={setGroupsResizing}
+      resizeAbove={tasksResizable ? resizeTasks : undefined}
+      onResizeDraggingChange={handleGroupsResizingChange}
       className="pb-2"
       // 加载中不传空态：列表请求还没落地，摆「还没有项目」就是一次闪屏
       empty={
@@ -2021,7 +2125,10 @@ export function AgentSidebar({
               icon={CalendarClock}
               label={t("定时任务")}
               title={t("打开定时任务管理（增删改、跨项目）")}
-              onClick={() => openTriggersTab()}
+              onClick={() => {
+                openTriggersTab();
+                onNavigate?.();
+              }}
             />
           </SidebarActions>
 

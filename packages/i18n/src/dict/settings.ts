@@ -134,6 +134,8 @@ export const SETTINGS: Record<string, string> = {
   '下载中断，请重试。': 'Download interrupted — try again.',
   '下载失败，请重试。': 'Download failed — try again.',
   '检查更新失败：{reason}': 'Check failed: {reason}',
+  'GitHub 接口被限流或被网络拦截（HTTP 403），请稍后重试。':
+    'GitHub API is rate-limited or blocked (HTTP 403). Please try again later.',
   '重启并安装': 'Restart and install',
   '正在后台下载，可继续使用。': 'Downloading in the background; you can keep using the app.',
   '会退出应用，安装完成后自动打开。': 'The app will quit and reopen automatically when installation finishes.',

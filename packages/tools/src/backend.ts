@@ -24,11 +24,14 @@ import {
   type WorkspaceFindOptions,
   type WorkspaceSearchFile,
   type WorkspaceSearchOptions,
-  type WorkspaceStat
+  type WorkspaceStat,
+  type SandboxPolicy
 } from '@fizz/contracts/workspace'
 import { createAnsiStripper } from './ansi'
 import { createOutputDecoder } from './output-decoder'
 import { ripgrepFind, ripgrepSearch } from './ripgrep'
+import { classifyConfinedRun, sandbox } from './sandbox'
+import type { ConfinedArgv } from './sandbox'
 
 /** 搜索文件的大小上限（1MB，跳过大文件避免卡死） */
 export const MAX_SEARCH_FILE_SIZE = 1_048_576
@@ -95,23 +98,42 @@ export function killChild(child: ReturnType<typeof spawn>, isWin: boolean): void
   }
 }
 
+export interface ShellSpawnOptions {
+  /**
+   * 这条命令会被沙箱包住。Windows 上据此放弃 Git Bash 改走 PowerShell
+   * （MSYS2 在限制性令牌下起不来，见函数体内的注释）。
+   */
+  sandboxed?: boolean
+}
+
 /**
  * 把一条命令翻译成「起哪个 shell、带什么参数、什么环境」。
  *
  * 前台（`runCommand`）与后台（`spawnBackgroundShell`）**必须用同一份判定**：两条路要是
  * 各挑一次 shell，同一条命令「直接跑」和「丢后台跑」的行为就会不一样 —— 最典型的是
  * Windows 上前台走 Git Bash、后台掉进 PowerShell，管道 / `&&` / 单引号整个不认。
+ *
+ * 唯一的例外是沙箱（`sandboxed`）：Windows 上 MSYS2 在限制性令牌里起不来，只能换 PowerShell。
  */
-export function resolveShellSpawn(command: string): {
+export function resolveShellSpawn(
+  command: string,
+  options: ShellSpawnOptions = {}
+): {
   shellCmd: string
   shellArgs: string[]
   env: NodeJS.ProcessEnv
   isWin: boolean
 } {
   const isWin = process.platform === 'win32'
-  const bashPath = isWin ? gitBashPath() : null
+  /**
+   * 沙箱里的 Windows 只能用 PowerShell：MSYS2 运行时在限制性令牌下**必然**起不来
+   * （cygheap 改自己令牌的 DefaultDacl 被拒 → `couldn't create signal pipe, Win32 error 5`），
+   * cmd / pwsh 同沙箱正常。不换 shell 的话沙箱开着时一条命令都跑不了。
+   */
+  const noMsys = options.sandboxed === true
+  const bashPath = isWin && !noMsys ? gitBashPath() : null
   const useBash = !isWin || Boolean(bashPath)
-  const shellCmd = isWin ? (bashPath ?? commandShellPath()) : '/bin/bash'
+  const shellCmd = isWin ? (bashPath ?? commandShellPath({ noMsys })) : '/bin/bash'
   const shellArgs = isWin
     ? useBash
       ? ['-lc', command]
@@ -134,13 +156,45 @@ export function resolveShellSpawn(command: string): {
 }
 
 /** 本地执行：与改造前的 `runCommand` 同一套进程树终止 / 解码 / 截断语义，只返回原始结果 */
-function localExec(command: string, cwd: string, opts: WorkspaceExecOptions): Promise<WorkspaceExecResult> {
-  const { shellCmd, shellArgs, env, isWin } = resolveShellSpawn(command)
+async function localExec(command: string, cwd: string, opts: WorkspaceExecOptions): Promise<WorkspaceExecResult> {
+  const { shellCmd, shellArgs, env, isWin } = resolveShellSpawn(command, {
+    sandboxed: opts.sandbox !== undefined
+  })
   const timeoutMs = opts.timeoutMs ?? 120_000
   const maxBytes = opts.maxBytes ?? MAX_CMD_CAPTURE
-  const child = spawn(shellCmd, shellArgs, {
+  /**
+   * 沙箱：**包在 spawn 之前，包的是完整 argv**（不是往命令字符串前面拼一段 —— 引号、
+   * 空格、`--` 都会出事）。拿不到可用后端时按 fail closed 返回「没启动」，绝不裸跑。
+   */
+  let argv = [shellCmd, ...shellArgs]
+  let confinement: { policy: SandboxPolicy; facts: ConfinedArgv } | undefined
+  if (opts.sandbox) {
+    if (opts.signal?.aborted) {
+      return { stdout: '', stderr: '', exitCode: null, reason: 'aborted', truncated: false }
+    }
+    try {
+      const facts = await sandbox.confine(argv, opts.sandbox, opts.signal ? { signal: opts.signal } : {})
+      argv = facts.argv
+      confinement = { policy: opts.sandbox, facts }
+    } catch (err) {
+      // 启动前被取消：按取消收场，别报成基础设施错误
+      if (opts.signal?.aborted) {
+        return { stdout: '', stderr: '', exitCode: null, reason: 'aborted', truncated: false }
+      }
+      return {
+        stdout: '',
+        stderr: '',
+        exitCode: null,
+        reason: 'error',
+        error: err instanceof Error ? err.message : String(err),
+        truncated: false
+      }
+    }
+  }
+  const child = spawn(argv[0], argv.slice(1), {
     cwd,
-    env,
+    // runner 需要的额外环境（Electron 打包态要 ELECTRON_RUN_AS_NODE）
+    env: confinement?.facts.env ? { ...env, ...confinement.facts.env } : env,
     windowsHide: true,
     ...(isWin ? {} : { detached: true })
   })
@@ -164,7 +218,33 @@ function localExec(command: string, cwd: string, opts: WorkspaceExecOptions): Pr
       opts.signal?.removeEventListener('abort', onAbort)
       stdout += decodeStdout.flush()
       stderr += decodeStderr.flush()
-      resolve({ stdout, stderr, exitCode: exitCode ?? null, reason, error, truncated })
+      // runner 失败优先于「被拒绝」：命令根本没跑，不能报成策略拒绝
+      const outcome =
+        confinement && reason === 'exit'
+          ? classifyConfinedRun(
+              exitCode ?? null,
+              stderr,
+              confinement.facts.denialSignatures,
+              confinement.facts.runnerFailureRules
+            )
+          : undefined
+      const sandboxResult =
+        outcome && confinement
+          ? {
+              mode: confinement.policy.mode,
+              denied: outcome.denied,
+              ...(outcome.runnerFailed ? { runnerFailed: outcome.runnerFailed } : {})
+            }
+          : undefined
+      resolve({
+        stdout,
+        stderr,
+        exitCode: exitCode ?? null,
+        reason,
+        error,
+        truncated,
+        ...(sandboxResult ? { sandbox: sandboxResult } : {})
+      })
     }
     const reap = (): void => {
       killChild(child, isWin)

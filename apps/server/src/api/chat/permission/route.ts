@@ -7,8 +7,12 @@
  * 改完**下一次工具调用立刻按新档裁决**（不必等下一轮）。
  *
  * 幂等：run 不存在 / 已结束 / 档位非法之外的拼错 = `{ updated: false }`，不报错。
+ *
+ * 切到 `full` 时顺带把这条 run 已经挂起的审批按批准收场：闸门挂起后不再看档位，
+ * 不主动结算的话，用户刚表态「别再逐条问我」，屏幕上那张卡却还杵在等点击。
  */
 import type { PermissionSetInput } from '@fizz/contracts/agent-api'
+import { releaseConfirmsFor } from '@/lib/server/confirm-gate'
 import { getRun } from '@/lib/server/chat-run'
 import { isAiPermissionMode } from '@/lib/server/permission-mode'
 import { jsonError, parseJsonBody } from '@/app/api/_lib/auth'
@@ -26,5 +30,7 @@ export async function POST(request: Request) {
   // run 不存在 / 已结束 = 没东西可改（幂等空成功；下一轮会带新的档位正常开跑）
   if (!run || run.finishedAt !== undefined) return Response.json({ updated: false })
   run.permissionMode = body.permissionMode
+  // 只放行这一条 run 的：settle 会照常发 confirm-resolved 帧，前端据此撤卡
+  if (body.permissionMode === 'full') releaseConfirmsFor(run.requestId, true)
   return Response.json({ updated: true })
 }

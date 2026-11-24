@@ -5,10 +5,41 @@
  * 必须逐段单引号转义 —— 这里的每个入口都只收已经决定好的参数，不做「聪明」的拼接。
  */
 import { posix } from 'node:path'
+import type { SandboxPolicy } from '@fizz/contracts/workspace'
+import { bwrapProfileArgs } from '@fizz/tools'
 
 /** POSIX shell 单引号转义（含单引号的串也能安全落地） */
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * 把一段 argv 拼成 `bwrap <profile> -- <argv>` 的单行脚本。
+ *
+ * 远端只能传**字符串**（SSH 的 exec 请求没有 argv 语义），所以这里必须自己转义：
+ * 每个 token 单独单引号 —— 包括 profile 里的路径（工作区路径可能带空格）。
+ * `--` 之后才是命令，顺序与本地 `sandbox.confine` 完全一致。
+ */
+function buildBwrapInvocation(policy: SandboxPolicy, argv: readonly string[]): string {
+  return `bwrap ${[...bwrapProfileArgs(policy), '--', ...argv].map(shellQuote).join(' ')}`
+}
+
+/**
+ * 远端 bwrap 探针：只读档跑 `true`，退出 0 才算这台主机真的能用（bwrap 已安装且
+ * user namespace / mount 权限可用）。只读档不绑定工作区，不会碰用户的任何文件。
+ */
+export function buildSandboxProbeScript(): string {
+  return buildBwrapInvocation({ mode: 'read-only', workspaceRoot: '/' }, ['true'])
+}
+
+/**
+ * 把一条命令包进远端 bwrap。
+ *
+ * 内层用 `sh -c` 承接用户命令原文 —— 与本地 `bwrap ... -- bash -lc <command>` 同义，
+ * 但远端登录 shell 已经在 `buildExecScript` 里切好目录，这里只负责「限制写范围」。
+ */
+export function buildConfinedScript(policy: SandboxPolicy, command: string): string {
+  return buildBwrapInvocation(policy, ['sh', '-c', command])
 }
 
 /** 命令使用的 pid 文件（每次执行一个，收尾即删） */

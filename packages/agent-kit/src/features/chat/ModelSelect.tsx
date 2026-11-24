@@ -87,6 +87,8 @@ export function ModelSelect({ app }: { app: AgentApp }) {
       // 这里转成 undefined 让 `ModelPicker` 走它自己的 DEFAULT_CONTEXT_WINDOW 兜底
       defaultContextWindow={app.defaultContextWindow ?? undefined}
       onOpenSettings={openSettingsTab}
+      // ACP 模型清单：首次进入某个 agent 时拉一次并落盘，标题行尾的刷新按钮强制重拉
+      onLoadAcpModels={app.loadAcpModels}
       // 选完模型不关闭：底部思考强度要能接着调；首次选模型时面板也会当场出现
       closeOnSelect={false}
       {...(showReasoningEffort

@@ -91,6 +91,7 @@ import { stripAnsi } from '@fizz/agent-kit/shared/lib/terminal/terminal-mcp'
 import { useConfirm } from '@fizz/agent-kit/shared/components/ConfirmProvider'
 import { scalePx } from '@fizz/agent-kit/shared/lib/ui-scale'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { GlassPanel } from '@fizz/ui/liquid-glass'
 
 /** 终端字号缩放范围与缺省（与 contracts 的 `terminalFontSize` 约定一致） */
 const MIN_FONT_SIZE = 8
@@ -2109,45 +2110,49 @@ export function TerminalPanel({
         )}
         {/* 命令预测下拉框：按光标位置浮在终端上；开着时 → 接受、Ctrl+↑/↓ 换选（见 sendInput） */}
         {suggestions && (
-          <div
+          <GlassPanel
             ref={dropdownRef}
             style={pos ? { top: pos.top, left: pos.left } : undefined}
-            className="absolute z-10 max-h-56 w-80 overflow-y-auto rounded-md border border-border bg-popover/95 p-1 text-xs shadow-lg backdrop-blur"
+            className="absolute z-10 flex max-h-56 w-80 flex-col overflow-hidden rounded-md p-0 text-xs"
           >
-            <div className="px-2 py-1 text-muted-foreground">
+            {/* 头部固定：说明行不随命令列表滚走 */}
+            <div className="shrink-0 border-b border-border/60 px-2 py-1 text-muted-foreground">
               命令预测 · → 接受 · Ctrl+↑/↓ 选择 · Esc 收起
             </div>
-            {suggestions.items.map((item, i) => {
-              const buf = suggestions.buf
-              const rest = item.slice(buf.length)
-              return (
-                <button
-                  key={item}
-                  type="button"
-                  // preventDefault：点击不抢走终端焦点，光标不闪、输入不断
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    activeIndexRef.current = i
-                    acceptSuggestion()
-                    termRef.current?.focus()
-                  }}
-                  className={cn(
-                    'flex w-full items-center rounded px-2 py-1 text-left',
-                    i === suggestions.index
-                      ? 'bg-primary/15 text-foreground'
-                      : 'text-muted-foreground hover:bg-secondary'
-                  )}
-                >
-                  {/* 两段文字留在同一个元素里：button 是 flex 容器，拆成两个子 span
-                      会各自成为块容器，边界空格落在行盒边缘被裁掉（显示成「gitstatus」） */}
-                  <span className="truncate">
-                    {buf}
-                    <span className="font-medium text-primary">{rest}</span>
-                  </span>
-                </button>
-              )
-            })}
-          </div>
+            {/* 滚动下放到内层：边缘流光那两层是 `absolute inset-0`，放在滚动容器里会跟着列表滚走 */}
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1">
+              {suggestions.items.map((item, i) => {
+                const buf = suggestions.buf
+                const rest = item.slice(buf.length)
+                return (
+                  <button
+                    key={item}
+                    type="button"
+                    // preventDefault：点击不抢走终端焦点，光标不闪、输入不断
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      activeIndexRef.current = i
+                      acceptSuggestion()
+                      termRef.current?.focus()
+                    }}
+                    className={cn(
+                      'flex w-full items-center rounded px-2 py-1 text-left',
+                      i === suggestions.index
+                        ? 'bg-primary/15 text-foreground'
+                        : 'text-muted-foreground hover:bg-secondary'
+                    )}
+                  >
+                    {/* 两段文字留在同一个元素里：button 是 flex 容器，拆成两个子 span
+                        会各自成为块容器，边界空格落在行盒边缘被裁掉（显示成「gitstatus」） */}
+                    <span className="truncate">
+                      {buf}
+                      <span className="font-medium text-primary">{rest}</span>
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </GlassPanel>
         )}
         {historyScope && historyOpen && (
           <div className="absolute top-11 right-2 z-20 flex max-h-[70%] w-96 max-w-[calc(100%-1rem)] flex-col rounded-md border border-border bg-popover/95 shadow-lg backdrop-blur">
@@ -2253,18 +2258,16 @@ export function TerminalPanel({
           /**
            * 选区模式键条：方向键只动选区端点（见 `handleAction` 里的 `SELECT_NAV_TOKENS`），
            * 不进 shell。仍是 2 行 × `h-8` —— 与普通键条**同高**，切换时终端不会因为 fit
-           * 抖一下。7 列：
-           * - 第一行 `← ↑ ↓ →` + `复制`（跨 2 列）+ `定起点`：方向键随手按，复制是大目标；
-           * - 第二行 `Home End PgUp PgDn` + `取消`（跨 3 列）：大段跳转与退出。
+           * 抖一下。7 列，方向键摆成与普通键条 / 电脑键盘一致的倒 T：
+           * ↑ 在第 1 行第 5 列，← ↓ → 在第 2 行第 4~6 列；Home / End 仍夹在 ↑ 两侧，
+           * PgUp / PgDn 仍占第 7 列上下 —— 两套键条切换时手不用重新找位置。
+           * - 第一行：`复制`（跨 2 列）、`定起点`、`Home`、`↑`、`End`、`PgUp`；
+           * - 第二行：`取消`（跨 3 列）、`←`、`↓`、`→`、`PgDn`。
            *
            * 「定起点」未锁定时方向键只挪光标（选起点），按一下锁住；再按一下解锁、选区收回到
            * 起点那一格（高亮 = 已锁定）。不锁就扩选的话起点永远改不了（用户报的正是这个）。
            */
           <div className="grid shrink-0 grid-cols-7 bg-background">
-            <MobileKey label="←" ariaLabel="左方向键" onClick={() => handleAction('ArrowLeft')} repeat />
-            <MobileKey label="↑" ariaLabel="上方向键" onClick={() => handleAction('ArrowUp')} repeat />
-            <MobileKey label="↓" ariaLabel="下方向键" onClick={() => handleAction('ArrowDown')} repeat />
-            <MobileKey label="→" ariaLabel="右方向键" onClick={() => handleAction('ArrowRight')} repeat />
             <MobileKey
               className="col-span-2"
               label={tr('复制')}
@@ -2277,10 +2280,14 @@ export function TerminalPanel({
               onClick={toggleAnchor}
             />
             <MobileKey label="Home" onClick={() => handleAction('Home')} repeat />
+            <MobileKey label="↑" ariaLabel="上方向键" onClick={() => handleAction('ArrowUp')} repeat />
             <MobileKey label="End" onClick={() => handleAction('End')} repeat />
             <MobileKey label="PgUp" ariaLabel="上一页" onClick={() => handleAction('PageUp')} repeat />
-            <MobileKey label="PgDn" ariaLabel="下一页" onClick={() => handleAction('PageDown')} repeat />
             <MobileKey className="col-span-3" label={tr('取消')} onClick={exitSelectionMode} />
+            <MobileKey label="←" ariaLabel="左方向键" onClick={() => handleAction('ArrowLeft')} repeat />
+            <MobileKey label="↓" ariaLabel="下方向键" onClick={() => handleAction('ArrowDown')} repeat />
+            <MobileKey label="→" ariaLabel="右方向键" onClick={() => handleAction('ArrowRight')} repeat />
+            <MobileKey label="PgDn" ariaLabel="下一页" onClick={() => handleAction('PageDown')} repeat />
           </div>
         ) : (
           <div className="grid shrink-0 grid-cols-7 bg-background">

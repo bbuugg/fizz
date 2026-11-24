@@ -284,7 +284,12 @@ function BranchPill({ app, editable }: { app: AgentApp; editable: boolean }) {
       // 与「工作区选择」同款 pill；面板向上弹（横条贴着窗口底边）
       label={label}
       emptyLabel={tr('Git')}
-      onOpen={loadBranches}
+      // 分支可能在终端里被切过：每次打开面板都重读「当前分支 + 清单」，
+      // 只刷清单的话打勾项与 pill 文案仍是旧的（用户报过）
+      onOpen={() => {
+        void refreshBranch()
+        loadBranches()
+      }}
       onCheckout={switchTo}
       onCreate={createBranch}
       onInit={initRepo}

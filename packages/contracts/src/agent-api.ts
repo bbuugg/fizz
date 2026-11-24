@@ -360,6 +360,15 @@ export const API_ROUTES = {
    */
   acpAgentModels: "/api/acp/agents/:id/models",
   /**
+   * 检测这个外部 Agent 是否能正常启动并完成 ACP 握手：
+   * POST /api/acp/agents/:id/check → `AcpAgentCheckResult`
+   *
+   * 与 `/models` 共用同一次探针：成功时顺带刷新模型缓存（`AcpAgentConfig.models`）。
+   * **检测结果本身也落盘**（`AcpAgentConfig.health`），所以换页面 / 换客户端都能看到
+   * 上一次结论；失败仍返回 200（「检测完成且失败」不是接口错误）。
+   */
+  acpAgentCheck: "/api/acp/agents/:id/check",
+  /**
    * 这个外部 Agent 的**完整能力快照**（模型清单 + 模式 / 思考档）：
    * GET /api/acp/agents/:id/capabilities
    *
@@ -2424,7 +2433,7 @@ export type AcpAgentInput = {
    * 新建缺省 `once`（只允许一次，下次仍会问）。
    */
   allowStrategy?: AcpAllowStrategy;
-  /** 会话下拉里暴露哪几个模型（设置里挑的）；不传 = 沿用原有，空数组 = 一个都不列 */
+  /** 模型清单（由模型选择器拉取并落盘；不传 = 沿用原有，空数组 = 探测过但没有模型） */
   models?: AcpModelOption[];
 };
 
@@ -2439,6 +2448,20 @@ export type AcpAgentInput = {
 export type AcpAgentView = AcpAgentConfig & {
   imageInput?: boolean;
 };
+
+/**
+ * `POST /api/acp/agents/:id/check` 的应答。
+ *
+ * 失败（起不来 / 拒绝握手）同样是 200：这次请求本身跑完了，`ok: false` + `error`
+ * 才是检测结论；`agent` 里带着刚落盘的 `health`，界面直接替换那一行即可。
+ */
+export interface AcpAgentCheckResult {
+  ok: boolean;
+  /** 失败原因（成功时不带）；已压成一行并截断 */
+  error?: string;
+  /** 检测后的最新视图（含 health 与成功时刷新后的 models；失败时 health.detail 带命令 / 工作目录） */
+  agent: AcpAgentView;
+}
 
 /** 一个常驻 ACP agent 进程（诊断用；GET /api/acp/sessions 的数组项） */
 export interface AcpProcessInfo {

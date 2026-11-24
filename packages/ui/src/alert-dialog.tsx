@@ -4,12 +4,7 @@ import { AlertDialog as AlertDialogPrimitive } from "radix-ui"
 
 import { Button } from "./button"
 import { orderDialogActions } from "./dialog-actions"
-import {
-  clearLiquidLens,
-  GLASS_PANEL_CLASS,
-  LiquidGlassPanel,
-  trackLiquidLens,
-} from "./liquid-glass"
+import { useGlassPanel } from "./liquid-glass"
 
 function AlertDialog({
   ...props
@@ -59,6 +54,7 @@ function AlertDialogContent({
 }: React.ComponentProps<typeof AlertDialogPrimitive.Content> & {
   size?: "default" | "sm"
 }) {
+  const glass = useGlassPanel(props)
   return (
     <AlertDialogPortal>
       <AlertDialogOverlay />
@@ -70,25 +66,13 @@ function AlertDialogContent({
           // 来自 `GLASS_PANEL_CLASS`，跟随指针的边缘光圈由 `LiquidGlassPanel` 铺在内容之上。
           // ⚠️ 别再往这里加 `bg-*`：会把实色底换成别的（透明）颜色。
           "group/alert-dialog-content fixed top-1/2 left-1/2 z-50 grid w-full -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl p-4 text-popover-foreground outline-none duration-100 data-[size=default]:max-w-xs data-[size=sm]:max-w-xs data-[size=default]:sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
-          GLASS_PANEL_CLASS,
+          glass.className,
           className
         )}
         {...props}
-        // 玻璃的边缘光圈：指针位置写到容器自身的 CSS 变量上，由 `LiquidGlassPanel` 读取
-        onPointerEnter={(event) => {
-          trackLiquidLens(event)
-          props.onPointerEnter?.(event)
-        }}
-        onPointerMove={(event) => {
-          trackLiquidLens(event)
-          props.onPointerMove?.(event)
-        }}
-        onPointerLeave={(event) => {
-          clearLiquidLens(event)
-          props.onPointerLeave?.(event)
-        }}
+        {...glass.handlers}
       >
-        <LiquidGlassPanel />
+        {glass.edge}
         {children}
       </AlertDialogPrimitive.Content>
     </AlertDialogPortal>

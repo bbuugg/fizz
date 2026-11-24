@@ -38,12 +38,7 @@ import {
   pct
 } from '@fizz/agent-kit/shared/components/monitor-parts'
 import { Popover, PopoverContent, PopoverTrigger } from '@fizz/ui/popover'
-import {
-  clearLiquidLens,
-  GLASS_PANEL_CLASS,
-  LiquidGlassPanel,
-  trackLiquidLens
-} from '@fizz/ui/liquid-glass'
+import { useGlassPanel } from '@fizz/ui/liquid-glass'
 
 /** 轮询间隔：与服务端采样节奏对齐（快一点也能拿到最新帧） */
 const POLL_MS = 2_000
@@ -53,6 +48,8 @@ const POLL_MS = 2_000
 // ---------------------------------------------------------------------------
 
 export function SystemMonitorBadge({ api }: { api: AgentApi | null }) {
+  // 弹出面板的液态玻璃外壳与边缘流光（指针追踪）由 Hook 统一给
+  const glass = useGlassPanel()
   const [open, setOpen] = useState(false)
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -159,13 +156,11 @@ export function SystemMonitorBadge({ api }: { api: AgentApi | null }) {
         // 滚动下放到内层，保证流光钉在面板上、不随内容滚走。
         className={cn(
           'h-[min(380px,var(--radix-popover-content-available-height,380px))] w-[380px] max-w-[85vw] overflow-hidden rounded-xl p-0 ring-0',
-          GLASS_PANEL_CLASS
+          glass.className
         )}
-        onPointerEnter={(event) => trackLiquidLens(event)}
-        onPointerMove={(event) => trackLiquidLens(event)}
-        onPointerLeave={(event) => clearLiquidLens(event)}
+        {...glass.handlers}
       >
-        <LiquidGlassPanel />
+        {glass.edge}
         <div className="no-scrollbar h-full overflow-y-auto overscroll-contain p-3">
         {!snap ? (
           // 固定高度下加载 / 报错态居中，别缩在顶部留一大块空

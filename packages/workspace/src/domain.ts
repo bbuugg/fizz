@@ -65,7 +65,7 @@ import {
   normalizeCollabState,
   normalizeReasoningEffort
 } from '@fizz/contracts/types'
-import type { AcpAgentConfig } from '@fizz/acp'
+import type { AcpAgentConfig, AcpAgentHealth, AcpModelOption } from '@fizz/acp'
 import { normalizeMcpTransport, type McpServerConfig, type McpServerInput } from '@fizz/mcp'
 import type { SkillSettings } from '@fizz/skills'
 import { normalizeSubagentSettings, type SubagentSettings } from '@fizz/contracts/types'
@@ -1776,8 +1776,8 @@ export class AgentDomain {
     const name = input.name?.trim()
     if (!name) throw new Error('缺少 ACP agent 名称')
     if (!input.command?.trim()) throw new Error('缺少启动命令')
-    // 更新时按 id 找回旧的：`models`（会话下拉里暴露哪几个模型）不传就沿用，
-    // 免得「只改一下命令」把用户在设置里挑好的模型清单抹掉
+    // 更新时按 id 找回旧的：`models`（模型选择器拉下来的候选清单）不传就沿用，
+    // 免得「只改一下命令」把已经探测好的清单抹掉
     const existing = input.id
       ? this.store.snapshot().acpAgents.find((a) => a.id === input.id)
       : undefined
@@ -1790,6 +1790,12 @@ export class AgentDomain {
     const preset = input.preset ?? existing?.preset
     const command = input.command.trim()
     const args = input.args ?? existing?.args ?? []
+    // 命令 / 参数没变才保留上次检测结论；改过就必须回到「未检测」——
+    // 旧结果描述的是另一条命令，继续显示「正常 / 失败」会误导。
+    const health =
+      existing && acpAgentKey(existing) === acpAgentKey({ command, args })
+        ? existing.health
+        : undefined
     // 同一个 agent 只留一条：命令 + 参数完全相同就算同一条（名称不参与判重）。
     // **只在新建时判** —— 带 id 的保存一律放行：否则历史数据里已经躺着重复条目时，
     // 连「挑模型」这种带 id 的保存都会被另一条挡下来，等于把人锁死。
@@ -1807,7 +1813,8 @@ export class AgentDomain {
       ...(type ? { type } : {}),
       ...(preset ? { preset } : {}),
       ...(allowStrategy ? { allowStrategy } : {}),
-      ...(models ? { models } : {})
+      ...(models ? { models } : {}),
+      ...(health ? { health } : {})
     }
     this.store.mutate((d) => {
       const exists = d.acpAgents.some((a) => a.id === agent.id)
@@ -1816,6 +1823,32 @@ export class AgentDomain {
         : [...d.acpAgents, agent]
     })
     return toAcpView(agent)
+  }
+
+  /**
+   * 记录一次「检测可用性」的结果：健康状态与（成功时的）模型清单**一次写入**。
+   *
+   * `expectedKey` 是检测开始时的命令身份。检测要真起一次 agent 进程，期间用户可能
+   * 已经在另一个客户端改了命令 —— 这时旧结果不能记到新配置头上，直接拒绝写入。
+   */
+  recordAcpAgentCheck(
+    id: string,
+    input: { expectedKey: string; health: AcpAgentHealth; models?: AcpModelOption[] }
+  ): AcpAgentView {
+    const current = this.store.snapshot().acpAgents.find((agent) => agent.id === id)
+    if (!current) throw new Error('所选 ACP agent 不存在或已被删除，请重新选择')
+    if (acpAgentKey(current) !== input.expectedKey) {
+      throw new Error('检测期间该 ACP agent 的启动命令已被修改，请重试')
+    }
+    const next: AcpAgentConfig = {
+      ...current,
+      health: input.health,
+      ...(input.models ? { models: input.models } : {})
+    }
+    this.store.mutate((d) => {
+      d.acpAgents = d.acpAgents.map((agent) => (agent.id === id ? next : agent))
+    })
+    return toAcpView(next)
   }
 
   deleteAcpAgent(id: string): AcpAgentView[] {

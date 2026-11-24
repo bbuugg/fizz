@@ -39,10 +39,15 @@
  * 唯一的例外是**远端工作区**：ACP agent 不出现在一级，只留一行说明
  * （`acpDisabledReason`）—— 外部 agent 是服务端本机 spawn 的进程，够不到 SSH 主机上的目录。
  */
-import { Bot, ChevronLeft, Settings } from 'lucide-react'
-import type { ReactNode } from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { Bot, ChevronLeft, Loader2, RefreshCw, Settings } from 'lucide-react'
+import type {
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode
+} from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Popover, PopoverTrigger } from '@fizz/ui/popover'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@fizz/ui/tooltip'
 import {
   PickerFooter,
   PickerItem,
@@ -59,8 +64,9 @@ import appLogo from '@fizz/agent-kit/shared/assets/logo.png'
 import { AcpAgentIcon } from '@fizz/agent-kit/shared/components/AcpAgentIcon'
 import { CHAT_PILL } from '@fizz/agent-kit/features/chat/composer'
 import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
+import { needsAcpModelLoad, type AcpModelLoadError } from '@fizz/agent-kit/shared/lib/acp-models'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
-import { formatContextWindow } from '@fizz/agent-kit/shared/lib/utils'
+import { cn, formatContextWindow } from '@fizz/agent-kit/shared/lib/utils'
 import { t } from '@fizz/i18n'
 
 /**
@@ -115,6 +121,8 @@ interface PickerRow {
   /** 行尾次要信息（内置模型显示上下文窗口：圆环的分母就是它） */
   hint?: string
   title?: string
+  /** 悬停气泡：只在需要看完整 id / 描述的行上给（触屏由 Tooltip 的 allowTouch 放行） */
+  tip?: ReactNode
   active: boolean
   /** 搜索文本：把小标题也拼进来，敲配置名 / Agent 名也能搜到它下面的模型 */
   search: string
@@ -213,6 +221,16 @@ export interface ModelPickerProps {
   /** 打开设置里某个分组的入口；不传则整颗齿轮不渲染 */
   onOpenSettings?: (tab: 'models' | 'acp') => void
   /**
+   * 拉取某个 ACP agent 的模型清单（模型选择器首次进入该 agent 时自动调，刷新按钮传
+   * `force`）。实现方负责探测并**落盘**，失败返回一行结论 + 可选排查细节（成功 `null`）。
+   *
+   * 不传 = 不加载（只显示已经存下来的清单）—— 终端助手面板不接 ACP，就不传。
+   */
+  onLoadAcpModels?: (
+    agentId: string,
+    force?: boolean
+  ) => Promise<AcpModelLoadError | null>
+  /**
    * 固定在面板底部的附加区块：**不随模型列表滚动**（列表在它上方单独滚）。
    *
    * 目前只有会话输入框的 `ModelSelect` 用它放「思考强度」（切模型时立刻跟着变），
@@ -242,6 +260,7 @@ export function ModelPicker({
   emptyTitle,
   defaultContextWindow = DEFAULT_CONTEXT_WINDOW,
   onOpenSettings,
+  onLoadAcpModels,
   footer,
   closeOnSelect = true
 }: ModelPickerProps) {
@@ -272,6 +291,49 @@ export function ModelPicker({
       : null
   const atLevel2 =
     activeGroup != null && (activeGroup.kind === 'builtin' || activeAcpAgent != null)
+
+  /** 正在拉模型清单的 agent id（同一时刻最多一个在转） */
+  const [loadingAcp, setLoadingAcp] = useState<string | null>(null)
+  /** 拉取失败的原因（按 agent id；重开面板或再次刷新时清掉） */
+  const [acpLoadErrors, setAcpLoadErrors] = useState<Record<string, AcpModelLoadError>>({})
+  const activeAcpLoadError = activeAcpAgent ? acpLoadErrors[activeAcpAgent.id] : undefined
+
+  /**
+   * 拉一次某个 agent 的模型清单。`force` = 刷新按钮；非强制时已有 `models` 字段
+   * 就直接跳过 —— 打开面板不该每次都起一个外部 agent 进程。
+   *
+   * 失败只记在本地：这里不弹全局 toast（选择器正开着，就地显示更近）。
+   */
+  const loadAcp = useCallback(
+    (agent: AcpAgentView, force: boolean): void => {
+      if (!onLoadAcpModels) return
+      if (!force && !needsAcpModelLoad(agent)) return
+      setLoadingAcp(agent.id)
+      setAcpLoadErrors((prev) => {
+        if (prev[agent.id] === undefined) return prev
+        const next = { ...prev }
+        delete next[agent.id]
+        return next
+      })
+      void onLoadAcpModels(agent.id, force).then((error) => {
+        setLoadingAcp((current) => (current === agent.id ? null : current))
+        if (error) setAcpLoadErrors((prev) => ({ ...prev, [agent.id]: error }))
+      })
+    },
+    [onLoadAcpModels]
+  )
+
+  /**
+   * 进入某个 ACP agent 的二级时自动拉一次（`models` 缺失 = 新加的 / 老数据）。
+   *
+   * 失败**不自动重试**：依赖里只有 agent 对象与回调，失败后它们不变，不会打转；
+   * 关掉重开面板会再试，或者点标题行尾的刷新。
+   */
+  useEffect(() => {
+    if (!open || !activeAcpAgent) return
+    if (!needsAcpModelLoad(activeAcpAgent)) return
+    loadAcp(activeAcpAgent, false)
+  }, [open, activeAcpAgent, loadAcp])
 
   /** 触发器上显示的短标签（`null` = 没选或目标失效 → 用 `emptyLabel`） */
   const shortLabel = modelTargetLabel(models, acpAgents, value, showProvider)
@@ -329,6 +391,28 @@ export function ModelPicker({
     )
   }
 
+  /** 二级标题行尾的刷新（ACP）：强制重新探测模型清单 */
+  const refreshAcp = (agent: AcpAgentView): ReactNode => {
+    if (!onLoadAcpModels) return null
+    const loading = loadingAcp === agent.id
+    const label = t('重新加载模型清单')
+    return (
+      <button
+        type="button"
+        title={label}
+        aria-label={label}
+        disabled={loading}
+        onClick={(event) => {
+          event.stopPropagation()
+          loadAcp(agent, true)
+        }}
+        className="rounded p-0.5 transition-colors hover:bg-foreground/10 hover:text-foreground disabled:opacity-50"
+      >
+        <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />
+      </button>
+    )
+  }
+
   /** 内置模型：按配置分段（二级里给模型列表用） */
   const builtinSections: PickerSection[] = []
   for (const config of models) {
@@ -374,10 +458,27 @@ export function ModelPicker({
       })
     }
     for (const model of agentModels) {
+      // 空串 / 纯空白的描述不占一行：agent 有时会广告一个只有空白的 description
+      const tipValue = model.value.trim()
+      const tipDescription = model.description?.trim()
       rows.push({
         key: `acp:${agent.id}:${model.value}`,
         label: model.name,
-        title: model.description ?? model.name,
+        ...(tipValue || tipDescription
+          ? {
+              tip: (
+                <>
+                  {tipValue ? <div className="break-all font-mono">{tipValue}</div> : null}
+                  {tipDescription ? (
+                    // tooltip 是反色底（bg-foreground / text-background）：这里不能再用
+                    // text-muted-foreground（那是给普通底色用的灰），会糊得看不清；
+                    // 用透明度压一档即可（与其它 tooltip 的次要行同一做法）
+                    <div className="mt-0.5 text-pretty opacity-80">{tipDescription}</div>
+                  ) : null}
+                </>
+              )
+            }
+          : {}),
         active:
           value?.backend === 'acp' &&
           value.configId === agent.id &&
@@ -436,6 +537,106 @@ export function ModelPicker({
         )
       : []
 
+  /**
+   * 行的可读名：需要看完整 id / 描述的行（ACP 模型）用气泡包住。
+   *
+   * 触屏用**长按**打开（不是点按——点按是选中模型）：
+   * - `allowTouch` 只让组件在触屏上渲染出来，Radix 的触发器本身还会忽略 touch 指针
+   *   （`pointerType === 'touch'` 直接 return），所以必须自己控制 `open`；
+   * - 按住约 450ms 打开气泡，并在随后的一小段窗口里忽略 Radix 的自动关闭 ——
+   *   抬手会依次触发 pointerleave / click，不拦的话气泡立刻被关掉，只能看到一闪；
+   * - 长按之后的这一次 click 要**吃掉**（只查看，不选中）；手指移动超过阈值（列表滚动）
+   *   就取消长按。
+   */
+  const [tipKey, setTipKey] = useState<string | null>(null)
+  const tipHoldUntil = useRef(0)
+  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pressStart = useRef<{ x: number; y: number } | null>(null)
+  const longPressedKey = useRef<string | null>(null)
+  const clearPress = (): void => {
+    if (pressTimer.current !== null) {
+      clearTimeout(pressTimer.current)
+      pressTimer.current = null
+    }
+  }
+  useEffect(() => clearPress, [])
+
+  const touchTipHandlers = (
+    row: PickerRow
+  ): {
+    onPointerDown: (event: ReactPointerEvent<HTMLSpanElement>) => void
+    onPointerMove: (event: ReactPointerEvent<HTMLSpanElement>) => void
+    onPointerUp: () => void
+    onPointerCancel: () => void
+    onPointerLeave: () => void
+    onClickCapture: (event: ReactMouseEvent<HTMLSpanElement>) => void
+    onContextMenu: (event: ReactMouseEvent<HTMLSpanElement>) => void
+  } => ({
+    onPointerDown: (event) => {
+      if (event.pointerType !== 'touch') return
+      clearPress()
+      longPressedKey.current = null
+      // 换一行重新按：上一行还挂着的气泡先收掉，别等到新气泡出来才换
+      setTipKey(null)
+      pressStart.current = { x: event.clientX, y: event.clientY }
+      pressTimer.current = setTimeout(() => {
+        pressTimer.current = null
+        longPressedKey.current = row.key
+        // 抬手前后 Radix 会连续要求关闭，留一个窗口让用户看清
+        tipHoldUntil.current = Date.now() + 1500
+        setTipKey(row.key)
+      }, 450)
+    },
+    onPointerMove: (event) => {
+      if (event.pointerType !== 'touch' || !pressStart.current) return
+      const dx = event.clientX - pressStart.current.x
+      const dy = event.clientY - pressStart.current.y
+      // 手指在列表上滑动 = 滚动，不该算长按
+      if (Math.hypot(dx, dy) > 10) clearPress()
+    },
+    onPointerUp: clearPress,
+    onPointerCancel: clearPress,
+    onPointerLeave: clearPress,
+    onClickCapture: (event) => {
+      if (longPressedKey.current !== row.key) return
+      longPressedKey.current = null
+      // 长按只为看 id：这一下不要顺带选中模型
+      event.preventDefault()
+      event.stopPropagation()
+    },
+    onContextMenu: (event) => {
+      // 长按在移动端会招来系统菜单 / 文本选择，这里一并压掉
+      if (longPressedKey.current === row.key) event.preventDefault()
+    }
+  })
+
+  const rowLabel = (row: PickerRow): ReactNode =>
+    row.tip ? (
+      <Tooltip
+        allowTouch
+        open={tipKey === row.key}
+        onOpenChange={(next) => {
+          if (next) {
+            setTipKey(row.key)
+            return
+          }
+          if (Date.now() < tipHoldUntil.current) return
+          setTipKey(null)
+        }}
+      >
+        <TooltipTrigger asChild>
+          <span className="block select-none truncate" {...touchTipHandlers(row)}>
+            {row.label}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top" align="start" className="max-w-80 text-left text-pretty">
+          {row.tip}
+        </TooltipContent>
+      </Tooltip>
+    ) : (
+      row.label
+    )
+
   const renderSection = (section: PickerSection): ReactNode => (
     <div key={section.key}>
       {/* 二级里的小标题（配置名）比一级分组再轻一档：贴紧下面的行 */}
@@ -449,7 +650,7 @@ export function ModelPicker({
           active={row.active}
           onSelect={row.onSelect}
         >
-          {row.label}
+          {rowLabel(row)}
         </PickerItem>
       ))}
     </div>
@@ -511,7 +712,16 @@ export function ModelPicker({
                 activeAcpAgent ? presetIcon(activeAcpAgent) : builtinIcon('size-3.5')
               }
               label={level2Label}
-              action={level2Acp ? gear('acp') : gear('models')}
+              action={
+                level2Acp ? (
+                  <span className="flex items-center gap-1">
+                    {activeAcpAgent ? refreshAcp(activeAcpAgent) : null}
+                    {gear('acp')}
+                  </span>
+                ) : (
+                  gear('models')
+                )
+              }
               onBack={agentLocked ? undefined : leaveGroup}
             />
           ) : (
@@ -534,24 +744,43 @@ export function ModelPicker({
             />
             <PickerList>
               {level2Acp ? (
-                level2AcpRows.length ? (
-                  level2AcpRows.map((row) => (
-                    <PickerItem
-                      key={row.key}
-                      value={row.key}
-                      title={row.title}
-                      hint={row.hint}
-                      active={row.active}
-                      onSelect={row.onSelect}
-                    >
-                      {row.label}
-                    </PickerItem>
-                  ))
-                ) : (
-                  <PickerNote>
-                    {keyword ? t('没有匹配的模型') : t('它没有可选的模型')}
-                  </PickerNote>
-                )
+                <>
+                  {activeAcpAgent && loadingAcp === activeAcpAgent.id && (
+                    <PickerNote>
+                      <span className="inline-flex items-center gap-1">
+                        <Loader2 className="size-3.5 animate-spin" />
+                        {t('正在加载模型清单…')}
+                      </span>
+                    </PickerNote>
+                  )}
+                  {activeAcpLoadError && (
+                    <PickerNote title={activeAcpLoadError.detail}>
+                      {activeAcpLoadError.detail
+                        ? activeAcpLoadError.message
+                        : t('模型清单加载失败：{error}', { error: activeAcpLoadError.message })}
+                    </PickerNote>
+                  )}
+                  {level2AcpRows.length ? (
+                    level2AcpRows.map((row) => (
+                      <PickerItem
+                        key={row.key}
+                        value={row.key}
+                        title={row.title}
+                        hint={row.hint}
+                                      active={row.active}
+                        onSelect={row.onSelect}
+                      >
+                        {rowLabel(row)}
+                      </PickerItem>
+                    ))
+                  ) : activeAcpAgent &&
+                    loadingAcp !== activeAcpAgent.id &&
+                    !acpLoadErrors[activeAcpAgent.id] ? (
+                    <PickerNote>
+                      {keyword ? t('没有匹配的模型') : t('它没有可选的模型')}
+                    </PickerNote>
+                  ) : null}
+                </>
               ) : visibleBuiltinSections.length ? (
                 visibleBuiltinSections.map((section) => renderSection(section))
               ) : (

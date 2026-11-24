@@ -56,12 +56,13 @@
  * 走 `ConfirmQueue`：**一屏只看一项**（可左右翻），高度与单张卡一致；内置工具再给
  * 「全部允许 / 全部拒绝」批量答复。
  */
-import { useState, type ReactNode } from 'react'
-import { ArrowRight, ChevronLeft, ChevronRight, ShieldAlert } from 'lucide-react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { ArrowRight, ChevronLeft, ChevronRight, ShieldAlert, Timer, Unlock } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
 import { LiquidGlassEdgeLight, useLiquidGlassLens } from '@fizz/ui/liquid-glass'
 import { toolLabel } from '@fizz/agent-kit/shared/lib/parts'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
+import { formatCountdown, remainingMs } from '@fizz/agent-kit/shared/lib/confirm-countdown'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import type { AgentConfirmOption } from '@fizz/contracts/types'
 import type { AgentConfirmRequest } from '@fizz/contracts/agent-api'
@@ -126,6 +127,44 @@ function ConfirmCommand({ command }: { command: string }) {
 }
 
 /**
+ * 自动拒绝的倒计时。
+ *
+ * 用服务端给的**绝对到期时刻**每秒重算，而不是 `setTimeout` 减一：切到队列里的下一张卡时
+ * 每张卡的到期时刻不同，减一会把上一张的进度带过来。`expiresAt` 不存在（超时 0 = 一直等）
+ * 时这个组件根本不挂载 —— 「别显示」是调用点的条件，不是这里的空状态。
+ *
+ * 最后一分钟转 amber：这是唯一需要用户「快点决定」的时刻，但不要用红色 —— 红色在这套
+ * 界面里是破坏性操作的语义（拒绝按钮），倒计时只是提醒。
+ */
+function ConfirmCountdown({ expiresAt }: { expiresAt: number }) {
+  const tr = useT()
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    // 切到另一张卡时立刻对齐一次（同一个组件实例的 expiresAt 会变）
+    setNow(Date.now())
+    const timer = setInterval(() => {
+      const current = Date.now()
+      setNow(current)
+      // 到点后服务端会推 confirm-resolved 把卡撤掉；先停表，别空转
+      if (current >= expiresAt) clearInterval(timer)
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [expiresAt])
+  const left = remainingMs(expiresAt, now)
+  return (
+    <div
+      className={cn(
+        'flex items-center gap-1 text-xs tabular-nums',
+        left <= 60_000 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'
+      )}
+    >
+      <Timer className="size-3.5 shrink-0" />
+      {tr('剩余 {time} 后自动拒绝', { time: formatCountdown(left) })}
+    </div>
+  )
+}
+
+/**
  * 题干：盾牌图标 + 意图（+ 命令原文），工具名小标 / agent 名小标 / 批量计数贴右端。
  *
  * **首行就是整张卡的标题**：改造前这里上面还压着一行固定的「需要你确认」，两行说的是
@@ -186,6 +225,23 @@ function ConfirmBody({
         </span>
       </div>
       <ConfirmCommand command={confirm.command} />
+      {confirm.sandboxJustification && (
+        /* 提权与「允许执行」是两件事：这条单独占一行，把「放宽到哪一档 + 为什么」摊开，
+           否则用户只会看到一张更严的命令卡，不知道自己正在批准一次越界写入。 */
+        <div className="flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-xs leading-4 text-amber-700 dark:text-amber-300">
+          <Unlock className="mt-0.5 size-3.5 shrink-0" />
+          <span className="min-w-0 break-words">
+            {tr('放宽「命令沙箱」到{level}，仅这一次：{reason}', {
+              level:
+                confirm.sandboxRequestedMode === 'danger-full-access'
+                  ? tr('完全访问')
+                  : tr('仅工作区'),
+              reason: confirm.sandboxJustification
+            })}
+          </span>
+        </div>
+      )}
+      {confirm.expiresAt !== undefined && <ConfirmCountdown expiresAt={confirm.expiresAt} />}
     </div>
   )
 }

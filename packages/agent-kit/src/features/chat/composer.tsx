@@ -39,7 +39,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from '@fizz/ui/dropdown-menu'
-import { GLASS_PANEL_CLASS, LiquidGlassButton, LiquidGlassEdgeLight, LiquidGlassSurface, useLiquidGlassLens } from '@fizz/ui/liquid-glass'
+import {
+  GLASS_PANEL_CLASS,
+  LiquidGlassButton,
+  LiquidGlassEdgeLight,
+  LiquidGlassSurface,
+  useGlassPanel,
+  useLiquidGlassLens
+} from '@fizz/ui/liquid-glass'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@fizz/ui/select'
 import type { AiPermissionMode } from '@fizz/contracts/types'
 import {
@@ -608,6 +615,8 @@ export function Composer({
   const beamActive = beamRequested && !reducedMotion
   /** 输入卡片的边缘流光：指针在卡片上移动时只亮边框那一圈 */
   const lens = useLiquidGlassLens()
+  /** 斜线命令 / @ 点名浮层的玻璃外壳（底 / 描边 / 景深 + 跟随指针的边缘流光） */
+  const paletteGlass = useGlassPanel()
   return (
     <Popover open={paletteVisible}>
       {/*
@@ -927,69 +936,86 @@ export function Composer({
           onEscapeKeyDown={(e) => e.preventDefault()}
           role="listbox"
           aria-label={mentionVisible ? tr('点名智能体') : tr('斜线命令')}
-          className="w-[var(--radix-popover-trigger-width)] min-w-64 max-h-64 overflow-y-auto rounded-xl p-1"
+          // 玻璃外壳与边缘流光（指针追踪）由 `useGlassPanel` 统一给
+          {...paletteGlass.handlers}
+          className={cn(
+            // 与模型选择面板同一套：实色底 + 淡描边 + 景深投影来自 `useGlassPanel`，
+            // `ring-0` 顶掉 `PopoverContent` 自带的淡 ring —— 勾边只留玻璃那一圈。
+            'flex max-h-64 w-[var(--radix-popover-trigger-width)] min-w-64 flex-col gap-0 overflow-hidden rounded-xl p-0 ring-0',
+            paletteGlass.className
+          )}
         >
-          {mentionVisible
-            ? mentionMatches.map((agent, i) => (
-                <button
-                  key={agent.id}
-                  type="button"
-                  role="option"
-                  aria-selected={i === mentionHighlight}
-                  className={cn(
-                    'flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors',
-                    i === mentionHighlight ? 'bg-foreground/10' : 'hover:bg-foreground/5'
-                  )}
-                  onMouseEnter={() => setMentionHighlight(i)}
-                  onClick={() => completeMention(agent)}
-                >
-                  <AtSign className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-xs font-medium text-foreground">
-                      @{agent.name}
-                    </span>
-                    {agent.role && (
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {agent.role}
-                      </span>
+          {paletteGlass.edge}
+          {/* 滚动下放到内层：边缘流光那两层是 `absolute inset-0`，放在滚动容器里会跟着名单滚走 */}
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1">
+            {mentionVisible
+              ? mentionMatches.map((agent, i) => (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    role="option"
+                    aria-selected={i === mentionHighlight}
+                    className={cn(
+                      'flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors',
+                      i === mentionHighlight ? 'bg-foreground/10' : 'hover:bg-foreground/5'
                     )}
-                  </span>
-                </button>
-              ))
-            : candidates.map((command, i) => (
-            <button
-              key={command.name}
-              type="button"
-              role="option"
-              aria-selected={i === highlight}
-              className={cn(
-                'flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors',
-                i === highlight ? 'bg-foreground/10' : 'hover:bg-foreground/5'
-              )}
-              onMouseEnter={() => setHighlight(i)}
-              onClick={() => {
-                const parsed = parseSlashInput(value)
-                const args = parsed?.command === command.name ? parsed.args : ''
-                if (!args && !command.noArgs) completeCommand(command)
-                else {
-                  onChange('')
-                  command.run(slashContext!, args)
-                }
-              }}
-            >
-              <Terminal className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1">
-                <span className="flex items-baseline gap-1.5">
-                  <span className="font-mono text-xs text-foreground">/{command.name}</span>
-                  <span className="text-xs font-medium text-foreground">{command.displayName}</span>
-                  {command.argsHint && (
-                    <span className="truncate text-xs text-muted-foreground">{command.argsHint}</span>
-                  )}
-                </span>
-                <span className="block text-xs text-muted-foreground">{command.description}</span>
-              </span>
-            </button>
-          ))}
+                    onMouseEnter={() => setMentionHighlight(i)}
+                    onClick={() => completeMention(agent)}
+                  >
+                    <AtSign className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-xs font-medium text-foreground">
+                        @{agent.name}
+                      </span>
+                      {agent.role && (
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {agent.role}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                ))
+              : candidates.map((command, i) => (
+                  <button
+                    key={command.name}
+                    type="button"
+                    role="option"
+                    aria-selected={i === highlight}
+                    className={cn(
+                      'flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors',
+                      i === highlight ? 'bg-foreground/10' : 'hover:bg-foreground/5'
+                    )}
+                    onMouseEnter={() => setHighlight(i)}
+                    onClick={() => {
+                      const parsed = parseSlashInput(value)
+                      const args = parsed?.command === command.name ? parsed.args : ''
+                      if (!args && !command.noArgs) completeCommand(command)
+                      else {
+                        onChange('')
+                        command.run(slashContext!, args)
+                      }
+                    }}
+                  >
+                    <Terminal className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-baseline gap-1.5">
+                        <span className="font-mono text-xs text-foreground">/{command.name}</span>
+                        <span className="text-xs font-medium text-foreground">
+                          {command.displayName}
+                        </span>
+                        {command.argsHint && (
+                          <span className="truncate text-xs text-muted-foreground">
+                            {command.argsHint}
+                          </span>
+                        )}
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        {command.description}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+          </div>
         </PopoverContent>
       )}
     </Popover>

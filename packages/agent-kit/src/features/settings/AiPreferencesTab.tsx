@@ -20,6 +20,7 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
 import {
+  Box,
   Check,
   Footprints,
   Layers,
@@ -51,6 +52,7 @@ import {
   SUBAGENT_MAX_STEPS,
   SUBAGENT_META,
   SUBAGENT_MIN_STEPS,
+  type CommandSandboxMode,
   type SubagentDefinition,
   type SubagentId
 } from '@fizz/contracts/types'
@@ -227,6 +229,25 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
           options={permissionOptions()}
         />
         {current && <p className="text-xs leading-4 text-muted-foreground">{current.hint}</p>}
+      </section>
+
+      <section className="space-y-2">
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          <Box className="size-3.5" />
+          {tr('命令沙箱')}
+        </div>
+        <p className="text-xs leading-4 text-muted-foreground">
+          {tr('开启后 bash 命令只能写工作区与临时目录，越界写入由系统沙箱拦截（只约束文件写入，不拦网络）。Linux 需要 bubblewrap、macOS 需要 sandbox-exec、Windows 使用随包的受限令牌后端（x64）；远端 SSH 工作区还要求远端主机装有 bwrap。缺后端的机器上命令会直接失败，请保持关闭。下一轮对话生效。')}
+        </p>
+        <Segmented<CommandSandboxMode>
+          ariaLabel={tr('命令沙箱')}
+          value={app.sandboxMode}
+          onChange={app.setSandboxMode}
+          options={[
+            { value: 'off', label: tr('关闭') },
+            { value: 'workspace-write', label: tr('仅工作区') }
+          ]}
+        />
       </section>
 
       <section className="space-y-2">

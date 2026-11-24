@@ -24,6 +24,7 @@ Fizz 是自托管的 AI Agent 工作台：**所有能力跑在一个 Node 进程
 | `packages/agent` | `resolveModel`、agent 循环（`engine.ts`）、对话编排 | 零 Electron |
 | `packages/tools` | Agent 工具集 + 项目级工具 | `project-tools` 只准挂给项目管理助手 |
 | `packages/skills` `plugin` `mcp` `acp` `git` `shells` | 技能 / 插件 / MCP / 外部 agent / worktree / shell 探测 | 零 Electron |
+| `packages/win-sandbox` | Windows 写受限沙箱（受限令牌 + capability SID）与 runner 产物 | 零 Electron；koffi 懒加载，非 win32 不碰原生层；**runner 必须独立进程**（崩了不能拖主进程） |
 | `packages/agent-client` | 能力层：api / host 契约 / 宿主兜底 | **零 React、零 JSX**；不得反向依赖 kit / ui / host / apps |
 | `packages/agent-kit` | `src/shell`（web+desktop 外壳）+ `src/features`（业务面板） | 不得依赖 `agent-host` / `apps`；包内**没有 `@/*` 别名**，用 `@fizz/agent-kit/...` 互引 |
 | `packages/ui` `ui-tokens` `i18n` | 无业务原语、设计令牌、中英文案 | `ui` 只吃 props 与令牌，不发请求、不读领域状态 |
@@ -73,6 +74,7 @@ Fizz 是自托管的 AI Agent 工作台：**所有能力跑在一个 Node 进程
 - **「始终允许」的键是命令原文，不是工具名**（按工具名记 = 点一次放行该工具的一切调用）；落盘 `approvedCommands`，每次审批前现读盘。「始终拒绝」只记内存。
 - 一批审批走 **`ConfirmQueue`**（一屏一项 + 批量答复），不能一条一张卡地摞——会把输入框顶出屏幕。
 - 同一终端上的客户端工具调用必须串行（`SERIALIZED_TOOLS` + `serializeOn`）：模型一批 tool-call 是并行下发的。
+- **Windows 沙箱下命令只能用 PowerShell**：MSYS2 / Git Bash 在限制性令牌里**必然**启动失败（cygheap 改自己令牌的 `DefaultDacl` 被拒 → `couldn't create signal pipe, Win32 error 5`），cmd / pwsh 同沙箱正常。所以 `resolveShellSpawn(command, { sandboxed })` 在 win32 + 沙箱时换 PowerShell，`shellNote` 必须同步换成 PowerShell 语法（否则模型照旧写 `ls | grep` 一条条失败）；`sandboxed` 由 `opts.sandbox !== undefined` 得来，前台与后台两处都要传。
 
 ### 前端
 
@@ -101,6 +103,8 @@ Fizz 是自托管的 AI Agent 工作台：**所有能力跑在一个 Node 进程
 
 ### 打包与发版
 
+- **Windows 沙箱是我们自己的代码，一个 `@deepseek-ai/*` 包都不引**：`packages/win-sandbox` 移植自 deepseek-harness（MIT），唯一第三方依赖是 `koffi`（FFI，要 dlopen 同目录的原生 `.node`，所以只能 external + `asarUnpack`，内联会破坏它的路径探测）。
+- **runner 是独立构建产物，不是被主 bundle 内联的模块**：`packages/win-sandbox/build.mjs` 把它打成单文件 `win-sandbox/runner.mjs`，`build:server` / `build:desktop` 末尾各自产出（server → `dist/win-sandbox/`，desktop → `out/win-sandbox/`）。它必须以 `ELECTRON_RUN_AS_NODE=1` 的**纯 node** 进程跑，因此不读 asar；`resolveWindowsRunner()` 按固定候选定位，asar 内路径**先换** `app.asar.unpacked` 镜像（asar 内 `existsSync` 也为真是坑）。忘了构建的表现是「未找到 windows-acl runner」，不是缺模块报错。
 - **版本号只有 `apps/desktop/package.json` 那一份算数**（`app.getVersion()`、`latest.yml`、产物名同源于它）；根 `package.json` 的 version 不参与打包。升版本用 `npm run version:set -- v0.1.3` 一次改齐，**别手改一处漏一处**（`apps/server/src/app.ts` 的 `VERSION` 是第三处硬编码）。
 - **tag 名不参与版本比较**：改 tag 不改 version = 用户永远收不到更新。
 - 打包脚本一律带 `--publish never`（发布只由 Action 做）；产物落在 **`apps/desktop/release/`**（`directories.output` 相对 project 目录）；Release 的 `files` 里**必须含 `latest*.yml`**，漏了表现为「永远收不到更新」。

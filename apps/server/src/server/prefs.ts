@@ -14,12 +14,14 @@
  *
  * ⚠️ 这里只读、不写：写入只有 `POST /api/prefs` 一条路（`domain.savePrefs`）。
  */
-import type { AiPermissionMode } from '@fizz/contracts/types'
+import type { AiPermissionMode, CommandSandboxMode } from '@fizz/contracts/types'
 import { domain } from './state'
 
 /** 服务端执行语义相关的偏好（已归一化：数字一定在合法区间、枚举一定在集合内） */
 export interface ServerAgentPrefs {
   permissionMode: AiPermissionMode
+  /** 命令沙箱：off / workspace-write（没有可用后端的平台由工具层 fail closed） */
+  sandboxMode: CommandSandboxMode
   /** 审批超时（毫秒）；0 = 一直等 */
   confirmTimeoutMs: number
   maxRetries: number
@@ -32,6 +34,7 @@ export function agentPrefs(): ServerAgentPrefs {
   const prefs = domain.getPrefs()
   return {
     permissionMode: prefs['fizz.web.permissionMode'] as AiPermissionMode,
+    sandboxMode: prefs['fizz.web.sandboxMode'] as CommandSandboxMode,
     // 前端存的是**分钟**（设置页的输入单位），这里换成毫秒给 confirm-gate
     confirmTimeoutMs: Number(prefs['fizz.web.confirmTimeout']) * 60_000,
     maxRetries: Number(prefs['fizz.web.maxRetries']),

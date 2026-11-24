@@ -3,12 +3,7 @@ import { cn } from "cn"
 import { CheckIcon, ChevronRightIcon, CircleIcon } from "lucide-react"
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui"
 import { useDismissFocusGuard } from "./focus-dismiss"
-import {
-  clearLiquidLens,
-  GLASS_PANEL_CLASS,
-  LiquidGlassPanel,
-  trackLiquidLens,
-} from "./liquid-glass"
+import { useGlassPanel } from "./liquid-glass"
 import { resolveCollisionPadding } from "./safe-area"
 import { stopPortalClick } from "./portal-click-guard"
 
@@ -49,10 +44,13 @@ function DropdownMenuContent({
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
   // 指针关闭不回焦（否则触发器会被 :focus-visible 描成主色边框），见 focus-dismiss.ts
   const dismissFocus = useDismissFocusGuard()
+  // 液态玻璃外壳与指针追踪（边缘流光）由 Hook 统一给
+  const glass = useGlassPanel(props)
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
         {...props}
+        {...glass.handlers}
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
         collisionPadding={resolveCollisionPadding(props.collisionPadding)}
@@ -83,24 +81,11 @@ function DropdownMenuContent({
           // 尺寸兜底（窄窗口 / 小屏）：高度取 Radix 可用高度与视口高 - 2rem 的较小者（超了内滚），
           // 宽度封顶视口宽 - 1rem —— 不封顶的话长菜单会撑出视口，多出来的那截被浏览器直接裁掉。
           "relative z-50 flex max-h-[min(var(--radix-dropdown-menu-content-available-height),calc(100vh_-_2rem))] max-w-[calc(100vw_-_1rem)] min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) flex-col overflow-hidden rounded-xl text-popover-foreground data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
-          GLASS_PANEL_CLASS,
+          glass.className,
           className
         )}
-        // 玻璃的边缘光圈：指针位置写到容器自身的 CSS 变量上，由 `LiquidGlassPanel` 读取
-        onPointerEnter={(event) => {
-          trackLiquidLens(event)
-          props.onPointerEnter?.(event)
-        }}
-        onPointerMove={(event) => {
-          trackLiquidLens(event)
-          props.onPointerMove?.(event)
-        }}
-        onPointerLeave={(event) => {
-          clearLiquidLens(event)
-          props.onPointerLeave?.(event)
-        }}
       >
-        <LiquidGlassPanel />
+        {glass.edge}
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1">
           {children}
         </div>
@@ -288,9 +273,11 @@ function DropdownMenuSubContent({
 }: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
   // 子菜单没有 `onCloseAutoFocus`（Radix 的 SubContent 不挂 FocusScope），
   // 关闭后本来就不回焦，不需要守卫。
+  const glass = useGlassPanel(props)
   return (
     <DropdownMenuPrimitive.SubContent
       {...props}
+      {...glass.handlers}
       data-slot="dropdown-menu-sub-content"
       // 同 Content：子菜单也是 portal，点击不冒到外面那一行
       onClick={(event) => {
@@ -301,23 +288,11 @@ function DropdownMenuSubContent({
         // 与主面板同一套液态玻璃外壳 + 边缘流光（滚动同样下放到内层）：
         // 子菜单是**另一个组件**（DropdownMenuSubContent），不会跟着 Content 一起改。
         "relative z-50 flex min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) flex-col overflow-hidden rounded-xl text-popover-foreground data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
-        GLASS_PANEL_CLASS,
+        glass.className,
         className
       )}
-      onPointerEnter={(event) => {
-        trackLiquidLens(event)
-        props.onPointerEnter?.(event)
-      }}
-      onPointerMove={(event) => {
-        trackLiquidLens(event)
-        props.onPointerMove?.(event)
-      }}
-      onPointerLeave={(event) => {
-        clearLiquidLens(event)
-        props.onPointerLeave?.(event)
-      }}
     >
-      <LiquidGlassPanel />
+      {glass.edge}
       <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1">
         {children}
       </div>

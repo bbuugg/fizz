@@ -31,6 +31,7 @@ import {
   loadConfirmTimeout,
   loadMaxRetries,
   loadMaxSteps,
+  loadSandboxMode,
   loadToolCallConcurrency,
   loadToolIntent,
 } from "./storage";
@@ -78,6 +79,7 @@ export const createConversationSlice: StateCreator<
     runningConversations: {},
     blankIntent: false,
     permissionMode: loadPermissionMode(),
+    sandboxMode: loadSandboxMode(),
     confirmTimeoutMin: loadConfirmTimeout(),
     maxRetries: loadMaxRetries(),
     toolCallConcurrency: loadToolCallConcurrency(),

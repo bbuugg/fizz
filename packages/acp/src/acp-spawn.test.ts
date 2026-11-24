@@ -8,12 +8,13 @@
  *
  * 所以两件事都不能退化：
  * ① 探针自己兜底到主目录（`resolveProbeCwd`）；
- * ② 真起不来时，报错必须说清是「命令」还是「工作目录」的问题（`describeSpawnError`）。
+ * ② 真起不来时，摘要必须说清是「命令」还是「工作目录」的问题，完整路径留在
+ *    `AcpSpawnError.detail`（模型选择器只显示摘要，检测 tooltip 才展开细节）。
  */
 import { describe, expect, it } from 'vitest'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describeSpawnError, resolveProbeCwd } from './acp'
+import { AcpSpawnError, describeSpawnError, resolveProbeCwd } from './acp'
 
 /** 造一个确定不存在的路径（不碰磁盘：只拼字符串） */
 function missingPath(): string {
@@ -37,16 +38,20 @@ describe('describeSpawnError', () => {
   const enoent = (): Error =>
     Object.assign(new Error('spawn codebuddy ENOENT'), { code: 'ENOENT' })
 
-  it('ENOENT 且 cwd 不存在 → 指明是工作目录的问题', () => {
+  it('ENOENT 且 cwd 不存在 → 摘要一行说明，路径留在 detail', () => {
     const cwd = missingPath()
-    const message = describeSpawnError(enoent(), 'codebuddy', cwd).message
-    expect(message).toContain('工作目录不存在')
-    expect(message).toContain(cwd)
+    const err = describeSpawnError(enoent(), 'codebuddy', cwd)
+    expect(err).toBeInstanceOf(AcpSpawnError)
+    expect(err.message).toContain('工作目录不存在')
+    // 选择器只显示摘要：路径不能挤在主文案里（会变成「加载失败：启动失败：…（路径）」）
+    expect(err.message).not.toContain(cwd)
+    expect((err as AcpSpawnError).detail).toContain(cwd)
   })
 
-  it('ENOENT 但 cwd 正常 → 指明是命令的问题', () => {
-    const message = describeSpawnError(enoent(), 'codebuddy', tmpdir()).message
-    expect(message).toContain('命令不存在或无法执行')
+  it('ENOENT 但 cwd 正常 → 指明是命令的问题，工作目录进 detail', () => {
+    const err = describeSpawnError(enoent(), 'codebuddy', tmpdir())
+    expect(err.message).toContain('命令不存在或无法执行')
+    expect((err as AcpSpawnError).detail).toContain(tmpdir())
   })
 
   it('不是 ENOENT 的错误原样抛出（别改写 agent 自己的报错）', () => {

@@ -9,7 +9,11 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { sftpMock, execMock } = vi.hoisted(() => ({
+const { sftpMock, execMock, sandboxMock } = vi.hoisted(() => ({
+  sandboxMock: {
+    remoteSandboxAvailability: vi.fn(),
+    forgetRemoteSandbox: vi.fn()
+  },
   sftpMock: {
     stat: vi.fn(),
     list: vi.fn(),
@@ -24,6 +28,7 @@ const { sftpMock, execMock } = vi.hoisted(() => ({
 
 vi.mock('./sftp', () => ({ sftpService: sftpMock }))
 vi.mock('./exec', () => ({ remoteExecService: execMock }))
+vi.mock('./sandbox', () => sandboxMock)
 
 import { createRemoteBackend } from './workspace-backend'
 
@@ -322,5 +327,36 @@ describe('exec', () => {
     const backend = createRemoteBackend('h1', '/srv/app')
     await expect(backend.exec('ls', { cwd: '/etc' })).rejects.toThrow(/越界/)
     expect(execMock.exec).not.toHaveBeenCalled()
+  })
+
+  it('带沙箱策略时把命令包进远端 bwrap，并按方言归因拒绝', async () => {
+    sandboxMock.remoteSandboxAvailability.mockResolvedValue({ available: true })
+    execMock.exec.mockResolvedValue(
+      execResult({ exitCode: 1, stderr: 'bash: /etc/x: Read-only file system\n' })
+    )
+    const backend = createRemoteBackend('h1', '/srv/app')
+    const result = await backend.exec('rm /etc/x', {
+      sandbox: { mode: 'workspace-write', workspaceRoot: '/srv/app' }
+    })
+
+    const [, script] = execMock.exec.mock.calls[0] as [string, string]
+    expect(script.startsWith('bwrap ')).toBe(true)
+    expect(script).toContain(`'--bind' '/srv/app' '/srv/app'`)
+    expect(script).toContain(`'--' 'sh' '-c' 'rm /etc/x'`)
+    expect(result.sandbox).toEqual({ mode: 'workspace-write', denied: true })
+  })
+
+  it('远端没有 bwrap 时命令不启动（fail closed）', async () => {
+    sandboxMock.remoteSandboxAvailability.mockResolvedValue({
+      available: false,
+      reason: 'bwrap: command not found'
+    })
+    const backend = createRemoteBackend('h1', '/srv/app')
+    const result = await backend.exec('ls', {
+      sandbox: { mode: 'workspace-write', workspaceRoot: '/srv/app' }
+    })
+    expect(execMock.exec).not.toHaveBeenCalled()
+    expect(result.reason).toBe('error')
+    expect(result.error).toContain('bwrap')
   })
 })

@@ -362,6 +362,9 @@ export const CHAT: Record<string, string> = {
   '跟随 agent 默认': 'Follow agent default',
   '还没有模型配置': 'No model configs yet',
   '它没有可选的模型': 'It has no selectable models',
+  '正在加载模型清单…': 'Loading model list…',
+  '模型清单加载失败：{error}': 'Failed to load models: {error}',
+  '重新加载模型清单': 'Reload model list',
   '搜索模型 / Agent': 'Search models / agents',
   '没有匹配的模型': 'No matching models',
   '远端工作区不能用外部 Agent（ACP）：它要在服务端本机起一个进程，够不到 SSH 主机上的目录。请用内置模型。':

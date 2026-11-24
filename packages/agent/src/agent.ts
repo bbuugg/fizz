@@ -73,7 +73,7 @@ import {
   type AgentStopReason
 } from '@fizz/contracts/types'
 import { extractNestedDocPaths, readNestedProjectDocs, type ProjectDoc } from './project-doc'
-import type { WorkspaceBackend } from '@fizz/contracts/workspace'
+import type { SandboxMode, WorkspaceBackend } from '@fizz/contracts/workspace'
 import type { Context, TurnFinishPayload, TurnStartPayload } from '@fizz/plugin'
 import type {
   AgentChatMessage,
@@ -83,6 +83,7 @@ import type {
   AiModelConfig,
   AiPermissionMode,
   AiReasoningEffort,
+  CommandSandboxMode,
   RunAgentResult,
   SubagentDefinition,
   SubagentTurnUsage,
@@ -134,6 +135,12 @@ export interface RunAgentOptions {
    */
   getPermissionMode?: () => AiPermissionMode
   /**
+   * 命令沙箱开关（设置 → AI → 偏好，默认 `off`）。开启后 `bash`（前台与后台）经平台
+   * 沙箱执行，只允许写工作区与临时目录；拿不到后端时**命令不执行**（fail closed）。
+   * 只作用于本地工作区。
+   */
+  sandboxMode?: CommandSandboxMode
+  /**
    * 装配这一轮的静态部分（系统提示词 + 工具集）。
    *
    * 不传 = `assembleStandard`（内置文件 / 联网工具 + 工作区版提示词）。
@@ -169,6 +176,8 @@ export interface RunAgentOptions {
     command: string
     cwd: string
     title: string
+    /** 本次该用的沙箱档（含提权结果）；不传 = 调用方按自己的偏好解析 */
+    sandboxMode?: SandboxMode
   }) => Promise<{ id: string }>
   signal?: AbortSignal
   /**
@@ -626,6 +635,8 @@ export interface AgentAssemblyDeps {
    * 快照死在整轮里；传 getter 则闸门**每次工具调用现取**，用户中途切档立刻生效。
    */
   getPermissionMode?: () => AiPermissionMode
+  /** 命令沙箱开关（见 `RunAgentOptions.sandboxMode`） */
+  sandboxMode?: CommandSandboxMode
   requestConfirm?: (req: AgentConfirmInput) => Promise<boolean>
   /** 流事件出口：工具输出增量经它直出（不与入参增量的缓冲混用） */
   onEvent?: (event: AgentStreamEvent) => void
@@ -636,6 +647,8 @@ export interface AgentAssemblyDeps {
     command: string
     cwd: string
     title: string
+    /** 本次该用的沙箱档（含提权结果）；不传 = 调用方按自己的偏好解析 */
+    sandboxMode?: SandboxMode
   }) => Promise<{ id: string }>
   extraTools?: Record<string, unknown>
   /** 调用方额外挂的插件（浏览器 / MCP 桥接 / 磁盘插件等），按数组顺序挂载 */
@@ -718,6 +731,8 @@ export function assembleStandard(deps: AgentAssemblyDeps): AgentAssembly {
         permissionMode: deps.permissionMode ?? 'full',
         // 运行中活取权限档（用户在整轮中途切档时，闸门立刻按新档裁决）
         ...(deps.getPermissionMode ? { getPermissionMode: deps.getPermissionMode } : {}),
+        // 命令沙箱开关（不传 = 不隔离）
+        ...(deps.sandboxMode ? { sandboxMode: deps.sandboxMode } : {}),
         // exactOptionalPropertyTypes 下不能传 undefined，条件展开
         ...(deps.requestConfirm ? { requestConfirm: deps.requestConfirm } : {}),
         // 单条命令停止 + 实时输出：三个回调成组注入（缺 commandStops = 都不注入）
@@ -1194,6 +1209,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
     projectDoc: opts.projectDoc ?? null,
     ...(opts.permissionMode ? { permissionMode: opts.permissionMode } : {}),
     ...(opts.getPermissionMode ? { getPermissionMode: opts.getPermissionMode } : {}),
+    ...(opts.sandboxMode ? { sandboxMode: opts.sandboxMode } : {}),
     ...(opts.requestConfirm ? { requestConfirm: opts.requestConfirm } : {}),
     ...(opts.commandStops ? { commandStops: opts.commandStops } : {}),
     ...(opts.onBackgroundCommand ? { onBackgroundCommand: opts.onBackgroundCommand } : {}),

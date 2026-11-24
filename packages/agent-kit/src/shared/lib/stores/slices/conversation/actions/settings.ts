@@ -9,6 +9,7 @@ import {
   saveConfirmTimeout,
   saveMaxRetries,
   saveMaxSteps,
+  saveSandboxMode,
   saveToolCallConcurrency,
   saveToolIntent,
 } from "../storage";
@@ -20,6 +21,7 @@ export function createSettingsActions(
 ): Pick<
   ConversationSlice,
   | "setPermissionMode"
+  | "setSandboxMode"
   | "setAcpPermissionMode"
   | "setConfirmTimeoutMin"
   | "setMaxRetries"
@@ -48,6 +50,12 @@ export function createSettingsActions(
       if (!requestId || !api) return;
       // 幂等：run 已结束 = 空成功，静默即可（不值得为它弹错误）
       void api.setChatPermission(requestId, mode).catch(() => undefined);
+    },
+    setSandboxMode: (mode) => {
+      // 只影响**下一轮**：沙箱策略在工具集构建时随请求带给服务端，
+      // 正在跑的那一轮已经装配完了（与权限档不同，它没有运行中改档端点）。
+      saveSandboxMode(mode);
+      set({ sandboxMode: mode });
     },
     setAcpPermissionMode: (mode, scope) => {
       const conversationId = resolveConvId(scope);

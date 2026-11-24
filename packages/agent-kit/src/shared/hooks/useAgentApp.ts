@@ -339,6 +339,8 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
      */
     pump: (opts?: { force?: boolean }) => s.pump(conversationId, opts),
     permissionMode: s.permissionMode,
+    /** 命令沙箱开关（off / workspace-write；下一轮生效） */
+    sandboxMode: s.sandboxMode,
     // 动作
     connect: s.connect,
     disconnect: s.disconnect,
@@ -470,6 +472,8 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     /** 切换权限模式（confirm = 破坏性操作先问一句）；活档改的是本标签那条会话的轮 */
     setPermissionMode: (mode: AiPermissionMode) =>
       s.setPermissionMode(mode, conversationId),
+    /** 命令沙箱开关（显式开启才隔离；没有可用后端的平台会拒绝执行命令） */
+    setSandboxMode: s.setSandboxMode,
     /** 本标签 ACP 会话的权限答复策略（confirm = 逐次问；allow = 应用层自动放行） */
     setAcpPermissionMode: (mode: AcpPermissionMode) =>
       s.setAcpPermissionMode(mode, conversationId),
@@ -510,10 +514,15 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     saveAcpAgent: s.saveAcpAgent,
     deleteAcpAgent: s.deleteAcpAgent,
     /**
-     * 保存「这个 ACP agent 的模型里，哪几个放进会话下拉」（设置页挑的）。
-     * 一个 agent 往往能选十几二十个模型，全列进会话下拉太吵，这里做一层白名单。
+     * 拉取并落盘某个 ACP agent 的模型清单（模型选择器首次打开时自动调，「刷新」传 force）。
+     * 失败返回一行结论 + 可选排查细节（成功 null）—— 选择器就地显示，不走全局 toast。
      */
-    saveAcpAgentModels: s.saveAcpAgentModels,
+    loadAcpModels: s.loadAcpModels,
+    /**
+     * 检测某个 ACP agent 能否正常启动并完成握手；结果（含失败原因）由服务端落盘，
+     * 刷新后仍能恢复。设置页在行内展示，不弹全局 toast。
+     */
+    checkAcpAgent: s.checkAcpAgent,
     /**
      * 探针：问这个 ACP agent **自己**有哪些模型可选（设置页列候选用；起一次它的进程，
      * 问完就收掉）。失败（命令不存在 / 不是 ACP agent）时抛错，由调用方提示。

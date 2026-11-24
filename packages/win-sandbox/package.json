@@ -1,0 +1,32 @@
+{
+  "name": "@fizz/win-sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows 写受限沙箱（受限令牌 + capability SID 白名单）：移植自 deepseek-harness（MIT），自带独立 runner 入口",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./runner": {
+      "types": "./src/acl/runner.ts",
+      "default": "./src/acl/runner.ts"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "koffi": "^3.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "typescript": "^7.0.2"
+  }
+}
