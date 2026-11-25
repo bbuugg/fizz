@@ -40,7 +40,7 @@
  * 远端工作区（`source` 是 SFTP）不画：那目录不在这台机器的文件系统里。
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { ArrowUp, Folder, FolderPlus, FolderSearch, Loader2 } from 'lucide-react'
+import { ArrowUp, Check, Folder, FolderPlus, FolderSearch, Loader2 } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
 import {
   CommandDialog,
@@ -52,7 +52,6 @@ import {
   CommandList
 } from '@fizz/ui/command'
 import { Input } from '@fizz/ui/input'
-import { Kbd } from '@fizz/ui/kbd'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { formatShortcut } from '@fizz/agent-kit/shared/lib/shortcuts'
@@ -335,17 +334,27 @@ export function DirectoryBrowser({
                   </Button>
                 </IconTip>
               ) : null}
-              <Button
-                variant="outline"
-                size="sm"
-                className="shrink-0 gap-1.5 pr-1.5"
-                disabled={!data || loading}
-                // 键帽本身就是提示：面板里 ⏎ 被「进入」占着，确认只能是 ⌘/Ctrl + ⏎
-                onClick={pickCurrent}
+              {/*
+                确认按钮收成**纯图标**（与左边「新建文件夹」那颗同款 ghost 按钮）：
+                这一行已经有一个路径输入和一颗图标钮，再来一块带文字 + 键帽的实心按钮，
+                视觉重量比内容本身还重。动作与快捷键放进 tooltip（⌘/Ctrl + ⏎）。
+              */}
+              <IconTip
+                label={tr('选择当前目录（{shortcut}）', {
+                  shortcut: formatShortcut('CommandOrControl+Enter')
+                })}
               >
-                {tr('选择')}
-                <Kbd className="bg-muted/70">{formatShortcut('CommandOrControl+Enter')}</Kbd>
-              </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="shrink-0"
+                  aria-label={tr('选择当前目录')}
+                  disabled={!data || loading}
+                  onClick={pickCurrent}
+                >
+                  <Check className="size-4" />
+                </Button>
+              </IconTip>
             </>
           }
         />
@@ -490,19 +499,11 @@ export function DirectoryBrowser({
 }
 
 /**
- * 底栏那枚纯文字动作的外形。
+ * 底栏右下角那枚动作：「使用系统文件选择器」——**纯图标 + tooltip**。
  *
- * 用纯文字而不是 `Button`：底栏只有一行高（和键位提示同高），带边框的按钮会把整条
- * 撑高、看着像第二块工具条。
- */
-const footerLink =
-  'inline-flex items-center gap-1 rounded-sm px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
-
-/**
- * 底栏右下角那条纯文字动作：「使用系统文件选择器」。
- *
- * 两副外壳共用（弹窗底栏、命令面板目录页底栏），且与左边那排键位提示**同一行**
- * （所以只有它一枚：多一枚就得折行）。**只在桌面端画** —— 调用方先判
+ * 底栏只有一行高（与左边那排键位提示同高），带文字的按钮会把整条撑高、看着像
+ * 第二块工具条；文案收进 tooltip 后与左边那排键位提示平级、不多占横向空间。
+ * 两副外壳共用（弹窗底栏、命令面板目录页底栏）。**只在桌面端画** —— 调用方先判
  * `host.pickLocalDirectory` 在不在；面板列的是服务端目录、路径得靠敲，系统框能直接
  * 调出资源管理器 / 访达、还认得上次打开的位置。
  */
@@ -515,10 +516,17 @@ export function SystemDirPickerLink({
 }) {
   const tr = useT()
   return (
-    <button type="button" onClick={onPick} className={cn(footerLink, className)}>
-      <FolderSearch className="size-3.5" />
-      {tr('使用系统文件选择器')}
-    </button>
+    <IconTip label={tr('使用系统文件选择器')}>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        className={cn('shrink-0', className)}
+        aria-label={tr('使用系统文件选择器')}
+        onClick={onPick}
+      >
+        <FolderSearch className="size-3.5" />
+      </Button>
+    </IconTip>
   )
 }
 

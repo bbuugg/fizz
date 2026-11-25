@@ -1,5 +1,5 @@
 /**
- * 输入卡片下方的**常驻状态横条**：git 分支 / 权限档 / 上下文占用（工作区只在空会话里出现）。
+ * 输入卡片下方的**常驻状态横条**：本地 / 远程、git 分支 / 权限档 / 上下文占用（工作区只在空会话里出现）。
  *
  * 以前这一条只在空会话里显示工作区选择，建完会话就整条消失；权限与上下文圆环挤在
  * 卡片内的操作行里（那行还要放附件、模型、语音、发送，窄屏时互相挤）。现在：
@@ -13,7 +13,7 @@
  * - 权限档与上下文圆环从卡片内搬到这一条右侧。
  */
 import { useEffect, useState } from 'react'
-import { GitBranch } from 'lucide-react'
+import { Cloud, Folder, GitBranch } from 'lucide-react'
 import { Skeleton } from '@fizz/ui/skeleton'
 import { AcpPermissionPill } from '@fizz/agent-kit/features/chat/AcpPermissionPill'
 import { ContextRing } from '@fizz/agent-kit/features/chat/ContextRing'
@@ -118,6 +118,44 @@ function BranchPill({ app }: { app: AgentApp }) {
 }
 
 /**
+ * 「本地 / 远程」pill：告诉人这个项目在哪儿（本地 = 文件夹图标，远端 = 云 + 主机名）。
+ *
+ * 点击 = 打开当前工作区的**文件面板**（与顶栏 / 侧栏那些入口同一个 side tab）。
+ * 没有活动工作区、或工作区没有目录时返回 null —— 没有目录就没有文件面板可开，
+ * 留一颗点不动的入口只会让人以为坏了。
+ *
+ * 与 git pill 同一套尺寸与 hover（`h-6` + 淡前景色，见 `BranchPill` 的注释）。
+ */
+function WorkspaceLocationPill({ app }: { app: AgentApp }) {
+  const tr = useT()
+  const { toggleSideTab } = useAppContext()
+  const workspace = app.workspaces.find((w) => w.id === app.activeWorkspaceId)
+  if (!workspace?.path) return null
+  const remote = workspace.remote
+  const hostName = remote
+    ? app.sshHosts.find((host) => host.id === remote.hostId)?.name
+    : undefined
+  const Icon = remote ? Cloud : Folder
+  // 远端尽量报主机名（「远程 · termux」比一个泛泛的「远程」有用）；主机已删就退回「远程」
+  const label = remote ? (hostName ?? tr('远程')) : tr('本地')
+  const title = `${label} · ${workspace.path}\n${tr('打开文件面板')}`
+  return (
+    <div className="flex min-w-0 items-center text-sm text-muted-foreground">
+      <button
+        type="button"
+        onClick={() => toggleSideTab('files')}
+        title={title}
+        aria-label={title}
+        className="flex h-6 min-w-0 items-center gap-1.5 rounded-md pl-3 pr-1.5 text-left transition-colors hover:bg-foreground/5 hover:text-foreground"
+      >
+        <Icon className="size-3.5 shrink-0" />
+        <span className="max-w-40 truncate">{label}</span>
+      </button>
+    </div>
+  )
+}
+
+/**
  * 本轮**实时估算**的输出速度（tok/s），放在上下文圆环左侧。
  *
  * 只在「这一轮正在跑、且已经采到速度」时出现：数字来自流式增量的客户端估算
@@ -145,6 +183,7 @@ export function ComposerStatusBar({ app, running }: { app: AgentApp; running: bo
   const isAcp = turnIsAcp(app)
   return (
     <div className="flex w-full min-w-0 items-center gap-2">
+      <WorkspaceLocationPill app={app} />
       <BranchPill app={app} />
       {/* 与输入相关的控件留在卡片里；这两颗是「当前状态 / 全轮生效」的设置，归到横条 */}
       <div className="ml-auto flex shrink-0 items-center gap-1">

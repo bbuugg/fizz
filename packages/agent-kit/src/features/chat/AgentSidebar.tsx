@@ -622,6 +622,16 @@ export function AgentSidebar({
     () => new Set(app.workspaces.filter((w) => w.scratch).map((w) => w.id)),
     [app.workspaces],
   );
+  /**
+   * 远端（SSH）工作区的 id 集合：这些工作区里的会话行首图标用云。
+   *
+   * 临时会话（`scratch`）也在里面 —— 它们可以挂在远端工作区下，但没有项目行可挂云图标，
+   * 位置信息只能落到会话行自己身上。预生成 Set，避免每一行每一帧 find 一遍。
+   */
+  const remoteWorkspaceIds = useMemo(
+    () => new Set(app.workspaces.filter((w) => w.remote).map((w) => w.id)),
+    [app.workspaces],
+  );
   /** 临时会话（未归档）：按最近更新排序，与项目树里的组同一套顺序 */
   const scratchConversations = useMemo(() => {
     const list: AgentApp["conversations"] = [];
@@ -968,6 +978,7 @@ export function AgentSidebar({
         <ConversationRowIcon
           backend={conversation.backend}
           kind={conversation.kind}
+          remote={remoteWorkspaceIds.has(workspaceId)}
           acpCommand={acpAgent?.command}
           acpPreset={acpAgent?.preset}
           waiting={waiting}

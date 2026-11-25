@@ -172,6 +172,7 @@ export const CHAT: Record<string, string> = {
   '等待回答': 'Waiting for answer',
   'ACP 会话': 'ACP conversation',
   '对话会话': 'Chat conversation',
+  '远端工作区会话': 'Remote workspace conversation',
   '多智能体协作会话': 'Multi-agent conversation',
   '未查看': 'Unseen',
   '定时任务起的会话，还没点开过': 'Scheduled-task conversation that has not been opened',

@@ -1,8 +1,10 @@
 /**
  * 会话行首的图标槽：**类型图标 + 运行态**。
  *
- * 三种类型：普通对话 / 外部 ACP agent（机器人）/ 多智能体协作（网络）；
- * 三种运行态**盖在类型之上**（优先级从高到低）：在等确认（盾牌问号）→ 在等回答
+ * 类型：普通对话 / 外部 ACP agent（机器人）/ 多智能体协作（网络）；普通对话落在
+ * **远端（SSH）工作区**时换成云 —— 临时会话同样适用（它们没有项目行可以挂云图标，
+ * 位置信息只能落在会话行自己身上）。
+ * 运行态**盖在类型之上**（优先级从高到低）：在等确认（盾牌问号）→ 在等回答
  * （问号气泡）→ 正在跑（打字气泡）→ 停下来才回到类型图标。
  * 「在等用户」优先于「在跑」：这时正卡住不动，画成在跑会让人以为还在干活。
  *
@@ -13,7 +15,7 @@
  * 类型判定口径与契约一致：`backend === 'acp'` 才是 ACP（旧值 / 缺省落进普通对话），
  * `kind === 'collab'` 才是协作会话。
  */
-import { Bot, MessageCircleQuestion, MessageSquare, Network, ShieldQuestion } from 'lucide-react'
+import { Bot, Cloud, MessageCircleQuestion, MessageSquare, Network, ShieldQuestion } from 'lucide-react'
 import { Loader } from '@fizz/agent-kit/shared/ai-elements/loader'
 import { AcpAgentIcon } from '@fizz/agent-kit/shared/components/AcpAgentIcon'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
@@ -27,6 +29,7 @@ const ICON = 'size-4 shrink-0'
 export function ConversationRowIcon({
   backend,
   kind,
+  remote = false,
   acpCommand,
   acpPreset,
   waiting = null,
@@ -37,6 +40,14 @@ export function ConversationRowIcon({
 }: {
   backend?: 'builtin' | 'acp'
   kind?: 'chat' | 'collab'
+  /**
+   * 会话所在工作区是远端（SSH）：普通对话的类型图标换成**云**。
+   *
+   * 临时会话（scratch 工作区）同样适用 —— 它们没有项目行可以挂那颗云图标，
+   * 位置信息只能落在会话行自己身上。ACP / 协作仍保留各自的类型图标（那是「会话形态」，
+   * 比位置更该抢眼）。
+   */
+  remote?: boolean
   /** ACP 会话绑定的 agent 启动命令（`preset` 缺失时的老数据兜底） */
   acpCommand?: string
   /** ACP 会话绑定 agent 的预设身份：改过命令也仍用同一张图标 */
@@ -94,6 +105,15 @@ export function ConversationRowIcon({
       <Network
         className={cn(ICON, 'text-muted-foreground', className)}
         aria-label={t('多智能体协作会话')}
+      />
+    )
+  }
+  // 普通对话落在远端工作区（含临时会话）：云标位置，与项目行上的云图标同一含义
+  if (remote) {
+    return (
+      <Cloud
+        className={cn(ICON, 'text-muted-foreground', className)}
+        aria-label={t('远端工作区会话')}
       />
     )
   }
