@@ -339,7 +339,10 @@ export function registerAgentTransportIpc(): void {
    * 主进程代为建连。目标永远是进程内后端的内部 loopback server（见 `manager.ts`），
    * 未启用鉴权（desktop 进程内直连）无需 token —— 渲染端因此不需要知道任何端口。
    */
-  ipcMain.handle(AGENT_IPC.wsOpen, (event, input: WsOpenRequest): WsOpenResult => {
+  ipcMain.handle(AGENT_IPC.wsOpen, async (event, input: WsOpenRequest): Promise<WsOpenResult> => {
+    // 与 HTTP 同一条启动竞态：窗口刚起来就开状态推送 WS，后端可能还在装配。
+    // 等装配落地再读端口，别回「还没就绪」让渲染端白重连一轮。
+    await backendManager.whenReady()
     const port = backendManager.wsPort()
     if (!port) return { ok: false, error: '进程内后端还没就绪' }
     if (wsStreams.has(input.streamId)) return { ok: false, error: 'streamId 已存在' }

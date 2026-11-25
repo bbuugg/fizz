@@ -134,10 +134,21 @@ class BackendManager {
   /**
    * 内部 WS server 的端口（后端还没就绪时是 `null`）。
    *
-   * 渲染端在「要开 WS 的那一刻」经 IPC 来取 —— 那时后端早就绪了（请求都发得出去了）。
+   * 渲染端在「要开 WS 的那一刻」经 IPC 来取，先 `await whenReady()` 再读。
    */
   wsPort(): number | null {
     return this.wsPortValue
+  }
+
+  /**
+   * 等正在进行的装配结束（没在装配就立即返回）。
+   *
+   * 窗口比后端先就绪是常态：`whenReady` 里 `void start()` 之后立刻建窗口，渲染端挂载时
+   * 发出的首批请求正好落在装配窗口里。**必须等它落地**，不能当场回「尚未就绪」——
+   * 那会在启动时弹一条无意义的报错（偶发，取决于磁盘与模块导入耗时）。
+   */
+  async whenReady(): Promise<void> {
+    if (this.starting) await this.starting
   }
 
   /**
@@ -145,6 +156,7 @@ class BackendManager {
    * `server-client` 是唯一调用方。
    */
   async fetch(request: Request): Promise<Response> {
+    if (!this.app) await this.whenReady()
     const app = this.app
     if (!app) throw new BackendUnavailableError(this.error ?? '共享后端尚未就绪')
     return app.fetch(request)
