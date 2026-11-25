@@ -263,6 +263,23 @@ export function CommandPalette({
     wasOpen.current = open
   }, [open, initialPage])
 
+  /**
+   * 打开后**强制一次空渲染**：让 `DialogContent` 的高度过渡先把基线量到。
+   *
+   * `DialogContent` 在 Radix Portal 里首次挂载时，`useHeightTransition` 的那一次 layout
+   * effect 可能还拿不到节点（ref 为空）；如果此后没有别的重渲染，它**第一次见到节点会是
+   * 用户第一次切二级页的那次渲染** —— 于是按「新节点」跳过动画。症状正是「第一次切二级
+   * 没有高度过渡，返回再切就有了」。
+   * 打开后隔一帧戳一次渲染，基线就在用户操作之前量好；已经有基线时这一步是 from=to
+   * 的直接落定，没有可见副作用。
+   */
+  const [, primeHeight] = useState(0)
+  useEffect(() => {
+    if (!open) return
+    const id = requestAnimationFrame(() => primeHeight((n) => n + 1))
+    return () => cancelAnimationFrame(id)
+  }, [open])
+
   /** 进下一级。每页都从空词开始：上一页的词留着也没处显示，还会把新页筛空 */
   const push = (next: PalettePage): void => {
     setKeyword('')

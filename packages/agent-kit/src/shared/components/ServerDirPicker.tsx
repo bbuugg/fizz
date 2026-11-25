@@ -273,6 +273,14 @@ export function DirectoryBrowser({
   if (!sourceRef.current) return null
 
   const canMkdir = Boolean(sourceRef.current.mkdir)
+  /**
+   * 多盘符（Windows）时顶部那排「跳到哪个盘」是否出现。
+   *
+   * 它是**数据回来之后**才出现的：面板高度若跟着长，刚进目录页会先到一个高度、
+   * 列完盘符再蹿到另一个高度（用户反馈的「中间有顿感」）。所以列表高度里预留它的位置
+   * （见下面 `listClassName` 的兜底），并在那一排上强制**单行横向滚动**，高度是固定值。
+   */
+  const hasRootRow = (data?.roots?.length ?? 0) > 1
   /** 上一级目录；null = 已经在根（清单第一行那颗 `..` 靠它，没有就不画） */
   const parentDir = data?.parent ?? null
 
@@ -358,16 +366,19 @@ export function DirectoryBrowser({
             </>
           }
         />
-        {/* 多盘符（Windows）时给一排「跳到哪个盘」；单根（POSIX / SFTP）不必占地方 */}
-        {(data?.roots?.length ?? 0) > 1 ? (
-          <div className="flex flex-wrap gap-1 px-3 pb-1.5">
+        {/* 多盘符（Windows）时给一排「跳到哪个盘」；单根（POSIX / SFTP）不必占地方。
+            **单行横向滚动**（不换行）+ **固定 `h-7`**：这一行是数据回来之后才出现的，
+            高度必须与下面列表预扣的值（`--spacing` × 7）分毫不差 —— 差几像素也会被高度过渡
+            放大成「先到一个高度、再到另一个高度」的两段跳。所以不写 `py` / `pb` 让内容量高度。 */}
+        {hasRootRow ? (
+          <div className="no-scrollbar flex h-7 shrink-0 items-center gap-1 overflow-x-auto px-3">
             {data?.roots?.map((root) => (
               <button
                 key={root.path}
                 type="button"
                 onClick={() => void load(root.path)}
                 className={cn(
-                  'rounded-md px-2 py-0.5 text-xs transition-colors',
+                  'shrink-0 rounded-md px-2 py-0.5 text-xs transition-colors',
                   root.path === data?.path
                     ? 'bg-secondary text-foreground'
                     : 'text-muted-foreground hover:bg-secondary/60 hover:text-foreground'
@@ -395,8 +406,17 @@ export function DirectoryBrowser({
             `listClassName` 给了就**整个换掉**这一条：弹窗外壳自己定了高度（`h-[32rem]`），
             清单只负责吃满剩下的那块（传 `flex-1`）。两者别叠 —— `h-*` 与 `flex-1` 会同时
             生效，最后靠 flex-basis 谁赢，读代码的人看不出来。
+
+            ⚠️ 出现多盘符那一排时，列表高度要**扣掉那一排的高度**：那一排是数据回来之后才
+            出现的，不扣的话整个面板会在「列完盘符」那一刻再长高一次（用户反馈的「先变到一个
+            位置、再变到另一个位置，中间有顿感」）。扣的值与那一排**同源**（`--spacing` × 7，
+            即 `h-7`）：主题密度会把间距基数改成 0.94~1.05 倍，写死 `1.75rem` 会差 1~2px，
+            高度过渡又会把它放大成一次微跳。
           */
-          listClassName ?? 'h-[min(20rem,calc(85dvh_-_10rem))]',
+          listClassName ??
+            (hasRootRow
+              ? 'h-[calc(min(20rem,calc(85dvh_-_10rem))-calc(var(--spacing)*7))]'
+              : 'h-[min(20rem,calc(85dvh_-_10rem))]'),
           /*
             目录行比 `CommandDialog` 默认的 `py-3` 紧一档（44 → 36px）。
             `!` 是必须的：`CommandDialog` 根上那条 `[&_[cmdk-item]]:py-3` 与本条
