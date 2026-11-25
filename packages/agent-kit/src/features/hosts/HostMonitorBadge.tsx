@@ -37,6 +37,7 @@ import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { STATUS_ITEM_CLASS } from '@fizz/agent-kit/shared/lib/status-bar'
 import { Popover, PopoverContent, PopoverTrigger } from '@fizz/ui/popover'
+import { useGlassPanel } from '@fizz/ui/liquid-glass'
 import {
   LOAD_TEXT_CLASS,
   Row,
@@ -90,6 +91,8 @@ export function HostMonitorBadge({
   hostName?: string
 }) {
   const t = useT()
+  // 弹出面板的液态玻璃外壳 + 边缘流光（指针追踪）由 Hook 统一给，与本机监控那颗同一套
+  const glass = useGlassPanel()
   const [open, setOpen] = useState(false)
   const [metrics, setMetrics] = useState<HostMetrics | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -216,8 +219,16 @@ export function HostMonitorBadge({
         side="top"
         align="end"
         collisionPadding={8}
-        className="h-[min(480px,var(--radix-popover-content-available-height,480px))] w-[380px] max-w-[85vw] overflow-y-auto overscroll-contain no-scrollbar p-3"
+        // 玻璃外壳与边缘流光：与状态栏那颗本机监控 / 上下文圆环同一份（`useGlassPanel`）。
+        // 滚动下放到内层，保证流光钉在面板边缘、不随内容滚走。
+        className={cn(
+          'h-[min(480px,var(--radix-popover-content-available-height,480px))] w-[380px] max-w-[85vw] overflow-hidden rounded-xl p-0 ring-0',
+          glass.className
+        )}
+        {...glass.handlers}
       >
+        {glass.edge}
+        <div className="no-scrollbar h-full overflow-y-auto overscroll-contain p-3">
         {!snap ? (
           <div className="flex min-h-full items-center justify-center py-4 text-center text-xs text-muted-foreground">
             {error ? t('监控不可用：{error}', { error }) : t('正在连接主机并读取指标…')}
@@ -369,6 +380,7 @@ export function HostMonitorBadge({
             </Section>
           </div>
         )}
+        </div>
       </PopoverContent>
     </Popover>
   )

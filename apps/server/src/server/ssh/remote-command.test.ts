@@ -13,7 +13,6 @@ import {
   buildKillScript,
   buildSandboxProbeScript,
   parseTerminalCwd,
-  pidFileFor,
   shellQuote
 } from './remote-command'
 
@@ -31,35 +30,33 @@ describe('shellQuote', () => {
   })
 })
 
-describe('pidFileFor', () => {
-  it('固定落在 /tmp，带调用方给的 id', () => {
-    expect(pidFileFor('abc123')).toBe('/tmp/fizz-exec-abc123.pid')
-  })
-})
-
 describe('buildExecScript', () => {
   it('优先 setsid，并先把当前 shell 的 pid 写进文件', () => {
-    const script = buildExecScript('npm test', { pidFile: pidFileFor('x') })
+    const script = buildExecScript('npm test', { pidId: 'x' })
     expect(script).toContain('command -v setsid')
     expect(script).toContain('setsid sh -c')
-    expect(script).toContain('echo $$ >')
-    expect(script).toContain('/tmp/fizz-exec-x.pid')
+    expect(script).toContain('echo $$ 2>/dev/null >')
+    // pid 目录不能写死 /tmp：Termux / Android 上不可写，必须有家目录兜底
+    expect(script).toContain('d=/tmp')
+    expect(script).toContain('[ -w "$d" ]')
+    expect(script).toContain('$HOME/.fizz/tmp')
+    expect(script).toContain('"$d/fizz-exec-x.pid"')
     expect(script).toContain('npm test')
   })
 
   it('cwd 存在时先 cd，失败退出 127', () => {
-    const script = buildExecScript('ls', { pidFile: pidFileFor('x'), cwd: '/srv/app' })
+    const script = buildExecScript('ls', { pidId: 'x', cwd: '/srv/app' })
     expect(script).toContain('cd ')
     expect(script).toContain('/srv/app')
     expect(script).toContain('|| exit 127;')
   })
 
   it('没有 cwd 时不拼 cd', () => {
-    expect(buildExecScript('ls', { pidFile: pidFileFor('x') })).not.toContain('cd ')
+    expect(buildExecScript('ls', { pidId: 'x' })).not.toContain('cd ')
   })
 
   it('命令里的单引号被安全转义', () => {
-    const script = buildExecScript(`echo 'hi'`, { pidFile: pidFileFor('x') })
+    const script = buildExecScript(`echo 'hi'`, { pidId: 'x' })
     expect(script).toContain(`'\\''`)
     expect(script).toContain('hi')
   })
@@ -67,24 +64,26 @@ describe('buildExecScript', () => {
 
 describe('buildKillScript', () => {
   it('TERM 打负 pid（进程组）；pid 文件缺失时什么都不做', () => {
-    const script = buildKillScript('/tmp/fizz-exec-x.pid', 'TERM')
-    expect(script).toContain(`cat '/tmp/fizz-exec-x.pid'`)
+    const script = buildKillScript('x', 'TERM')
+    expect(script).toContain(`cat "$d/fizz-exec-x.pid"`)
+    expect(script).toContain('[ -w "$d" ]')
+    expect(script).toContain('$HOME/.fizz/tmp')
     expect(script).toContain(`kill -TERM -"$p"`)
     expect(script).toContain('if [ -n "$p" ]')
   })
 
   it('KILL 额外按父子关系兜底（setsid 不可用时的分支）', () => {
-    const script = buildKillScript('/tmp/fizz-exec-x.pid', 'KILL')
+    const script = buildKillScript('x', 'KILL')
     expect(script).toContain(`kill -KILL -"$p"`)
     expect(script).toContain('pkill -KILL -P "$p"')
   })
 })
 
 describe('buildCleanupScript', () => {
-  it('只删 pid 文件', () => {
-    expect(buildCleanupScript('/tmp/fizz-exec-x.pid')).toBe(
-      `rm -f '/tmp/fizz-exec-x.pid'`
-    )
+  it('只删 pid 文件（目录与 exec / kill 同一段解析）', () => {
+    const script = buildCleanupScript('x')
+    expect(script).toContain('[ -w "$d" ]')
+    expect(script.endsWith(`rm -f "$d/fizz-exec-x.pid"`)).toBe(true)
   })
 })
 

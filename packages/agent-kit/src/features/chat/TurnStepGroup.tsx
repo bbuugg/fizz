@@ -39,6 +39,9 @@
  * 高度有界，抬头始终留在组顶、内容在框内自己滚；组在跑的时候新卡片会从底部冒出来，
  * 贴底跟随才能一直看到最新那一步（用户上滚即停跟、滚回底部自动恢复）。抬头本身**不吸顶**
  * —— 免得多条历史消息各有一个吸顶条互相叠。
+ * 小框里的位置感由三件套兜住：滚动条不再藏（桌面鼠标下）、上 / 下边缘在那一侧还有内容时
+ * 渐隐、右侧中部一组**上下步进钮**（到顶 / 到底，样式参考数字输入框的自绘步进）——
+ * 用户反馈过「内容一多只能摸黑往下滚」。
  * 这句「正在工作」挂的是 `live` 而不是 `active`（差在「工具出结果 → 模型生成下一次调用」
  * 那几秒），否则这行字会在两种文案之间反复横跳。
  *
@@ -47,9 +50,9 @@
  * 重挂载）。受控写法与 PartView 的 ReasoningView / ToolCallCard 保持一致，
  * 展开 / 收起时同样要 holdScroll() 暂停自动贴底，否则视图会被拽走。
  */
-import { useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
-import { Brain, ChevronRight, Minimize2, Square, Wrench } from 'lucide-react'
+import { Brain, ChevronDown, ChevronRight, ChevronUp, Minimize2, Square, Wrench } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@fizz/ui/tooltip'
 import { ShimmerLabel } from '@fizz/agent-kit/shared/ai-elements/shimmer-label'
@@ -152,7 +155,54 @@ export function TurnStepGroup({
   const conversation = useConversationOptional()
   // 展开后的内容区限高滚动：与 `ReasoningContent` / `StreamingInputBlock` 同一套贴底
   // （新工具卡从底部冒出来时自动跟到底；用户上滚即停跟，滚回底部恢复）
-  const { scrollRef, contentRef } = useStickToBottom({ initial: 'instant' })
+  const { scrollRef, contentRef, scrollToBottom, stopScroll } = useStickToBottom({
+    initial: 'instant'
+  })
+
+  /**
+   * 组内滚动的**位置感**（用户反馈：16rem 的小框里内容一多，只能「摸黑」往下滚）。
+   *
+   * 三件事一起成立才有用：
+   * - 滚动条不再藏（见下面 scroller 的类名注释）；
+   * - 上 / 下边缘在「那一侧还有内容」时渐隐；
+   * - 右侧中部给一组**上下步进钮**（视觉参考数字输入框右侧的自绘步进：两颗 `flex-1`
+   *   的 Chevron 叠在一列里），上 = 到顶、下 = 到底，到边界就按死。
+   *
+   * 边缘状态自己量（`scrollTop` / `scrollHeight`），不依赖本轮是否还在流式 ——
+   * 已结束的组同样需要知道「上面还有多少」。ResizeObserver 盯 scroller 与内容两层：
+   * 后者长高时（流式新卡冒出来）滚动事件不一定触发，边缘提示会滞后。
+   */
+  const [edges, setEdges] = useState({ top: true, bottom: true })
+  const syncEdges = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const top = el.scrollTop <= 1
+    const bottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 1
+    setEdges((prev) =>
+      prev.top === top && prev.bottom === bottom ? prev : { top, bottom }
+    )
+  }, [scrollRef])
+  useEffect(() => {
+    if (!open) return
+    const el = scrollRef.current
+    if (!el) return
+    syncEdges()
+    const ro = new ResizeObserver(syncEdges)
+    ro.observe(el)
+    if (contentRef.current) ro.observe(contentRef.current)
+    return () => ro.disconnect()
+  }, [open, syncEdges, scrollRef, contentRef])
+
+  /**
+   * 回顶部：先 `stopScroll()` 掐掉贴底跟随 —— 组还在跑时，只把 `scrollTop` 改成 0 的话，
+   * 下一批新卡片一到库又会把我们拉回底部，看起来像「点了没反应」。
+   */
+  const scrollToTop = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    stopScroll()
+    el.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [scrollRef, stopScroll])
 
   /*
    * 右格内容预览只给**收起**状态看。
@@ -339,17 +389,60 @@ export function TurnStepGroup({
             （`initial: 'instant'` 让展开那一刻就看见最新一步），用户上滚即停跟。
             `overflow-anchor: none` 关掉 Chromium 的滚动锚定 —— 它会在卡片变高时「帮忙」
             修位置，与贴底逻辑打架，造成偶发跳顶（与思考内容同一条）。
-            `no-scrollbar` 与思考内容同一处理，滚动条在这类"局部窗口"里太扎眼。
+            **不再挂 `no-scrollbar`**：用户反馈小框里完全看不出「还有多长、现在在哪」，
+            只能摸黑往下滚（终端长输出踩过同一条坑，最后也是把条画回来）。桌面鼠标下走
+            全局那条 10px 细条；触屏 / 窄屏本来就不画条，不占横向空间。
+            再补上 / 下边缘渐隐与右侧的上 / 下步进钮，见下面那几个浮动层。
             `border-l + pl-3`：组内内容往右缩进一档并挂一条竖线，与组外正文分开 ——
             消息流里一眼能看出「这几张卡属于同一组」，与侧栏子列表同一做法。
             `ml-2`：竖线从最左缘再让出半个图标宽（`size-4` 的一半，同走 `--spacing` 倍率），
             正好落在抬头左侧那颗图标的中心线上。 */}
-        <div
-          ref={scrollRef}
-          className="max-h-64 overflow-y-auto ml-2 border-l border-border pr-2 pl-3 no-scrollbar"
-          style={{ overflowAnchor: 'none' }}
-        >
-          <div ref={contentRef} className="flex flex-col gap-2">{children}</div>
+        <div className="relative">
+          <div
+            ref={scrollRef}
+            onScroll={syncEdges}
+            className="max-h-64 overflow-y-auto ml-2 border-l border-border pr-2 pl-3 [scrollbar-gutter:stable]"
+            style={{ overflowAnchor: 'none' }}
+          >
+            <div ref={contentRef} className="flex flex-col gap-2">{children}</div>
+          </div>
+          {/* 上 / 下渐隐：那一侧还有内容时给一道 20px 的渐变，滚到头就消失。
+              `pointer-events-none`：纯视觉提示，不能挡卡片点击与文字拖选。 */}
+          {!edges.top ? (
+            <div className="pointer-events-none absolute inset-x-0 top-0 h-5 bg-gradient-to-b from-background to-transparent" />
+          ) : null}
+          {!edges.bottom ? (
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-background to-transparent" />
+          ) : null}
+          {/* 滚动步进：右侧中部、上下两颗（视觉参考数字输入框右侧的自绘步进钮 ——
+              两颗 `flex-1` 的 Chevron 叠在一列里，hover 才有底色，到边界就按死）。
+              只有内容真的溢出时才整组出现（`top && bottom` = 没得滚）。
+              `right-3` 让开桌面那条 10px 滚动条；容器垫一层半透明底 + 细描边 ——
+              它浮在工具卡上面，纯图标压在深色卡片上会糊掉。 */}
+          {!(edges.top && edges.bottom) ? (
+            <span className="absolute right-3 top-1/2 z-10 flex h-12 w-5 -translate-y-1/2 flex-col overflow-hidden rounded-md bg-background/80 shadow-sm ring-1 ring-border/60 backdrop-blur-sm">
+              <button
+                type="button"
+                aria-label={tr('滚动到顶部')}
+                title={tr('滚动到顶部')}
+                disabled={edges.top}
+                onClick={scrollToTop}
+                className="flex flex-1 items-center justify-center text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+              >
+                <ChevronUp className="size-3" strokeWidth={2.5} />
+              </button>
+              <button
+                type="button"
+                aria-label={tr('滚动到底部')}
+                title={tr('滚动到底部')}
+                disabled={edges.bottom}
+                onClick={() => void scrollToBottom('smooth')}
+                className="flex flex-1 items-center justify-center text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+              >
+                <ChevronDown className="size-3" strokeWidth={2.5} />
+              </button>
+            </span>
+          ) : null}
         </div>
       </ToolContent>
     </Collapsible>

@@ -124,7 +124,8 @@ describe('exec', () => {
     })
     expect(client.exec.mock.calls[0][0]).toContain('npm test')
     expect(client.exec.mock.calls[0][0]).toContain('setsid sh -c')
-    expect(client.exec.mock.calls[0][0]).toContain('/tmp/fizz-exec-')
+    expect(client.exec.mock.calls[0][0]).toContain('fizz-exec-')
+    expect(client.exec.mock.calls[0][0]).toContain('$HOME/.fizz/tmp')
   })
 
   it('没有 exit 事件就关闭 = 链路断开，不当成退出码 0', async () => {

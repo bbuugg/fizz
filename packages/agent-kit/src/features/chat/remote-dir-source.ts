@@ -34,8 +34,26 @@ export function remoteParent(path: string): string | null {
 export function remoteDirSource(app: AgentApp, hostId: string): DirPickerSource {
   return {
     list: async (dir) => {
-      // 空串 = 「从起点开始」：SFTP 侧按 `/` 列（服务端的 sftpList 也只认绝对路径）
-      const result = await app.sftpList(hostId, dir || '/')
+      /*
+        空串 = 「从起点开始」：**起点不能写死 `/`**。
+
+        - Termux / Android 上 `/` 不可读（列出就 EACCES），用户会被迫手敲家目录
+          （`/data/data/com.termux/files/home`）才进得去；
+        - Windows OpenSSH 的默认目录还是盘符风格（`/C:/…`），`/` 同样不是用户想去的地方。
+
+        和 SFTP 面板的连接逻辑（`SftpPanel.connect`）、拖拽上传的目标初值同一条口径：
+        交给服务端 `realpath('.')` 解析成该用户的默认工作目录（通常是家目录）。
+        realpath 也失败时仍退回 `/`，让 SFTP 的错误原样报给用户，而不是吞掉。
+      */
+      let start = dir
+      if (!start) {
+        try {
+          start = await app.sftpRealpath(hostId)
+        } catch {
+          start = '/'
+        }
+      }
+      const result = await app.sftpList(hostId, start)
       return {
         path: result.path,
         parent: remoteParent(result.path),

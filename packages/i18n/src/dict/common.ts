@@ -11,6 +11,8 @@ export const COMMON: Record<string, string> = {
   '保存中…': 'Saving…',
   '删除': 'Delete',
   '编辑': 'Edit',
+  '视图': 'View',
+  '窗口置顶': 'Always on Top',
   '确定': 'OK',
   '确认': 'Confirm',
   '执行': 'Run',

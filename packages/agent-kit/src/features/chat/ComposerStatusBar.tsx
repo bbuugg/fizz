@@ -81,18 +81,21 @@ function BranchPill({ app }: { app: AgentApp }) {
   const disabled = !workspaceId
 
   return (
-    <div
-      className={
-        'flex h-8 min-w-0 items-center rounded text-sm text-muted-foreground transition-colors' +
-        (disabled ? '' : ' hover:bg-foreground/5 hover:text-foreground')
-      }
-    >
+    <div className="flex min-w-0 items-center text-sm text-muted-foreground">
+      {/*
+        hover 底色挂在**按钮自己**、且高度收到 `h-6`（24px）：原来挂在外面那层 `h-8` 上，
+        32px 的方块比文字高出一截，和右侧权限 / 上下文那几颗「只变色、不出块」的 pill 摆在一起
+        很突兀（用户反馈「hover 后有一个很高的背景」）。外层因此不再定高、也不再带 hover。
+      */}
       <button
         type="button"
         onClick={() => toggleSideTab('git')}
         disabled={disabled}
         title={disabled ? tr('先选择工作区') : tr('打开源代码管理（Git）面板')}
-        className="flex min-w-0 items-center gap-1.5 rounded py-1 pl-3 pr-1.5 text-left disabled:cursor-not-allowed disabled:opacity-60"
+        className={
+          'flex h-6 min-w-0 items-center gap-1.5 rounded-md pl-3 pr-1.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60' +
+          (disabled ? '' : ' hover:bg-foreground/5 hover:text-foreground')
+        }
       >
         <GitBranch className="size-3.5 shrink-0" />
         <span className="inline-flex min-w-0 items-center">

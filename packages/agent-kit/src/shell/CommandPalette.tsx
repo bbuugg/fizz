@@ -770,8 +770,10 @@ export function CommandPalette({
       ) : page.kind === 'remote-dir' ? (
         /*
           远端目录页：与本地目录页同一块浏览器，只换数据源 —— 清单来自那台主机的 SFTP。
-          `initialPath="/"` 是有意的：远端没有「用户主目录」这个接口，从根开始列最直白；
-          列不动（没权限 / 服务器不支持）时错误留在列表区，Esc 退回主机清单换一台。
+          **不要钉 `initialPath="/"`**：Android / Termux 的 `/` 直接没权限（一打开就是
+          permission denied，用户只能手敲家目录），Windows OpenSSH 的默认目录又是
+          `/C:/…` 那种盘符路径。缺省交给数据源 —— `remoteDirSource` 用 `realpath('.')`
+          解析这台主机登录用户的默认工作目录（通常是家目录）。
         */
         <DirectoryBrowser
           /*
@@ -781,7 +783,6 @@ export function CommandPalette({
           key={`remote:${page.hostName}`}
           source={page.source}
           leading={backButton}
-          initialPath="/"
           onPick={(path) => {
             handleOpenChange(false)
             page.onPick(path)

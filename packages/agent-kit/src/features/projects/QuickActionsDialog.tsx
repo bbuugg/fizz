@@ -16,10 +16,11 @@
  *
  * ## 排版
  *
- * 高度**固定**（`h-[480px] max-h-[85dvh]`，与下面「编辑单条」那颗同值）：列表长短差别很大，
- * 按内容撑高的话从空态变成长列表、或加一条之后整个弹窗会跳，底下的「配置位置 / 关闭」
- * 也跟着上下窜（本仓库处理过好几轮这种抖动，见 `docs/lessons/ui.md`）。定高之后只有列表区
- * 内部滚动，底部永远停在原地。`max-h-[85dvh]` 兜住小屏 / 手机。
+ * 高度**跟内容走、只封顶**（`max-h-[min(480px,85dvh)]`，与下面「编辑单条」那颗同值）：
+ * 不再钉死固定高度 —— 只有一两条快捷功能时，定高会在底部留一大块空白。
+ * 高度变化（加载完 / 加一条）由 `DialogContent` 的
+ * `useHeightTransition` 补一段过渡（与选择器面板同一份，见 `height-transition.ts`），
+ * 不会「啪」地跳；超过封顶之后只有列表区内部滚动。
  * 外层 `min-h-0` 不能删：DialogContent 是 grid，grid 子项默认 `min-height: auto`，
  * 不给 0 的话这个 `flex-1` 容器宁可顶破 `max-h-*` 也不交出高度，列表滚不起来。
  *
@@ -38,7 +39,7 @@
  * `persist`：一次拖动会写出好几份文件。
  */
 import { useEffect, useMemo, useState } from 'react'
-import { Copy, Pencil, Plus, Trash2, Zap } from 'lucide-react'
+import { Pencil, Plus, Trash2, Zap } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   QUICK_ACTION_KINDS,
@@ -56,7 +57,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@f
 import { Input } from '@fizz/ui/input'
 import { Button } from '@fizz/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@fizz/ui/tabs'
-import { Textarea } from '@fizz/ui/textarea'
+import MonacoEditor from '@fizz/agent-kit/features/files/MonacoEditor'
 import {
   QUICK_ACTION_ICONS,
   QUICK_ACTION_KIND_LABELS,
@@ -285,7 +286,7 @@ export function QuickActionsDialog({
     <>
       <Dialog open={open} onOpenChange={(next) => (next ? undefined : onClose())}>
         <DialogContent
-          className="flex h-[480px] max-h-[85dvh] flex-col overflow-hidden sm:max-w-md"
+          className="flex max-h-[min(480px,85dvh)] flex-col overflow-hidden sm:max-w-md"
           // 打开时不抢焦点（用户要求）：Radix 默认会聚焦第一个可聚焦元素
           onOpenAutoFocus={(event) => event.preventDefault()}
         >
@@ -334,45 +335,20 @@ export function QuickActionsDialog({
               {tr('添加快捷功能')}
             </Button>
           </div>
-
-          <div className="flex items-center justify-between gap-2 pt-3">
-            <span
-              className="flex min-w-0 items-center gap-1 truncate text-xs text-muted-foreground"
-              title={snapshot?.filePath}
-            >
-              {snapshot ? tr('配置位置：{path}', { path: snapshot.filePath }) : tr('配置文件读取中…')}
-              {snapshot?.filePath && (
-                <button
-                  type="button"
-                  aria-label={tr('复制配置路径')}
-                  title={tr('复制配置路径')}
-                  onClick={() => {
-                    void navigator.clipboard.writeText(snapshot.filePath)
-                    toast.success(tr('已复制配置路径'))
-                  }}
-                  className="shrink-0 rounded p-0.5 hover:bg-foreground/10"
-                >
-                  <Copy className="size-3" />
-                </button>
-              )}
-            </span>
-            <Button data-dialog-dismiss="" variant="ghost" size="sm" onClick={onClose}>
-              {tr('关闭')}
-            </Button>
-          </div>
         </DialogContent>
       </Dialog>
 
       {/*
         编辑单条：嵌套弹窗，列表仍留在下层，改完能立刻看到顺序与内容。
 
-        高度**钉死**（`h-[480px] max-h-[85dvh]`）：表单随「类型」换行数（命令那条目标框
-        是 2 行、其余 1 行）与说明文案长短上下跳，`max-h` 挡不住这种跳。定高之后表单区
-        只有内部滚动 —— 表单再长也不用滚到底才能看到「取消 / 保存」。
+        高度**跟内容走、只封顶**（`max-h-[min(480px,85dvh)]`）：三种类型的「目标」控件
+        本来就不一样高（链接 / 路径是一行输入框，命令是 8rem 的 Monaco），换类型时高度
+        由 `DialogContent` 的 `useHeightTransition` 补一段过渡，不再钉死定高留空白。
+        超过封顶后表单区只有内部滚动 —— 表单再长也不用滚到底才能看到「取消 / 保存」。
       */}
       <Dialog open={draft !== null} onOpenChange={(next) => (next ? undefined : setDraft(null))}>
         <DialogContent
-          className="flex h-[480px] max-h-[85dvh] flex-col overflow-hidden sm:max-w-[480px]"
+          className="flex max-h-[min(480px,85dvh)] flex-col overflow-hidden sm:max-w-[480px]"
           // 编辑弹窗同样不自动聚焦：下面的名称输入框也不挂 autoFocus
           onOpenAutoFocus={(event) => event.preventDefault()}
         >
@@ -430,15 +406,34 @@ export function QuickActionsDialog({
                   <div className="mb-1 text-xs text-muted-foreground">
                     {draft.kind === 'command' ? tr('命令') : draft.kind === 'link' ? tr('链接') : tr('路径')}
                   </div>
-                  <Textarea
-                    variant="muted"
-                    rows={draft.kind === 'command' ? 2 : 1}
-                    placeholder={tr(QUICK_ACTION_TARGET_HINTS[draft.kind])}
-                    value={draft.target}
-                    onChange={(e) => setDraft({ ...draft, target: e.target.value })}
-                    // `min-h-0`：这个框只有 1–2 行，Textarea 的默认最小高度会把它撑成一大块
-                    className="min-h-0 resize-none"
-                  />
+                  {/*
+                    三种类型的「目标」形状本来就不同，别共用一个 textarea：
+                    - 链接 / 路径是**一行**，回车即保存（与上面的名称框一致）；
+                    - 命令是多行（按行顺序执行），给 Monaco（语言 shell）—— 语法高亮 / 行号 /
+                      撤销都白拿，loader 与主题复用文件面板那一份，不额外付包体。
+                      高度**钉死 8rem**（用户要求「不要太高」）：够看四五条命令，再多在编辑器内滚；
+                      同时弹窗高度不随输入的长短跳。
+                  */}
+                  {draft.kind === 'command' ? (
+                    <div className="h-32 overflow-hidden rounded-lg border">
+                      <MonacoEditor
+                        value={draft.target}
+                        onChange={(value) => setDraft({ ...draft, target: value })}
+                        language="shell"
+                        showHeader={false}
+                      />
+                    </div>
+                  ) : (
+                    <Input
+                      variant="muted"
+                      placeholder={tr(QUICK_ACTION_TARGET_HINTS[draft.kind])}
+                      value={draft.target}
+                      onChange={(e) => setDraft({ ...draft, target: e.target.value })}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') void submitDraft()
+                      }}
+                    />
+                  )}
                 </div>
                 <div>
                   <div className="mb-1 text-xs text-muted-foreground">{tr('说明（可选）')}</div>

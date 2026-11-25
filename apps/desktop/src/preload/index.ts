@@ -27,6 +27,8 @@ const windowBridge: DesktopWindowBridge = {
   close: () => ipcRenderer.invoke(WINDOW_IPC.close) as Promise<void>,
   quit: () => ipcRenderer.invoke(WINDOW_IPC.quit) as Promise<void>,
   isMaximized: () => ipcRenderer.invoke(WINDOW_IPC.isMaximized) as Promise<boolean>,
+  toggleFullScreen: () => ipcRenderer.invoke(WINDOW_IPC.toggleFullScreen) as Promise<void>,
+  isFullScreen: () => ipcRenderer.invoke(WINDOW_IPC.isFullScreen) as Promise<boolean>,
   notify: (notice: SystemNotice) => ipcRenderer.invoke(WINDOW_IPC.notify, notice) as Promise<boolean>,
   // sendSync：主进程持有这个偏好，渲染端启动时同步取一次（不能先显示错的值再跳）
   loadCloseToTray: () => ipcRenderer.sendSync(WINDOW_IPC.loadCloseToTray) as boolean,
@@ -74,6 +76,11 @@ const windowBridge: DesktopWindowBridge = {
     const listener = (_e: unknown, maximized: boolean): void => cb(maximized)
     ipcRenderer.on(WINDOW_IPC.maximizedChanged, listener)
     return () => ipcRenderer.off(WINDOW_IPC.maximizedChanged, listener)
+  },
+  onFullScreenChange: (cb: (fullScreen: boolean) => void) => {
+    const listener = (_e: unknown, fullScreen: boolean): void => cb(fullScreen)
+    ipcRenderer.on(WINDOW_IPC.fullScreenChanged, listener)
+    return () => ipcRenderer.off(WINDOW_IPC.fullScreenChanged, listener)
   },
   onAppUpdateChange: (cb: (status: AppUpdateStatus) => void) => {
     const listener = (_e: unknown, status: AppUpdateStatus): void => cb(status)

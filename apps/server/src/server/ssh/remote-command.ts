@@ -42,9 +42,22 @@ export function buildConfinedScript(policy: SandboxPolicy, command: string): str
   return buildBwrapInvocation(policy, ['sh', '-c', command])
 }
 
-/** 命令使用的 pid 文件（每次执行一个，收尾即删） */
-export function pidFileFor(id: string): string {
-  return `/tmp/fizz-exec-${id}.pid`
+/**
+ * 远端 pid 文件所在目录的**运行时解析片段**（`$d` 由它给出）。
+ *
+ * 不能写死 `/tmp`：Termux / Android 上 `/tmp` 只对 root 可写（甚至不存在），AI 执行命令时
+ * 命令尾部会冒出 `sh: 1: cannot create /tmp/fizz-exec-….pid: Permission denied`。
+ * 优先 `/tmp`（普通 Linux / macOS 保持原行为），不可写就落到 `$HOME/.fizz/tmp` ——
+ * SSH 会话一定带 `HOME`，且登录用户对家目录可写。
+ *
+ * ⚠️ exec / kill / cleanup **必须共用这一段**：它们是三次独立的 SSH exec，目录算得不一样
+ * 就会「杀不掉、也删不掉」上一轮留下的 pid 文件与进程。
+ */
+const PID_DIR_SETUP = `d=/tmp; [ -w "$d" ] || { d="$HOME/.fizz/tmp"; mkdir -p "$d" 2>/dev/null; }`
+
+/** pid 文件在脚本里的路径表达式（`$d` 由 `PID_DIR_SETUP` 给出；id 是 uuid，无需转义） */
+function pidPathExpr(id: string): string {
+  return `"$d/fizz-exec-${id}.pid"`
 }
 
 /**
@@ -57,10 +70,14 @@ export function pidFileFor(id: string): string {
  * `cwd` 在写 pid 之后、exec 之前切：`cd` 失败退出码 127，与「sh 找不到命令」同一类，
  * 调用方本来就会把 stderr 原样带给模型。
  */
-export function buildExecScript(command: string, opts: { pidFile: string; cwd?: string }): string {
+export function buildExecScript(command: string, opts: { pidId: string; cwd?: string }): string {
   const cd = opts.cwd ? `cd ${shellQuote(opts.cwd)} || exit 127; ` : ''
-  // `$$` 必须留给远端 sh 展开，这里只拼字面量
-  const inner = `echo $$ > ${shellQuote(opts.pidFile)} 2>/dev/null; ${cd}exec sh -c ${shellQuote(command)}`
+  // `$$` 必须留给远端 sh 展开，这里只拼字面量。
+  // `2>/dev/null` 要写在 `>` **前面**：重定向从左到右生效，先接上 stderr 才能把
+  // 「pid 文件写不了」这类错误一起吞掉（顺序反了时失败提示仍会打进命令输出）。
+  const inner =
+    `${PID_DIR_SETUP}; echo $$ 2>/dev/null > ${pidPathExpr(opts.pidId)}; ` +
+    `${cd}exec sh -c ${shellQuote(command)}`
   return (
     'if command -v setsid >/dev/null 2>&1; then ' +
     `setsid sh -c ${shellQuote(inner)}; else sh -c ${shellQuote(inner)}; fi`
@@ -71,19 +88,20 @@ export function buildExecScript(command: string, opts: { pidFile: string; cwd?: 
  * 终止脚本：优先按进程组（负 pid），失败退回单杀；`KILL` 档再补一刀直接子进程。
  * pid 文件里是内层 sh 的 `$$`，`exec` 之后它仍是命令本身的 pid。
  */
-export function buildKillScript(pidFile: string, signal: 'TERM' | 'KILL'): string {
+export function buildKillScript(pidId: string, signal: 'TERM' | 'KILL'): string {
   const extra =
     signal === 'KILL' ? `; pkill -KILL -P "$p" 2>/dev/null` : ''
   return (
-    `p=$(cat ${shellQuote(pidFile)} 2>/dev/null); ` +
+    `${PID_DIR_SETUP}; ` +
+    `p=$(cat ${pidPathExpr(pidId)} 2>/dev/null); ` +
     `if [ -n "$p" ]; then ` +
     `kill -${signal} -"$p" 2>/dev/null || kill -${signal} "$p" 2>/dev/null${extra}; fi`
   )
 }
 
 /** 收尾：删掉 pid 文件（命令已结束时调用，幂等） */
-export function buildCleanupScript(pidFile: string): string {
-  return `rm -f ${shellQuote(pidFile)}`
+export function buildCleanupScript(pidId: string): string {
+  return `${PID_DIR_SETUP}; rm -f ${pidPathExpr(pidId)}`
 }
 
 /**

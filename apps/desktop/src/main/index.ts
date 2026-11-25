@@ -52,6 +52,7 @@ import {
   startDownload,
   updaterStatus
 } from './updater'
+import { isToggleFullScreenKey } from '../shared/keys'
 import {
   WINDOW_IPC,
   type DesktopAppInfo,
@@ -426,6 +427,16 @@ function registerWindowIpc(): void {
   })
   ipcMain.handle(WINDOW_IPC.isMaximized, (event) => senderWindow(event)?.isMaximized() ?? false)
   /**
+   * 全屏（「视图」菜单）：切换与查询都作用在发起请求的窗口上。
+   * F11 不走这里 —— 主进程直接切，状态靠 `fullScreenChanged` 广播回去。
+   */
+  ipcMain.handle(WINDOW_IPC.toggleFullScreen, (event) => {
+    const win = senderWindow(event)
+    if (!win) return
+    win.setFullScreen(!win.isFullScreen())
+  })
+  ipcMain.handle(WINDOW_IPC.isFullScreen, (event) => senderWindow(event)?.isFullScreen() ?? false)
+  /**
    * 关闭按钮的行为偏好。**同步读**（preload 用 sendSync）：主进程是唯一真源，
    * 渲染端启动时同步取一次，界面不会先显示错的值再跳一下。
    */
@@ -754,6 +765,21 @@ function blockPageReload(window: BrowserWindow): void {
   })
 }
 
+/**
+ * F11 切换全屏。
+ *
+ * ⚠️ 必须在主进程拦：终端（xterm）这类自己吞键的区域拿到焦点后，渲染端的
+ * keydown 收不到，只有浏览器进程的 `before-input-event` 一定先看到。
+ * 判定（只认无修饰键的 keyDown、忽略长按重复）在 `../shared/keys`，有单测。
+ */
+function bindFullScreenShortcut(window: BrowserWindow): void {
+  window.webContents.on('before-input-event', (event, input) => {
+    if (!isToggleFullScreenKey(input)) return
+    event.preventDefault()
+    window.setFullScreen(!window.isFullScreen())
+  })
+}
+
 /** 同源判定（连协议一起比 —— `file:` / `data:` / `about:` 的 origin 都是字符串 `"null"`，只比 origin 会把它们混为一谈） */
 function sameOrigin(a: string, b: string): boolean {
   try {
@@ -843,7 +869,7 @@ function createWindow(): void {
     minHeight: MAIN_WINDOW_SIZE.min.height,
     show: false,
     autoHideMenuBar: true,
-    // 上次退出时的「窗口置顶」状态（标题栏那颗图钉写的，见 mainAlwaysOnTop）
+    // 上次退出时的「窗口置顶」状态（标题栏「视图」菜单写的，见 mainAlwaysOnTop）
     alwaysOnTop: windowPrefs.mainAlwaysOnTop,
     // 自定义标题栏：Windows / Linux 隐藏整条；mac 用 hiddenInset 保留交通灯
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
@@ -861,6 +887,16 @@ function createWindow(): void {
   mainWindow.on('maximize', notifyMaximized)
   mainWindow.on('unmaximize', notifyMaximized)
   /**
+   * 全屏状态推给渲染端（「视图」菜单据此在「全屏 / 退出全屏」之间切换）。
+   * F11 与菜单两条路最后都会落到 `setFullScreen`，这两个事件是共同出口。
+   */
+  const notifyFullScreen = (): void => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    mainWindow.webContents.send(WINDOW_IPC.fullScreenChanged, mainWindow.isFullScreen())
+  }
+  mainWindow.on('enter-full-screen', notifyFullScreen)
+  mainWindow.on('leave-full-screen', notifyFullScreen)
+  /**
    * 关闭 = 收起到托盘（默认；设置「通用」里可改成直接退出）。
    *
    * `!tray` 时不拦截：托盘没建起来（图标缺失等）还去隐藏窗口，应用就再也叫不回来了。
@@ -874,6 +910,7 @@ function createWindow(): void {
     mainWindow = null
   })
   blockPageReload(mainWindow)
+  bindFullScreenShortcut(mainWindow)
   routeExternalLinks(mainWindow)
   secureWebviews(mainWindow)
 

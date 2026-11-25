@@ -5,16 +5,16 @@
  * - Windows / Linux：右侧自绘最小化 / 最大化(还原) / 关闭按钮
  *
  * 左侧：品牌区（应用 logo + 名字，从 AI Agent 侧栏顶部搬过来的 —— 侧栏收起后整条会消失，
- * 品牌不该跟着没）。
+ * 品牌不该跟着没）。品牌右侧是**菜单条**（目前只有「视图」：全屏 / 窗口置顶）。
  *
- * 右侧：**窗口置顶**图钉 + **AI 助手**开关键（都靠窗口控制键左侧）。助手是全局右侧
+ * 右侧：**AI 助手**开关键（靠窗口控制键左侧）。助手是全局右侧
  * 停靠面板，入口放窗口级 chrome 上才哪儿都能点到；web 的 `WebTitleBar` 也是同一位置
- * （右上角）。置顶只有 desktop 有 —— web 里没有可置顶的窗口，那边不渲染这颗键。
+ * （右上角）。窗口置顶在「视图」菜单里（带勾选），不再是独立图钉键。
  *
  * 「应用日志」入口**已从这里移走**，下沉到**底部状态栏最右端**（`LogsButton`）—— 它低频、
  * 属全局工具，交给状态栏的 `actions` 槽。
  *
- * 窗口级工具只留「置顶图钉 + AI 助手」（窗口控制键除外），**中间**是命令面板的搜索框。
+ * 窗口级工具只留「菜单条 + AI 助手」（窗口控制键除外），**中间**是命令面板的搜索框。
  * 除此之外刻意不再放别的功能入口：侧边栏折叠在各侧栏自己身上（AgentSidebar /
  * HostsSidebar / ApiPanel 里那颗按钮），退出走系统窗口控制与菜单。
  *
@@ -26,10 +26,22 @@
  * 没有 window.api.app.platform）。
  */
 import { useEffect, useState, type ReactNode } from 'react'
-import { Copy, Minus, Pin, Sparkles, Square, X } from 'lucide-react'
+import { Copy, Minus, Sparkles, Square, X } from 'lucide-react'
 import { AppBrand, setAssistantPanelOpen, useAssistantPanelOpen } from '@fizz/agent-kit'
 import { MobileSidebarToggle } from '@fizz/agent-kit/shell/layout/MobileSidebarToggle'
 import { TitleBarSearch } from '@fizz/agent-kit/shell/layout/TitleBarSearch'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
+import { isShortcutRecording } from '@fizz/agent-kit/shared/lib/shortcuts'
+import { isViewMenuKey } from '../shared/keys'
+import {
+  Menubar,
+  MenubarCheckboxItem,
+  MenubarContent,
+  MenubarItem,
+  MenubarMenu,
+  MenubarShortcut,
+  MenubarTrigger
+} from '@fizz/ui/menubar'
 // `window.fizzWindow` 的全局声明在 `shared/window.ts`（纯类型文件，preload 与渲染端共用）
 
 /** 渲染端没有 process.platform：从 UA 判（macOS 的 UA 一定带 Mac） */
@@ -41,7 +53,13 @@ const IS_MAC = /mac/i.test(navigator.platform || navigator.userAgent)
 */
 
 export function TitleBar() {
+  const t = useT()
   const [maximized, setMaximized] = useState(false)
+  /**
+   * 全屏状态：F11 由主进程拦截（终端等区域抢焦点时渲染端收不到键），所以启动时查一次，
+   * 之后只认主进程的 `fullScreenChanged` 广播 —— 菜单文案与真实窗口状态不会分叉。
+   */
+  const [fullScreen, setFullScreen] = useState(false)
   /**
    * 窗口置顶状态：首帧同步取主进程那份偏好（与 loadCloseToTray 同一套路），
    * 重启后仍是上次退出时的状态。
@@ -49,10 +67,50 @@ export function TitleBar() {
   const [onTop, setOnTop] = useState(() => window.fizzWindow.loadMainAlwaysOnTop())
   // 助手开关：模块级单例状态，与 app-shell 里那份是同一个（同一份 bundle，见 index.ts 导出说明）
   const assistantOpen = useAssistantPanelOpen()
+  /** 「视图」菜单开合（受控：Alt+V 要在渲染端把它打开） */
+  const [viewMenuOpen, setViewMenuOpen] = useState(false)
 
   useEffect(() => {
     void window.fizzWindow.isMaximized().then(setMaximized)
-    return window.fizzWindow.onMaximizedChange(setMaximized)
+    const offMaximized = window.fizzWindow.onMaximizedChange(setMaximized)
+    void window.fizzWindow.isFullScreen().then(setFullScreen)
+    const offFullScreen = window.fizzWindow.onFullScreenChange(setFullScreen)
+    return () => {
+      offMaximized()
+      offFullScreen()
+    }
+  }, [])
+
+  /**
+   * Alt+V 打开 / 收起「视图」菜单（Windows 菜单助记符 `视图(V)`）。
+   *
+   * 捕获阶段挂：xterm / Monaco 这类自己处理键盘的区域在冒泡阶段拦截，
+   * 捕获阶段先轮到我们；设置页正在录制快捷键时让路，别把用户按的键吃了。
+   * macOS 不绑：Option+V 在输入框里要用于输入 √。
+   *
+   * ⚠️ 全局快捷键里 Alt+V 是「语音输入」的默认值，但桌面端 `capabilities.voice`
+   * 为 false、全局分发直接放行，所以这里不会抢它的键（见 `../shared/keys`）。
+   */
+  useEffect(() => {
+    if (IS_MAC) return
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.isComposing || isShortcutRecording()) return
+      const hit = isViewMenuKey({
+        type: event.type,
+        key: event.key,
+        control: event.ctrlKey,
+        meta: event.metaKey,
+        alt: event.altKey,
+        shift: event.shiftKey,
+        isAutoRepeat: event.repeat
+      })
+      if (!hit) return
+      event.preventDefault()
+      event.stopPropagation()
+      setViewMenuOpen((open) => !open)
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [])
 
   return (
@@ -92,30 +150,81 @@ export function TitleBar() {
       </div>
 
       {/*
+        菜单条（品牌右侧）：紧凑、无边框，与标题栏连成一片。
+        `app-no-drag` 必须加在根上：菜单项的可点击区域落在拖拽区里时会被当成拖窗口。
+
+        下拉面板按截图那种「整行高亮」样式收：内容只留 2px 内边距，行内左右撑开。
+        **hover / 键盘高亮走主色**：不改 `@fizz/ui` 的 Menubar 原语（它用的是 accent），
+        只在这块面板上把 `--accent` / `--accent-foreground` 两个变量就地换成
+        primary / primary-foreground —— 这样连勾选图标、F11 角标这些子元素的
+        `focus:**` 规则也会跟着变，不用逐条压 specificity。
+
+        「视图」里的两项：
+        - 全屏 / 退出全屏：文案随主进程广播的 `fullScreenChanged` 切换，右侧标注 F11
+          （键由主进程拦截，见 main/index.ts 的 bindFullScreenShortcut）；
+        - 窗口置顶：带勾选，状态仍由主进程落盘（重启后保持），与原来的图钉同一份偏好。
+      */}
+      <Menubar
+        value={viewMenuOpen ? 'view' : ''}
+        onValueChange={(value) => setViewMenuOpen(value === 'view')}
+        className="app-no-drag ml-3 h-auto gap-0 border-0 bg-transparent p-0"
+      >
+        <MenubarMenu value="view">
+          {/*
+            `h-6 py-0 leading-none`：原语靠 `py-[2px] + text-sm 行高` 撑高度，换成
+            固定 24px 高、行高 1 之后，中文按 em 盒在按钮里严格居中 —— 原来那套
+            半行距叠在 CJK 上，视觉上会偏下。
+            hover / 展开态用主色 20%：原语的 `muted` 比 sidebar 还浅，
+            `sidebar-accent` 也只差 0.028 亮度，都看不出来。
+            括号里的字母是 Windows 菜单助记符（截图里的 编辑(E)）：`视图(V)` 真的绑了
+            Alt+V（见上面的捕获监听），mac 没有这套约定、也不显示。
+          */}
+          <MenubarTrigger className="h-6 rounded-[4px] px-3 py-0 text-xs leading-none hover:bg-primary/20 aria-expanded:bg-primary/20">
+            {t('视图')}
+            {!IS_MAC && <span className="ml-0.5">(V)</span>}
+          </MenubarTrigger>
+          {/*
+            `alignOffset={0}`：原语默认 -4px，会让面板比入口左沿再往外探 4px；
+            归零后面板左沿与「视图」按钮的左沿齐平。
+          */}
+          <MenubarContent
+            alignOffset={0}
+            className="min-w-44 rounded-[6px] px-2 py-1.5 text-xs [--accent:var(--primary)] [--accent-foreground:var(--primary-foreground)]"
+          >
+            <MenubarItem
+              className="rounded-[3px] px-2 py-1.5 text-xs"
+              onSelect={() => void window.fizzWindow.toggleFullScreen()}
+            >
+              {fullScreen ? t('退出全屏') : t('全屏')}
+              <MenubarShortcut>F11</MenubarShortcut>
+            </MenubarItem>
+            <MenubarCheckboxItem
+              /*
+                对号挪到右端：原语的指示器是 `absolute left-1.5`，这里把直接子 span
+                改到右边（`[&>span]` 的 specificity 高于原语的单个 `left-*` 类），
+                再把行的左内边距收回来、右侧留出勾选位。
+              */
+              className="rounded-[3px] py-1.5 pl-2 pr-7 text-xs [&>span]:right-1.5 [&>span]:left-auto"
+              checked={onTop}
+              onCheckedChange={(checked) => {
+                const next = checked === true
+                setOnTop(next)
+                void window.fizzWindow.setMainAlwaysOnTop(next)
+              }}
+            >
+              {t('窗口置顶')}
+            </MenubarCheckboxItem>
+          </MenubarContent>
+        </MenubarMenu>
+      </Menubar>
+
+      {/*
         中间：命令面板的搜索框（点击弹出面板，与 web 顶栏同一颗 `TitleBarSearch`）。
         ⚠️ `app-no-drag` **只加在框本身**：这层 div 若整块设 no-drag，窗口中间就再也拖不
         动了 —— 空白处必须留给窗口拖拽（顶栏整条是 `app-drag`，见文件头）。
       */}
       <div className="flex min-w-0 flex-1 items-center justify-center px-2">
         <TitleBarSearch className="app-no-drag w-7 md:w-full md:max-w-xs" />
-      </div>
-
-      {/*
-        窗口置顶（图钉）：开启后主窗口浮在其它窗口之上，不随切走应用被盖住。
-        状态落在主进程的 `mainAlwaysOnTop`（重启保持）。
-      */}
-      <div className="app-no-drag flex items-stretch">
-        <TitleBarButton
-          title={onTop ? '取消窗口置顶' : '窗口置顶'}
-          active={onTop}
-          onClick={() => {
-            const next = !onTop
-            setOnTop(next)
-            void window.fizzWindow.setMainAlwaysOnTop(next)
-          }}
-        >
-          <Pin className="size-3.5" />
-        </TitleBarButton>
       </div>
 
       {/*

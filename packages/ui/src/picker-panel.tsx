@@ -56,12 +56,20 @@ import { SearchField } from './search-field'
  * 不传就什么都不画（工作区 / 分支那些选择器不需要）。
  *
  * 高度上限**必须吃 Radix 算出来的可用高度**（`--radix-popper-available-height`，由
- * `Popper.Content` 以内联变量给出，已扣掉 `collisionPadding`），再与 26rem 取小：
+ * `Popper.Content` 以内联变量给出，已扣掉 `collisionPadding`），再与 26rem 取小，
+ * 并**再减掉 `--overlay-top`**：
  *
  * - 只写 `100dvh` 是错的：那是**整窗高度**，模型 / 工作区列表一长，面板就长到将近一屏，
  *   贴在输入框上方的面板直接顶出视口上沿 —— 搜索框被窗口裁掉，看起来像「溢出、顶部被遮挡」。
  *   Radix 的翻转只在两侧都放得下时才有用，面板比两侧空间都高时它只能留在原位溢出。
  * - `26rem` 是桌面上的舒适上限：再高就该滚了，不该继续长。
+ * - `--overlay-top` 是**顶部 chrome 的几何让位**（desktop = 自绘标题栏高度；web = 0；
+ *   手机 = 系统栏安全区）。必须减：Radix 的碰撞边界是整块视口，它认为标题栏那条也算
+ *   「可用空间」，于是又高又长的面板会一路顶进标题栏。而 Windows 上 `-webkit-app-region: drag`
+ *   是**系统级 caption 命中**（窗口过程对那条矩形返回 `HTCAPTION`，与 DOM 的 z 序无关）——
+ *   面板画在标题栏上层也照样点不到，二级视图顶部的「返回 / 设置」与搜索框全部失效
+ *   （用户实测：「模型选择面板的 header 点不了」）。抬 z-index 治不了，只能几何避开。
+ *   与 Dialog / Sheet / Drawer 的遮罩上沿读同一个 token，那条链路的注释见 `tokens.css`。
  *
  * `min-h-0` + `flex-1` 让中间的列表收缩并自己滚（不要给列表写死 `h-*`）。
  * `dvh` 那一段只是首帧兜底：可用高度是量出来才写上去的，第一次绘制时可能还没值。
@@ -101,7 +109,7 @@ function PickerPanel({
       className={cn(
         // 与弹窗 / 命令面板同一套液态玻璃外壳（见 `liquid-glass.tsx`）。
         // `ring-0` 顶掉 `PopoverContent` 自带的淡 ring —— 勾边只留玻璃那一圈，不要两层。
-        'flex max-h-[min(26rem,var(--radix-popper-available-height,calc(100dvh_-_3rem)))] w-72 flex-col gap-0 overflow-hidden rounded-xl p-0 ring-0',
+        'flex max-h-[min(26rem,calc(var(--radix-popper-available-height,calc(100dvh_-_3rem))_-_var(--overlay-top,0px)))] w-72 flex-col gap-0 overflow-hidden rounded-xl p-0 ring-0',
         glass.className,
         className
       )}

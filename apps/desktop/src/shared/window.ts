@@ -21,6 +21,17 @@ export const WINDOW_IPC = {
   isMaximized: 'agent-window:isMaximized',
   /** 最大化状态变化事件（main → renderer，标题栏据此切换最大化/还原图标） */
   maximizedChanged: 'agent-window:maximized',
+  /** 切换全屏（标题栏「视图」菜单） */
+  toggleFullScreen: 'agent-window:toggleFullScreen',
+  /** 当前是否全屏（标题栏首帧 / 菜单文案用） */
+  isFullScreen: 'agent-window:isFullScreen',
+  /**
+   * 全屏状态变化（main → renderer）。
+   *
+   * F11 由主进程拦截（终端等区域获得焦点时渲染端收不到键），所以主进程是
+   * 状态变化的唯一出口，界面必须靠这条广播切菜单文案。
+   */
+  fullScreenChanged: 'agent-window:fullScreenChanged',
   /** 系统通知（renderer → main）：是否弹由主进程按前台状态判定 */
   notify: 'agent-window:notify',
   /** 关闭按钮行为偏好：收起到托盘（true，默认）/ 直接退出（同步读，见下） */
@@ -206,6 +217,12 @@ export interface DesktopWindowBridge {
   isMaximized(): Promise<boolean>
   /** 订阅最大化状态变化；返回退订函数 */
   onMaximizedChange(cb: (maximized: boolean) => void): () => void
+  /** 切换全屏（「视图」菜单点的是这条；F11 在主进程里直接切，不经过这里） */
+  toggleFullScreen(): Promise<void>
+  /** 当前是否全屏 */
+  isFullScreen(): Promise<boolean>
+  /** 订阅全屏状态变化（F11 由主进程拦截，界面只能靠这条知道状态变了）；返回退订函数 */
+  onFullScreenChange(cb: (fullScreen: boolean) => void): () => void
   /**
    * 发一条系统通知。**是否真的弹由主进程判定**：应用在前台（窗口可见且聚焦）时不发 ——
    * 那时返回 `false`，调用方（`lib/notify.ts` 的 `notify`）会改发一条应用内 toast。

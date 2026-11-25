@@ -29,6 +29,7 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
+  LoaderPinwheel,
   LogIn,
   Pencil,
   Plus,
@@ -470,7 +471,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
                     onClick={() => void checkAgent(agent)}
                   >
                     {checking ? (
-                      <Loader2 className="size-3.5 animate-spin" />
+                      <LoaderPinwheel className="size-3.5 animate-spin" />
                     ) : failed ? (
                       <AlertCircle className="size-3.5" />
                     ) : checkedAt !== undefined ? (
@@ -555,7 +556,13 @@ export function AcpTab({ app }: { app: AgentApp }) {
           disabled={detecting}
           onClick={() => void runDetect()}
         >
-          {detecting && <Loader2 className="size-3.5 animate-spin" />}
+          <span className="inline-flex size-3.5 shrink-0 items-center justify-center" aria-hidden="true">
+            {detecting ? (
+              <LoaderPinwheel className="size-full animate-spin" />
+            ) : (
+              <RefreshCw className="size-full text-muted-foreground" />
+            )}
+          </span>
           {tr('检测已安装')}
         </Button>
         <Button size="sm" variant="outline" className="flex-1" onClick={() => openAcpForm()}>

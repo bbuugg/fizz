@@ -19,7 +19,7 @@ import type { WorkspaceExecOptions, WorkspaceExecResult } from '@fizz/contracts/
 import { createAnsiStripper, createOutputDecoder } from '@fizz/tools'
 import { domain } from '../state'
 import { connectWithJumps } from './connect'
-import { buildCleanupScript, buildExecScript, buildKillScript, pidFileFor } from './remote-command'
+import { buildCleanupScript, buildExecScript, buildKillScript } from './remote-command'
 
 /** 闲置多久回收连接（与 SFTP 池同一量级；太短会让连续命令反复握手） */
 const IDLE_MS = 5 * 60 * 1000
@@ -167,9 +167,9 @@ class RemoteExecService {
       resolve({ stdout: '', stderr: '', exitCode: null, reason: 'aborted', truncated: false })
       return
     }
-    const pidFile = pidFileFor(randomUUID().replace(/-/g, ''))
+    const pidId = randomUUID().replace(/-/g, '')
     const script = buildExecScript(command, {
-      pidFile,
+      pidId,
       ...(opts.cwd ? { cwd: opts.cwd } : {})
     })
 
@@ -201,13 +201,13 @@ class RemoteExecService {
          * 整棵进程树就留在远端了。
          */
         killTimer = setTimeout(() => {
-          void this.runAux(entry, buildKillScript(pidFile, 'KILL')).then(() =>
-            this.runAux(entry, buildCleanupScript(pidFile))
+          void this.runAux(entry, buildKillScript(pidId, 'KILL')).then(() =>
+            this.runAux(entry, buildCleanupScript(pidId))
           )
         }, KILL_GRACE_MS)
         killTimer.unref?.()
       } else {
-        void this.runAux(entry, buildCleanupScript(pidFile))
+        void this.runAux(entry, buildCleanupScript(pidId))
       }
       resolve({
         stdout,
@@ -221,7 +221,7 @@ class RemoteExecService {
 
     const terminate = (reason: 'timeout' | 'aborted'): void => {
       if (settled) return
-      void this.runAux(entry, buildKillScript(pidFile, 'TERM'))
+      void this.runAux(entry, buildKillScript(pidId, 'TERM'))
       finish(reason)
     }
 
