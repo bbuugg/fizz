@@ -181,8 +181,11 @@ function LiveTps({ app, running }: { app: AgentApp; running: boolean }) {
 
 export function ComposerStatusBar({ app, running }: { app: AgentApp; running: boolean }) {
   const isAcp = turnIsAcp(app)
+  // 定高 `h-8`：右侧权限 / 上下文 pill 是 32px，左侧 pill 是 24px。某些状态（ACP
+  // 空会话：无会话 → 权限 pill 与上下文圆环都不渲染）整条只剩左侧 24px，横条会矮一截、
+  // 和卡片底部对不上。统一锁到「显示时」的高度。
   return (
-    <div className="flex w-full min-w-0 items-center gap-2">
+    <div className="flex h-8 w-full min-w-0 items-center gap-2">
       <WorkspaceLocationPill app={app} />
       <BranchPill app={app} />
       {/* 与输入相关的控件留在卡片里；这两颗是「当前状态 / 全轮生效」的设置，归到横条 */}
