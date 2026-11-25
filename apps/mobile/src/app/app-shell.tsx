@@ -771,6 +771,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               onOpenChange={setPaletteOpen}
               initialPage={paletteEntry}
               onOpenConversation={openConversation}
+              // 与桌面同一条路：选中工作区 = 打开它的「创建新任务」页
+              onOpenWorkspace={startDraftConversation}
               shortcuts={shortcuts}
               theme={theme}
               onToggleTheme={toggleTheme}

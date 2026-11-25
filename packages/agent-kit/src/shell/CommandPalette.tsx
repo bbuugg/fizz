@@ -13,7 +13,8 @@
  * （如「搜索会话」「新建工作区」）。层级用**栈**记（`stack`，栈顶 = 当前页），
  * 不是单个 `mode` 枚举 —— 那等于「最多两级」，只能回根级。
  *
- * 现在 `push` 进下一级、`pop` 回上一级，想压多深都行。两条现成的链：
+ * 现在 `push` 进下一级、`pop` 回上一级，想压多深都行。现成的链：
+ * - `工作区 → 工作区清单页`（选中一个工作区，打开它的「创建新任务」页）
  * - `新建工作区 → 选择文件夹… → 目录页`（本地目录，选完登记工作区）
  * - `新建工作区 → 连接远端服务器… → 远端主机页 → 远端目录页`（选主机再选目录）
  * 每按一次 Esc 退一层（最内层 → … → 新建工作区 → 关面板），不是「一下跳回命令列表」。
@@ -60,8 +61,11 @@ import {
 import {
   ArrowLeft,
   ChevronRight,
+  Cloud,
   FileCode2,
+  Folder,
   Gauge,
+  GitBranch,
   MessageSquare,
   MessageSquarePlus,
   Moon,
@@ -74,7 +78,7 @@ import {
   Settings,
   Sun
 } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { CommandPaletteEntry } from '@fizz/agent-kit/shared/lib/command-palette'
 import { conversationTitle } from '@fizz/agent-kit/shared/lib/conversation-title'
 import { CommandPaletteSearch } from './CommandPaletteSearch'
@@ -87,6 +91,11 @@ import { CommandPaletteSearch } from './CommandPaletteSearch'
 type PalettePage =
   | { kind: 'root' }
   | { kind: 'new-workspace' }
+  /**
+   * 工作区清单页：选中一个工作区 = 打开它的「创建新任务」页（与侧栏点项目行同一条路）。
+   * 根级「工作区」组里那条「工作区」压进来（在「新建工作区」上方）。
+   */
+  | { kind: 'workspaces' }
   | { kind: 'hosts' }
   | { kind: 'scripts' }
   | { kind: 'search-sessions' }
@@ -120,6 +129,7 @@ export function CommandPalette({
   open,
   onOpenChange,
   onOpenConversation,
+  onOpenWorkspace,
   shortcuts,
   theme,
   onToggleTheme,
@@ -144,6 +154,13 @@ export function CommandPalette({
   initialPage?: CommandPaletteEntry
   /** 打开一个会话：走宿主统一入口（跨项目先切项目、切到对话视图、写 URL） */
   onOpenConversation: (conversationId: string, workspaceId?: string) => void
+  /**
+   * 打开某个工作区的「创建新任务」页：切工作区 + 空态对话 + 占位标签 + 切到对话视图。
+   *
+   * 与侧栏点项目行走**同一条路**（宿主 `startDraftConversation`）。命令面板自己切不了
+   * 主区域标签，所以必须由宿主给这个回调，不能在这里直接 `selectWorkspace` 了事。
+   */
+  onOpenWorkspace: (workspaceId: string) => void
   /** 当前快捷键配置：给命令行展示组合键提示 */
   shortcuts: { action: string; accelerator: string }[]
   theme: 'dark' | 'light'
@@ -265,6 +282,18 @@ export function CommandPalette({
 
   const activeWorkspaceId = app.activeWorkspaceId
 
+  /**
+   * 「工作区」二级页的可选项：有真实目录、且不是临时任务的工作区。
+   *
+   * 与侧栏项目树同一口径（`path` 为空的历史空壳、`scratch` 的临时任务都不进列表）——
+   * 它们没有「新建会话」的语义，列出来只会让人以为是个能用的项目。
+   * 顺序直接用 `app.workspaces`（服务端数组顺序，与侧栏一致）。
+   */
+  const paletteWorkspaces = useMemo(
+    () => app.workspaces.filter((w) => w.path && !w.scratch),
+    [app.workspaces]
+  )
+
   /** 二级页面头部的「回上一级」按钮（主机 / 脚本 / 新建工作区 / 目录页四处同款） */
   const backButton = (
     <Button
@@ -317,6 +346,11 @@ export function CommandPalette({
         return {
           title: t('新建工作区'),
           description: t('选择文件夹、从 Git 导入、连接远端服务器或新建容器型项目')
+        }
+      case 'workspaces':
+        return {
+          title: t('工作区'),
+          description: t('选一个工作区，打开它的新建会话页面')
         }
       case 'hosts':
         return { title: t('主机'), description: t('选一台主机，在内容区域打开它的终端') }
@@ -406,14 +440,40 @@ export function CommandPalette({
             <CommandEmpty>{t("没有匹配的命令。")}</CommandEmpty>
 
             {/*
-              工作区：只放一条「新建工作区」进二级，不把四条入口平铺在根级 —— 它们都是
-              「加一个项目」的一部分，一次只会做一件，铺开只把根级清单顶长。
+              工作区：两条 ——「工作区」（选一个，打开它的新建会话页）与「新建工作区」
+              （四条添加入口收在二级）。四条入口不平铺在根级：它们都是「加一个项目」的
+              一部分，一次只会做一件，铺开只把根级清单顶长。
+
+              「工作区」只在真有可选项目时出现（临时任务 / 空壳工作区不算）：一条零项目时
+              点进去是空列表，等于一个死入口。
 
               为什么值得在这里开一个口子：那四条入口原先只长在「开始新对话」页的工作区下拉
               底部（以及定时任务表单里），**空会话之外根本没有**。命令面板是「哪儿都能叫出来」
               的入口，加项目这种低频但急需的操作放这儿才找得到。
             */}
             <CommandGroup heading={t('工作区')}>
+              {paletteWorkspaces.length > 0 && (
+                <CommandItem
+                  keywords={[
+                    'workspace',
+                    'project',
+                    'switch',
+                    'open',
+                    '工作区',
+                    '项目',
+                    '打开',
+                    '切换'
+                  ]}
+                  onSelect={() => push({ kind: 'workspaces' })}
+                >
+                  <FolderTree />
+                  <span>{t('工作区')}</span>
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    {paletteWorkspaces.length}
+                  </span>
+                  <ChevronRight />
+                </CommandItem>
+              )}
               <CommandItem
                 keywords={[
                   'workspace',
@@ -621,6 +681,53 @@ export function CommandPalette({
               </CommandItem>
                 </>
               )}
+            </CommandGroup>
+          </CommandList>
+        </>
+      ) : page.kind === 'workspaces' ? (
+        <>
+          <CommandInput
+            leading={backButton}
+            placeholder={t('搜索工作区')}
+            value={keyword}
+            onValueChange={setKeyword}
+            autoFocus
+          />
+          {/* 清单在内存里（`app.workspaces`），过滤交给 cmdk；`value` 里带上路径，
+              敲目录名也能命中。右侧灰字是该工作区的位置（远端带上主机名）。 */}
+          <CommandList className="min-h-0 max-h-[min(24rem,calc(85dvh_-_7rem))] flex-1">
+            <CommandEmpty>{t('没有匹配的工作区')}</CommandEmpty>
+            <CommandGroup>
+              {paletteWorkspaces.map((workspace) => {
+                const Icon = workspace.remote
+                  ? Cloud
+                  : workspace.isWorktree
+                    ? GitBranch
+                    : Folder
+                const hostName = workspace.remote
+                  ? app.sshHosts.find((host) => host.id === workspace.remote?.hostId)?.name
+                  : undefined
+                const hint = workspace.remote
+                  ? `${hostName ?? t('主机已删除')} · ${workspace.path}`
+                  : workspace.path
+                return (
+                  <CommandItem
+                    key={workspace.id}
+                    value={`工作区 ${workspace.name} ${workspace.path}`}
+                    keywords={['workspace', 'project', workspace.name, workspace.path]}
+                    onSelect={run(() => onOpenWorkspace(workspace.id))}
+                  >
+                    <Icon />
+                    <span className="truncate">{workspace.name}</span>
+                    <span
+                      className="ml-auto max-w-40 truncate text-xs text-muted-foreground"
+                      title={hint}
+                    >
+                      {hint}
+                    </span>
+                  </CommandItem>
+                )
+              })}
             </CommandGroup>
           </CommandList>
         </>

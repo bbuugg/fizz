@@ -975,6 +975,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               onOpenChange={setPaletteOpen}
               initialPage={paletteEntry}
               onOpenConversation={openConversation}
+              // 「工作区」二级页选中一项 = 打开它的「创建新任务」页（与侧栏点项目行同一条路）
+              onOpenWorkspace={startDraftConversation}
               shortcuts={shortcuts}
               theme={theme}
               onToggleTheme={toggleTheme}
