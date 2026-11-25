@@ -78,7 +78,7 @@ import {
   Settings,
   Sun
 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CommandPaletteEntry } from '@fizz/agent-kit/shared/lib/command-palette'
 import { conversationTitle } from '@fizz/agent-kit/shared/lib/conversation-title'
 import { CommandPaletteSearch } from './CommandPaletteSearch'
@@ -232,15 +232,36 @@ export function CommandPalette({
    */
   const [rootQuery, setRootQuery] = useState('')
 
-  /** 面板每次打开都从根级开始；关掉时把栈与输入现场全清掉，下次进来是干净的命令列表 */
+  /**
+   * 关面板时**只关、不动页面栈**。
+   *
+   * 原来关的一瞬间把栈弹回根级、并清词：那一刻 Dialog 还在播退出动画，内容却已经换成
+   * 根级清单（比二级页高），`DialogContent` 的高度过渡于是先把面板「长高」再消失 ——
+   * 用户看到的就是「点一下外面，面板先变高一下才关」。栈与输入现场留到**下一次打开**
+   * 的 `open` 跳变时再清（见下面的 effect），退出动画期间画面保持原样。
+   */
   const handleOpenChange = (next: boolean): void => {
-    if (!next) {
-      setStack([ROOT_PAGE])
+    onOpenChange(next)
+  }
+
+  /**
+   * 每次「从关到开」都把栈与输入现场复位（宿主若按 `key` 重挂组件，这一步天然不会跑）。
+   *
+   * 为什么不放在关闭回调里：关闭回调发生在退出动画**之前**，换内容会让面板在消失前
+   * 先做一次高度过渡（见 `handleOpenChange` 的注释）。放在打开时清，画面已经重新出现，
+   * 高度变化是「这次打开」的，不会被看成「关的时候抽了一下」。
+   */
+  const wasOpen = useRef(open)
+  useEffect(() => {
+    if (open && !wasOpen.current) {
+      setStack(
+        initialPage === 'new-workspace' ? [ROOT_PAGE, { kind: 'new-workspace' }] : [ROOT_PAGE]
+      )
       setKeyword('')
       setRootQuery('')
     }
-    onOpenChange(next)
-  }
+    wasOpen.current = open
+  }, [open, initialPage])
 
   /** 进下一级。每页都从空词开始：上一页的词留着也没处显示，还会把新页筛空 */
   const push = (next: PalettePage): void => {
