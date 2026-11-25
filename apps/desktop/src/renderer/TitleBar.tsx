@@ -95,6 +95,10 @@ export function TitleBar() {
     if (IS_MAC) return
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.isComposing || isShortcutRecording()) return
+      // 窄到手机宽度时菜单入口本身已隐藏（见 Menubar 的 `max-md:hidden`）：
+      // 快捷键也不该再「打开一个看不见的菜单」，否则状态会留到下次拉宽时莫名弹开。
+      // 断点与隐藏完全一致：`md` = 768px。
+      if (window.innerWidth < 768) return
       const hit = isViewMenuKey({
         type: event.type,
         key: event.key,
@@ -167,7 +171,9 @@ export function TitleBar() {
       <Menubar
         value={viewMenuOpen ? 'view' : ''}
         onValueChange={(value) => setViewMenuOpen(value === 'view')}
-        className="app-no-drag ml-3 h-auto gap-0 border-0 bg-transparent p-0"
+        // 窄到手机宽度时整条菜单入口收起：与中间搜索框**同一个断点**（`md`）——
+        // 那边文字一消失、只剩一颗搜索图标，这边再挂一条「视图(V)」就只有它挤不下。
+        className="app-no-drag ml-3 h-auto gap-0 border-0 bg-transparent p-0 max-md:hidden"
       >
         <MenubarMenu value="view">
           {/*
@@ -222,9 +228,13 @@ export function TitleBar() {
         中间：命令面板的搜索框（点击弹出面板，与 web 顶栏同一颗 `TitleBarSearch`）。
         ⚠️ `app-no-drag` **只加在框本身**：这层 div 若整块设 no-drag，窗口中间就再也拖不
         动了 —— 空白处必须留给窗口拖拽（顶栏整条是 `app-drag`，见文件头）。
+
+        窄到手机宽度（`<md`）时这层改为**靠右**：搜索框只剩一颗图标（文字隐藏、宽度收到
+        `w-7`），再居中就会孤零零飘在中间；贴到右端与 AI 助手入口挨着，视觉上并进右侧那组
+        窗口级按钮。宽屏仍是居中一条横贯的框。
       */}
-      <div className="flex min-w-0 flex-1 items-center justify-center px-2">
-        <TitleBarSearch className="app-no-drag w-7 md:w-full md:max-w-xs" />
+      <div className="flex min-w-0 flex-1 items-center justify-end px-2 md:justify-center">
+        <TitleBarSearch className="app-no-drag w-7 max-md:bg-transparent max-md:hover:bg-foreground/10 md:w-full md:max-w-xs" />
       </div>
 
       {/*
@@ -232,10 +242,12 @@ export function TitleBar() {
         `setAssistantPanelOpen` 读写与 app-shell 同一份单例状态，AppShell 会跟着重渲染。
         `app-no-drag` 必须加：否则点它会变成拖窗口。样式复用同条的 `TitleBarButton`。
       */}
-      <div className="app-no-drag flex items-stretch">
+      <div className="app-no-drag flex items-center">
         <TitleBarButton
           title={assistantOpen ? '关闭 AI 助手' : '打开 AI 助手'}
           active={assistantOpen}
+          // 与搜索图标同形：24px 高 + 圆角，上下各留 4px（不再贴满标题栏整高）
+          inset
           onClick={() => setAssistantPanelOpen(!assistantOpen)}
         >
           <Sparkles className="size-3.5" />
@@ -280,6 +292,7 @@ function TitleBarButton({
   title,
   destructive,
   active,
+  inset = false,
   onClick,
   children
 }: {
@@ -287,10 +300,25 @@ function TitleBarButton({
   destructive?: boolean
   /** 开关类按钮的开启态（目前只有 AI 助手）：图标用主题色，与 web 端 `AiAssistantButton` 一致 */
   active?: boolean
+  /**
+   * 与顶栏那颗搜索图标同形：高度收到 `h-6`、`rounded-md`，上下各留 4px。
+   *
+   * 窗口控制键（最小化 / 最大化 / 关闭）**不要**开这个 —— 它们要贴满标题栏整高，
+   * 与系统原生按钮一个观感。
+   */
+  inset?: boolean
   onClick: () => void
   children: ReactNode
 }) {
-  const base = 'flex w-11 items-center justify-center transition-colors'
+  /**
+   * 开启态 / 普通态统一用「淡前景色」hover（与搜索图标一致）。
+   *
+   * `inset` 时宽度也跟搜索图标一致（`w-7`）：图标只有 14px，`w-11` 会在左右各多出
+   * 15px 空白，看起来像「图标缩在中间」。窗口控制键要保持 44px 的点击宽度，不开 `inset`。
+   */
+  const base = `flex items-center justify-center transition-colors ${
+    inset ? 'h-6 w-7 rounded-md' : 'w-11'
+  }`
   return (
     <button
       type="button"
@@ -299,13 +327,13 @@ function TitleBarButton({
       onClick={onClick}
       className={
         active
-          ? `${base} text-primary hover:bg-secondary hover:text-primary`
+          ? `${base} text-primary hover:bg-foreground/10 hover:text-primary`
           : destructive
             // shadcn v4 没有 --destructive-foreground token（Button 的 destructive 变体也是
             // bg-destructive text-white）：写 text-destructive-foreground 会因 token 缺失
             // 静默不生成，图标停在灰色
             ? `${base} text-muted-foreground hover:bg-destructive hover:text-white`
-            : `${base} text-muted-foreground hover:bg-secondary hover:text-foreground`
+            : `${base} text-muted-foreground hover:bg-foreground/10 hover:text-foreground`
       }
     >
       {children}
