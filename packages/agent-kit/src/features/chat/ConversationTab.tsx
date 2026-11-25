@@ -316,8 +316,6 @@ export function ConversationTab({
    */
   const isRemote = !!workspace?.remote
   const gitChangeCount = panel?.gitChanges?.count ?? 0
-  const gitBadge =
-    gitChangeCount > 0 ? `${gitChangeCount}${panel?.gitChanges?.truncated ? '+' : ''}` : null
   /** 面板里已挂出的终端条数：顶栏终端按钮右上角挂个徽标（0 条不挂） */
   const terminalCount = panel?.terminals.length ?? 0
 
@@ -749,17 +747,12 @@ export function ConversationTab({
                   <TooltipTrigger asChild>
                     <Button
                       variant="outline"
-                      className={cn('relative h-7! w-8! p-0!', sideTab === 'git' && 'text-primary')}
+                      className={cn('h-7! w-8! p-0!', sideTab === 'git' && 'text-primary')}
                       aria-label={tr('源代码管理')}
                       disabled={!workspaceId}
                       onClick={() => toggleSideTabOf(key, 'git')}
                     >
                       <GitBranch className="size-4" />
-                      {gitBadge && (
-                        <span className="pointer-events-none absolute -top-1.5 -right-1.5 min-w-4 rounded-full bg-primary px-1 text-center text-[0.625rem] font-medium leading-4 text-primary-foreground tabular-nums">
-                          {gitBadge}
-                        </span>
-                      )}
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent side="bottom">

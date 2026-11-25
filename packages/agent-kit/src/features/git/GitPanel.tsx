@@ -90,6 +90,13 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from '@fizz/ui/dropdown-menu'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger
+} from '@fizz/ui/context-menu'
 import { Input } from '@fizz/ui/input'
 import { FileDiffView } from '@fizz/agent-kit/features/git/FileDiffView'
 import { ChangeTreeList } from '@fizz/agent-kit/features/git/GitChangeTree'
@@ -1104,7 +1111,14 @@ export function GitPanel({
         标题位让给分支 —— 它才是这一行最有用的东西（原来独占下面一整行状态条）。
         顺带把状态条上那几个指示（分离头指针 / ↑↓ / 上游）也搬上来，那行于是整行删掉。
       */}
-      <div className="flex shrink-0 items-center gap-1.5 px-3 py-2">
+      {/* 不是仓库（含还在读状态）时整行收起：分支图标 / 刷新 / 树状切换在这里都没有可操作对象 */}
+      <div
+        className={
+          status?.isRepo
+            ? 'flex shrink-0 items-center gap-1.5 px-3 py-2'
+            : 'hidden'
+        }
+      >
         <GitBranchIcon
           className="size-4 shrink-0 text-muted-foreground"
           aria-label={status?.root ? t('仓库：{root}', { root: status.root }) : undefined}
@@ -1508,45 +1522,40 @@ export function GitPanel({
                 <div className="pl-2">
                   {stashes.length ? (
                     stashes.map((s) => (
-                      <div
-                        key={s.ref}
-                        className="flex items-center gap-1.5 rounded px-2 py-1 text-xs hover:bg-foreground/5"
-                      >
-                        <span className="shrink-0 font-mono text-muted-foreground">{s.ref}</span>
-                        <span className="min-w-0 flex-1 truncate" title={s.message}>
-                          {s.message}
-                        </span>
-                        <Button
-                          variant="ghost"
-                          className="h-5! shrink-0 gap-1 px-1.5! text-xs"
-                          title={t('弹出（git stash pop）：应用这次贮藏，并从栈里删掉')}
-                          disabled={busy}
-                          onClick={() => void applyStash(s, true)}
-                        >
-                          <ArchiveRestore className="size-3" />
-                          {t('弹出')}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          className="h-5! shrink-0 px-1.5! text-xs"
-                          title={t('应用（git stash apply）：应用这次贮藏，但留在栈里')}
-                          disabled={busy}
-                          onClick={() => void applyStash(s, false)}
-                        >
-                          {t('应用')}
-                        </Button>
-                        <IconTip label={t('删除这次贮藏（git stash drop）…')}>
-                          <Button
-                            variant="ghost"
-                            className="size-5! shrink-0 p-0! text-muted-foreground hover:text-destructive"
-                            aria-label={t('删除贮藏 {ref}', { ref: s.ref })}
+                      <ContextMenu key={s.ref}>
+                        <ContextMenuTrigger asChild>
+                          <div className="flex items-center gap-1.5 rounded px-2 py-1 text-xs hover:bg-foreground/5">
+                            <span className="shrink-0 font-mono text-muted-foreground">{s.ref}</span>
+                            <span className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap no-scrollbar" title={s.message}>
+                              {s.message}
+                            </span>
+                          </div>
+                        </ContextMenuTrigger>
+                        <ContextMenuContent className="w-56">
+                          <ContextMenuItem
                             disabled={busy}
-                            onClick={() => setDropStash(s)}
+                            onSelect={() => void applyStash(s, true)}
                           >
-                            <Trash2 className="size-3" />
-                          </Button>
-                        </IconTip>
-                      </div>
+                            <ArchiveRestore className="size-3.5" />
+                            {t('弹出（应用并从栈里删除）')}
+                          </ContextMenuItem>
+                          <ContextMenuItem
+                            disabled={busy}
+                            onSelect={() => void applyStash(s, false)}
+                          >
+                            {t('应用（保留在栈里）')}
+                          </ContextMenuItem>
+                          <ContextMenuSeparator />
+                          <ContextMenuItem
+                            className="text-destructive"
+                            disabled={busy}
+                            onSelect={() => setDropStash(s)}
+                          >
+                            <Trash2 className="size-3.5" />
+                            {t('删除这次贮藏…')}
+                          </ContextMenuItem>
+                        </ContextMenuContent>
+                      </ContextMenu>
                     ))
                   ) : (
                     <div className="px-2 py-1 text-xs text-muted-foreground">{t('还没有贮藏')}</div>

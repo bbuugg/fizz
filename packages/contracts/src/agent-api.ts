@@ -47,6 +47,7 @@ import type {
   AcpAgentType,
   AcpAllowStrategy,
   AcpModelOption,
+  AcpProtocolVersion,
 } from "@fizz/acp";
 import type { McpToolInfo } from "@fizz/mcp";
 import type { SkillListResult } from "@fizz/skills";
@@ -412,6 +413,19 @@ export const API_ROUTES = {
    * 还没有 agent 侧 session（新会话没发过消息）时是幂等空操作。
    */
   acpAgentRestart: "/api/acp/agents/:id/restart",
+  /**
+   * 分叉 agent 侧会话：POST /api/acp/agents/:id/fork（body: `{ sessionId, workspacePath? }`）
+   * → `{ sessionId }`。分叉出来的新会话 id 拿去建一条本地 ACP 会话即可。
+   * agent 不支持 `session/fork` 时返回接口错误（前端据此提示）。
+   */
+  acpAgentFork: "/api/acp/agents/:id/fork",
+  /** 关闭 agent 侧会话（不删除数据）：POST /api/acp/agents/:id/close（body: `{ sessionId }`） */
+  acpAgentClose: "/api/acp/agents/:id/close",
+  /**
+   * 外部 Agent 的登录：POST /api/acp/agents/:id/auth（body: `{ methodId }`）登录；
+   * DELETE 退出登录（仅支持 `auth/logout` 的 v2 agent）。
+   */
+  acpAgentAuth: "/api/acp/agents/:id/auth",
   /** 常驻 ACP 进程快照（诊断）：GET /api/acp/sessions → `{ sessions: AcpProcessInfo[] }` */
   acpProcesses: "/api/acp/sessions",
   /** 清空会话（删掉全部消息）：DELETE /api/conversations/:id/messages */
@@ -2433,6 +2447,11 @@ export type AcpAgentInput = {
    * 新建缺省 `once`（只允许一次，下次仍会问）。
    */
   allowStrategy?: AcpAllowStrategy;
+  /**
+   * 走哪一版 ACP 协议：`v1`（stable，缺省）/ `v2`（draft）。不传 = 沿用原有，
+   * 新建缺省 `v1`。v2 仍是 draft，命令要支持 `session/resume` 才能恢复既有会话。
+   */
+  protocolVersion?: AcpProtocolVersion;
   /** 模型清单（由模型选择器拉取并落盘；不传 = 沿用原有，空数组 = 探测过但没有模型） */
   models?: AcpModelOption[];
 };

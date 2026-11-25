@@ -10,13 +10,7 @@
  * 本模块刻意与 Electron / 具体宿主解耦（依赖经 `setBrowserProfilesRoot` /
  * `setBrowserChannelResolver` 注入），可被纯 Node 验证脚本直接跑。
  */
-import {
-  chromium,
-  type Browser,
-  type BrowserContext,
-  type CDPSession,
-  type Page
-} from 'playwright'
+import type { Browser, BrowserContext, CDPSession, Page } from 'playwright'
 import type {
   BrowserChannel,
   BrowserFrame,
@@ -41,6 +35,17 @@ import {
 } from './profiles'
 import { ensureChromiumReady } from '../playwright-browsers'
 import { pageErrorMessage } from '../headless'
+
+/**
+ * playwright 只在真要起浏览器时才加载：它在模块初始化时就算默认缓存目录，
+ * 只认 linux / darwin / win32 —— android 上顶层 import 会直接抛
+ * `Unsupported platform: android`，把整个 server 拖得起不来（与 `headless.ts`
+ * 里 `await import('playwright')` 同一理由）。
+ */
+type Chromium = (typeof import('playwright'))['chromium']
+async function loadChromium(): Promise<Chromium> {
+  return (await import('playwright')).chromium
+}
 
 /** screencast 帧节流：最多 ~30fps，避免把 CPU 都喂给编码（静止页面也会持续推帧） */
 const MIN_FRAME_INTERVAL = 33
@@ -254,6 +259,7 @@ export class BrowserSession {
 
   /** 一次启动尝试：成功即把本会话的 browser/context/page 装配好并开播；失败抛错由调用方收尾 */
   private async launch(attempt: LaunchAttempt, preset: BrowserViewportPreset): Promise<void> {
+    const chromium = await loadChromium()
     this.channelLabel = attempt.label
     const contextOptions = {
       viewport: this.viewport,

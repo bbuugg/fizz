@@ -29,6 +29,7 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
+  LogIn,
   Pencil,
   Plus,
   Power,
@@ -69,7 +70,12 @@ import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { formatCommandArgs, parseCommandArgs } from '@fizz/agent-kit/shared/lib/command-args'
 import { formatDuration } from '@fizz/agent-kit/shared/lib/duration'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
-import type { AcpAgentType, AcpAllowStrategy } from '@fizz/acp'
+import type {
+  AcpAgentType,
+  AcpAllowStrategy,
+  AcpAuthMethod,
+  AcpProtocolVersion
+} from '@fizz/acp'
 import type { AcpAgentView, AcpProcessInfo, DetectedAcpAgent } from '@fizz/contracts/agent-api'
 import { acpAgentKey } from '@fizz/contracts/agent-api'
 
@@ -95,11 +101,18 @@ export function AcpTab({ app }: { app: AgentApp }) {
   const [acpType, setAcpType] = useState<AcpAgentType>('generic')
   /** 表单里的「完全放行答复」：`once` = 只允许一次（下次仍问）；`always` = 让 agent 永久记住 */
   const [acpAllow, setAcpAllow] = useState<AcpAllowStrategy>('once')
+  /** 表单里的协议版本：`v1` = stable（缺省）；`v2` = draft（会话恢复走 resume） */
+  const [acpProtocol, setAcpProtocol] = useState<AcpProtocolVersion>('v1')
   /**
    * 表单里这条配置的「预设身份」：新增时从预设带上，之后改命令 / 参数也不变。
    * 自定义 agent 为 null（图标回落 Bot）。
    */
   const [acpPresetId, setAcpPresetId] = useState<string | null>(null)
+  /** 登录弹窗：探到 agent 广告的登录方式后让用户挑一个 */
+  const [authOpen, setAuthOpen] = useState(false)
+  const [authAgent, setAuthAgent] = useState<AcpAgentView | null>(null)
+  const [authMethods, setAuthMethods] = useState<AcpAuthMethod[]>([])
+  const [authBusy, setAuthBusy] = useState(false)
   /** 新增 / 编辑共用的表单弹窗是否打开 */
   const [adding, setAdding] = useState(false)
   /** 表单弹窗正在编辑哪个 agent（null = 新增） */
@@ -217,6 +230,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
     setAcpArgs(formatCommandArgs(agent?.args ?? []))
     setAcpType(agent?.type ?? 'generic')
     setAcpAllow(agent?.allowStrategy ?? 'once')
+    setAcpProtocol(agent?.protocolVersion ?? 'v1')
     // 老数据没有 `preset`：按命令补一次，之后这条配置的身份就固定了
     setAcpPresetId(agent ? agent.preset ?? findAcpPreset(agent.command)?.id ?? null : null)
     setAdding(true)
@@ -245,6 +259,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
     setAcpArgs(formatCommandArgs(preset.args))
     setAcpType(preset.type ?? 'generic')
     setAcpAllow('once')
+    setAcpProtocol('v1')
     // 身份随预设一起定下来：之后在表单里改命令 / 参数，它仍然是这个 agent
     setAcpPresetId(preset.id)
     setAdding(true)
@@ -265,7 +280,8 @@ export function AcpTab({ app }: { app: AgentApp }) {
       args: draftArgs,
       type: acpType,
       ...(acpPresetId ? { preset: acpPresetId } : {}),
-      allowStrategy: acpAllow
+      allowStrategy: acpAllow,
+      protocolVersion: acpProtocol
     })
     // 成功才关弹窗；失败（服务端也会拦重复）保留草稿，别让人重敲一遍。
     // 关的那一下不重置字段 —— 退出动画期间清空会让输入框当场闪一下。
@@ -301,6 +317,38 @@ export function AcpTab({ app }: { app: AgentApp }) {
     if (!result.ok && result.error && !result.persisted) {
       setCheckErrors((prev) => ({ ...prev, [agent.id]: result.error! }))
     }
+  }
+
+  /** 打开登录弹窗：真起一次探针问 agent 支持哪些登录方式（登录方式不落盘） */
+  const openAcpAuth = async (agent: AcpAgentView): Promise<void> => {
+    setAuthAgent(agent)
+    setAuthMethods([])
+    setAuthBusy(true)
+    setAuthOpen(true)
+    try {
+      const caps = await app.probeAcpCapabilities(agent.id)
+      setAuthMethods(caps.authMethods)
+    } catch (err) {
+      app.setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  const loginWith = async (methodId: string): Promise<void> => {
+    if (!authAgent) return
+    setAuthBusy(true)
+    const ok = await app.authenticateAcpAgent(authAgent.id, methodId)
+    setAuthBusy(false)
+    if (ok) setAuthOpen(false)
+  }
+
+  const logout = async (): Promise<void> => {
+    if (!authAgent) return
+    setAuthBusy(true)
+    const ok = await app.logoutAcpAgent(authAgent.id)
+    setAuthBusy(false)
+    if (ok) setAuthOpen(false)
   }
 
   /**
@@ -460,6 +508,17 @@ export function AcpTab({ app }: { app: AgentApp }) {
                   )}
                 </TooltipContent>
               </Tooltip>
+              {/* 登录：真起一次探针列出 agent 广告的登录方式（terminal 类型需去终端里完成） */}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="size-7 p-0 text-muted-foreground"
+                aria-label={tr('登录 {name}', { name: agent.name })}
+                title={tr('登录 {name}', { name: agent.name })}
+                onClick={() => void openAcpAuth(agent)}
+              >
+                <LogIn className="size-3.5" />
+              </Button>
               {/* 编辑：预填当前配置，改完保存（带 id 走更新，已缓存的模型清单不受影响） */}
               <Button
                 size="sm"
@@ -689,6 +748,23 @@ export function AcpTab({ app }: { app: AgentApp }) {
             />
             <div className="space-y-1">
               <div className="text-xs text-muted-foreground">
+                {tr('协议版本：v1 是稳定版；v2 仍是 draft（会话恢复走 session/resume，且没有 set_mode）')}
+              </div>
+              <Select
+                value={acpProtocol}
+                onValueChange={(v) => setAcpProtocol(v as AcpProtocolVersion)}
+              >
+                <SelectTrigger variant="muted" className="h-9 w-full min-w-0 overflow-hidden text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="v1">{tr('v1（stable，推荐）')}</SelectItem>
+                  <SelectItem value="v2">{tr('v2（draft，agent 必须支持）')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">
                 {tr('类型（决定会话里的模式 UI：opencode → 权限档，pi → 思考档，通用 → 不显示）')}
               </div>
               <Select value={acpType} onValueChange={(v) => setAcpType(v as AcpAgentType)}>
@@ -861,6 +937,83 @@ export function AcpTab({ app }: { app: AgentApp }) {
         }}
       />
 
+      {/* 登录：登录方式不落盘，每次打开都现探一次（agent 版本变了方法也可能变） */}
+      <Dialog
+        open={authOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAuthOpen(false)
+            setAuthMethods([])
+            setAuthAgent(null)
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {tr('登录 {name}', { name: authAgent?.name ?? '' })}
+            </DialogTitle>
+            <DialogDescription>
+              {tr('登录方式由 agent 在初始化时广告；「终端」类型需要到终端里手动完成。')}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            {authBusy && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin" />
+                {tr('正在读取登录方式…')}
+              </div>
+            )}
+            {!authBusy && authMethods.length === 0 && (
+              <div className="text-xs text-muted-foreground">
+                {tr('这个 agent 没有广告登录方式（可能不需要登录，或还没完成初始化）。')}
+              </div>
+            )}
+            {!authBusy &&
+              authMethods.map((method) => (
+                <div
+                  key={method.id}
+                  className="flex items-center gap-2 rounded-md border border-border/60 px-3 py-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm">{method.name}</div>
+                    {method.description && (
+                      <div className="truncate text-xs text-muted-foreground">
+                        {method.description}
+                      </div>
+                    )}
+                    {method.type === 'terminal' && (
+                      <div className="text-[0.6875rem] text-muted-foreground">
+                        {tr('需要在终端里完成')}
+                      </div>
+                    )}
+                  </div>
+                  <Button
+                    size="sm"
+                    disabled={authBusy || method.type === 'terminal'}
+                    onClick={() => void loginWith(method.id)}
+                  >
+                    {tr('登录')}
+                  </Button>
+                </div>
+              ))}
+          </div>
+          <DialogFooter className="pt-1">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={authBusy || !authAgent}
+              onClick={() => void logout()}
+            >
+              {tr('退出登录')}
+            </Button>
+            <Button type="button" size="sm" variant="ghost" onClick={() => setAuthOpen(false)}>
+              {tr('关闭')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

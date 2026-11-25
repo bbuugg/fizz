@@ -523,6 +523,12 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
      * 刷新后仍能恢复。设置页在行内展示，不弹全局 toast。
      */
     checkAcpAgent: s.checkAcpAgent,
+    /** 探一次 agent 的完整能力（含登录方式），设置页登录用 */
+    probeAcpCapabilities: s.probeAcpCapabilities,
+    /** 用 agent 广告的某种方式登录 */
+    authenticateAcpAgent: s.authenticateAcpAgent,
+    /** 退出登录（仅 v2 的 auth/logout） */
+    logoutAcpAgent: s.logoutAcpAgent,
     /**
      * 探针：问这个 ACP agent **自己**有哪些模型可选（设置页列候选用；起一次它的进程，
      * 问完就收掉）。失败（命令不存在 / 不是 ACP agent）时抛错，由调用方提示。

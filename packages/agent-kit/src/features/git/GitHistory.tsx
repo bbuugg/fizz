@@ -275,21 +275,12 @@ export function GitHistory({
                           )}
                           <span className="shrink-0 font-mono text-muted-foreground">{c.short}</span>
                           <span
-                            className="min-w-0 flex-1 truncate"
+                            className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap no-scrollbar"
                             title={`${c.subject}\n${c.author} · ${c.date}`}
                           >
                             {c.subject}
                           </span>
                         </button>
-                        <Button
-                          variant="ghost"
-                          className="h-5! shrink-0 px-1.5! text-xs"
-                          title={t('检出这次提交（分离头指针）')}
-                          disabled={busy}
-                          onClick={() => onCheckout(c.hash)}
-                        >
-                          {t('检出')}
-                        </Button>
                       </div>
                     </ContextMenuTrigger>
                     <ContextMenuContent className="w-56">

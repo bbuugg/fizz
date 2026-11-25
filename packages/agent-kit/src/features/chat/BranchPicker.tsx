@@ -23,7 +23,8 @@
  * 另一个地方含糊带过。确认后调 `onDelete(target, force)`，真正的命令与刷新在调用方。
  */
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, GitBranch, GitBranchPlus, Pencil, Trash2 } from 'lucide-react'
+import { ChevronDown, Copy, GitBranch, GitBranchPlus, Pencil, Trash2 } from 'lucide-react'
+import { toast } from 'sonner'
 import type { GitBranchesResult } from '@fizz/git'
 import {
   AlertDialog,
@@ -313,6 +314,38 @@ export function BranchPicker({
     setRenameName('')
     await onRename(from, renameTo)
   }
+
+  /**
+   * 复制分支名：走 promise 而不是 void 一把梭 —— 剪贴板在非安全上下文 / 无焦点时会拒，
+   * 静默失败的话用户以为已经复制到了。
+   */
+  const copyBranch = (name: string): void => {
+    navigator.clipboard.writeText(name).then(
+      () => toast.success(tr('已复制分支名')),
+      (err: unknown) =>
+        toast.error(
+          tr('复制失败：{error}', { error: err instanceof Error ? err.message : String(err) })
+        )
+    )
+  }
+
+  /** 行尾动作（复制分支名）：复制面板里显示的那条 ref（远端含远端名），排在铅笔左侧 */
+  const copyAction = (name: string): React.ReactNode => (
+    <IconTip label={tr('复制分支名')}>
+      <button
+        type="button"
+        aria-label={tr('复制分支名 {name}', { name })}
+        // 行本身是「切换到这条分支」：不拦的话点复制会顺手触发检出
+        onClick={(e) => {
+          e.stopPropagation()
+          copyBranch(name)
+        }}
+        className={iconActionClass}
+      >
+        <Copy className="size-3.5" />
+      </button>
+    </IconTip>
+  )
 
   /** 行尾动作（删除）：不看 `onDelete` 就给不画 */
   const deleteAction = (
@@ -632,21 +665,21 @@ export function BranchPicker({
                       reserveCheck={false}
                       active={name === branch}
                       /*
-                        行尾动作：铅笔（改名）+ 垃圾桶（删除）。删不了「当前所在的分支」
-                        （git 会拒），但**改名可以改当前分支**（HEAD 跟着改名，不切走）。
+                        行尾动作：复制 + 铅笔（改名）+ 垃圾桶（删除）。复制与改名都在，
+                        删不了「当前所在的分支」（git 会拒），但**改名可以改当前分支**
+                        （HEAD 跟着改名，不切走）。
                       */
                       action={
-                        onRename || (onDelete && name !== branch) ? (
-                          <span className="flex items-center gap-0.5">
-                            {onRename ? renameAction(name) : null}
-                            {onDelete && name !== branch
-                              ? deleteAction(
-                                  { kind: 'local', name },
-                                  tr('删除分支 {name}', { name })
-                                )
-                              : null}
-                          </span>
-                        ) : undefined
+                        <span className="flex items-center gap-0.5">
+                          {copyAction(name)}
+                          {onRename ? renameAction(name) : null}
+                          {onDelete && name !== branch
+                            ? deleteAction(
+                                { kind: 'local', name },
+                                tr('删除分支 {name}', { name })
+                              )
+                            : null}
+                        </span>
                       }
                       onSelect={() => void select(name)}
                     >
@@ -663,12 +696,15 @@ export function BranchPicker({
                     reserveCheck={false}
                     active={name === branch}
                     action={
-                      onDelete
-                        ? deleteAction(
-                            { kind: 'remote', ...splitRemoteBranch(name) },
-                            tr('删除远端分支 {name}', { name })
-                          )
-                        : undefined
+                      <span className="flex items-center gap-0.5">
+                        {copyAction(name)}
+                        {onDelete
+                          ? deleteAction(
+                              { kind: 'remote', ...splitRemoteBranch(name) },
+                              tr('删除远端分支 {name}', { name })
+                            )
+                          : null}
+                      </span>
                     }
                     onSelect={() => void select(name)}
                   >

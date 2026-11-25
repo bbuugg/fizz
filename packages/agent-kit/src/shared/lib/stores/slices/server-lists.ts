@@ -26,6 +26,7 @@ import type {
   UpstreamModelsInput,
   WorkspaceCloneInput
 } from '@fizz/contracts/agent-api'
+import type { AcpProbeResult } from '@fizz/acp'
 import type { McpServerConfig, McpServerInput } from '@fizz/mcp'
 import type { SkillListResult } from '@fizz/skills'
 import type {
@@ -255,6 +256,12 @@ export interface ServerListsSlice {
    * `health`（界面刷新后仍能恢复）。不走全局 error：设置页在行内展示。
    */
   checkAcpAgent: (agentId: string) => Promise<{ ok: boolean; error?: string; persisted: boolean }>
+  /** 探一次 agent 的完整能力（含登录方式），设置页登录用；失败写 error 并抛给调用方 */
+  probeAcpCapabilities: (agentId: string) => Promise<AcpProbeResult>
+  /** 用 agent 广告的某种方式登录；成功 / 失败都写全局 error（失败），返回是否成功 */
+  authenticateAcpAgent: (agentId: string, methodId: string) => Promise<boolean>
+  /** 退出登录（仅 v2 的 auth/logout） */
+  logoutAcpAgent: (agentId: string) => Promise<boolean>
   saveMcpServer: (input: McpServerInput) => Promise<boolean>
   deleteMcpServer: (id: string) => Promise<boolean>
   saveSshHost: (input: HostInput) => Promise<boolean>
@@ -891,6 +898,25 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
     // ---------- 配置类动作 ----------
     saveAcpAgent: (input) => withRefresh(() => requireApi().saveAcpAgent(input)),
     deleteAcpAgent: (id) => withRefresh(() => requireApi().deleteAcpAgent(id)),
+    probeAcpCapabilities: (agentId) => requireApi().probeAcpCapabilities(agentId),
+    authenticateAcpAgent: async (agentId, methodId) => {
+      try {
+        await requireApi().authenticateAcpAgent(agentId, methodId)
+        return true
+      } catch (err) {
+        get().setError(errorMessage(err))
+        return false
+      }
+    },
+    logoutAcpAgent: async (agentId) => {
+      try {
+        await requireApi().logoutAcpAgent(agentId)
+        return true
+      } catch (err) {
+        get().setError(errorMessage(err))
+        return false
+      }
+    },
     loadAcpModels: (agentId, force = false) => {
       const agent = get().acpAgents.find((a) => a.id === agentId)
       if (!agent) {

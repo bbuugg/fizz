@@ -1399,6 +1399,42 @@ export function createApi(
           body: JSON.stringify({ conversationId }),
         },
       ),
+    /** 分叉 agent 侧会话（session/fork）：返回新会话 id，拿去建本地 ACP 会话 */
+    forkAcpSession: (
+      id: string,
+      input: { sessionId: string; workspacePath?: string },
+    ) =>
+      request<{ sessionId: string }>(
+        API_ROUTES.acpAgentFork.replace(":id", encodeURIComponent(id)),
+        {
+          method: "POST",
+          body: JSON.stringify(input),
+        },
+      ),
+    /** 关闭 agent 侧会话（不删除数据，之后仍可 resume） */
+    closeAcpSession: (id: string, sessionId: string) =>
+      request<{ ok: boolean; supported: boolean }>(
+        API_ROUTES.acpAgentClose.replace(":id", encodeURIComponent(id)),
+        {
+          method: "POST",
+          body: JSON.stringify({ sessionId }),
+        },
+      ),
+    /** 用 agent 广告的某种方式登录 */
+    authenticateAcpAgent: (id: string, methodId: string) =>
+      request<{ ok: true }>(
+        API_ROUTES.acpAgentAuth.replace(":id", encodeURIComponent(id)),
+        {
+          method: "POST",
+          body: JSON.stringify({ methodId }),
+        },
+      ),
+    /** 退出登录（仅 v2 的 auth/logout） */
+    logoutAcpAgent: (id: string) =>
+      request<{ ok: true }>(
+        API_ROUTES.acpAgentAuth.replace(":id", encodeURIComponent(id)),
+        { method: "DELETE" },
+      ),
     getConversation: (id: string) =>
       request<AgentConversation>(`${API_ROUTES.conversations}/${id}/messages`),
     /** 读协作会话的运行态快照（任务 / 消息 / 最近状态）；普通会话 400 */

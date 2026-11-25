@@ -1788,6 +1788,8 @@ export class AgentDomain {
     const allowStrategy = input.allowStrategy ?? existing?.allowStrategy
     // 预设身份（图标等）：不传沿用旧值 —— 之后改命令 / 参数不改变它
     const preset = input.preset ?? existing?.preset
+    // ACP 协议版本：不传沿用旧值；老数据没有这个字段，运行时按 v1 处理
+    const protocolVersion = input.protocolVersion ?? existing?.protocolVersion
     const command = input.command.trim()
     const args = input.args ?? existing?.args ?? []
     // 命令 / 参数没变才保留上次检测结论；改过就必须回到「未检测」——
@@ -1813,6 +1815,7 @@ export class AgentDomain {
       ...(type ? { type } : {}),
       ...(preset ? { preset } : {}),
       ...(allowStrategy ? { allowStrategy } : {}),
+      ...(protocolVersion ? { protocolVersion } : {}),
       ...(models ? { models } : {}),
       ...(health ? { health } : {})
     }

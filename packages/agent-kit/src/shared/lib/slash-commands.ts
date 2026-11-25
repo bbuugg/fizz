@@ -288,21 +288,11 @@ async function runInit(c: SlashCommandContext): Promise<void> {
  */
 const GIT_COMMIT_PROMPT_ZH = `为当前工作区做一次提交。
 
-先看 \`git status\`、\`git diff\`（必要时 \`--staged\`）和 \`git log --oneline -10\`，再动手。
-
-- 提交信息由你根据改动生成：一句话说清做了什么、为什么；仓库已有固定风格就照它写，没有别硬加前缀。
-- 只暂存这次改动相关的文件；无关文件、密钥、构建产物不要提交。
-- 不要 push；没有可提交的改动就直接说，不要造空提交。
-- 完成后告诉我提交 hash 与提交信息；失败就贴 git 原话。`
+先看 \`git status\`、\`git diff\` 和 \`git log --oneline -10\`，再只暂存这次改动相关的文件。提交信息由你根据改动生成，跟随仓库既有风格。不要 push；没有改动就说一声。完成后告诉我提交 hash 与提交信息。`
 
 const GIT_COMMIT_PROMPT_EN = `Make one commit for the current workspace.
 
-Read \`git status\`, \`git diff\` (and \`--staged\` when needed) and \`git log --oneline -10\` first.
-
-- Generate the commit message from the changes: one sentence on what changed and why. If the repository has a fixed style (e.g. Conventional Commits), follow its format but write the message in English.
-- Stage only files related to this change; do not commit unrelated files, secrets or build artifacts.
-- Do not push. If there is nothing to commit, just say so; do not create an empty commit.
-- When done, report the commit hash and message; on failure, paste git's original output.`
+Read \`git status\`, \`git diff\` and \`git log --oneline -10\`, then stage only the files for this change. Generate the commit message from the changes and follow the repo's existing style; write the message in English. Do not push; if there is nothing to commit, just say so. When done, report the commit hash and message.`
 
 function gitCommitPrompt(): string {
   return getLanguage() === 'en' ? GIT_COMMIT_PROMPT_EN : GIT_COMMIT_PROMPT_ZH

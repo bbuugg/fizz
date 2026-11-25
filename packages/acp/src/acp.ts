@@ -38,6 +38,17 @@ import type {
   AcpModelOption,
   AcpToolCallContent,
 } from "./types";
+import {
+  resolveAcpFactory,
+  type AcpAuthMethod,
+  type AcpConnection,
+  type AcpElicitationReply,
+  type AcpElicitationRequest,
+  type AcpPermissionReply,
+  type AcpPermissionRequest,
+  type AcpSessionInfo,
+  type AcpTurnSource,
+} from "./protocol";
 
 /** 没人答复审批时的缺省兜底（与桌面端一致；0 = 不超时，随请求可配） */
 const DEFAULT_CONFIRM_TIMEOUT_MS = 10 * 60 * 1000;
@@ -452,13 +463,23 @@ interface AcpSessionEntry {
   conversationId: string;
   proc: ChildProcess;
   /**
+   * spawn 失败原因（命令不存在 / cwd 不存在）。`getOrCreateEntry` 一建好进程就挂
+   * `'error'` 监听并记在这里，`connectAdapter` 建连前先查 —— 两者之间隔着轮次排队，
+   * 不记下来的话错误事件早于监听器到达，又会变成未捕获异常。
+   */
+  spawnError: Error | null;
+  /**
    * agent 进程的 cwd（会话所属工作区；探针场景给主目录）。
    * 留着是为了 spawn 失败时能说清「是命令的问题还是目录的问题」——见 `describeSpawnError`。
    */
   cwd: string;
-  session: acp.ActiveSession | null;
-  /** 建立会话时的 client 上下文（模型下发的 `session/set_config_option` 用它） */
-  cx: acp.ClientContext | null;
+  /** 协议版本无关的连接（v1 / v2 由 adapter 决定；初始化 / 切配置都走它） */
+  connection: AcpConnection | null;
+  /**
+   * 本轮的交互来源（`session/new` 建出来的 ActiveSession，或 `session/load` /
+   * `session/resume` 恢复出来的手写队列）。新建 / 恢复二选一，轮次循环不区分。
+   */
+  source: AcpTurnSource | null;
   /**
    * agent 广告的权限档位（ACP Session Modes，可选能力）与当前档。
    * 只做**记录与切换**（`session/set_mode`），不做任何语义映射 —— 问不问、怎么问，
@@ -486,12 +507,6 @@ interface AcpSessionEntry {
    * 优先取老式那个（`snapshotOf`），取不到才用这里。null = agent 不走 configOptions 通道。
    */
   modeOptionSelector: AcpModeOptionSelector | null;
-  closeConnection: (() => void) | null;
-  /**
-   * `session/load` 恢复出来的会话通道（与 `session` 二选一作为本轮的交互来源）。
-   * 打开会话 / 轮次前恢复上下文都走它；teardown 时随 entry 一起消失。
-   */
-  loadedSource: LoadedTurnSource | null;
   /**
    * agent 在 `initialize` 里广告的**输入形态能力**（`promptCapabilities`）。
    *
@@ -500,6 +515,8 @@ interface AcpSessionEntry {
    * null = 这条连接还没 initialize 完。
    */
   promptCapabilities: acp.PromptCapabilities | null;
+  /** initialize 里广告的登录方式（空 = 不需要认证） */
+  authMethods: AcpAuthMethod[];
   /** 建立 / 最近一次活动时间：空闲回收与诊断用 */
   createdAt: number;
   lastActiveAt: number;
@@ -521,6 +538,10 @@ interface AcpSessionEntry {
     requestPermission?: (
       req: AgentConfirmInput,
     ) => Promise<AgentPermissionReply>;
+    /** agent 发起结构化追问（elicitation）；缺省 = 一律 decline */
+    requestElicitation?: (
+      req: AcpElicitationRequest,
+    ) => Promise<AcpElicitationReply>;
     onEvent: (event: AgentStreamEvent) => void;
   } | null;
 }
@@ -873,7 +894,7 @@ function teardown(key: string): void {
   const entry = sessions.get(key);
   if (!entry) return;
   sessions.delete(key);
-  entry.closeConnection?.();
+  entry.connection?.close();
   killProcessTree(entry.proc);
 }
 
@@ -939,209 +960,85 @@ function ensureAcpIdleTimer(): void {
   acpIdleTimer.unref?.();
 }
 
-/** 轮次里流动的一条消息：agent 的增量通知，或整轮的 stop */
-type TurnMessage =
-  | { kind: "session_update"; update: acp.SessionUpdate }
-  | { kind: "stop"; stopReason: string };
-
 /**
- * `session/load` 恢复出来的会话交互通道。
+ * 建立到 agent 进程的协议连接（v1 / v2 由 `agent.protocolVersion` 决定），并完成
+ * initialize。连接生命周期 = 会话生命周期，挂到 entry 上直到 teardown。
  *
- * SDK 的 `ActiveSession` 只能附着在 `session/new` 上（`attachSession` 是私有的），
- * 而 `session/load` 之后 agent 的 `session/update` 通知不会自动进任何队列 —— 这里用
- * `ClientApp.onNotification` 按 sessionId 自己路由，提供与 ActiveSession 同形的
- * `prompt` / `nextUpdate`，让 runAcpAgent 的轮次循环对两种来源完全通用。
- *
- * ⚠️ 「同形」包括**失败也要走队列**：`ActiveSession.prompt` 失败时 SDK 会
- * `updates.reject(error)`，让挂着的 `nextUpdate()` 抛出来（见 `dist/acp.js`）。
- * 这条通道是手写的，少了这一步就会出现「agent 报错、界面永远思考中」（见 `fail`）。
+ * session/new（ensureSession）与恢复会话（loadTurnSource）共用这一段。
  */
-class LoadedTurnSource {
-  private queue: Array<TurnMessage> = [];
-  /** 等消息的 `nextUpdate()`：**两个回调都留着** —— 出错时要能把它们拒掉（见 `fail`） */
-  private waiters: Array<{
-    resolve: (message: TurnMessage) => void;
-    reject: (err: unknown) => void;
-  }> = [];
-  /**
-   * 还没有等待者的错误（agent 回了 JSON-RPC error，而轮次循环此刻还没走到 `nextUpdate`）。
-   * 与 SDK 的 `updates.reject` 同语义：**错误也走这条队列**，否则轮次永远等不到 stop。
-   */
-  private failure: unknown = null;
-
-  constructor(
-    readonly sessionId: string,
-    private readonly cx: acp.ClientContext,
-  ) {}
-
-  /** session/update 通知入口（connectEntry 里的 onNotification 按 sessionId 分发到这里） */
-  handleNotification(params: acp.SessionNotification): void {
-    if (params.sessionId !== this.sessionId) return;
-    this.push({ kind: "session_update", update: params.update });
-  }
-
-  private push(message: TurnMessage): void {
-    const waiter = this.waiters.shift();
-    if (waiter) waiter.resolve(message);
-    else this.queue.push(message);
-  }
-
-  /**
-   * 把一轮的错误交给等在这里的 `nextUpdate()`（没有等待者就先存着，下次调用立刻抛）。
-   *
-   * ⚠️ 少了这一步就是**真卡死**：`runAcpAgent` 里 `void source.prompt(text).catch(() => undefined)`
-   * **吞掉了** prompt 的 rejection，而轮次循环只等 `nextUpdate()`。agent 以 JSON-RPC error
-   * 结束一轮时（凭据无效 / 上游 5xx / 重试耗尽），错误只停在那个被吞掉的 rejection 上，
-   * 循环**永远等不到 stop** —— 界面一直「思考中」，只能手动点停止。
-   * （`session/new` 那条路不会这样：SDK 的 `ActiveSession.prompt` 失败时会自己 reject 队列。）
-   */
-  fail(err: unknown): void {
-    const waiter = this.waiters.shift();
-    if (waiter) waiter.reject(err);
-    else this.failure = err;
-  }
-
-  /**
-   * 取走队列里攒着的全部消息（不阻塞）：`session/load` 的回放历史就躺在这里。
-   * 轮次前调用可以把回放丢掉（视图由打开会话时的 transcript 端点负责）；
-   * 打开会话时则把它们转成流事件交给界面。
-   */
-  drainAll(): TurnMessage[] {
-    const out = this.queue;
-    this.queue = [];
-    return out;
-  }
-
-  /** 让 agent 恢复这个会话（历史会以 session/update 回放进队列） */
-  async load(
-    cwd: string,
-  ): Promise<{ configOptions?: acp.SessionConfigOption[] | null }> {
-    // load 的应答类型在 SDK 里被标成 void（agent 侧可返回 void），实际带 configOptions。
-    // ⚠️ mcpServers 是 load 请求的必填字段（与 session/new 不同，这里没有 builder 兜底），
-    // 漏了会被 agent 的 schema 校验直接拒成 Invalid params
-    const response = (await this.cx.request(acp.methods.agent.session.load, {
-      sessionId: this.sessionId,
-      cwd,
-      mcpServers: [],
-    })) as { configOptions?: acp.SessionConfigOption[] | null } | void;
-    return response ?? {};
-  }
-
-  /**
-   * 与 `ActiveSession.prompt` 同语义：整轮结束才 resolve；stop 消息由这里入队。
-   *
-   * 入参与 SDK 那个一致地接受**内容块数组**（图片附件就是靠它进来的）：
-   * `session/prompt` 的 `prompt` 字段本来就是 `ContentBlock[]`，不是字符串。
-   */
-  async prompt(prompt: string | acp.ContentBlock[]): Promise<void> {
-    // 新一轮开始：丢掉上一轮残留的错误（同 ActiveSession.prompt 的 clearErrors）
-    this.failure = null;
-    try {
-      const response = await this.cx.request(acp.methods.agent.session.prompt, {
-        sessionId: this.sessionId,
-        prompt:
-          typeof prompt === "string"
-            ? [{ type: "text", text: prompt }]
-            : prompt,
-      });
-      this.push({ kind: "stop", stopReason: response.stopReason });
-    } catch (err) {
-      // 错误推进队列，**照旧往上抛**：调用方那个 `.catch` 兜住它，谁也不依赖 rejection
-      this.fail(err);
-      throw err;
-    }
-  }
-
-  async nextUpdate(): Promise<TurnMessage> {
-    const queued = this.queue.shift();
-    // 队列优先：stop 已经入队、进程紧接着才退的场合，先把这一轮的结局交出去
-    if (queued) return queued;
-    if (this.failure !== null) {
-      const err = this.failure;
-      this.failure = null;
-      throw err;
-    }
-    return new Promise((resolve, reject) =>
-      this.waiters.push({ resolve, reject }),
-    );
-  }
-}
-
-/**
- * 建立到 agent 进程的连接：initialize + 权限 / 通知处理器挂好，返回可用的
- * ClientContext，然后**挂住**直到 teardown（连接生命周期 = 会话生命周期）。
- * session/new（ensureSession）与 session/load（loadTurnSource）共用这一段。
- */
-async function connectEntry(
+async function connectAdapter(
   entry: AcpSessionEntry,
   agent: AcpAgentConfig,
-  workspacePath: string,
-): Promise<acp.ClientContext> {
+): Promise<AcpConnection> {
+  if (entry.spawnError) throw entry.spawnError;
   const proc = entry.proc;
-  const input = Writable.toWeb(proc.stdin!) as WritableStream;
-  const output = Readable.toWeb(proc.stdout!) as ReadableStream;
+  const toAgent = Writable.toWeb(proc.stdin!) as WritableStream<Uint8Array>;
+  const fromAgent = Readable.toWeb(proc.stdout!) as ReadableStream<Uint8Array>;
   proc.stderr?.on("data", (chunk) => {
     console.error(`[acp:${agent.name}] ${String(chunk).trimEnd()}`);
   });
 
-  return new Promise<acp.ClientContext>((resolveCx, rejectCx) => {
-    // spawn 失败（命令不存在 / 没有执行权限）只会以 `'error'` 事件抛出：ChildProcess 上
-    // 没人监听它 = 未捕获异常，会把整个进程带走（进程内直连时就是**桌面崩掉**），
-    // 所以必须接住，并把它转成这条会话的错误。
-    proc.once("error", (err: Error) => {
-      if (sessions.get(`${entry.agentId}::${entry.conversationId}`) === entry) {
-        sessions.delete(`${entry.agentId}::${entry.conversationId}`);
-      }
-      rejectCx(describeSpawnError(err, agent.command, entry.cwd));
-    });
-    void acp
-      .client({ name: "Fizz Server" })
-      .onRequest(acp.methods.client.session.requestPermission, async (ctx) =>
-        handlePermission(entry, ctx.params as acp.RequestPermissionRequest),
-      )
-      .onNotification(acp.methods.client.session.update, (ctx) => {
-        // 加载出来的会话没有 ActiveSession 帮忙路由，这里按 sessionId 分发
-        entry.loadedSource?.handleNotification(ctx.params);
-      })
-      .connectWith(
-        acp.ndJsonStream(input, output),
-        async (ctx: acp.ClientContext) => {
-          try {
-            const init = await ctx.request(acp.methods.agent.initialize, {
-              protocolVersion: acp.PROTOCOL_VERSION,
-              // session.configOptions：声明我们支持会话配置项（模型选择器就挂在它上面）。
-              // 协议里「不声明」= 不支持任何配置项扩展，有的 agent 会因此干脆不广告模型清单。
-              clientCapabilities: { session: { configOptions: {} } },
-              clientInfo: { name: "Fizz Server", version: "0.1.0" },
-            });
-            /**
-             * 输入形态能力：**只认 agent 明说支持的那几项**。
-             *
-             * SDK 的 schema 给 `promptCapabilities.image` 带了 `default(false)`，所以
-             * 「没广告」读出来就是 false —— 协议也确实是这个语义（"The Client MUST adapt
-             * its interface according to PromptCapabilities"）。界面据此决定给不给回形针，
-             * 别靠 `backend === 'acp'` 一刀切（见前端的 `acpImagesSupported`）。
-             */
-            entry.promptCapabilities = init.agentCapabilities?.promptCapabilities ?? null;
-            const imageSupport = entry.promptCapabilities?.image;
-            if (typeof imageSupport === "boolean") {
-              imageSupportByAgent.set(entry.agentId, imageSupport);
-            }
-            resolveCx(ctx);
-          } catch (err) {
-            rejectCx(err instanceof Error ? err : new Error(String(err)));
-            return;
-          }
-          // 挂在这里直到 teardown（连接生命周期 = 会话生命周期）
-          await new Promise<void>((resolveClose) => {
-            entry.closeConnection = resolveClose;
-          });
-        },
-      )
-      .catch((err: unknown) =>
-        rejectCx(err instanceof Error ? err : new Error(String(err))),
-      );
+  const factory = resolveAcpFactory(agent.protocolVersion);
+  const key = `${entry.agentId}::${entry.conversationId}`;
+  /**
+   * spawn 失败（命令不存在 / 没有执行权限）只会以 `'error'` 事件抛出：ChildProcess 上
+   * 没人监听它 = 未捕获异常，会把整个 server 进程带走。
+   *
+   * ⚠️ 监听器**不能在建连成功后摘掉**：`factory.connect()` 只是把流包起来，会在同一
+   * 微任务里就 resolve，而 spawn 的 `'error'` 是下一轮事件循环才来 —— 之前用
+   * `proc.off('error')` 正好把唯一的监听器摘掉了，于是 `spawn codebuddy ENOENT`
+   * 直接把 server 打崩。监听器跟着进程走，进程死了才失效。
+   */
+  let spawnError: Error | null = null;
+  let rejectSpawn!: (err: Error) => void;
+  const spawnFailed = new Promise<never>((_, reject) => {
+    rejectSpawn = reject;
   });
+  // 建连 / initialize 都结束后 error 仍可能来；先挂个 catch，免得变成 unhandledRejection
+  spawnFailed.catch(() => undefined);
+  const onError = (err: Error): void => {
+    spawnError = describeSpawnError(err, agent.command, entry.cwd);
+    if (sessions.get(key) === entry) sessions.delete(key);
+    entry.source?.fail?.(spawnError);
+    rejectSpawn(spawnError);
+  };
+  proc.on("error", onError);
+  const connection = await Promise.race([
+    new Promise<AcpConnection>((resolve, reject) => {
+      void factory
+        .connect({
+          toAgent,
+          fromAgent,
+          handlers: {
+            onPermission: (req) => handlePermission(entry, req),
+            onElicitation: (req) =>
+              entry.turn?.requestElicitation?.(req) ??
+              Promise.resolve<AcpElicitationReply>({ action: "decline" }),
+            onElicitationComplete: (id) => {
+              console.log(`[acp:${agent.name}] elicitation ${id} 已完成`);
+            },
+          },
+        })
+        .then(resolve)
+        .catch((err: unknown) =>
+          reject(err instanceof Error ? err : new Error(String(err))),
+        );
+    }),
+    spawnFailed,
+  ]);
+  entry.connection = connection;
+  // initialize 也要和 spawn 错误赛跑：进程起不来时请求可能永远等不到回包
+  const init = await Promise.race([connection.initialize(), spawnFailed]);
+  if (spawnError) throw spawnError;
+  entry.authMethods = init.authMethods;
+  entry.promptCapabilities =
+    init.promptImage === null
+      ? null
+      : ({ image: init.promptImage } as acp.PromptCapabilities);
+  if (typeof init.promptImage === "boolean") {
+    imageSupportByAgent.set(entry.agentId, init.promptImage);
+  }
+  return connection;
 }
 
 async function ensureSession(
@@ -1150,97 +1047,78 @@ async function ensureSession(
   workspacePath: string,
   agent: AcpAgentConfig,
   onSessionCreated?: (info: AcpSessionReadyInfo) => void,
-): Promise<acp.ActiveSession> {
-  if (entry.session) return entry.session;
-  // 复用可能已经建立的连接（session/load 失败后连接仍活着），避免在同一进程上重复建连
-  const cx = entry.cx ?? (await connectEntry(entry, agent, workspacePath));
-  entry.cx = cx;
-  // session/load 失败会残留一个不可用的加载通道：清掉，免得后续轮次误用
-  entry.loadedSource = null;
+): Promise<AcpTurnSource> {
+  if (entry.source) return entry.source;
+  // 复用可能已经建立的连接（恢复会话失败后连接仍活着），避免在同一进程上重复建连
+  const connection =
+    entry.connection ?? (await connectAdapter(entry, agent));
   // 「任务」会话没有工作区目录：ACP agent 仍要一个合法 cwd，落到主目录
-  const session = await cx.buildSession(workspacePath || homedir()).start();
-  entry.session = session;
-  // 权限档位（ACP Session Modes，可选能力）：只记录，切换走 setAcpSessionMode（session/set_mode）
-  const modeState = session.modes ?? null;
-  entry.availableModes = modeState?.availableModes ?? [];
-  entry.currentModeId = modeState?.currentModeId ?? null;
+  const result = await connection.newSession(workspacePath || homedir());
+  entry.source = result.source;
+  const configOptions = (result.configOptions as acp.SessionConfigOption[] | null) ?? null;
+  // 权限档位（ACP Session Modes，可选能力）：只记录，切换走 setAcpSessionMode
+  entry.availableModes = (result.modes?.availableModes ?? []) as acp.SessionMode[];
+  entry.currentModeId = result.modes?.currentModeId ?? null;
   if (entry.availableModes.length) {
     console.log(
       `[acp:${agent.name}] 可用档位：${entry.availableModes.map((m) => `${m.id}(${m.name})`).join(", ")}；当前 ${entry.currentModeId}`,
     );
   }
   // 可选模型（可选能力）：agent 在 configOptions 里广告，切换见 applyAcpModel
-  entry.modelSelector = pickModelSelector(
-    session.newSessionResponse?.configOptions,
-  );
+  entry.modelSelector = pickModelSelector(configOptions as acp.SessionConfigOption[] | null);
   if (entry.modelSelector) {
     console.log(
       `[acp:${agent.name}] 可选模型：${entry.modelSelector.options.map((o) => `${o.value}(${o.name})`).join(", ")}；当前 ${entry.modelSelector.current}`,
     );
   }
-  // 可选思考档（`pi` 用它，可选能力）：同一份 configOptions 里 category='thought_level'，切换见 applyAcpThoughtLevel
-  entry.thoughtLevelSelector = pickThoughtLevelSelector(
-    session.newSessionResponse?.configOptions,
-  );
+  // 可选思考档（`pi` 用它）：同一份 configOptions 里 category='thought_level'
+  entry.thoughtLevelSelector = pickThoughtLevelSelector(configOptions as acp.SessionConfigOption[] | null);
   if (entry.thoughtLevelSelector) {
     console.log(
       `[acp:${agent.name}] 思考档：${entry.thoughtLevelSelector.options.map((o) => `${o.value}(${o.name})`).join(", ")}；当前 ${entry.thoughtLevelSelector.current}`,
     );
   }
-  // 可选「模式」（configOptions 的 `category: 'mode'`，**opencode 用它**）：与老式 `modes` 字段并存
-  entry.modeOptionSelector = pickModeOptionSelector(
-    session.newSessionResponse?.configOptions,
-  );
+  // 可选「模式」（configOptions 的 `category: 'mode'`，**opencode 用它**）
+  entry.modeOptionSelector = pickModeOptionSelector(configOptions as acp.SessionConfigOption[] | null);
   if (entry.modeOptionSelector) {
     console.log(
       `[acp:${agent.name}] 模式（configOptions）：${entry.modeOptionSelector.options.map((o) => `${o.value}(${o.name})`).join(", ")}；当前 ${entry.modeOptionSelector.current}`,
     );
   }
-  // 会话就绪回调放在最后：此刻档位 / 模型 / 思考档 / 模式都已记录，回调能拿到完整快照
-  onSessionCreated?.({ sessionId: session.sessionId, ...snapshotOf(entry) });
-  return session;
+  // 会话就绪回调放在最后：此刻档位 / 模型 / 思考档 / 模式都已记录
+  onSessionCreated?.({ sessionId: result.source.sessionId, ...snapshotOf(entry) });
+  return result.source;
 }
 
 /**
- * 用 `session/load` 恢复一个**绑定的既有会话**：agent 侧按 sessionId 找回自己的
- * 上下文，历史以 session/update 回放进队列。加载完顺手把 load 响应里的
- * configOptions 也补进模型选择器（与 session/new 对齐）。
+ * 用 `session/load`（v1）/ `session/resume`（v2）恢复一个**绑定的既有会话**：agent 侧按
+ * sessionId 找回自己的上下文，历史以 session/update 回放进队列。加载完顺手把响应里的
+ * configOptions / modes 补进各选择器（与 session/new 对齐）。
  */
 async function loadTurnSource(
   entry: AcpSessionEntry,
   agent: AcpAgentConfig,
   workspacePath: string,
   sessionId: string,
-): Promise<LoadedTurnSource> {
-  const cx = await connectEntry(entry, agent, workspacePath);
-  entry.cx = cx;
-  const source = new LoadedTurnSource(sessionId, cx);
-  entry.loadedSource = source;
-  const response = await source.load(workspacePath || homedir());
-  entry.modelSelector =
-    entry.modelSelector ?? pickModelSelector(response.configOptions ?? null);
-  // load 响应里同样可能带权限档位：没有记录过就补上（与 session/new 对齐）
-  const loadModes = (
-    response as {
-      modes?: {
-        availableModes?: acp.SessionMode[];
-        currentModeId?: string | null;
-      } | null;
-    }
-  ).modes;
-  if (loadModes?.availableModes?.length && entry.availableModes.length === 0) {
-    entry.availableModes = loadModes.availableModes;
-    entry.currentModeId = loadModes.currentModeId ?? null;
+): Promise<AcpTurnSource> {
+  const connection =
+    entry.connection ?? (await connectAdapter(entry, agent));
+  const result = await connection.resumeSession(sessionId, workspacePath || homedir());
+  entry.source = result.source;
+  const configOptions = (result.configOptions as acp.SessionConfigOption[] | null) ?? null;
+  entry.modelSelector = entry.modelSelector ?? pickModelSelector(configOptions as acp.SessionConfigOption[] | null);
+  // 恢复响应里同样可能带权限档位：没有记录过就补上
+  if (result.modes?.availableModes?.length && entry.availableModes.length === 0) {
+    entry.availableModes = result.modes.availableModes as acp.SessionMode[];
+    entry.currentModeId = result.modes.currentModeId ?? null;
   }
-  // load 响应里同样可能带思考档（与 session/new 对齐）；没记录过才补
+  // 恢复响应里同样可能带思考档；没记录过才补
   entry.thoughtLevelSelector =
-    entry.thoughtLevelSelector ??
-    pickThoughtLevelSelector(response.configOptions ?? null);
+    entry.thoughtLevelSelector ?? pickThoughtLevelSelector(configOptions as acp.SessionConfigOption[] | null);
   // 同理补 configOptions 通道的「模式」（opencode）
   entry.modeOptionSelector =
-    entry.modeOptionSelector ??
-    pickModeOptionSelector(response.configOptions ?? null);
-  return source;
+    entry.modeOptionSelector ?? pickModeOptionSelector(configOptions as acp.SessionConfigOption[] | null);
+  return result.source;
 }
 
 /**
@@ -1371,7 +1249,7 @@ async function ensureActivated(
             console.warn(
               `[acp:${info.agent.name}] 自动激活的 session/load 失败，退回 session/new：${describeError(err)}`,
             );
-            entry.loadedSource = null;
+            entry.source = null;
             await ensureSession(entry, info.workspacePath, info.agent);
           }
         } else {
@@ -1393,7 +1271,7 @@ async function ensureActivated(
     }
   }
   const entry = sessions.get(key);
-  if (!entry || (!entry.cx && !entry.session && !entry.loadedSource)) {
+  if (!entry || !entry.connection) {
     return "自动激活会话失败（进程没能建立）";
   }
   return null;
@@ -1420,14 +1298,14 @@ export async function setAcpSessionMode(
     if (err) return { ok: false, error: err };
   }
   const entry = sessions.get(key);
-  if (!entry || !entry.cx) {
+  if (!entry || !entry.connection) {
     return {
       ok: false,
       error: "会话未激活（先在会话里发一条消息，或重新打开会话）",
     };
   }
-  // load 恢复的会话没有 ActiveSession（只有 loadedSource），sessionId 用绑定的那个
-  const sessionId = entry.session?.sessionId ?? activate?.loadSessionId;
+  // 恢复出来的会话（load / resume）source 的 sessionId 就是绑定的那个
+  const sessionId = entry.source?.sessionId ?? activate?.loadSessionId;
   if (!sessionId) {
     return {
       ok: false,
@@ -1441,23 +1319,19 @@ export async function setAcpSessionMode(
   }
   try {
     if (inSessionModes) {
-      await entry.cx.request(acp.methods.agent.session.setMode, {
-        sessionId,
-        modeId,
-      });
+      await entry.connection.setMode(sessionId, modeId);
       entry.currentModeId = modeId;
     } else if (modeOption) {
-      const response = await entry.cx.request(
-        acp.methods.agent.session.setConfigOption,
-        {
-          sessionId,
-          configId: modeOption.configId,
-          value: modeId,
-        },
+      const configOptions = await entry.connection.setConfigOption(
+        sessionId,
+        modeOption.configId,
+        modeId,
       );
-      entry.modeOptionSelector = pickModeOptionSelector(
-        response?.configOptions,
-      ) ?? { ...modeOption, current: modeId };
+      entry.modeOptionSelector =
+        pickModeOptionSelector(configOptions as acp.SessionConfigOption[] | null) ?? {
+          ...modeOption,
+          current: modeId,
+        };
     }
     return { ok: true };
   } catch (err) {
@@ -1481,13 +1355,13 @@ export async function setAcpSessionThoughtLevel(
     if (err) return { ok: false, error: err };
   }
   const entry = sessions.get(key);
-  if (!entry || !entry.cx) {
+  if (!entry || !entry.connection) {
     return {
       ok: false,
       error: "会话未激活（先在会话里发一条消息，或重新打开会话）",
     };
   }
-  const sessionId = entry.session?.sessionId ?? activate?.loadSessionId;
+  const sessionId = entry.source?.sessionId ?? activate?.loadSessionId;
   if (!sessionId) {
     return {
       ok: false,
@@ -1497,17 +1371,13 @@ export async function setAcpSessionThoughtLevel(
   const selector = entry.thoughtLevelSelector;
   if (!selector) return { ok: false, error: "这个 agent 不支持思考档" };
   try {
-    const response = await entry.cx.request(
-      acp.methods.agent.session.setConfigOption,
-      {
-        sessionId,
-        configId: selector.configId,
-        value,
-      },
+    const configOptions = await entry.connection.setConfigOption(
+      sessionId,
+      selector.configId,
+      value,
     );
-    entry.thoughtLevelSelector = pickThoughtLevelSelector(
-      response?.configOptions,
-    ) ?? { ...selector, current: value };
+    entry.thoughtLevelSelector =
+      pickThoughtLevelSelector(configOptions as acp.SessionConfigOption[] | null) ?? { ...selector, current: value };
     return { ok: true };
   } catch (err) {
     return { ok: false, error: describeError(err) };
@@ -1531,20 +1401,17 @@ async function applyAcpModel(
   const selector = entry.modelSelector;
   if (!selector || selector.current === modelId) return;
   if (!selector.options.some((option) => option.value === modelId)) return;
-  const cx = entry.cx;
+  const connection = entry.connection;
   const sessionId = sessionIdOf(entry);
-  if (!cx || !sessionId) return;
+  if (!connection || !sessionId) return;
   try {
-    const response = await cx.request(
-      acp.methods.agent.session.setConfigOption,
-      {
-        sessionId,
-        configId: selector.configId,
-        value: modelId,
-      },
+    const configOptions = await connection.setConfigOption(
+      sessionId,
+      selector.configId,
+      modelId,
     );
     // 响应带回完整的 configOptions（改一项可能影响别的项），以它为准
-    entry.modelSelector = pickModelSelector(response?.configOptions) ?? {
+    entry.modelSelector = pickModelSelector(configOptions as acp.SessionConfigOption[] | null) ?? {
       ...selector,
       current: modelId,
     };
@@ -1578,30 +1445,23 @@ async function applyAcpMode(
       : modeOption?.current === modeId
   )
     return;
-  const cx = entry.cx;
+  const connection = entry.connection;
   const sessionId = sessionIdOf(entry);
-  if (!cx || !sessionId) return;
+  if (!connection || !sessionId) return;
   try {
     if (inSessionModes) {
       // 规范通道：session/new 的 modes 字段
-      await cx.request(acp.methods.agent.session.setMode, {
-        sessionId,
-        modeId,
-      });
+      await connection.setMode(sessionId, modeId);
       entry.currentModeId = modeId;
     } else if (modeOption) {
       // configOptions 通道（opencode 的 category='mode'）
-      const response = await cx.request(
-        acp.methods.agent.session.setConfigOption,
-        {
-          sessionId,
-          configId: modeOption.configId,
-          value: modeId,
-        },
+      const configOptions = await connection.setConfigOption(
+        sessionId,
+        modeOption.configId,
+        modeId,
       );
-      entry.modeOptionSelector = pickModeOptionSelector(
-        response?.configOptions,
-      ) ?? { ...modeOption, current: modeId };
+      entry.modeOptionSelector =
+        pickModeOptionSelector(configOptions as acp.SessionConfigOption[] | null) ?? { ...modeOption, current: modeId };
     }
     console.log(`[acp] 模式已切到 ${modeId}`);
   } catch (err) {
@@ -1621,21 +1481,17 @@ async function applyAcpThoughtLevel(
   const selector = entry.thoughtLevelSelector;
   if (!selector || selector.current === value) return;
   if (!selector.options.some((o) => o.value === value)) return;
-  const cx = entry.cx;
+  const connection = entry.connection;
   const sessionId = sessionIdOf(entry);
-  if (!cx || !sessionId) return;
+  if (!connection || !sessionId) return;
   try {
-    const response = await cx.request(
-      acp.methods.agent.session.setConfigOption,
-      {
-        sessionId,
-        configId: selector.configId,
-        value,
-      },
+    const configOptions = await connection.setConfigOption(
+      sessionId,
+      selector.configId,
+      value,
     );
-    entry.thoughtLevelSelector = pickThoughtLevelSelector(
-      response?.configOptions,
-    ) ?? { ...selector, current: value };
+    entry.thoughtLevelSelector =
+      pickThoughtLevelSelector(configOptions as acp.SessionConfigOption[] | null) ?? { ...selector, current: value };
     console.log(`[acp] 思考档已切到 ${value}`);
   } catch (err) {
     console.warn(`[acp] 切换思考档失败（${value}）：`, err);
@@ -1653,10 +1509,7 @@ export async function listAcpModels(opts: {
   workspacePath: string;
 }): Promise<AcpModelChoices> {
   const entry = getOrCreateEntry(opts);
-  const session = await ensureSession(entry, opts.workspacePath, opts.agent);
-  entry.modelSelector =
-    entry.modelSelector ??
-    pickModelSelector(session.newSessionResponse?.configOptions);
+  await ensureSession(entry, opts.workspacePath, opts.agent);
   const selector = entry.modelSelector;
   return selector
     ? {
@@ -1705,6 +1558,8 @@ export interface AcpProbeResult {
   modes: AcpModesState | null;
   /** agent 广告的思考档快照；没广告则 null */
   thoughtLevel: AcpThoughtLevelState | null;
+  /** agent 广告的登录方式（空 = 不需要认证） */
+  authMethods: AcpAuthMethod[];
 }
 
 /**
@@ -1727,10 +1582,7 @@ export async function probeAcpCapabilities(opts: {
       conversationId,
       workspacePath,
     });
-    const session = await ensureSession(entry, workspacePath, opts.agent);
-    entry.modelSelector =
-      entry.modelSelector ??
-      pickModelSelector(session.newSessionResponse?.configOptions);
+    await ensureSession(entry, workspacePath, opts.agent);
     const selector = entry.modelSelector;
     return {
       models: selector
@@ -1741,20 +1593,11 @@ export async function probeAcpCapabilities(opts: {
           }
         : { configId: null, current: null, options: [] },
       ...snapshotOf(entry),
+      authMethods: entry.authMethods,
     };
   } finally {
     teardown(key);
   }
-}
-
-/** agent 侧既有会话的展示信息（session/list 的一行，只留界面需要的字段） */
-export interface AcpSessionInfo {
-  sessionId: string;
-  /** 会话的工作目录（导入时按它对上 Fizz 的项目） */
-  cwd: string;
-  title?: string;
-  /** ISO 8601 的最近活动时间 */
-  updatedAt?: string;
 }
 
 /**
@@ -1767,65 +1610,70 @@ export interface AcpSessionInfo {
  *
  * 分页（nextCursor）暂不处理：会话清单量级用不上，后续要接分页再加。
  */
+/**
+ * 拉起一个一次性探针连接（list / delete 用）：spawn + adapter.connect + initialize。
+ * 调用方负责 finally 里 `connection.close()` + `killProcessTree(proc)`。
+ */
+async function openProbeConnection(
+  agent: AcpAgentConfig,
+): Promise<{ connection: AcpConnection; proc: ChildProcess }> {
+  // 探针进程的 cwd 用主目录：列 / 删会话不需要真实项目
+  const proc = spawnCommand(agent.command, agent.args ?? [], homedir());
+  const toAgent = Writable.toWeb(proc.stdin!) as WritableStream<Uint8Array>;
+  const fromAgent = Readable.toWeb(proc.stdout!) as ReadableStream<Uint8Array>;
+  const factory = resolveAcpFactory(agent.protocolVersion);
+  /**
+   * 与 connectAdapter 同样的理由：监听器必须跟进程活到底。`connect()` 会比 spawn 的
+   * `'error'` 先 resolve，`once` 一旦在别处被摘掉（或未来有人加 off）就又会崩 server。
+   */
+  let rejectSpawn!: (err: Error) => void;
+  const spawnFailed = new Promise<never>((_, reject) => {
+    rejectSpawn = reject;
+  });
+  spawnFailed.catch(() => undefined);
+  proc.on("error", (err: Error) => {
+    rejectSpawn(describeSpawnError(err, agent.command, homedir()));
+  });
+  try {
+    const connection = await Promise.race([
+      new Promise<AcpConnection>((resolve, reject) => {
+        void factory
+          .connect({
+            toAgent,
+            fromAgent,
+            // 探针不跑对话，理论上不会有权限请求；万一来了就按拒绝答，别挂住
+            handlers: { onPermission: async () => ({ approved: false }) },
+          })
+          .then(resolve)
+          .catch((err: unknown) =>
+            reject(err instanceof Error ? err : new Error(String(err))),
+          );
+      }),
+      spawnFailed,
+    ]);
+    return { connection, proc };
+  } catch (err) {
+    // 建连失败时调用方拿不到 proc（返回值没出去），必须在这里收掉，别留孤儿进程
+    killProcessTree(proc);
+    throw err;
+  }
+}
+
 export async function listAcpSessions(opts: {
   agent: AcpAgentConfig;
   /** 按会话工作目录过滤；不给 = 拉全部 */
   cwd?: string;
 }): Promise<{ supported: boolean; sessions: AcpSessionInfo[] }> {
-  // 探针进程的 cwd 用主目录：列出会话不需要真实项目，过滤交给 session/list 的 cwd 参数
-  const proc = spawnCommand(
-    opts.agent.command,
-    opts.agent.args ?? [],
-    homedir(),
-  );
+  let probe: { connection: AcpConnection; proc: ChildProcess } | null = null;
   try {
-    const input = Writable.toWeb(proc.stdin!) as WritableStream;
-    const output = Readable.toWeb(proc.stdout!) as ReadableStream;
-    return await new Promise<{
-      supported: boolean;
-      sessions: AcpSessionInfo[];
-    }>((resolve, reject) => {
-      proc.once("error", (err: Error) => reject(err));
-      void acp
-        .client({ name: "Fizz Server" })
-        .onRequest(acp.methods.client.session.requestPermission, async () => {
-          // 清单探测不跑对话，理论上不会有权限请求；万一来了就按取消答，别挂住
-          throw new Error("list 探针不支持权限请求");
-        })
-        .connectWith(acp.ndJsonStream(input, output), async (ctx) => {
-          try {
-            const init = await ctx.request(acp.methods.agent.initialize, {
-              protocolVersion: acp.PROTOCOL_VERSION,
-              clientCapabilities: { session: { configOptions: {} } },
-              clientInfo: { name: "Fizz Server", version: "0.1.0" },
-            });
-            if (!init.agentCapabilities?.sessionCapabilities?.list) {
-              resolve({ supported: false, sessions: [] });
-              return;
-            }
-            const response = await ctx.request(
-              acp.methods.agent.session.list,
-              opts.cwd ? { cwd: opts.cwd } : {},
-            );
-            resolve({
-              supported: true,
-              sessions: response.sessions.map((s) => ({
-                sessionId: s.sessionId,
-                cwd: s.cwd,
-                ...(s.title ? { title: s.title } : {}),
-                ...(s.updatedAt ? { updatedAt: s.updatedAt } : {}),
-              })),
-            });
-          } catch (err) {
-            reject(err instanceof Error ? err : new Error(String(err)));
-          }
-        })
-        .catch((err: unknown) =>
-          reject(err instanceof Error ? err : new Error(String(err))),
-        );
-    });
+    probe = await openProbeConnection(opts.agent);
+    const init = await probe.connection.initialize();
+    if (!init.canList) return { supported: false, sessions: [] };
+    const sessions = await probe.connection.listSessions(opts.cwd);
+    return { supported: true, sessions };
   } finally {
-    killProcessTree(proc);
+    probe?.connection.close();
+    if (probe) killProcessTree(probe.proc);
   }
 }
 
@@ -1841,51 +1689,17 @@ export async function deleteAcpSession(opts: {
   agent: AcpAgentConfig;
   sessionId: string;
 }): Promise<{ ok: boolean; supported: boolean }> {
-  // 探针进程的 cwd 用主目录：删除会话不需要真实项目目录
-  const proc = spawnCommand(
-    opts.agent.command,
-    opts.agent.args ?? [],
-    homedir(),
-  );
+  let probe: { connection: AcpConnection; proc: ChildProcess } | null = null;
   try {
-    const input = Writable.toWeb(proc.stdin!) as WritableStream;
-    const output = Readable.toWeb(proc.stdout!) as ReadableStream;
-    return await new Promise<{ ok: boolean; supported: boolean }>(
-      (resolve, reject) => {
-        proc.once("error", (err: Error) => reject(err));
-        void acp
-          .client({ name: "Fizz Server" })
-          .onRequest(acp.methods.client.session.requestPermission, async () => {
-            // 删除探针不跑对话，理论上不会有权限请求；万一来了就按取消答，别挂住
-            throw new Error("delete 探针不支持权限请求");
-          })
-          .connectWith(acp.ndJsonStream(input, output), async (ctx) => {
-            try {
-              const init = await ctx.request(acp.methods.agent.initialize, {
-                protocolVersion: acp.PROTOCOL_VERSION,
-                clientCapabilities: { session: { configOptions: {} } },
-                clientInfo: { name: "Fizz Server", version: "0.1.0" },
-              });
-              if (!init.agentCapabilities?.sessionCapabilities?.delete) {
-                resolve({ ok: false, supported: false });
-                return;
-              }
-              await ctx.request(acp.methods.agent.session.delete, {
-                sessionId: opts.sessionId,
-              });
-              resolve({ ok: true, supported: true });
-            } catch (err) {
-              reject(err instanceof Error ? err : new Error(String(err)));
-            }
-          })
-          .catch((err: unknown) =>
-            reject(err instanceof Error ? err : new Error(String(err))),
-          );
-      },
-    );
+    probe = await openProbeConnection(opts.agent);
+    const init = await probe.connection.initialize();
+    if (!init.canDelete) return { ok: false, supported: false };
+    await probe.connection.deleteSession(opts.sessionId);
+    return { ok: true, supported: true };
   } finally {
-    killProcessTree(proc);
-    // 本地这条会话若还挂着常驻 entry（进程 / load 通道绑着同一个 sessionId），
+    probe?.connection.close();
+    if (probe) killProcessTree(probe.proc);
+    // 本地这条会话若还挂着常驻 entry（进程 / 恢复通道绑着同一个 sessionId），
     // agent 侧会话已删，entry 里留着的上下文已失效 —— 一并收掉，免得下一轮拿着
     // 已删除的 sessionId 去续。
     for (const key of [...sessions.keys()]) {
@@ -1895,9 +1709,105 @@ export async function deleteAcpSession(opts: {
   }
 }
 
-/** 会话交互来源的 sessionId（ActiveSession 或 load 恢复的通道，二选一） */
+/** 会话交互来源的 sessionId（新建或恢复出来的通道） */
 function sessionIdOf(entry: AcpSessionEntry): string | null {
-  return entry.loadedSource?.sessionId ?? entry.session?.sessionId ?? null;
+  return entry.source?.sessionId ?? null;
+}
+
+/**
+ * 分叉一个 agent 侧会话（`session/fork`）：返回值是**新会话 id**，调用方拿它建一条本地
+ * 会话（`acpSessionId` 绑上去）即可，后续轮次照常走 resume / load。
+ *
+ * 用一次性探针进程：分叉动作本身不需要常驻，分叉出来的会话留在 agent 侧。
+ */
+export async function forkAcpSession(opts: {
+  agent: AcpAgentConfig;
+  /** 要分叉的 agent 侧会话 id */
+  sessionId: string;
+  /** 新会话的工作目录（一般是原会话所属工作区） */
+  workspacePath?: string;
+}): Promise<{ sessionId: string }> {
+  let probe: { connection: AcpConnection; proc: ChildProcess } | null = null;
+  try {
+    probe = await openProbeConnection(opts.agent);
+    const init = await probe.connection.initialize();
+    if (!init.canFork) throw new Error("这个 agent 不支持 session/fork");
+    const result = await probe.connection.forkSession(
+      opts.sessionId,
+      resolveProbeCwd(opts.workspacePath),
+    );
+    return { sessionId: result.source.sessionId };
+  } finally {
+    probe?.connection.close();
+    if (probe) killProcessTree(probe.proc);
+  }
+}
+
+/**
+ * 关闭一个 agent 侧会话（`session/close`）：让 agent 释放它，但不删除落盘数据。
+ *
+ * 与 `deleteAcpSession` 区分：close 是「先放手」，之后还能 resume；delete 是抹掉。
+ */
+export async function closeAcpSession(opts: {
+  agent: AcpAgentConfig;
+  sessionId: string;
+}): Promise<{ ok: boolean; supported: boolean }> {
+  let probe: { connection: AcpConnection; proc: ChildProcess } | null = null;
+  try {
+    probe = await openProbeConnection(opts.agent);
+    const init = await probe.connection.initialize();
+    if (!init.canClose) return { ok: false, supported: false };
+    await probe.connection.closeSession(opts.sessionId);
+    return { ok: true, supported: true };
+  } finally {
+    probe?.connection.close();
+    if (probe) killProcessTree(probe.proc);
+    for (const key of [...sessions.keys()]) {
+      const entry = sessions.get(key);
+      if (entry && sessionIdOf(entry) === opts.sessionId) teardown(key);
+    }
+  }
+}
+
+/**
+ * 用 agent 广告的某种方式登录（v1 `authenticate` / v2 `auth/login`）。
+ *
+ * 只支持 `type: 'agent'` 的方法：`terminal` 方式要求客户端起一个交互式 TUI 进程，
+ * 本仓库没有 PTY 通道，直接拒绝并让用户去终端里手动登录。
+ */
+export async function authenticateAcpAgent(opts: {
+  agent: AcpAgentConfig;
+  methodId: string;
+}): Promise<void> {
+  let probe: { connection: AcpConnection; proc: ChildProcess } | null = null;
+  try {
+    probe = await openProbeConnection(opts.agent);
+    const init = await probe.connection.initialize();
+    const method = init.authMethods.find((m) => m.id === opts.methodId);
+    if (!method) throw new Error("这个 agent 没有这种方法");
+    if (method.type === "terminal") {
+      throw new Error("这一步需要在终端里完成（Fizz 暂不支持终端登录）");
+    }
+    await probe.connection.login(opts.methodId);
+  } finally {
+    probe?.connection.close();
+    if (probe) killProcessTree(probe.proc);
+  }
+}
+
+/** 退出登录（仅 v2 有 `auth/logout`；v1 会抛错） */
+export async function logoutAcpAgent(opts: {
+  agent: AcpAgentConfig;
+}): Promise<void> {
+  let probe: { connection: AcpConnection; proc: ChildProcess } | null = null;
+  try {
+    probe = await openProbeConnection(opts.agent);
+    await probe.connection.initialize();
+    await probe.connection.logout();
+  } finally {
+    probe?.connection.close();
+    if (probe) killProcessTree(probe.proc);
+  }
 }
 
 /**
@@ -1923,22 +1833,13 @@ function sessionIdOf(entry: AcpSessionEntry): string | null {
  */
 async function handlePermission(
   entry: AcpSessionEntry,
-  params: acp.RequestPermissionRequest,
-): Promise<acp.RequestPermissionResponse> {
-  const options: AgentConfirmOption[] = (params.options ?? []).map(
-    (option) => ({
-      optionId: option.optionId,
-      name: option.name,
-      kind: option.kind,
-    }),
-  );
-  const cancelled: acp.RequestPermissionResponse = {
-    outcome: { outcome: "cancelled" },
-  };
-  const selected = (
-    optionId: string | undefined,
-  ): acp.RequestPermissionResponse =>
-    optionId ? { outcome: { outcome: "selected", optionId } } : cancelled;
+  req: AcpPermissionRequest,
+): Promise<AcpPermissionReply> {
+  const options: AgentConfirmOption[] = req.options.map((option) => ({
+    optionId: option.optionId,
+    name: option.name,
+    kind: option.kind as AgentConfirmOption["kind"],
+  }));
   /** 拒绝类（reject_once / reject_always）里挑一个：给「按拒绝收场」的场合用 */
   const pickReject = (): string | undefined =>
     options.find(
@@ -1950,18 +1851,18 @@ async function handlePermission(
   const requestPermission = turn?.requestPermission;
   if (!requestPermission) {
     // 没有审批通道（例如无人值守的 API 调用）→ 按拒绝收场，而不是放行
-    return selected(pickReject());
+    const rejectId = pickReject();
+    return rejectId ? { approved: false, optionId: rejectId } : { approved: false };
   }
 
-  // 这里是增量更新：缺的字段回查本轮 tool_call 的记忆（CodeBuddy 只给 toolCallId）
-  const toolCall = params.toolCall;
-  const toolCallId = toolCall.toolCallId ?? "";
+  // 增量更新：缺的字段回查本轮 tool_call 的记忆（CodeBuddy 只给 toolCallId）
+  const toolCallId = req.toolCallId;
   const known = toolCallId ? turn.toolCalls.get(toolCallId) : undefined;
   // 协议：本次没带的字段视为「没变化」，取回查到的上一份
-  const title = acpTitle(toolCall.title) ?? known?.title ?? "";
-  const kind = (typeof toolCall.kind === "string" && toolCall.kind) || known?.kind;
+  const title = acpTitle(req.title) ?? known?.title ?? "";
+  const kind = req.kind || known?.kind;
   // 工具名优先用 agent 的程序化名（`ToolCall.name`），没有才退回 `kind`
-  const name = acpName(toolCall.name) ?? known?.name;
+  const name = req.name ?? known?.name;
   // 选项原样透传：界面渲染的就是 agent 给的这组（名字 / 性质都不动）
   const confirm: Omit<AgentConfirmRequest, "id" | "requestId"> = {
     toolCallId,
@@ -1994,9 +1895,13 @@ async function handlePermission(
         option.kind === "allow_once" || option.kind === "allow_always",
     )?.optionId ?? options[0]?.optionId;
 
-  if (reply.optionId) return selected(reply.optionId);
-  if (reply.approved) return selected(pickAllow());
-  return selected(pickReject());
+  if (reply.optionId) return { approved: true, optionId: reply.optionId };
+  if (reply.approved) {
+    const optionId = pickAllow();
+    return optionId ? { approved: true, optionId } : { approved: true };
+  }
+  const rejectId = pickReject();
+  return rejectId ? { approved: false, optionId: rejectId } : { approved: false };
 }
 
 /** 会话就绪时回传给调用方的信息（`session/new` 建成 或 `session/load` 恢复后） */
@@ -2078,6 +1983,13 @@ export interface RunAcpAgentOptions {
    * 不传 = 无人值守，权限请求一律按拒绝收场（挑第一个 reject 类选项；没有则 cancelled）。
    */
   requestPermission?: (req: AgentConfirmInput) => Promise<AgentPermissionReply>;
+  /**
+   * 结构化追问（elicitation）通道：agent 在运行中要用户补结构化输入时走它。
+   * 不传 = 一律 `decline`（无人值守时别把 agent 挂住）。
+   */
+  requestElicitation?: (
+    req: AcpElicitationRequest,
+  ) => Promise<AcpElicitationReply>;
   signal?: AbortSignal;
   /**
    * 绑定的 agent 侧 session id（会话记录里的 acpSessionId）。给了它且进程/会话
@@ -2127,17 +2039,17 @@ function getOrCreateEntry(opts: {
     agentId: opts.agent.id,
     conversationId: opts.conversationId,
     proc,
+    spawnError: null,
     cwd,
-    session: null,
-    cx: null,
+    connection: null,
+    source: null,
     availableModes: [],
     currentModeId: null,
     modelSelector: null,
     thoughtLevelSelector: null,
     modeOptionSelector: null,
-    closeConnection: null,
-    loadedSource: null,
     promptCapabilities: null,
+    authMethods: [],
     createdAt: Date.now(),
     lastActiveAt: Date.now(),
     chain: Promise.resolve(),
@@ -2145,16 +2057,28 @@ function getOrCreateEntry(opts: {
   };
   sessions.set(key, entry);
   ensureAcpIdleTimer();
+  /**
+   * 必须**在 spawn 的同一轮**挂上：`runAcpAgent` 会先建 entry、再排队 / 拼 prompt，
+   * 等走到 `connectAdapter` 时 `'error'` 可能已经发过了。ChildProcess 上没人监听
+   * `'error'` = 未捕获异常，`spawn codebuddy ENOENT` 会直接把 server 进程带走。
+   * 这里只负责「接住 + 记账」，真正的报错由 `connectAdapter` 在查 `spawnError` 时抛出。
+   */
+  proc.on("error", (err: Error) => {
+    const failure = describeSpawnError(err, opts.agent.command, cwd);
+    entry.spawnError = failure;
+    if (sessions.get(key) === entry) sessions.delete(key);
+    entry.source?.fail?.(failure);
+  });
   proc.on("exit", (code, signal) => {
     // 进程自己退了（崩溃 / 命令不存在）：会话不可复用，下一轮重建
     if (sessions.get(key) === entry) sessions.delete(key);
     /**
-     * 半路死掉的进程也要**把错误交给正在等消息的轮次**：`LoadedTurnSource` 那条路的
-     * `nextUpdate()` 是我们自己实现的，进程退出不会让 SDK 拒掉挂起的等待 —— 不喊一声，
+     * 半路死掉的进程也要**把错误交给正在等消息的轮次**：`ManualTurnSource`（resume/load）
+     * 的 `nextUpdate()` 是我们自己实现的，进程退出不会让 SDK 拒掉挂起的等待 —— 不喊一声，
      * 界面就一直停在「思考中」，直到用户手动停止。
-     * （`session/new` 那条路走 SDK 的队列 + 中止时的 `abortGate`，这里只管 load 通道。）
+     * （`session/new` 那条路走 SDK 的队列 + 中止时的 `abortGate`，这里只管手写队列。）
      */
-    entry.loadedSource?.fail(
+    entry.source?.fail?.(
       new Error(
         `agent 进程已退出（${signal ? `信号 ${signal}` : `退出码 ${code ?? "未知"}`}）`,
       ),
@@ -2221,6 +2145,9 @@ export async function runAcpAgent(
       ...(opts.requestPermission
         ? { requestPermission: opts.requestPermission }
         : {}),
+      ...(opts.requestElicitation
+        ? { requestElicitation: opts.requestElicitation }
+        : {}),
       onEvent: emit,
     };
     /**
@@ -2235,7 +2162,8 @@ export async function runAcpAgent(
      * （agent 进程还在跑），要连会话一起拆掉」就是在绕这个坑。
      *
      * 所以两件事一起做：
-     *   1. `teardown()` 杀掉 agent 进程（不杀就是留一个再也管不住的孤儿进程）；
+     *   1. 先发 `session/cancel` 请 agent 自己停（给它 400ms 收尾）；仍不结束时
+     *      `teardown()` 杀掉进程（不杀就是留一个再也管不住的孤儿进程）；
      *   2. 用一个 gate 把 `nextUpdate()` race 掉 —— 不去赌「进程被杀后 SDK 会不会把挂起的
      *      nextUpdate 拒掉」，自己保证一定跳得出来。
      */
@@ -2244,6 +2172,16 @@ export async function runAcpAgent(
       releaseAbortGate = () => resolve(null);
     });
     const onAbort = (): void => {
+      const sessionId = current.source?.sessionId;
+      const connection = current.connection;
+      if (sessionId && connection) {
+        void connection.cancelTurn(sessionId).catch(() => undefined);
+        setTimeout(() => {
+          if (sessions.get(key) === current) teardown(key);
+          releaseAbortGate?.();
+        }, 400);
+        return;
+      }
       if (sessions.get(key) === current) teardown(key);
       releaseAbortGate?.();
     };
@@ -2258,8 +2196,8 @@ export async function runAcpAgent(
       // 3. 绑定了 sessionId 但进程 / 会话已没 → session/load 恢复上下文（停止 / 重启后不失忆）；
       //    load 回放的历史在轮次前 drain 掉 —— 视图由打开会话时的 transcript 端点负责；
       //    load 失败（agent 不支持 / 会话已失效）→ 退回 session/new。
-      let source: acp.ActiveSession | LoadedTurnSource;
-      const liveSource = current.loadedSource ?? current.session;
+      let source: AcpTurnSource;
+      const liveSource = current.source;
       if (liveSource) {
         source = liveSource;
       } else if (opts.loadSessionId) {
@@ -2308,7 +2246,7 @@ export async function runAcpAgent(
        *
        * ⚠️ 这个 `.catch` 会**吞掉** prompt 的 rejection —— 所以「这一轮失败」必须由 source
        * 自己推进 `nextUpdate()` 的队列：SDK 的 `ActiveSession` 失败时内部会 `updates.reject`，
-       * 而 `session/load` 那条手写通道靠 `LoadedTurnSource.fail`（prompt 的 catch 里调）。
+       * 而 `session/load` / `session/resume` 那条手写通道靠 `ManualTurnSource.fail`（进程退出时调）。
        * 少了它，下面那句 `await ... nextUpdate()` 会永远挂着 —— 界面一直「思考中」。
        */
       void source.prompt(prompt).catch(() => undefined);

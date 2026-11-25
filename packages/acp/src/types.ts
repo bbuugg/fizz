@@ -3,6 +3,7 @@
  * 类型真源在本包，前端一律 `import type` 引用（类型会被编译期擦除，
  * 不会把 @agentclientprotocol/sdk 与 node 子进程拖进浏览器产物）。
  */
+import type { AcpProtocolVersion } from './protocol/types'
 
 /**
  * 外部 agent 的「风格」（设置 → 外部 Agent 里手选）：决定会话输入区里模式 UI 的
@@ -37,6 +38,13 @@ export interface AcpAgentConfig {
   args: string[]
   /** 风格（见 `AcpAgentType`）；缺省 = `generic`（不显示模式 UI） */
   type?: AcpAgentType
+  /**
+   * 说话用的 ACP 协议版本：`v1`（stable，缺省）或 `v2`（draft）。
+   *
+   * 缺省必须是 `v1`：老数据没有这个字段，回落成 v1 才不改变已保存 agent 的行为。
+   * 选 v2 只对**本身实现了 v2** 的 agent 有效，否则 initialize 会失败。
+   */
+  protocolVersion?: AcpProtocolVersion
   /**
    * 新增时选的预设 id（`ACP_AGENT_PRESETS[].id`）：决定图标这类**身份**信息。
    *
