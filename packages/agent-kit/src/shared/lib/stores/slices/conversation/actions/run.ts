@@ -94,6 +94,17 @@ export function createRunActions(
     stopConversation: async (conversationId: string) => {
       const current = readSlice(conversationId).request;
       if (!current) return;
+      /**
+       * 手动停止 = 自动续发到此为止：队列原样留着，等用户自己点「启动 / 发送下一条」。
+       *
+       * ⚠️ 必须**在 `await api.abort()` 之前同步掐住**：abort 会让服务端先关掉这条
+       * SSE，`runRound` 的收场可能在下面 `current.controller.abort()` 执行前就走到
+       * 「自然收尾」分支去 `pump()` —— 那一瞬间队列已经被顶上去了（随后这里再清
+       * `request`，还会把新一轮的现场抹掉）。先落 `queuePaused`，`pump` 就地认得它。
+       */
+      if (readSlice(conversationId).queuedMessages.length > 0) {
+        get().setQueuePaused(true, conversationId);
+      }
       const api = get().getApi();
       // 先让服务端停下 Agent 循环，再断开 HTTP（顺序反了会留下孤儿循环）。
       // 服务端在 abort 时会把正等着的审批按拒绝解开（否则工具会卡到超时）

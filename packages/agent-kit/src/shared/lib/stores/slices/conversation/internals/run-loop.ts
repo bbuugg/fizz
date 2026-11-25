@@ -174,6 +174,11 @@ export function createConversationRunLoop(ctx: ConvCore) {
       markRunning(conversationId, true);
 
       let attempt = 0;
+      /**
+       * 接回来的这一轮如果以 error / aborted 收场，同样不许把队列续上（见 runRound
+       * 收场的说明）。收场走 `settleRound`，所以信号之外再传一份「停没停」。
+       */
+      let halted: "error" | "aborted" | null = null;
       for (;;) {
         /**
          * 每次（重）接入前先把占位清空：回放是从帧日志**头部**开始的，清空后回放出来的
@@ -204,6 +209,11 @@ export function createConversationRunLoop(ctx: ConvCore) {
          * 下一轮开头刚把这一轮的 parts 清空，漏一帧过去就是「回放重建完又被追加一遍」。
          */
         const batch = createFrameBatcher((frame) => {
+          if (frame.type === "event" && frame.event?.type === "finish") {
+            const reason = frame.event.finishReason;
+            if (reason === "error") halted = "error";
+            else if (reason === "aborted") halted = "aborted";
+          }
           if (get().getApi() === api && readSlice(conversationId).request?.controller === controller)
             handleFrame(conversationId, assistantId, frame);
         });
@@ -234,7 +244,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
           batch.flush();
           if (readSlice(conversationId).request?.controller !== controller) return true;
           // 流正常关闭 = 收到过 end 帧（服务端把已结束的 run 回放完也会直接 close）
-          settleRound(conversationId, controller.signal);
+          settleRound(conversationId, controller.signal, halted);
           return true;
         } catch (err) {
           /*
@@ -245,7 +255,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
           if (get().getApi() !== api || readSlice(conversationId).request?.controller !== controller) return true;
           // 用户点了「停止」（或睡眠期间点了）：这条流是我们自己断的，照常收场
           if (controller.signal.aborted) {
-            settleRound(conversationId, controller.signal);
+            settleRound(conversationId, controller.signal, halted);
             return true;
           }
           const status = httpStatusOf(err);
@@ -261,7 +271,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
            * 把 `streaming` 永久留在 true、侧栏一直转圈，用户只能刷新页面。
            */
           if (status === 404) {
-            settleRound(conversationId, controller.signal);
+            settleRound(conversationId, controller.signal, halted);
             return true;
           }
           /**
@@ -275,7 +285,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
            */
           const alive = await peekActiveRun(conversationId);
           if (!alive || alive.requestId !== requestId) {
-            settleRound(conversationId, controller.signal);
+            settleRound(conversationId, controller.signal, halted);
             return true;
           }
           attempt += 1;
@@ -1179,6 +1189,15 @@ export function createConversationRunLoop(ctx: ConvCore) {
     get().setError(null);
     /** 这一轮是不是「没能开跑」（服务端也没起过 run / 被拒 / 连不上）—— 决定收尾要不要拉权威历史 */
     let failed = false;
+    /**
+     * 这一轮是不是**被停下**的（服务端给的 `finish` 里 `finishReason !== 'done'`）。
+     *
+     * 与 `failed` 分开：错误 / 中止的这一轮服务端照样落盘了，收尾仍要拉权威历史；
+     * 但它**绝不能触发队列自动续发** —— 用户的要求是「任何手动停止或出错停止，
+     * 队列都不自动发」。`finish` 帧到达后还要过一帧合批，检测放在 batch 回调里
+     * （那时 finally 还没跑）。
+     */
+    let halted: "error" | "aborted" | null = null;
     /** 连接断了但服务端那轮还在跑：已经转交 attachRun 续接，收场归它管 */
     let handedOff = false;
     // 这一轮开跑：侧栏在它的会话上转圈（之后切到别的会话也不挪窝）
@@ -1189,9 +1208,14 @@ export function createConversationRunLoop(ctx: ConvCore) {
      * 这一轮的帧合批器（见 `lib/frame-batch.ts`）：把逐 token 的 delta 攒到一个动画帧
      * 再一次性落进 store，避免「一 token 一次整树渲染」。
      */
-    const batch = createFrameBatcher((frame) =>
-      handleFrame(conversationId, assistantId, frame),
-    );
+    const batch = createFrameBatcher((frame) => {
+      if (frame.type === "event" && frame.event?.type === "finish") {
+        const reason = frame.event.finishReason;
+        if (reason === "error") halted = "error";
+        else if (reason === "aborted") halted = "aborted";
+      }
+      handleFrame(conversationId, assistantId, frame);
+    });
 
     try {
       const requestId = await api.streamChat(
@@ -1337,25 +1361,29 @@ export function createConversationRunLoop(ctx: ConvCore) {
         if (convBackend !== "acp") void loadMessages(conversationId);
       }
       /**
-       * 自然收尾（没被中止、也没失败）：把**这条会话**队列里的下一条顶上来接着跑；
-       * 用户点了停止（aborted）则保留队列，等他之后手动再发时一并续上。
+       * 自然收尾（没被中止、没出错）才有资格把**这条会话**队列里的下一条顶上来；
+       * 用户点了停止（aborted）/ 本轮出错（error）都必须掐住，等他之后手动再发。
+       * 手动停止时 `stopConversation` 已经同步置了 `queuePaused`；服务端主动中止
+       * （另一标签 / 其他端）与出错则在这里补上，别让队列被错误地续发。
        *
        * **不看焦点**：以前这里要求「必须还是活跃会话」，分屏时在 B 标签排了三条、切回 A
        * 看别的东西，B 的第一轮跑完队列就停在那儿不动了 —— 队列是「我自己会接着跑」的
        * 承诺，与用户此刻看哪块无关。`pump(conversationId)` 会把下一轮也发到 B 上。
        */
-      if (!controller.signal.aborted && !failed) {
+      if (!controller.signal.aborted && !failed && !halted) {
         pump(conversationId);
-      } else if (
-        failed &&
-        readSlice(conversationId).queuedMessages.length > 0
-      ) {
-        // 失败停链（spec §3）：不自动发下一条（防坏配置把整个队列烧完），队列保留，
-        // 头部显式提示「已暂停」+ 一键继续 / 清空 —— 现状是静默卡住，用户只能猜
-        writeSlice(conversationId, (s) => ({
-          ...s,
-          queuePausedReason: "failed",
-        }));
+      } else if (readSlice(conversationId).queuedMessages.length > 0) {
+        if (failed || halted === "error") {
+          // 失败停链（spec §3）：不自动发下一条（防坏配置把整个队列烧完），队列保留，
+          // 头部显式提示「已暂停」+ 一键继续 / 清空 —— 现状是静默卡住，用户只能猜
+          writeSlice(conversationId, (s) => ({
+            ...s,
+            queuePausedReason: "failed",
+          }));
+        } else if (halted === "aborted") {
+          // 别的端 / 别的标签按下停止：等同于本地手动停止，队列必须等用户显式启动
+          get().setQueuePaused(true, conversationId);
+        }
       }
     }
     // 走到这里 = 这一轮**确实发出去了**（跑完了 / 断了但由 attachRun 接上 / 落成错误）
@@ -1366,7 +1394,11 @@ export function createConversationRunLoop(ctx: ConvCore) {
    * 这一轮收场：复位本地现场、拉服务端权威历史、把队列的下一条顶上来接着跑。
    * `runRound` 与 `attachRun`（含断线重接循环）共用同一套收场语义。
    */
-  const settleRound = (conversationId: string, signal: AbortSignal): void => {
+  const settleRound = (
+    conversationId: string,
+    signal: AbortSignal,
+    halted: "error" | "aborted" | null = null,
+  ): void => {
     if (readSlice(conversationId).request?.controller.signal !== signal) return;
     writeSlice(conversationId, (s) => ({
       ...s,
@@ -1395,9 +1427,22 @@ export function createConversationRunLoop(ctx: ConvCore) {
       (c) => c.id === conversationId,
     )?.backend;
     if (convBackend !== "acp") void loadMessages(conversationId);
-    // 自然收尾（没被中止）：把队列里的下一条顶上来接着跑；用户点了停止则保留队列。
+    // 自然收尾（没被中止、没出错）：把队列里的下一条顶上来接着跑；用户点了停止 /
+    // 这一轮以 error / aborted 收场则保留队列。
     // 同样不看焦点 —— 后台标签的队列自己跑完（见 settleRound 里的说明）
-    if (!signal.aborted) pump(conversationId);
+    if (!signal.aborted && !halted) {
+      pump(conversationId);
+    } else if (readSlice(conversationId).queuedMessages.length > 0) {
+      if (halted === "error") {
+        writeSlice(conversationId, (s) => ({
+          ...s,
+          queuePausedReason: "failed",
+        }));
+      } else if (halted === "aborted") {
+        // 别的端 / 别的标签按下停止：等同于本地手动停止，队列必须等用户显式启动
+        get().setQueuePaused(true, conversationId);
+      }
+    }
   };
 
   /**

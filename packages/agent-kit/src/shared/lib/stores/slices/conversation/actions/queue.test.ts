@@ -30,6 +30,7 @@ function makeStore() {
   const api = {
     setConversationQueue: vi.fn(async () => ({ ok: true })),
     setConversationTarget: vi.fn(async () => ({ ok: true })),
+    abort: vi.fn(async () => ({ ok: true })),
     // 运行中「点队列发送」= 插话：投进服务端收件箱，回一条带 id 的消息
     steer: vi.fn(async (_id: string, text: string) => ({
       message: {
@@ -128,7 +129,9 @@ function makeStore() {
     sendQueuedMessage: slice.sendQueuedMessage as (
       id: string,
       scope?: string | null
-    ) => Promise<boolean>
+    ) => Promise<boolean>,
+    stopConversation: slice.stopConversation as (id: string) => Promise<void>,
+    writeSlice
   }
 }
 
@@ -256,5 +259,40 @@ describe('sendQueuedMessage：跑着时 = 插话', () => {
     expect(runRound).not.toHaveBeenCalled()
     expect(readSlice(FOCUS).queuedMessages).toEqual([])
     expect(readSlice(FOCUS).pendingSteers.map((m) => m.id)).toEqual(['steer-1'])
+  })
+})
+
+describe('stopConversation：手动停止掐住队列自动续发', () => {
+  /**
+   * 回归：用户在跑着的会话里排了一条，然后点「停止」—— 队列不能自己发出去。
+   *
+   * 以前 `stopConversation` 先 `await api.abort()` 再 `controller.abort()`：服务端
+   * 被 abort 时会先关掉 SSE，`runRound` 的收场在本地 controller 还没 abort 之前就
+   * 跑到了「自然收尾」分支，`pump()` 于是把队首发了出去。现在停止那一刻就同步置
+   * `queuePaused`，`pump` 认得它。
+   */
+  it('停止后队列暂停，之后收尾的 pump 不再自动发下一条', async () => {
+    const { state, readSlice, queueIn, pump, runRound, stopConversation, writeSlice } =
+      makeStore()
+    queueIn(FOCUS, ['停下来别发'])
+    state.runningConversations = { [FOCUS]: true }
+    writeSlice(FOCUS, (s) => ({
+      ...s,
+      request: {
+        id: 'run-1',
+        assistantId: 'a1',
+        controller: { abort: vi.fn(), signal: { aborted: false } }
+      }
+    }))
+
+    await stopConversation(FOCUS)
+
+    expect(readSlice(FOCUS).queuePaused).toBe(true)
+    // 模拟收尾时那次 pump：暂停状态下必须不动
+    pump(FOCUS)
+    expect(runRound).not.toHaveBeenCalled()
+    expect(readSlice(FOCUS).queuedMessages.map((m) => m.text)).toEqual([
+      '停下来别发'
+    ])
   })
 })
