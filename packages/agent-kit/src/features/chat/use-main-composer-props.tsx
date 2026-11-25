@@ -416,13 +416,16 @@ export function useMainComposerProps(
     ),
     trailing: (
       <>
-        <ModelSelect app={app} />
-        {/* 模式：**只有 opencode 风格**才显示（build / plan），摆在模型选择器之后；
-            没有模式时返回 null —— 不做中性 pill */}
+        {/*
+          会随 Agent 切换而**出现 / 消失**的入口一律排在模型选择**左边**：
+          模式（opencode 风格：build / plan）与思考档（pi 风格）都是 ACP 才有的，
+          挂在模型右侧时，一切换 Agent 整排 pill 就把模型选择器往左挤一截。
+          放左边之后模型 / 发送那一侧的位置稳定，变化只发生在左侧。
+          两者没有对应能力时都返回 null。
+        */}
         <AcpModePill app={app} />
-        {/* 思考档：**只有 pi 风格**才显示（pi 用 configOptions 的 thought_level 表达它，
-            不是 Session Modes）；没有思考档时返回 null */}
         <AcpThoughtLevelSelect app={app} />
+        <ModelSelect app={app} />
       </>
     ),
     textareaRef,
