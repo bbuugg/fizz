@@ -763,16 +763,14 @@ function ErrorTextBlock({ text, onReload, reloading, reloadDisabled }: {
 }) {
   const tr = useT()
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <div className="min-w-0 flex-1">
-        <MessageResponse className="tracking-[0.02em]">{text}</MessageResponse>
-      </div>
+    <div>
+      <MessageResponse className="inline tracking-[0.02em] [&>p:last-child]:inline">{text}</MessageResponse>
       {onReload ? (
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="h-7 gap-1.5 px-2 text-xs"
+          className="ml-1.5 h-7 gap-1.5 px-2 align-baseline text-xs"
           disabled={reloading || reloadDisabled}
           aria-busy={reloading}
           onClick={() => onReload()}
