@@ -11,11 +11,13 @@ import { domain } from '@/lib/server/state'
 import { findActiveByConversation, summarize } from '@/lib/server/chat-run'
 import {
   carryOverDurations,
+  carryOverErrors,
   acpTranscriptView,
   getAcpTranscript,
   setAcpTranscript
 } from '@/lib/server/acp-transcripts'
 import { refreshAcpSessionState } from '@/lib/server/acp-session-state'
+import { acpMcpServers } from '@/lib/server/acp-mcp'
 import { describeError, jsonError } from '@/app/api/_lib/auth'
 
 export async function GET(
@@ -49,12 +51,17 @@ export async function GET(
   if (!sessionId || !cwd) {
     return jsonError(400, '缺少 sessionId / cwd')
   }
+  const conversation = domain.getConversation(conversationId)
+  if (!conversation || conversation.backend !== 'acp' || conversation.configId !== id) {
+    return jsonError(400, '会话与外部 Agent 不匹配')
+  }
   try {
     const before = getAcpTranscript(conversationId)
     const messages = await replayAcpSession({
       agent,
       conversationId,
       workspacePath: cwd,
+      mcpServers: acpMcpServers(domain.listMcpServers(), conversation.mcpServerIds),
       sessionId
     })
     /**
@@ -67,7 +74,11 @@ export async function GET(
     const appended = before ? after.slice(before.length) : after
     // 回放重建出来的消息没有「本轮耗时」（agent 协议不给）：把快照里记的那份按顺序搬回来，
     // 否则刷新一下折叠条抬头就从「已工作 1 分 12 秒」退回计数摘要
-    if (before) carryOverDurations(before, messages)
+    if (before) {
+      // 工作台捕获的错误也不属于 agent 的回放数据，重载时必须保留在原轮次。
+      carryOverErrors(before, messages)
+      carryOverDurations(before, messages)
+    }
     setAcpTranscript(conversationId, [...messages, ...appended])
     // load 会把 agent 广告的档位带回来（可能被重置成默认）：刷新进会话配置，保留用户选的档
     refreshAcpSessionState(conversationId, agent.id)

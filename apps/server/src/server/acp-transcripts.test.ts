@@ -3,6 +3,7 @@
  *
  * 这段逻辑只在**顺序对得上**时才成立（回放的 id 与本地 id 无关），所以这里重点锁
  * 三件事：条数一致才搬、只搬助手消息、目标已有值不覆盖。
+ * `carryOverErrors` 防止 session/load 不回放工作台运行错误，导致错误正文与恢复按钮自动消失。
  */
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentChatMessage } from '@fizz/contracts/types'
@@ -10,7 +11,7 @@ import type { ChatRunSummary } from '@fizz/contracts/agent-api'
 
 vi.mock('./state', () => ({ acpTranscripts: new Map() }))
 
-const { carryOverDurations, setAcpTranscript, acpTranscriptView } = await import('./acp-transcripts')
+const { carryOverDurations, carryOverErrors, setAcpTranscript, acpTranscriptView } = await import('./acp-transcripts')
 
 function msg(
   id: string,
@@ -61,6 +62,51 @@ describe('carryOverDurations', () => {
     carryOverDurations(from, to)
 
     expect(to[1].durationMs).toBeUndefined()
+  })
+})
+
+describe('carryOverErrors', () => {
+  const user = (id: string, text = '问题') => ({ ...msg(id, 'user'), parts: [{ type: 'text' as const, text }] })
+  const error = { type: 'text' as const, text: '⚠️ ACP connection closed' }
+  const failed = { ...msg('a-local', 'assistant', 1200), parts: [error] }
+
+  it('回放缺少失败轮的助手消息时补回错误，重复同步不重复追加', () => {
+    const from = [user('u-local'), failed]
+    const to = [user('u-replay')]
+    carryOverErrors(from, to)
+    carryOverErrors(from, to)
+    expect(to).toEqual([user('u-replay'), failed])
+  })
+
+  it('已有回放正文时只补错误，不把本地正文再抄一遍', () => {
+    const from = [user('u-local'), { ...failed, parts: [{ type: 'text' as const, text: '半截正文' }, error] }]
+    const to = [user('u-replay'), msg('a-replay', 'assistant')]
+    carryOverErrors(from, to)
+    carryOverErrors(from, to)
+    expect(to[1].parts).toEqual([{ type: 'text', text: 'a-replay' }, error])
+    expect(from[1].parts).toHaveLength(2)
+  })
+
+  it('失败请求连用户消息都未被 agent 存下时保留失败尾轮', () => {
+    const from = [user('u-local'), failed]
+    const to: AgentChatMessage[] = []
+    carryOverErrors(from, to)
+    expect(to).toEqual(from)
+  })
+
+  it('用户消息对不上时不把旧错误挂到另一轮', () => {
+    const from = [user('u-local', '旧问题'), failed]
+    const to = [user('u-replay', '新问题'), msg('a-replay', 'assistant')]
+    carryOverErrors(from, to)
+    expect(to[1].parts).toEqual([{ type: 'text', text: 'a-replay' }])
+  })
+
+  it('前一轮没有助手回放时也不能把错误挪到后一轮', () => {
+    const from = [user('u1'), failed, user('u2', '下一题'), msg('a2', 'assistant')]
+    const to = [user('u-replay-1'), user('u-replay-2', '下一题'), msg('a-replay-2', 'assistant')]
+    carryOverErrors(from, to)
+    expect(to.map((m) => m.id)).toEqual(['u-replay-1', 'a-local', 'u-replay-2', 'a-replay-2'])
+    expect(to[3].parts).toEqual([{ type: 'text', text: 'a-replay-2' }])
   })
 })
 

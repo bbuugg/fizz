@@ -17,6 +17,22 @@
 /** 支持的 ACP 协议版本 */
 export type AcpProtocolVersion = 'v1' | 'v2'
 
+/** 服务端组装的 MCP 连接配置；只交给外部 agent，不进入客户端视图。 */
+export type AcpMcpServer =
+  | {
+      type: 'stdio'
+      name: string
+      command: string
+      args: string[]
+      env: { name: string; value: string }[]
+    }
+  | {
+      type: 'http' | 'sse'
+      name: string
+      url: string
+      headers: { name: string; value: string }[]
+    }
+
 /** ACP 权限请求里的一个可选项（两版同形） */
 export interface AcpPermissionOption {
   optionId: string
@@ -175,8 +191,8 @@ export interface AcpConnection {
   readonly version: AcpProtocolVersion
   /** 发 initialize，返回规整后的能力；重复调用返回同一结果 */
   initialize(): Promise<AcpInitResult>
-  newSession(cwd: string): Promise<AcpNewSessionResult>
-  resumeSession(sessionId: string, cwd: string): Promise<AcpResumeResult>
+  newSession(cwd: string, mcpServers?: AcpMcpServer[]): Promise<AcpNewSessionResult>
+  resumeSession(sessionId: string, cwd: string, mcpServers?: AcpMcpServer[]): Promise<AcpResumeResult>
   /** `session/fork`：从既有会话分叉出一条新会话（返回的新 sessionId 可直接 resume） */
   forkSession(sessionId: string, cwd: string): Promise<AcpResumeResult>
   /** `session/close`：让 agent 释放会话（不删除落盘数据） */

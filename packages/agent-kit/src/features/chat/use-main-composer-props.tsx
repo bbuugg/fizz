@@ -20,10 +20,7 @@ import {
   resolveSlashDispatchFor,
 } from "@fizz/agent-kit/shared/lib/slash-commands";
 import type { UploadFileRef, UploadProviderView } from "@fizz/contracts/agent-api";
-import {
-  ComposerToolbar,
-  ComposerToolbarPlaceholder,
-} from "@fizz/agent-kit/features/chat/ComposerToolbar";
+import { ComposerToolbar } from "@fizz/agent-kit/features/chat/ComposerToolbar";
 import type { AgentApp } from "@fizz/agent-kit/shared/hooks/useAgentApp";
 import { useT } from "@fizz/agent-kit/shared/lib/language";
 import { type AgentChatMessage } from "@fizz/contracts/types";
@@ -34,10 +31,7 @@ import { EditMessageBar } from "@fizz/agent-kit/features/chat/EditMessageBar";
 import { McpSelect } from "@fizz/agent-kit/features/chat/McpSelect";
 import { QueuedMessages } from "@fizz/agent-kit/features/chat/QueuedMessages";
 import { SteerEditBar } from "@fizz/agent-kit/features/chat/SteerEditBar";
-import {
-  attachmentsSupported,
-  turnIsAcp,
-} from "@fizz/agent-kit/features/chat/session-backend";
+import { attachmentsSupported } from "@fizz/agent-kit/features/chat/session-backend";
 import { AskFollowupPanel } from "@fizz/agent-kit/shared/ai-elements/followup-card";
 
 /**
@@ -127,7 +121,6 @@ export function useMainComposerProps(
   const ownRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = opts.textareaRef ?? ownRef;
   const { streaming } = app;
-  const isAcp = turnIsAcp(app);
   const running = streaming;
   /**
    * 正在等用户回答的提问（`ask`）。服务端一次只挂一个；真有多条就
@@ -326,28 +319,10 @@ export function useMainComposerProps(
     // 留着只会把「现在必须答」的那张卡往下挤。
     above: (
       <>
-        {/* 浏览器 / MCP 开关只在 内置（本地）链路生效：browser_* 工具与提示词里的浏览器
-            说明只在那边注入，ACP 走外部 agent，它自带工具、也不读会话的 browserSettings /
-            MCP 勾选。所以 ACP 会话里这一排干脆**不渲染** —— 两颗点不动的灰图标只会让人
-            以为是自己没配好。
-            ⚠️ 只有「开始新对话」页（还没成会话）保留同高占位：那里能当场把模型从内置切到
-            外部 Agent（`ModelSelect` 的 ACP 组，有会话就换不了类型），少了这一行输入卡片
-            会在切换的瞬间往上跳 32px（用户反馈过）。已打开的会话不会再切后端，扒掉不抖。 */}
-        {isAcp ? (
-          app.activeConversationId ? null : (
-            <ComposerToolbarPlaceholder
-              // 与真工具条的隐藏判据同源：没装浏览器 / 没配 MCP 时那两颗不出现，
-              // 占位也得跟着少画，否则切回内置 agent 的那一下高度对不上
-              browser={app.browserInstalled}
-              mcp={app.mcpServers.length > 0}
-            />
-          )
-        ) : (
-          <ComposerToolbar app={app}>
-            {/* MCP 从 `trailing` 搬上来：它与浏览器同属「给这一轮装能力」 */}
-            <McpSelect app={app} />
-          </ComposerToolbar>
-        )}
+        {/* MCP 对内置 / ACP 都开放；浏览器适用范围与草稿占位由工具条独立处理。 */}
+        <ComposerToolbar app={app}>
+          <McpSelect app={app} />
+        </ComposerToolbar>
         {/*
           会话自己的后台进程（agent 用 runInBackground 起的 dev server / watch）**不在这里**：
           它和「运行中的子智能体」合成了一排入口药丸，挂在 `ChatSurface` 的 `above` 里

@@ -14,6 +14,7 @@
  * 只在内存里：服务端重启后连同 run 一起消失，下一次空闲打开会话会重新 load。
  */
 import type { AgentChatMessage } from '@fizz/contracts/types'
+import { ERROR_TEXT_PREFIX } from '@fizz/contracts/types'
 import type { AcpTranscriptResult, ChatRunSummary } from '@fizz/contracts/agent-api'
 import { acpTranscripts } from './state'
 
@@ -58,6 +59,58 @@ export function appendAcpTranscript(
 /** 删会话 / 转成内置会话时清掉，别让同名 id 的旧视图复活 */
 export function forgetAcpTranscript(conversationId: string): void {
   acpTranscripts.delete(conversationId)
+}
+
+/**
+ * 运行错误由工作台捕获，agent 的 session/load 不一定回放它，不能随权威正文一起擦掉。
+ * 回放 id 会重编，按用户消息的顺序与正文对齐轮次；一旦对不上就停止，避免把旧错误挂错轮。
+ * 只补缺失错误；回放已有正文时不复制本地正文，整条失败回复未回放时才保留本地消息。
+ */
+export function carryOverErrors(from: AgentChatMessage[], to: AgentChatMessage[]): void {
+  const turns = (messages: AgentChatMessage[]): AgentChatMessage[][] => {
+    const result: AgentChatMessage[][] = []
+    for (const message of messages) {
+      if (message.role === 'user') result.push([message])
+      else result.at(-1)?.push(message)
+    }
+    return result
+  }
+  const textOf = (message: AgentChatMessage): string => message.parts
+    .filter((p) => p.type === 'text').map((p) => p.text).join('').trim()
+  const errorsOf = (message: AgentChatMessage) => message.role === 'assistant'
+    ? message.parts.filter((p) => p.type === 'text' && p.text.trimStart().startsWith(ERROR_TEXT_PREFIX))
+    : []
+  const replayTurns = turns(to)
+  for (const [index, source] of turns(from).entries()) {
+    const target = replayTurns[index]
+    const failed = source.filter((message) => errorsOf(message).length > 0)
+    if (!target) {
+      // 失败请求可能连用户消息都没被 agent 存下；只补明确失败的尾轮。
+      if (!failed.length) return
+      to.push(...source)
+      continue
+    }
+    if (textOf(source[0]) !== textOf(target[0])) return
+    const seen = new Set(target.flatMap(errorsOf).map((p) => p.type === 'text' ? p.text : ''))
+    for (const message of failed) {
+      const missing = errorsOf(message).filter((p) => {
+        if (p.type !== 'text' || seen.has(p.text)) return false
+        seen.add(p.text)
+        return true
+      })
+      if (!missing.length) continue
+      const assistant = target.filter((m) => m.role === 'assistant').at(-1)
+      if (assistant) {
+        const replacement = { ...assistant, parts: [...assistant.parts, ...missing] }
+        to[to.indexOf(assistant)] = replacement
+        target[target.indexOf(assistant)] = replacement
+      } else {
+        const nextUser = replayTurns[index + 1]?.[0]
+        to.splice(nextUser ? to.indexOf(nextUser) : to.length, 0, message)
+        target.push(message)
+      }
+    }
+  }
 }
 
 /**

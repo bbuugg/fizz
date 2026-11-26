@@ -8,6 +8,7 @@
  */
 import { getAcpSessionSnapshot, setAcpSessionThoughtLevel } from '@fizz/acp'
 import { domain } from '@/lib/server/state'
+import { acpMcpServers } from '@/lib/server/acp-mcp'
 import { jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 
 export async function POST(
@@ -25,10 +26,11 @@ export async function POST(
   const workspace = conversation ? domain.getWorkspace(conversation.workspaceId) : null
   const agent = domain.listAcpAgents().find((a) => a.id === id)
   const activate =
-    conversation && workspace && agent
+    conversation?.backend === 'acp' && conversation.configId === id && workspace && agent
       ? {
           agent,
           workspacePath: workspace.path,
+          mcpServers: acpMcpServers(domain.listMcpServers(), conversation.mcpServerIds),
           ...(conversation.acpSessionId ? { loadSessionId: conversation.acpSessionId } : {})
         }
       : undefined

@@ -50,6 +50,7 @@ import {
   validateUploadFiles
 } from './upload/index'
 import { acpPromptAttachments } from './acp-attachments'
+import { acpMcpServers } from './acp-mcp'
 import type {
   AgentChatMessage,
   AgentConversation,
@@ -1159,6 +1160,7 @@ async function startTurnReserved(
           workspace,
           history: [...conversation.messages, userMessage],
           agent: acpAgent,
+          mcpServers: acpMcpServers(domain.listMcpServers(), conversation.mcpServerIds),
           conversationId: conversation.id,
           requestId,
           confirmTimeoutMs,

@@ -20,6 +20,7 @@ import type {
   AcpElicitationReply,
   AcpElicitationRequest,
   AcpInitResult,
+  AcpMcpServer,
   AcpNewSessionResult,
   AcpPermissionRequest,
   AcpResumeResult,
@@ -189,6 +190,7 @@ function wrapActiveSession(session: any, normalizer: V2UpdateNormalizer): AcpTur
 class V2Connection implements AcpConnection {
   readonly version = 'v2' as const
   private init: AcpInitResult | null = null
+  private mcpCapabilities: { stdio?: object | null; http?: object | null } | null = null
   private readonly manual = new Map<string, ManualTurnSource>()
   /** 每个会话一份 v2→v1 规整器（agent_message 的「上次全文」是会话内状态） */
   private readonly normalizers = new Map<string, V2UpdateNormalizer>()
@@ -215,6 +217,7 @@ class V2Connection implements AcpConnection {
     } as any)
     const caps = (response as any)?.capabilities
     const sessionCaps = caps?.session
+    this.mcpCapabilities = sessionCaps?.mcp ?? null
     this.init = {
       promptImage: Boolean(sessionCaps?.prompt?.image),
       // v2 里 `capabilities.session` 出现即表示支持基线 list/resume/close
@@ -228,8 +231,21 @@ class V2Connection implements AcpConnection {
     return this.init
   }
 
-  async newSession(cwd: string): Promise<AcpNewSessionResult> {
-    const session = await this.ctx.buildSession(cwd).start()
+  private async mcpServers(servers: AcpMcpServer[]): Promise<acpV2.McpServer[]> {
+    await this.initialize()
+    return servers.flatMap((server): acpV2.McpServer[] => {
+      // v2 必须显式广告传输能力，且没有旧版 SSE 变体，不能擅自改成 HTTP。
+      if (server.type === 'stdio' && this.mcpCapabilities?.stdio) return [server]
+      if (server.type === 'http' && this.mcpCapabilities?.http) return [{ ...server, type: 'http' }]
+      return []
+    })
+  }
+
+  async newSession(cwd: string, mcpServers: AcpMcpServer[] = []): Promise<AcpNewSessionResult> {
+    const servers = await this.mcpServers(mcpServers)
+    const builder = this.ctx.buildSession(cwd)
+    for (const server of servers) builder.withMcpServer(server)
+    const session = await builder.start()
     return {
       source: wrapActiveSession(session, this.normalizerFor(session.sessionId)),
       configOptions: ((session as any).configOptions as unknown[]) ?? null,
@@ -251,11 +267,13 @@ class V2Connection implements AcpConnection {
     return source
   }
 
-  async resumeSession(sessionId: string, cwd: string): Promise<AcpResumeResult> {
+  async resumeSession(sessionId: string, cwd: string, mcpServers: AcpMcpServer[] = []): Promise<AcpResumeResult> {
+    const servers = await this.mcpServers(mcpServers)
     const source = this.manualSource(sessionId)
     const response = (await this.ctx.request(acpV2.methods.agent.session.resume, {
       sessionId,
       cwd,
+      mcpServers: servers,
       replayFrom: { type: 'start' },
     } as any)) as any
     return {

@@ -17,6 +17,7 @@ import { abortAcpTurn, replayAcpSession } from '@fizz/acp'
 import { domain } from '@/lib/server/state'
 import { ensurePiConfirmExtension } from '@/lib/server/acp-extension'
 import { refreshAcpSessionState } from '@/lib/server/acp-session-state'
+import { acpMcpServers } from '@/lib/server/acp-mcp'
 import { describeError, jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 
 export async function POST(
@@ -79,6 +80,7 @@ export async function POST(
       agent,
       conversationId,
       workspacePath: workspace.path,
+      mcpServers: acpMcpServers(domain.listMcpServers(), conversation.mcpServerIds),
       sessionId
     })
     // load 会把 agent 广告的档位带回来：刷新进会话配置，保留用户选的档

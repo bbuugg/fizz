@@ -17,6 +17,7 @@ import type {
   AcpElicitationReply,
   AcpElicitationRequest,
   AcpInitResult,
+  AcpMcpServer,
   AcpModesSnapshot,
   AcpNewSessionResult,
   AcpPermissionRequest,
@@ -130,6 +131,7 @@ function wrapActiveSession(session: acp.ActiveSession): AcpTurnSource {
 class V1Connection implements AcpConnection {
   readonly version = 'v1' as const
   private init: AcpInitResult | null = null
+  private mcpCapabilities: acp.McpCapabilities | undefined
   private readonly manual = new Map<string, ManualTurnSource>()
 
   constructor(
@@ -145,6 +147,7 @@ class V1Connection implements AcpConnection {
       clientInfo: CLIENT_INFO,
     })
     const caps = (response as any)?.agentCapabilities
+    this.mcpCapabilities = caps?.mcpCapabilities
     const sessionCaps = caps?.sessionCapabilities
     const image = caps?.promptCapabilities?.image
     this.init = {
@@ -160,8 +163,25 @@ class V1Connection implements AcpConnection {
     return this.init
   }
 
-  async newSession(cwd: string): Promise<AcpNewSessionResult> {
-    const session = await this.ctx.buildSession(cwd).start()
+  private async mcpServers(servers: AcpMcpServer[]): Promise<acp.McpServer[]> {
+    await this.initialize()
+    return servers.flatMap((server): acp.McpServer[] => {
+      // v1 的 stdio 是基线能力，wire 配置没有 type 判别式。
+      if (server.type === 'stdio') {
+        const { type: _type, ...stdio } = server
+        return [stdio]
+      }
+      if (server.type === 'http' && this.mcpCapabilities?.http === true) return [{ ...server, type: 'http' }]
+      if (server.type === 'sse' && this.mcpCapabilities?.sse === true) return [{ ...server, type: 'sse' }]
+      return []
+    })
+  }
+
+  async newSession(cwd: string, mcpServers: AcpMcpServer[] = []): Promise<AcpNewSessionResult> {
+    const servers = await this.mcpServers(mcpServers)
+    const builder = this.ctx.buildSession(cwd)
+    for (const server of servers) builder.withMcpServer(server)
+    const session = await builder.start()
     return {
       source: wrapActiveSession(session),
       configOptions: (session.newSessionResponse?.configOptions as unknown[]) ?? null,
@@ -181,13 +201,14 @@ class V1Connection implements AcpConnection {
     return source
   }
 
-  async resumeSession(sessionId: string, cwd: string): Promise<AcpResumeResult> {
+  async resumeSession(sessionId: string, cwd: string, mcpServers: AcpMcpServer[] = []): Promise<AcpResumeResult> {
+    const servers = await this.mcpServers(mcpServers)
     const source = this.manualSource(sessionId)
     // mcpServers 是 load 请求的必填字段（与 session/new 不同，这里没有 builder 兜底）
     const response = (await this.ctx.request(acp.methods.agent.session.load, {
       sessionId,
       cwd,
-      mcpServers: [],
+      mcpServers: servers,
     })) as any
     return {
       source,

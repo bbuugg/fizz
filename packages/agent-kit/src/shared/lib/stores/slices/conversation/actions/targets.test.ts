@@ -21,6 +21,7 @@
  * 3. `setChatTarget(target, 会话)` 只改那条会话，既不碰草稿也不碰别的会话；
  * 4. `setChatTarget(target, null)` 只改草稿，一个会话都不碰；
  * 5. 不传 scope 的旧调用行为不变（作用于焦点会话）。
+ * 6. ACP 的 MCP 选择同样写草稿 / 会话并持久化，不能因后端类型被丢弃。
  */
 import { describe, expect, it, vi } from 'vitest'
 import { createConversationSlice } from '../index'
@@ -211,6 +212,41 @@ describe('setChatTarget：作用域', () => {
 })
 
 describe('setMcpServerIds：作用域', () => {
+  it('ACP 新对话的选择留在草稿，不误写焦点会话', () => {
+    const { state, api, slice, scopedOf } = makeStore()
+    Object.assign(state.draftSettings as object, {
+      chatTarget: { backend: 'acp', configId: 'agent-a' }
+    })
+    const setMcpServerIds = slice.setMcpServerIds as (
+      ids: string[], scope: string | null
+    ) => void
+
+    setMcpServerIds(['mcp-files'], null)
+
+    expect(scopedOf(null).mcpServerIds).toEqual(['mcp-files'])
+    expect(api.setConversationTarget).not.toHaveBeenCalled()
+  })
+
+  it('已有 ACP 会话选择和清空 MCP 都更新自身并请求持久化', () => {
+    const { api, slice, conversationOf, scopedOf } = makeStore()
+    conversationOf(OTHER).backend = 'acp'
+    const setMcpServerIds = slice.setMcpServerIds as (
+      ids: string[], scope: string
+    ) => void
+
+    setMcpServerIds(['mcp-files'], OTHER)
+
+    expect(scopedOf(OTHER).mcpServerIds).toEqual(['mcp-files'])
+    expect(api.setConversationTarget).toHaveBeenLastCalledWith(OTHER, {
+      mcpServerIds: ['mcp-files']
+    })
+    setMcpServerIds([], OTHER)
+    expect(scopedOf(OTHER).mcpServerIds).toEqual([])
+    expect(api.setConversationTarget).toHaveBeenLastCalledWith(OTHER, { mcpServerIds: [] })
+    expect(conversationOf(FOCUS).mcpServerIds).toBeUndefined()
+    expect(scopedOf(null).mcpServerIds).toEqual([])
+  })
+
   it('某个会话只改自己的清单，草稿那份不动', () => {
     const { state, slice, conversationOf } = makeStore()
     const setMcpServerIds = slice.setMcpServerIds as (

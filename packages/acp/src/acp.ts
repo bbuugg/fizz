@@ -44,6 +44,7 @@ import {
   type AcpConnection,
   type AcpElicitationReply,
   type AcpElicitationRequest,
+  type AcpMcpServer,
   type AcpPermissionReply,
   type AcpPermissionRequest,
   type AcpSessionInfo,
@@ -1047,13 +1048,14 @@ async function ensureSession(
   workspacePath: string,
   agent: AcpAgentConfig,
   onSessionCreated?: (info: AcpSessionReadyInfo) => void,
+  mcpServers: AcpMcpServer[] = [],
 ): Promise<AcpTurnSource> {
   if (entry.source) return entry.source;
   // 复用可能已经建立的连接（恢复会话失败后连接仍活着），避免在同一进程上重复建连
   const connection =
     entry.connection ?? (await connectAdapter(entry, agent));
   // 「任务」会话没有工作区目录：ACP agent 仍要一个合法 cwd，落到主目录
-  const result = await connection.newSession(workspacePath || homedir());
+  const result = await connection.newSession(workspacePath || homedir(), mcpServers);
   entry.source = result.source;
   const configOptions = (result.configOptions as acp.SessionConfigOption[] | null) ?? null;
   // 权限档位（ACP Session Modes，可选能力）：只记录，切换走 setAcpSessionMode
@@ -1100,10 +1102,11 @@ async function loadTurnSource(
   agent: AcpAgentConfig,
   workspacePath: string,
   sessionId: string,
+  mcpServers: AcpMcpServer[] = [],
 ): Promise<AcpTurnSource> {
   const connection =
     entry.connection ?? (await connectAdapter(entry, agent));
-  const result = await connection.resumeSession(sessionId, workspacePath || homedir());
+  const result = await connection.resumeSession(sessionId, workspacePath || homedir(), mcpServers);
   entry.source = result.source;
   const configOptions = (result.configOptions as acp.SessionConfigOption[] | null) ?? null;
   entry.modelSelector = entry.modelSelector ?? pickModelSelector(configOptions as acp.SessionConfigOption[] | null);
@@ -1205,6 +1208,7 @@ export function getAcpSessionSnapshot(
 export interface AcpActivateInfo {
   agent: AcpAgentConfig;
   workspacePath: string;
+  mcpServers?: AcpMcpServer[];
   /** 会话记录里绑定的 agent 侧 session id：有则 session/load 恢复上下文，无则 session/new */
   loadSessionId?: string;
 }
@@ -1243,6 +1247,7 @@ async function ensureActivated(
               info.agent,
               info.workspacePath,
               info.loadSessionId,
+              info.mcpServers,
             );
           } catch (err) {
             // agent 不支持 load / 会话已失效：退回 session/new（与轮次路径同一套兜底）
@@ -1250,10 +1255,10 @@ async function ensureActivated(
               `[acp:${info.agent.name}] 自动激活的 session/load 失败，退回 session/new：${describeError(err)}`,
             );
             entry.source = null;
-            await ensureSession(entry, info.workspacePath, info.agent);
+            await ensureSession(entry, info.workspacePath, info.agent, undefined, info.mcpServers);
           }
         } else {
-          await ensureSession(entry, info.workspacePath, info.agent);
+          await ensureSession(entry, info.workspacePath, info.agent, undefined, info.mcpServers);
         }
       } catch (err) {
         // 彻底失败：拆掉半活的 entry，下次尝试从干净状态开始
@@ -1957,6 +1962,8 @@ export interface RunAcpAgentOptions {
   agent: AcpAgentConfig;
   conversationId: string;
   requestId: string;
+  /** 仅在新建/恢复时注入；复用活会话时不假定外部 agent 支持 MCP 热更新。 */
+  mcpServers?: AcpMcpServer[];
   /**
    * 本轮附带的图片（用户随消息发的）。缺省 = 纯文本，行为与之前逐字节一致。
    *
@@ -2207,6 +2214,7 @@ export async function runAcpAgent(
             opts.agent,
             opts.workspace.path,
             opts.loadSessionId,
+            opts.mcpServers,
           );
           source.drainAll();
           // 档位也可能在 load 回包里被刷新（甚至被 agent 重置）：回写会话，界面据此更新
@@ -2225,6 +2233,7 @@ export async function runAcpAgent(
             opts.workspace.path,
             opts.agent,
             opts.onSessionCreated,
+            opts.mcpServers,
           );
         }
       } else {
@@ -2233,6 +2242,7 @@ export async function runAcpAgent(
           opts.workspace.path,
           opts.agent,
           opts.onSessionCreated,
+          opts.mcpServers,
         );
       }
       // 会话记住的模型 / 权限档 / 思考档在 prompt 前依次下发（没选 / 不支持则静默跳过）。
@@ -2459,6 +2469,7 @@ export async function replayAcpSession(opts: {
   conversationId: string;
   workspacePath: string;
   sessionId: string;
+  mcpServers?: AcpMcpServer[];
 }): Promise<AgentChatMessage[]> {
   // **同一个会话的回放必须合流**：两个窗口（桌面端「在新窗口打开」/ 两个标签页）同时
   // 打开同一会话时，两边都会拉 transcript，而 `replayAcpSessionOnce` 第一件事是
@@ -2494,6 +2505,7 @@ async function replayAcpSessionOnce(opts: {
   conversationId: string;
   workspacePath: string;
   sessionId: string;
+  mcpServers?: AcpMcpServer[];
 }): Promise<AgentChatMessage[]> {
   teardown(`${opts.agent.id}::${opts.conversationId}`);
   const entry = getOrCreateEntry({
@@ -2507,6 +2519,7 @@ async function replayAcpSessionOnce(opts: {
     opts.agent,
     opts.workspacePath,
     opts.sessionId,
+    opts.mcpServers,
   );
   entry.lastActiveAt = Date.now();
   const inputMemory: AcpInputMemory = new Map();

@@ -25,6 +25,17 @@ export function turnIsAcp(app: AgentApp): boolean {
     : app.chatTarget?.backend === "acp";
 }
 
+/** MCP 对两种后端都可选；内置浏览器只在新建 ACP 时保留同高占位。 */
+export function composerToolbarState(app: AgentApp) {
+  const isAcp = turnIsAcp(app);
+  return {
+    browser: app.browserInstalled && !isAcp,
+    browserPlaceholder:
+      app.browserInstalled && isAcp && !app.activeConversationId,
+    mcp: app.mcpServers.length > 0,
+  };
+}
+
 /**
  * 这一轮能不能带图片附件（输入区回形针的闸门）。
  *

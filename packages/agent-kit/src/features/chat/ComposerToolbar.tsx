@@ -25,6 +25,7 @@
  * MCP，内置的 `browser_*` 会自动让位（见 `apps/server/src/server/chat-turn.ts`）。
  */
 import { BrowserPicker } from '@fizz/agent-kit/features/chat/BrowserPicker'
+import { composerToolbarState } from '@fizz/agent-kit/features/chat/session-backend'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import { Globe, Wrench } from 'lucide-react'
 import type { ReactNode } from 'react'
@@ -40,29 +41,29 @@ import type { ReactNode } from 'react'
  * （这里靠 `app.mcpServers.length` 判断 MCP 那颗会不会出现）。
  */
 export function ComposerToolbar({ app, children }: { app: AgentApp; children?: ReactNode }) {
-  // 没装就不渲染那颗开关（`/api/browser/runtime` 的 `installed`，见 store 的 refresh）
-  const browser = app.browserInstalled
-  const mcp = app.mcpServers.length > 0
-  if (!browser && !mcp) return null
+  const { browser, browserPlaceholder, mcp } = composerToolbarState(app)
+  if (!browser && !browserPlaceholder && !mcp) return null
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {browser && <BrowserToggle app={app} />}
+      {/* 新对话切到 ACP 时仅为浏览器留位，MCP 仍是可操作的真实控件。 */}
+      {browserPlaceholder && (
+        <span aria-hidden className="flex size-8 shrink-0 cursor-not-allowed items-center justify-center text-muted-foreground">
+          <Globe className="size-3.5 shrink-0" />
+        </span>
+      )}
       {children}
     </div>
   )
 }
 
 /**
- * **「开始新对话」页**选外部 Agent 时的同高占位：这一排（浏览器 / MCP）是「给 内置
- * 链路装能力」的开关，外部 Agent 自带工具、不读这两个字段，所以按钮不能给。
+ * 定时任务表单选外部 Agent 时的同高占位（见 `TriggerEditDialog`）。
+ * 会话输入框不使用整排占位：ACP 的 MCP 仍可选，浏览器占位由上面的工具条单独处理。
  *
  * 但那个页面**不能整行不渲染**：`above` 槽位里少了这一行，输入框卡片会往上跳 32px ——
  * 在那里当场把模型从内置切到外部 Agent 时整块输入区上下抖（用户反馈过）。所以画两颗
  * 灰掉、不可点的图标把高度占住，tooltip 说明为什么点不了。
- *
- * ⚠️ 只用于「还没成会话」的页。**已打开的 ACP 会话里不渲染这一排**（见
- * `use-main-composer-props` 的 `above`）：有会话就换不了类型，不会抖，摆两颗灰图标只会
- * 让人以为是自己没配好。
  *
  * ⚠️ `browser` / `mcp` 必须与真的 `ComposerToolbar` 用**同一套判据**（浏览器没装 /
  * 没配 MCP 时真工具条少一颗或整条不渲染），否则切回内置 agent 时高度对不上，照样抖。
