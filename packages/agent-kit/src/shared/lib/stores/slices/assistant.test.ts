@@ -65,6 +65,26 @@ function makeStore(api: Record<string, unknown>) {
 }
 
 describe('assistant slice · 停止', () => {
+  // 防止工具卡借用主聊天的 requestId，或切会话后停错另一轮。
+  it('单条停止按显式助手会话定位，不中止整轮', async () => {
+    const stopCommand = vi.fn().mockResolvedValue({})
+    const streamAssistant = vi.fn((_input, onFrame, signal) => {
+      onFrame({ type: 'start', requestId: 'ssh-run' })
+      return hangingStream(_input, onFrame, signal)
+    })
+    const { slice, read } = makeStore({ stopCommand, streamAssistant, abort: vi.fn().mockResolvedValue({}) })
+    const other = slice.ensureAssistantSession()
+    const owner = slice.newAssistantSession()
+    const sending = slice.sendAssistant('日志', 'terminal', undefined, { hostId: 'h1', cwd: '/srv/app' })
+    slice.switchAssistantSession(other)
+    await slice.stopAssistantCommand('tool-1', owner)
+    expect(stopCommand).toHaveBeenCalledWith('ssh-run', 'tool-1')
+    expect(read(owner).remoteTarget).toEqual({ hostId: 'h1', cwd: '/srv/app' })
+    slice.switchAssistantSession(owner)
+    slice.stopAssistant()
+    await sending
+  })
+
   it('停止 = 先叫停服务端 + 立刻置闲 + 不写错误', async () => {
     const abort = vi.fn().mockResolvedValue({ aborted: true })
     const streamAssistant = vi.fn(hangingStream)
@@ -109,6 +129,32 @@ describe('assistant slice · 停止', () => {
 
     releaseAbort?.()
     await vi.waitFor(() => expect(streamAssistant).toHaveBeenCalledTimes(2))
+  })
+})
+
+describe('assistant slice · SSH 目标', () => {
+  it('首次发送绑定目标，后续标签提供的目标不能覆盖；显式改目标才生效', async () => {
+    const streamAssistant = vi.fn().mockResolvedValue(undefined)
+    const { slice, read } = makeStore({ streamAssistant })
+    const id = slice.ensureAssistantSession()
+    await slice.sendAssistant('第一句', 'terminal', undefined, { hostId: 'h1', cwd: '/srv/app' })
+    await slice.sendAssistant('第二句', 'terminal', undefined, { hostId: 'h2', cwd: '/etc' })
+    expect(streamAssistant.mock.calls[1][0].remoteTarget).toEqual({ hostId: 'h1', cwd: '/srv/app' })
+    slice.setAssistantRemoteTarget({ hostId: 'h2', cwd: '/etc' })
+    await slice.sendAssistant('第三句', 'terminal')
+    expect(streamAssistant.mock.calls[2][0].remoteTarget).toEqual({ hostId: 'h2', cwd: '/etc' })
+    expect(read(id).remoteTarget?.hostId).toBe('h2')
+    expect(streamAssistant.mock.calls[0][0]).not.toHaveProperty('clientTools')
+  })
+
+  it('没有 SSH 目标时不发送、不追加消息', async () => {
+    const streamAssistant = vi.fn()
+    const { slice, read } = makeStore({ streamAssistant })
+    const id = slice.ensureAssistantSession()
+    await slice.sendAssistant('运行命令', 'terminal')
+    expect(streamAssistant).not.toHaveBeenCalled()
+    expect(read(id).messages).toEqual([])
+    expect(read(id).error).toContain('SSH')
   })
 })
 

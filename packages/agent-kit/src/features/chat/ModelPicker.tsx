@@ -39,7 +39,7 @@
  * 唯一的例外是**远端工作区**：ACP agent 不出现在一级，只留一行说明
  * （`acpDisabledReason`）—— 外部 agent 是服务端本机 spawn 的进程，够不到 SSH 主机上的目录。
  */
-import { Bot, ChevronLeft, Loader2, RefreshCw, Settings } from 'lucide-react'
+import { Bot, ChevronLeft, RefreshCw, Settings } from 'lucide-react'
 import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
@@ -352,6 +352,22 @@ export function ModelPicker({
     if (closeOnSelect) setOpen(false)
   }
 
+  /**
+   * 打开面板时该落在哪一层：**跟着当前选中的目标走**。
+   *
+   * 选完模型关掉面板、再打开时要回到刚才那份清单（接着换模型），而不是每次都退回
+   * 「选哪个 Agent」重来一遍。目标已失效（配置 / agent 被删）或还没选过 → 一级。
+   * 会话已创建时 `lockedGroup` 会接管，这里算出来的值不起作用。
+   */
+  const groupOfTarget = (): PickerGroup | null => {
+    if (!value?.configId) return null
+    if (value.backend === 'builtin') return { kind: 'builtin' }
+    if (value.backend !== 'acp') return null
+    return acpAgents.some((agent) => agent.id === value.configId)
+      ? { kind: 'acp', agentId: value.configId }
+      : null
+  }
+
   /** 进二级 / 退回一级：都清掉搜索词，别把上一层的过滤条件带过去 */
   const enterGroup = (next: PickerGroup): void => {
     setGroup(next)
@@ -395,21 +411,26 @@ export function ModelPicker({
   const refreshAcp = (agent: AcpAgentView): ReactNode => {
     if (!onLoadAcpModels) return null
     const loading = loadingAcp === agent.id
-    const label = t('重新加载模型清单')
+    const label = loading ? t('正在重新加载模型清单…') : t('重新加载模型清单')
     return (
-      <button
-        type="button"
-        title={label}
-        aria-label={label}
-        disabled={loading}
-        onClick={(event) => {
-          event.stopPropagation()
-          loadAcp(agent, true)
-        }}
-        className="rounded p-0.5 transition-colors hover:bg-foreground/10 hover:text-foreground disabled:opacity-50"
-      >
-        <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />
-      </button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={label}
+            aria-disabled={loading}
+            onClick={(event) => {
+              event.stopPropagation()
+              if (loading) return
+              loadAcp(agent, true)
+            }}
+            className="rounded p-0.5 transition-colors hover:bg-foreground/10 hover:text-foreground aria-disabled:opacity-50"
+          >
+            <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top">{label}</TooltipContent>
+      </Tooltip>
     )
   }
 
@@ -670,9 +691,9 @@ export function ModelPicker({
       open={open}
       onOpenChange={(next) => {
         setOpen(next)
-        // 每次开合都回到一级：会话已创建的由 `lockedGroup` 直接接管二级，
-        // 其余场景（空态 / 定时任务表单）每次都从「选哪个 agent」开始。
-        setGroup(null)
+        // 打开时落在当前目标所在的那一层（选过的模型接着换）；还没选过 / 目标失效才
+        // 从「选哪个 agent」开始。会话已创建的由 `lockedGroup` 直接接管二级。
+        setGroup(next ? groupOfTarget() : null)
         setQuery('')
       }}
     >
@@ -745,14 +766,6 @@ export function ModelPicker({
             <PickerList>
               {level2Acp ? (
                 <>
-                  {activeAcpAgent && loadingAcp === activeAcpAgent.id && (
-                    <PickerNote>
-                      <span className="inline-flex items-center gap-1">
-                        <Loader2 className="size-3.5 animate-spin" />
-                        {t('正在加载模型清单…')}
-                      </span>
-                    </PickerNote>
-                  )}
                   {activeAcpLoadError && (
                     <PickerNote title={activeAcpLoadError.detail}>
                       {activeAcpLoadError.detail

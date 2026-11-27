@@ -93,6 +93,11 @@ export function createConversationManageActions(
         // 跟着会话一起落库，否则用户白选。
         // `target` 里已显式带了 mcpServerIds 时以它为准（调用方更清楚）。
         const draftSettings = get().draftSettings;
+        const sourceConversationId = resolveConvId(undefined);
+        const {
+          activeWorkspaceId: sourceWorkspaceId,
+          draftAcp: draft,
+        } = get();
         const mcpServerIds = target?.mcpServerIds ?? draftSettings.mcpServerIds;
         const browserSettings = draftSettings.browserSettings;
         const reasoningEffort = draftSettings.reasoningEffort;
@@ -127,19 +132,23 @@ export function createConversationManageActions(
         }));
         // 没选项目：服务端刚建了个临时工作区 —— 清单不刷新的话顶栏 / 侧栏认不出它
         if (!wid) set({ workspaces: await api.listWorkspaces() });
-        set({
-          activeWorkspaceId: created.workspaceId,
-          activeConversationId: created.id,
-        });
-        // 新会话也是「当前现场」，下次启动回到它
-        saveActiveWorkspaceId(created.workspaceId);
-        saveActiveConversationId(created.id);
+        // 请求与临时工作区刷新期间用户可能已经切走；迟到结果只并入清单，不抢焦点或改恢复位置。
+        if (
+          resolveConvId(undefined) === sourceConversationId &&
+          get().activeWorkspaceId === sourceWorkspaceId
+        ) {
+          set({
+            activeWorkspaceId: created.workspaceId,
+            activeConversationId: created.id,
+          });
+          saveActiveWorkspaceId(created.workspaceId);
+          saveActiveConversationId(created.id);
+        }
         /**
          * 新任务页选好的 ACP 档位：会话一建好就下发。agent 侧 `session/new` 给的默认档
          * 未必是用户选的那个，而这一轮马上就要发 —— 等下一轮再补就是「第一轮按错的档跑」。
          * 失败不挡发送：pill 会显示回滚后的真实档，用户能看见。
          */
-        const draft = get().draftAcp;
         if (
           created.backend === "acp" &&
           draft &&
@@ -154,7 +163,8 @@ export function createConversationManageActions(
               draft.thought,
             );
         }
-        if (get().draftAcp) set({ draftAcp: null });
+        // 只消费本次创建的草稿；等待期间新选的档位属于下一次创建。
+        if (draft && get().draftAcp === draft) set({ draftAcp: null });
         // 会话已经建好、界面立刻就能用：档位下发在上面（要等 agent 应答），那几百毫秒
         // 不该继续转圈 —— 用户已经从「空态页」切进会话里了
         return settle(created.id);

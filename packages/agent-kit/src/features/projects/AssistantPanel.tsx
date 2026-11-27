@@ -5,9 +5,8 @@
  *
  * - **全局**（`scope = 'project'`）：挂在 app-shell 右侧停靠。只挂项目管理工具
  *   （建 / 删项目、worktree、定时任务…），**没有终端工具** —— 它没有绑定任何终端。
- * - **标签页内嵌**（`scope = 'terminal'`）：终端标签里挂一份，绑定那个终端。只挂那个
- *   终端的工具（执行命令 / 读输出 / 发按键），**没有项目工具** —— 一条绑定终端的会话里
- *   出现「建项目 / 删 worktree」没有语境。
+ * - **标签页内嵌**（`scope = 'terminal'`）：绑定保存的 SSH 主机，文件走 SFTP、命令走
+ *   独立 exec。会话目标一经选定便不跟随标签变化，用户可以显式更改；没有项目工具。
  *
  * ## 会话是**共享的一份池子**，不是「一个面板一段」
  *
@@ -28,7 +27,8 @@
  * 别再把这里换成 ACP 那套只读的 `CopyOnlyActions` —— 那是「历史在 agent 侧」的约束，
  * 助手不成立。
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import {
   Check,
   ChevronDown,
@@ -48,6 +48,8 @@ import {
   type AssistantTarget
 } from '@fizz/agent-kit/shared/lib/assistant-target'
 import { ChatSurface } from '@fizz/agent-kit/features/chat/chat-surface'
+import { ComposerDock } from '@fizz/agent-kit/features/chat/ComposerDock'
+import { getToolTab } from '@fizz/agent-kit/shared/lib/tool-tabs'
 import { ConfirmQueue } from '@fizz/agent-kit/features/chat/ConfirmCard'
 import { PermissionPill } from '@fizz/agent-kit/features/chat/composer'
 import { EditMessageBar } from '@fizz/agent-kit/features/chat/EditMessageBar'
@@ -56,8 +58,12 @@ import { ModelPicker } from '@fizz/agent-kit/features/chat/ModelPicker'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { textOf } from '@fizz/agent-kit/shared/lib/parts'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
-import type { AgentChatMessage } from '@fizz/contracts/agent-api'
+import type { AgentChatMessage, AssistantRemoteTarget } from '@fizz/contracts/agent-api'
 import { Button } from '@fizz/ui/button'
+import { Input } from '@fizz/ui/input'
+import { Label } from '@fizz/ui/label'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@fizz/ui/dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@fizz/ui/select'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -86,7 +92,7 @@ export function AssistantPanel({
   className,
   /** 工具作用域：`project` = 只有项目工具；`terminal` = 只有该终端的工具 */
   scope,
-  /** `scope === 'terminal'` 时：绑定的终端标签 key（取终端工具 + 工具默认目标） */
+   /** `scope === 'terminal'` 时：只用于读取打开终端时的主机元数据和语音作用域。 */
   boundTerminalTabKey,
   /** 内嵌形态：收起面板（全局形态不传，收起走顶栏那颗全局开关） */
   onClose
@@ -105,18 +111,26 @@ export function AssistantPanel({
   const switchAssistantSession = useAgentStore((s) => s.switchAssistantSession)
   const deleteAssistantSession = useAgentStore((s) => s.deleteAssistantSession)
   const setAssistantDraft = useAgentStore((s) => s.setAssistantDraft)
+  const setAssistantRemoteTarget = useAgentStore((s) => s.setAssistantRemoteTarget)
+  const sshHosts = useAgentStore((s) => s.sshHosts)
   const sendAssistant = useAgentStore((s) => s.sendAssistant)
   const resendAssistantMessage = useAgentStore((s) => s.resendAssistantMessage)
   const deleteAssistantMessage = useAgentStore((s) => s.deleteAssistantMessage)
   const stopAssistant = useAgentStore((s) => s.stopAssistant)
+  const stopAssistantCommand = useAgentStore((s) => s.stopAssistantCommand)
+  const stopTool = useCallback((toolCallId: string) => {
+    if (activeId) void stopAssistantCommand(toolCallId, activeId)
+  }, [activeId, stopAssistantCommand])
+  const stopTurn = useCallback(() => {
+    if (activeId) stopAssistant(activeId)
+  }, [activeId, stopAssistant])
   // 模型清单镜像(state-ws 快照,设置页增删模型后自动到)
   const modelConfigs = useAgentStore((s) => s.models)
   /**
    * 工具权限档：**直接用全局那一份**（主会话那颗 pill / 「设置 → 通用」改的就是它），
    * 助手面板不另存一个偏好 —— 「工具权限」在 Fizz 里是应用级概念，两处各记一份必然分叉。
    *
-   * 生效范围随 scope 不同（见 `AssistantSendInput.permissionMode`）：终端助手三档全生效，
-   * 项目助手只认 `readonly`（项目工具的审批是刻意写死的，不受档位放松）。
+    * 两种 scope 都是 readonly 拒绝、confirm 审批、full 放行。
    */
   const permissionMode = useAgentStore((s) => s.permissionMode)
   const setPermissionMode = useAgentStore((s) => s.setPermissionMode)
@@ -169,7 +183,7 @@ export function AssistantPanel({
     void loadDefaultContextWindow()
   }, [loadDefaultContextWindow])
   /** 模型下拉里的齿轮 → 「设置 → AI 模型」；与主会话那颗走同一条通路 */
-  const { openSettingsTab } = useAppContext()
+  const { app, openSettingsTab } = useAppContext()
 
   /**
    * 切换器里的清单：按更新时间倒序。**空会话不列**（新建了还没说话的那些是噪音），
@@ -190,6 +204,43 @@ export function AssistantPanel({
    */
   const draft = session?.draft ?? ''
   const streaming = !!session?.streaming
+  const toolTab = boundTerminalTabKey ? getToolTab(boundTerminalTabKey) : undefined
+  const remoteTarget: AssistantRemoteTarget | undefined = session?.remoteTarget ??
+    (toolTab?.sshHostId ? { hostId: toolTab.sshHostId, ...(toolTab.cwd ? { cwd: toolTab.cwd } : {}) } : undefined)
+  const remoteHost = sshHosts.find((host) => host.id === remoteTarget?.hostId && host.kind !== 'local')
+  const targetReady = !!remoteTarget && !!remoteHost
+  const [targetDialog, setTargetDialog] = useState(false)
+  const [targetHostId, setTargetHostId] = useState('')
+  const [targetCwd, setTargetCwd] = useState('')
+  const [savingTarget, setSavingTarget] = useState(false)
+  const openTargetDialog = (): void => {
+    setTargetHostId(remoteTarget?.hostId ?? '')
+    setTargetCwd(remoteTarget?.cwd ?? '')
+    setTargetDialog(true)
+  }
+  const saveRemoteTarget = async (): Promise<void> => {
+    if (!session || streaming || !targetHostId || savingTarget) return
+    const owner = session.sessionId
+    const cwd = targetCwd.trim()
+    if (cwd && (!cwd.startsWith('/') || /[\0\r\n]/.test(cwd))) {
+      toast.error(tr('工作目录必须是远端 POSIX 绝对路径'))
+      return
+    }
+    setSavingTarget(true)
+    try {
+      const path = await app.sftpRealpath(targetHostId, cwd || undefined)
+      // 确认它是可访问目录，避免把文件路径设成默认工作目录。
+      await app.sftpList(targetHostId, path)
+      const state = useAgentStore.getState()
+      if (state.assistantActiveId !== owner || state.assistantConversations[owner]?.streaming) return
+      setAssistantRemoteTarget({ hostId: targetHostId, cwd: path })
+      setTargetDialog(false)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSavingTarget(false)
+    }
+  }
   const hasMessages = (session?.messages.length ?? 0) > 0
   /** 「删除这段会话」的二次确认（与设置里删模型 / 删密钥同一个弹窗） */
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -247,7 +298,7 @@ export function AssistantPanel({
 
   const submit = (): void => {
     const text = draft.trim()
-    if (!text || streaming) return
+    if (!text || streaming || (embedded && (!targetReady || savingTarget))) return
     const resendTarget = activeEditing
     if (resendTarget) {
       /**
@@ -261,7 +312,7 @@ export function AssistantPanel({
         text,
         scope,
         target ?? undefined,
-        boundTerminalTabKey ?? null,
+        remoteTarget,
         permissionMode
       ).then(
         (ok) => {
@@ -276,7 +327,7 @@ export function AssistantPanel({
       text,
       scope,
       target ?? undefined,
-      boundTerminalTabKey ?? null,
+      remoteTarget,
       permissionMode
     )
     setAssistantDraft('')
@@ -368,6 +419,54 @@ export function AssistantPanel({
         </div>
       </div>
 
+      {embedded && (
+        <div className="space-y-1 border-b px-3 pb-2 text-xs">
+          <button type="button" className="flex w-full min-w-0 items-center gap-1 text-left text-foreground"
+            disabled={streaming || savingTarget} onClick={openTargetDialog} title={tr('选择 SSH 执行目标')}>
+            <Terminal className="size-3.5 shrink-0" />
+            <span className="truncate">{remoteHost?.name ?? tr(remoteTarget ? '主机已从清单里删除' : '请先选择 SSH 执行目标')}</span>
+            <ChevronDown className="size-3 shrink-0" />
+          </button>
+          <div className="truncate font-mono text-muted-foreground" title={remoteTarget?.cwd}>
+            {remoteTarget?.cwd ?? tr('SSH 登录目录')}
+          </div>
+          <div className="text-muted-foreground">{tr('独立 SSH 执行，不读取或输入当前终端')}</div>
+        </div>
+      )}
+
+      <Dialog open={targetDialog} onOpenChange={(open) => { if (!savingTarget) setTargetDialog(open) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{tr('选择 SSH 执行目标')}</DialogTitle>
+            <DialogDescription>{tr('目标随助手会话保存，切换终端标签不会更改；每条命令独立执行。')}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>{tr('SSH 主机')}</Label>
+              <Select value={targetHostId} onValueChange={(id) => { setTargetHostId(id); setTargetCwd('') }} disabled={savingTarget}>
+                <SelectTrigger><SelectValue placeholder={tr('请选择主机')} /></SelectTrigger>
+                <SelectContent>
+                  {sshHosts.filter((h) => h.kind !== 'local').map((host) => (
+                    <SelectItem key={host.id} value={host.id}>{host.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="assistant-remote-cwd">{tr('默认工作目录')}</Label>
+              <Input id="assistant-remote-cwd" value={targetCwd} onChange={(event) => setTargetCwd(event.target.value)}
+                placeholder={tr('留空使用 SSH 登录目录')} disabled={savingTarget} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" disabled={savingTarget} onClick={() => setTargetDialog(false)}>{tr('取消')}</Button>
+            <Button disabled={!targetHostId || savingTarget || streaming} onClick={() => void saveRemoteTarget()}>
+              {tr(savingTarget ? '连接中…' : '保存')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <ConfirmDeleteDialog
         open={confirmDelete}
         title="删除这段会话？"
@@ -392,6 +491,8 @@ export function AssistantPanel({
 
       <ChatSurface
         list={{
+          onStopTool: stopTool,
+          onStopTurn: stopTurn,
           messages: session?.messages ?? [],
           // 待审批的工具卡 / 分组抬头据此显示「等待审批」（与主会话同一张审批卡、同一口径）
           ...(session?.pendingConfirms?.length
@@ -415,11 +516,11 @@ export function AssistantPanel({
                 <Sparkles className="size-8 opacity-40" />
               )}
               <div className="text-sm font-medium">
-                {embedded ? '让助手操作这个终端' : '让助手帮你管项目'}
+                {embedded ? tr('让助手管理远端文件与命令') : '让助手帮你管项目'}
               </div>
               <div className="max-w-64 text-xs text-muted-foreground">
                 {embedded
-                  ? '试试:「看看当前目录」「列出最近的日志文件」「跑一下测试」'
+                  ? tr('试试：「读取配置文件」「搜索错误日志」「在远端运行构建」')
                   : '试试:「列出我的项目」「把 github.com/xxx/yyy 克隆到默认目录」「打开某个项目」'}
               </div>
             </div>
@@ -455,14 +556,16 @@ export function AssistantPanel({
           value: draft,
           onChange: (text) => setAssistantDraft(text),
           onSubmit: submit,
-          onCancel: () => stopAssistant(),
+          onCancel: stopTurn,
           streaming,
+          disabled: embedded && (!targetReady || savingTarget),
+          above: session ? <ComposerDock app={app} conversationId={session.sessionId} subagents={[]} onOpenSubagent={() => undefined} /> : undefined,
           // 占位文案只留「要它干什么」这半句：面板最窄 320px，带上
           // 「(Enter 发送,Shift+Enter 换行)」会折成两行 —— 而紧凑态空态高度被钉成一行，
           // 折行的那半截就被裁掉了。Enter 发送 / Shift+Enter 换行是 Composer 的固定行为
           // （见其文件头注释），面板里不再用占位文案复述。
           placeholder: embedded
-            ? tr('让助手执行 / 读取这个终端…')
+            ? tr('让助手读写远端文件 / 执行命令…')
             : tr('让助手创建 / 打开 / 删除项目…'),
           /**
            * 卡片内（`header` 槽）：编辑重发时那条「编辑消息」提示条 —— 与消息列表里
@@ -479,7 +582,7 @@ export function AssistantPanel({
           compact: true,
           // 工具权限：与主会话同一颗 pill（`PermissionPill`，图标编码档位、档名进 tooltip）。
           // 助手面板是「一句话就让 agent 动手」的入口，没有这一档就等于默认裸跑 ——
-          // 终端助手的 run_in_terminal / send_keys 会直接在你眼前那台终端里执行。
+          // 终端助手的 write / edit / bash 在远端执行，权限闸在服务端。
           // 只用图标（`CHAT_ICON_PILL`，32px）：面板本来就窄，一颗带文字的 pill 会把
           // 模型 pill 挤掉。
           leading: <PermissionPill value={permissionMode} onChange={handlePermissionChange} />,

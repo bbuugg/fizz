@@ -5,20 +5,22 @@
  * `session/load` 会带上 agent 侧的清单与它自己的当前值，直接覆盖会把用户选的档冲掉
  * （load 之后 agent 常被重置成默认档）。规则（见 spec 4.5.1）：
  *
- * - `incoming` 为 `null`（本次没拿到）→ 保持会话里已有的，**不清空**；
+ * - 未收到完整配置时的 `null` → 保留；完整配置明确缺项 → 清除旧档位；
  * - 清单 / 候选项用 agent 报的覆盖；
  * - `current` 仍是用户意图：它还在新清单里就保留，否则回落成 agent 报的当前值。
  */
 import type { AcpModesState, AcpThoughtLevelState } from '@fizz/contracts/types'
-import { getAcpSessionSnapshot } from '@fizz/acp'
+import { getAcpSessionSnapshot, setAcpSessionConfigListener } from '@fizz/acp'
 import { domain } from '@/lib/server/state'
 
 /** 合并 Session Modes 快照（保留用户选的档，见文件头规则） */
 export function mergeAcpModes(
   prev: AcpModesState | undefined,
-  incoming: AcpModesState | null
+  incoming: AcpModesState | null,
+  configOptionsKnown = false
 ): AcpModesState | undefined {
-  if (!incoming) return prev
+  // Session Modes 与 configOptions 是两条通道，完整配置只能明确移除后者。
+  if (!incoming) return configOptionsKnown && prev?.configId ? undefined : prev
   const current =
     prev?.current && incoming.available.some((m) => m.id === prev.current)
       ? prev.current
@@ -34,9 +36,10 @@ export function mergeAcpModes(
 /** 合并思考档快照（同上） */
 export function mergeAcpThoughtLevel(
   prev: AcpThoughtLevelState | undefined,
-  incoming: AcpThoughtLevelState | null
+  incoming: AcpThoughtLevelState | null,
+  configOptionsKnown = false
 ): AcpThoughtLevelState | undefined {
-  if (!incoming) return prev
+  if (!incoming) return configOptionsKnown ? undefined : prev
   const current =
     prev?.current && incoming.options.some((o) => o.value === prev.current)
       ? prev.current
@@ -55,12 +58,12 @@ export function refreshAcpSessionState(conversationId: string, agentId: string):
   const snap = getAcpSessionSnapshot(agentId, conversationId)
   if (!snap) return
   const conversation = domain.getConversation(conversationId)
-  if (!conversation) return
-  const acpModes = mergeAcpModes(conversation.acpModes, snap.modes)
-  const acpThoughtLevel = mergeAcpThoughtLevel(conversation.acpThoughtLevel, snap.thoughtLevel)
-  if (!acpModes && !acpThoughtLevel) return
+  if (conversation?.backend !== 'acp' || conversation.configId !== agentId) return
+  setAcpSessionConfigListener(agentId, conversationId, () => refreshAcpSessionState(conversationId, agentId))
+  const acpModes = mergeAcpModes(conversation.acpModes, snap.modes, snap.configOptionsKnown)
+  const acpThoughtLevel = mergeAcpThoughtLevel(conversation.acpThoughtLevel, snap.thoughtLevel, snap.configOptionsKnown)
   domain.setAcpSessionState(conversationId, {
-    ...(acpModes ? { acpModes } : {}),
-    ...(acpThoughtLevel ? { acpThoughtLevel } : {})
+    ...(acpModes || conversation.acpModes ? { acpModes: acpModes ?? null } : {}),
+    ...(acpThoughtLevel || conversation.acpThoughtLevel ? { acpThoughtLevel: acpThoughtLevel ?? null } : {})
   })
 }

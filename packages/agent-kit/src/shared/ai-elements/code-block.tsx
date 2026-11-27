@@ -13,6 +13,7 @@ import {
 } from "react";
 import { type BundledLanguage, codeToHtml, type ShikiTransformer, type ThemeRegistrationAny } from "shiki";
 import { useCodeTheme } from "@fizz/agent-kit/shared/lib/code-theme";
+import { writeClipboard } from "@fizz/agent-kit/shared/lib/clipboard";
 
 type CodeBlockProps = HTMLAttributes<HTMLDivElement> & {
   code: string;
@@ -156,13 +157,9 @@ export const CodeBlockCopyButton = ({
   const { code } = useContext(CodeBlockContext);
 
   const copyToClipboard = async () => {
-    if (typeof window === "undefined" || !navigator?.clipboard?.writeText) {
-      onError?.(new Error("Clipboard API not available"));
-      return;
-    }
-
     try {
-      await navigator.clipboard.writeText(code);
+      // 非安全上下文（http 自托管）没有 navigator.clipboard：helper 内部退回 execCommand
+      await writeClipboard(code);
       setIsCopied(true);
       onCopy?.();
       setTimeout(() => setIsCopied(false), timeout);

@@ -10,6 +10,7 @@
  * 钉住的是**投影时真的把 id 传下去了**：漏掉任何一个，界面看着正常、分屏时就会把
  * 消息 / 停止 / 队列 / 签出作用到焦点标签上。
  *
+ * 同时防止工作区读回全局焦点，导致分支 / 本地远端标识与文件操作串到其他标签。
  * 这里只测投影函数本身（纯函数，不渲染 hook），store 用 Proxy 假件：读到的每个方法
  * 都是记录调用的桩，于是「传了什么参数」一目了然。
  */
@@ -37,7 +38,7 @@ const SCOPED = {
   browserSettings: null
 }
 
-function makeStore() {
+function makeStore(extra: Record<string, unknown> = {}) {
   const calls: Array<{ fn: string; args: unknown[] }> = []
   const overrides: Record<string, unknown> = {
     // 投影时会就地查表 / 迭代的几个集合：给空的真数组，别让 stub 顶上去
@@ -50,7 +51,8 @@ function makeStore() {
     runningConversations: {},
     browserInstalled: false,
     getApi: () => ({}),
-    scopedSettingsOf: () => SCOPED
+    scopedSettingsOf: () => SCOPED,
+    ...extra
   }
   const store = new Proxy(
     {},
@@ -74,6 +76,22 @@ function makeStore() {
 }
 
 describe('agentAppFrom：读的是本视图那条会话的现场', () => {
+  it('工作区随本视图会话走，切换焦点不会改变远端工作区', () => {
+    const local = { id: 'local', path: '/local' }
+    const remote = { id: 'remote', path: '/remote', remote: { hostId: 'ssh-b' } }
+    const extra = {
+      workspaces: [local, remote],
+      conversations: [{ id: VIEW, workspaceId: remote.id }],
+      activeWorkspaceId: local.id
+    }
+    const { store } = makeStore(extra)
+    expect(agentAppFrom(store, VIEW).activeWorkspaceId).toBe(remote.id)
+    expect(agentAppFrom(store, VIEW).activeWorkspace).toBe(remote)
+    const { store: refocused } = makeStore({ ...extra, activeWorkspaceId: 'another-focus' })
+    expect(agentAppFrom(refocused, VIEW).activeWorkspace).toBe(remote)
+    expect(agentAppFrom(refocused, null).activeWorkspaceId).toBe('another-focus')
+  })
+
   it('模型 / 思考强度 / MCP 取 scoped 那份，不是全局那份', () => {
     const { store } = makeStore()
     const app = agentAppFrom(store, VIEW)
@@ -86,6 +104,16 @@ describe('agentAppFrom：读的是本视图那条会话的现场', () => {
   it('activeConversationId 就是本视图的会话（标签内「我是不是当前会话」的判断才不会错）', () => {
     const { store } = makeStore()
     expect(agentAppFrom(store, VIEW).activeConversationId).toBe(VIEW)
+  })
+
+  it('会话清单尚未加载时，不回落到焦点工作区', () => {
+    const { store } = makeStore({
+      activeWorkspaceId: 'focus-workspace',
+      workspaces: [{ id: 'focus-workspace', path: '/focus' }]
+    })
+    expect(agentAppFrom(store, VIEW).activeWorkspaceId).toBe('')
+    expect(agentAppFrom(store, VIEW).activeWorkspace).toBeNull()
+    expect(agentAppFrom(store, null).activeWorkspaceId).toBe('focus-workspace')
   })
 })
 

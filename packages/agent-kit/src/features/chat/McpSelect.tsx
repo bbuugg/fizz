@@ -19,6 +19,7 @@ export function McpSelect({ app }: { app: AgentApp }) {
       servers={app.mcpServers}
       value={app.mcpServerIds}
       onChange={app.setMcpServerIds}
+      disabled={app.streaming || (!app.activeConversationId && app.creatingConversation)}
     />
   );
 }

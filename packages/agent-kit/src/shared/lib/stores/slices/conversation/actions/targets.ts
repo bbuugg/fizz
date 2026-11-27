@@ -29,7 +29,7 @@ export function createTargetsActions(
   ConversationSlice,
   "setReasoningEffort" | "setChatTarget" | "setDraftAcpMode" | "setDraftAcpThought" | "clearDraftAcp" | "setMcpServerIds" | "setBrowserSettings"
 > {
-  const { set, get, probeDraftAcp, scopedSettingsOf, resolveConvId, isFocus, persistTarget, persistReasoningEffort, persistMcp, persistBrowserSettings } = ctx;
+  const { set, get, probeDraftAcp, scopedSettingsOf, resolveConvId, persistTarget, persistReasoningEffort, persistMcp, persistBrowserSettings } = ctx;
 
   /** 写草稿页那份待定选择（只在还没有会话时用） */
   const writeDraft = (patch: Partial<ScopedSettings>): void => {
@@ -63,44 +63,32 @@ export function createTargetsActions(
       } else {
         // persist* 会先乐观改清单：下拉 / pill 立刻生效，不用等往返
         persistTarget(conversationId, target);
-        /**
-         * 已有会话一般就到这儿 —— 下面那段是草稿页才需要的 ACP 档位（pill 要有数据）。
-         *
-         * 焦点会话例外：它和草稿页共用 composer 上那块 ACP 档位（非焦点标签读自己会话
-         * 上的 `acpModes`，不碰 `draftAcp`），所以焦点会话改 agent 时照样探一次。
-         */
-        if (!isFocus(conversationId)) return;
+        // 已有会话直接由 target 接口应用模型并回传能力，不启动无关的草稿探针。
+        return;
       }
       /**
        * 新任务页（还没有会话）：切到 ACP 就顺手探一次档位，切回内置 agent 就把草稿清掉。
        * 已有会话时不探 —— 会话自己带着 `acpModes` / `acpThoughtLevel`，再探一次纯属白起
        * 一个进程。
        *
-       * 只换**同一个 agent 的模型**（`acp:<id>:<model>`）不重探：档位是 agent 级的，
-       * 与挑哪个模型无关；重探还会把槽位里已经选好的模式 / 思考档清空（用户挑完
-       * 模式再换模型是很自然的顺序）。不同 agent 才清空 —— 别把 A 的档位挂给 B。
+       * 同一个 agent 换模型也要按模型读取能力；仍有效的选择由探针合并保留。
        */
-      if (
-        target?.backend === "acp" &&
-        target.configId &&
-        get().draftAcp?.agentId === target.configId
-      )
-        return;
       if (target?.backend === "acp" && target.configId)
-        void probeDraftAcp(target.configId);
+        void probeDraftAcp(target.configId, target.modelId);
       else if (get().draftAcp) set({ draftAcp: null });
     },
     setDraftAcpMode: (modeId) => {
       set((state) =>
-        state.draftAcp
+        state.draftAcp && !state.draftAcp.loading && !state.draftAcp.error &&
+          (modeId === null || state.draftAcp.modes?.available.some((mode) => mode.id === modeId))
           ? { draftAcp: { ...state.draftAcp, mode: modeId } }
           : state,
       );
     },
     setDraftAcpThought: (value) => {
       set((state) =>
-        state.draftAcp
-          ? { draftAcp: { ...state.draftAcp, thought: value } }
+        state.draftAcp && !state.draftAcp.loading && state.draftAcp.thoughtLevel?.options.some((o) => o.value === value)
+           ? { draftAcp: { ...state.draftAcp, thought: value } }
           : state,
       );
     },

@@ -23,10 +23,16 @@ export type { DiffHunk }
  * 不同的减号，比不显示更让人犯嘀咕。
  *
  * 减号用 U+2212（`−`）而不是 ASCII `-`：等宽字体下它和 `+` 一样宽，数字不会左右跳。
+ *
+ * ⚠️ `text-xs` 与 `font-mono` 都必须自带：
+ * - `text-xs`：工具卡头部那行不给基准字号（只给颜色），不写会继承消息正文，
+ *   数字比旁边的工具名（`text-sm`）还大；
+ * - `font-mono`：工具卡头部紧挨着的明细（路径 / 命令）就是等宽字体，无衬线字体里的
+ *   `−`（U+2212）常要回退到别的字体取字形，`+` 与 `−` 的视觉高度、基线会和路径对不齐。
  */
 export function DiffStat({ adds, dels }: { adds: number; dels: number }) {
   return (
-    <span className="shrink-0 tabular-nums">
+    <span className="shrink-0 font-mono text-xs tabular-nums">
       <span className="text-emerald-500">+{adds}</span>{' '}
       <span className="text-red-500">−{dels}</span>
     </span>

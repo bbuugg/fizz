@@ -623,7 +623,7 @@ export class UiService extends Service {
   }
 
   /**
-   * 放进注册表。**同类同 id 重复注册不覆盖**（与 `UploadsService` 同一取舍）：
+   * 放进注册表。**同类同 id 重复注册不覆盖**：
    * 界面是用户能看见的东西，「谁盖谁」都不该静默发生 —— 保留先注册的，只告警。
    */
   private put(key: string, decl: UiSurfaceDeclaration): Dispose {

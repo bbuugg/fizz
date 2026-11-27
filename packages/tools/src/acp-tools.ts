@@ -6,7 +6,7 @@
  *
  * ## 类型为什么不 import `@fizz/acp`
  *
- * 那边是 ACP 领域类型的真源（`AcpAgentConfig` / `AcpAgentType` / `AcpAllowStrategy`），
+ * 那边是 ACP 领域类型的真源（`AcpAgentConfig`），
  * 但包的运行期入口会把 `@agentclientprotocol/sdk` 拖进来 —— `packages/tools` 不该为
  * 一个配置读写工具付这份依赖。这里只声明用得到的结构（字段名与那边逐字一致），
  * 由服务端注入的实现负责对齐。**改字段时两边一起改**。
@@ -27,8 +27,6 @@ export interface AcpAgentSummary {
   name: string
   command: string
   args: string[]
-  type?: string
-  allowStrategy?: string
   /** 会话模型下拉里暴露哪几个（把已配置的清单原样报给模型，新增时要据此合并） */
   models?: Array<{ value: string; name: string; description?: string }>
 }
@@ -39,10 +37,6 @@ export interface AcpAgentInputLike {
   name: string
   command: string
   args?: string[]
-  /** 与 `@fizz/acp` 的 `AcpAgentType` 同集合；窄写是为了不用在服务端做类型断言 */
-  type?: 'opencode' | 'pi' | 'generic'
-  /** 与 `@fizz/acp` 的 `AcpAllowStrategy` 同集合 */
-  allowStrategy?: 'once' | 'always'
   /** 会话模型下拉里暴露哪几个；空数组 = 一个都不列，缺省 = 沿用 */
   models?: Array<{ value: string; name: string; description?: string }>
 }
@@ -81,11 +75,6 @@ export const ACP_TOOLS = [
   'delete_acp_agent'
 ] as const
 
-/** 风格：决定会话输入区里模式 UI 的语义与位置（见 `@fizz/acp` 的 `AcpAgentType`） */
-const AGENT_TYPE = z.enum(['opencode', 'pi', 'generic'])
-/** 「完全放行」时怎么答复权限请求（`once` 才会继续问，缺省就是它） */
-const ALLOW_STRATEGY = z.enum(['once', 'always'])
-
 /** 判重口径与领域层一致：命令 + 参数相同就是同一条（名称不参与） */
 function agentKey(agent: { command: string; args: string[] }): string {
   return `${agent.command}\u0000${agent.args.join('\u0000')}`
@@ -97,8 +86,6 @@ function summarize(agent: AcpAgentSummary): Record<string, unknown> {
     name: agent.name,
     command: agent.command,
     ...(agent.args.length ? { args: agent.args } : {}),
-    ...(agent.type ? { type: agent.type } : {}),
-    ...(agent.allowStrategy ? { allowStrategy: agent.allowStrategy } : {}),
     // 完整清单（不是只报数量）：模型要据此判断「已经有哪些」，
     // 否则「加一个模型」只能靠整份覆盖，一覆盖就把用户配好的全换掉了
     models: agent.models ?? []
@@ -139,8 +126,8 @@ export function buildAcpTools(deps: AcpToolsDeps): ToolSet {
   return {
     list_acp_agents: tool({
       description: tr(
-        '列出已保存的外部 Agent（ACP）配置：id / 名称 / 启动命令与参数 / 风格 / 放行策略 / 已暴露的完整模型清单（models）。改、删之前先用它拿 id；要新增模型时也先看这里的 models，别把已有清单覆盖掉。注意：配好 ≠ 用上，新建会话时还要把后端切成「外部 Agent」并选中它。',
-        'List saved external agents (ACP): id, name, launch command and args, style, allow strategy, and the full exposed models list. Use it to get ids before editing or deleting, and read models before adding one so you do not overwrite the existing list. Note: configured is not the same as used — a new conversation must switch its backend to "external agent" and pick this entry.'
+        '列出已保存的外部 Agent（ACP）配置：id / 名称 / 启动命令与参数 / 已暴露的完整模型清单（models）。改、删之前先用它拿 id；要新增模型时也先看这里的 models，别把已有清单覆盖掉。注意：配好 ≠ 用上，新建会话时还要把后端切成「外部 Agent」并选中它。',
+        'List saved external agents (ACP): id, name, launch command and args, and the full exposed models list. Use it to get ids before editing or deleting, and read models before adding one so you do not overwrite the existing list. Note: configured is not the same as used — a new conversation must switch its backend to "external agent" and pick this entry.'
       ),
       inputSchema: z.object({}),
       execute: async () => {
@@ -231,11 +218,9 @@ export function buildAcpTools(deps: AcpToolsDeps): ToolSet {
         command: z
           .string()
           .describe(tr('可执行文件（PATH 里的名字或绝对路径；Windows 上 npm 装的 CLI 常需要 .cmd）', 'Executable (a name on PATH or an absolute path; on Windows npm-installed CLIs often need .cmd)')),
-        args: z.array(z.string()).optional().describe(tr('启动参数，如 ["--acp"]', 'Launch args, e.g. ["--acp"]')),
-        type: AGENT_TYPE.optional().describe(tr('风格：opencode / pi / generic（缺省 generic，不显示模式 UI）', 'Style: opencode / pi / generic (default generic, no mode UI)')),
-        allowStrategy: ALLOW_STRATEGY.optional().describe(tr('「完全放行」时怎么答复权限请求：once（每次问，缺省）/ always（由 agent 永久记住）', 'How to answer permission requests under full access: once (ask every time, default) / always (the agent remembers)'))
+        args: z.array(z.string()).optional().describe(tr('启动参数，如 ["--acp"]', 'Launch args, e.g. ["--acp"]'))
       }),
-      execute: async ({ name, command, args, type, allowStrategy }, options) => {
+      execute: async ({ name, command, args }, options) => {
         const trimmedName = name.trim()
         const trimmedCommand = command.trim()
         if (!trimmedName) return '需要 name（展示名）。'
@@ -244,7 +229,7 @@ export function buildAcpTools(deps: AcpToolsDeps): ToolSet {
         const refused = await guardMutation(deps, {
           needsConfirm: true,
           denied: 'ACP agent 未创建',
-          command: `添加外部 Agent「${trimmedName}」（${detail}${type ? `，风格 ${type}` : ''}）`,
+          command: `添加外部 Agent「${trimmedName}」（${detail}）`,
           toolCallId: options.toolCallId,
           toolName: 'create_acp_agent'
         })
@@ -253,9 +238,7 @@ export function buildAcpTools(deps: AcpToolsDeps): ToolSet {
           const saved = deps.acp.save({
             name: trimmedName,
             command: trimmedCommand,
-            ...(args ? { args } : {}),
-            ...(type ? { type } : {}),
-            ...(allowStrategy ? { allowStrategy } : {})
+            ...(args ? { args } : {})
           })
           return JSON.stringify({ ok: true, agent: summarize(saved), note: ENABLE_HINT }, null, 2)
         } catch (err) {
@@ -266,16 +249,14 @@ export function buildAcpTools(deps: AcpToolsDeps): ToolSet {
 
     update_acp_agent: tool({
       description: tr(
-        '修改一个已保存的外部 Agent。**只传要改的字段，其余保持原样**（名称 / 命令 / 参数 / 风格 / 放行策略 / 暴露的模型任选；args 传 [] 清空）。命令行写错、换绝对路径、改风格都走它。\n\n**模型有两种改法，别用错**：① 只「再加一个 / 几个」模型用 addModels —— 与当前已配置的清单按 value 合并，不会替换；② 整份重设才用 models（会替换现有清单，传 [] = 一个都不列）。两者只能传一个。当前清单看 list_acp_agents 的 models 字段；候选先用 probe_acp_models 拿。修改前会弹审批卡。',
-        'Update a saved external agent. **Pass only the fields to change; the rest stay as-is** (name / command / args / style / allow strategy / exposed models; args: [] clears). Use it to fix a wrong command line, switch to an absolute path, or change the style.\n\n**Two ways to change models — do not mix them up**: (1) to merely ADD one or more models use addModels, which merges by value with the currently configured list instead of replacing it; (2) to reset the whole list use models (it replaces the current list; [] lists none). Pass only one of them. The current list is in list_acp_agents\' models field; get candidates with probe_acp_models first. A confirmation card is shown first.'
+        '修改一个已保存的外部 Agent。**只传要改的字段，其余保持原样**（名称 / 命令 / 参数 / 暴露的模型任选；args 传 [] 清空）。命令行写错、换绝对路径都走它。\n\n**模型有两种改法，别用错**：① 只「再加一个 / 几个」模型用 addModels —— 与当前已配置的清单按 value 合并，不会替换；② 整份重设才用 models（会替换现有清单，传 [] = 一个都不列）。两者只能传一个。当前清单看 list_acp_agents 的 models 字段；候选先用 probe_acp_models 拿。修改前会弹审批卡。',
+        'Update a saved external agent. **Pass only the fields to change; the rest stay as-is** (name / command / args / exposed models; args: [] clears). Use it to fix a wrong command line or switch to an absolute path.\n\n**Two ways to change models — do not mix them up**: (1) to merely ADD one or more models use addModels, which merges by value with the currently configured list instead of replacing it; (2) to reset the whole list use models (it replaces the current list; [] lists none). Pass only one of them. The current list is in list_acp_agents\' models field; get candidates with probe_acp_models first. A confirmation card is shown first.'
       ),
       inputSchema: z.object({
         id: z.string().describe(tr('ACP agent id（list_acp_agents 返回的 id）', 'ACP agent id (as returned by list_acp_agents)')),
         name: z.string().optional().describe(tr('新的展示名', 'New display name')),
         command: z.string().optional().describe(tr('新的启动命令', 'New launch command')),
         args: z.array(z.string()).optional().describe(tr('新的启动参数（整份替换，传 [] 清空）', 'New launch args (replaces wholesale; [] clears)')),
-        type: AGENT_TYPE.optional().describe(tr('新的风格', 'New style')),
-        allowStrategy: ALLOW_STRATEGY.optional().describe(tr('新的放行策略', 'New allow strategy')),
         models: z
           .array(z.object({ value: z.string(), name: z.string(), description: z.string().optional() }))
           .optional()
@@ -285,7 +266,7 @@ export function buildAcpTools(deps: AcpToolsDeps): ToolSet {
           .optional()
           .describe(tr('在现有清单上追加模型（按 value 合并，不会动已有的）。只是「再加一个模型」就用它，别传 models', 'Append models to the current list (merged by value; existing entries stay). Use this to merely add a model instead of passing models'))
       }),
-      execute: async ({ id, name, command, args, type, allowStrategy, models, addModels }, options) => {
+      execute: async ({ id, name, command, args, models, addModels }, options) => {
         const current = findAgent(deps, id)
         if (typeof current === 'string') return current
         const nextName = name?.trim() ?? current.name
@@ -324,8 +305,6 @@ export function buildAcpTools(deps: AcpToolsDeps): ToolSet {
             name: nextName,
             command: nextCommand,
             ...(args ? { args } : {}),
-            ...(type ? { type } : {}),
-            ...(allowStrategy ? { allowStrategy } : {}),
             ...(nextModels !== undefined ? { models: nextModels } : {})
           })
           return JSON.stringify({ ok: true, agent: summarize(saved) }, null, 2)

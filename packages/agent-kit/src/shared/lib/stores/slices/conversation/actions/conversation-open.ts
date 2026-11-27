@@ -49,6 +49,8 @@ export function createConversationOpenActions(
       // 记住现场：下次启动直接回到这个会话（它自己记着选的模型）
       saveActiveConversationId(conversationId);
       if (!conversationId) {
+        // 标签导航只恢复已有草稿；显式「新建」才初始化下面的待定选择。
+        if (opts?.keepScroll) return;
         // 回到「开始新对话」页：预选清单第一份**有可用模型**的配置（具体的配置 + 模型，
         // 下拉里显示真实名字）—— 不继承上一个会话的选择，也不存在「默认」概念。
         // 各会话的现场都留在会话清单项上，切回来原样还在 —— 不清任何东西。
@@ -155,13 +157,11 @@ export function createConversationOpenActions(
       }));
       void loadConversation(id);
     },
-    reloadAcpSession: async (conversationId) => {
+    reloadAcpSession: (conversationId) => {
       const conversation = get().conversations.find((c) => c.id === conversationId);
-      if (conversation?.backend !== "acp") return false;
-      const restored = await loadConversation(conversationId);
-      if (!restored && readSlice(conversationId).error)
-        get().setError(readSlice(conversationId).error!);
-      return restored;
+      if (conversation?.backend !== "acp") return Promise.resolve(false);
+      // 与错误重试 / 标签刷新共用同一个 Promise；具体错误留在本会话，由入口展示。
+      return loadConversation(conversationId);
     },
     reloadConversation: (conversationId) => loadConversation(conversationId),
   };

@@ -26,6 +26,7 @@ plugins/*/.build
 # mobile 的 Capacitor 生成物（P5 起壳加载自己的 dist，www 那套已废弃；老目录留着不碍事）
 apps/mobile/www
 apps/mobile/android
+apps/mobile/runtime/out/
 # mobile 的 Monaco 资源同样是 copy:monaco 的生成物（不重复入库 152 个 vendored 文件）
 apps/mobile/public/monaco-editor
 # Chrome 扩展（apps/extension）的 Monaco 资源，同一个脚本生成、同样不入库

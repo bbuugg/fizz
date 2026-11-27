@@ -52,6 +52,7 @@ import { formatBytes, formatRate } from '@fizz/agent-kit/shared/components/monit
 import { Popover, PopoverContent, PopoverTrigger } from '@fizz/ui/popover'
 import { Progress } from '@fizz/ui/progress'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@fizz/ui/tooltip'
+import { useGlassPanel } from '@fizz/ui/liquid-glass'
 
 /** 图标按钮统一成这一档尺寸：行高与标题行对齐，别各自定 */
 const ICON_BUTTON_CLASS =
@@ -169,6 +170,8 @@ export function TransferBadge({
 }) {
   const transfers = useAgentStore((s) => s.transfers)
   const clearFinished = useAgentStore((s) => s.clearFinishedTransfers)
+  // 弹层的液态玻璃外壳与边缘流光（指针追踪）由 Hook 统一给，与状态栏另外两颗徽标同一份
+  const glass = useGlassPanel()
 
   // 一条都没有时完全不渲染：徽标是「有活干才出现」的东西，常驻一个空壳只会挤占底栏
   if (transfers.length === 0) return null
@@ -206,14 +209,19 @@ export function TransferBadge({
         side={side}
         align="end"
         collisionPadding={8}
-        className={cn('w-[23rem] p-0 gap-0', contentClassName)}
+        // 与状态栏的监控 / 后台任务弹层同一套液态玻璃外观：实色底 + 描边 + 景深来自
+        // `GLASS_PANEL_CLASS`，跟随指针的边缘流光由 `LiquidGlassPanel` 铺。
+        // 滚动下放到内层清单，保证流光钉在面板边缘、不随内容滚走。
+        className={cn('w-[23rem] overflow-hidden rounded-xl p-0 gap-0 ring-0', glass.className, contentClassName)}
+        {...glass.handlers}
         /*
         打开时**不抢焦点**：这张清单是「看一眼」的信息位，抢焦点会把焦点从聊天输入框 /
         编辑器里拽走（与后台任务清单同一处理）。
       */
         onOpenAutoFocus={(event) => event.preventDefault()}
       >
-        <div className="flex items-center gap-2 px-3 py-1.5">
+        {glass.edge}
+        <div className="flex shrink-0 items-center gap-2 px-3 py-1.5">
           {activeCount > 0 ? (
             <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
           ) : (
@@ -230,7 +238,12 @@ export function TransferBadge({
           )}
         </div>
 
-        <div className={cn('overflow-y-auto overscroll-contain', transfers.length > 4 && 'max-h-64')}>
+        <div
+          className={cn(
+            'min-h-0 overflow-y-auto overscroll-contain',
+            transfers.length > 4 && 'max-h-64'
+          )}
+        >
           {transfers.map((task) => (
             <TransferRow key={task.id} task={task} host={host} />
           ))}

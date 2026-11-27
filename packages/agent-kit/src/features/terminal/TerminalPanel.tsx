@@ -24,6 +24,7 @@ import { History, Loader2, Trash2, Upload, X } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
+import { writeClipboard } from '@fizz/agent-kit/shared/lib/clipboard'
 import type { CommandHistoryEntry, SshConnectProgress } from '@fizz/contracts/agent-api'
 import type { SshCharset } from '@fizz/contracts/types'
 import { createZmodemController, type ZmodemController, type ZmodemState } from './zmodem-controller'
@@ -448,23 +449,6 @@ export function TerminalPanel({
     applyAnchorLocked(false)
   }, [applyAnchorLocked, selectBetweenCells])
 
-  /** 写剪贴板：`navigator.clipboard` 在部分安卓 WebView 里不可用，退回 execCommand */
-  const writeClipboard = useCallback(async (text: string): Promise<void> => {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text)
-      return
-    }
-    const area = document.createElement('textarea')
-    area.value = text
-    area.style.position = 'fixed'
-    area.style.opacity = '0'
-    document.body.appendChild(area)
-    area.select()
-    const ok = document.execCommand('copy')
-    document.body.removeChild(area)
-    if (!ok) throw new Error('clipboard unavailable')
-  }, [])
-
   /** 方向键选区之后的「复制」：写剪贴板并退出选区模式 */
   const copySelection = useCallback(async (): Promise<void> => {
     const term = termRef.current
@@ -481,7 +465,7 @@ export function TerminalPanel({
       return
     }
     exitSelectionMode()
-  }, [exitSelectionMode, tr, writeClipboard])
+  }, [exitSelectionMode, tr])
   /**
    * 输出活动（收到多少段 + 最后一段什么时候来的）：登记给 AI 工具，`run_in_terminal`
    * 靠它判「命令的输出停了没有」，替代从前固定 sleep 3 秒的做法。

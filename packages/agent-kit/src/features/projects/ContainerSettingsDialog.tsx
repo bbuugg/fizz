@@ -31,6 +31,7 @@ import { CONTAINER_MEMORY_LIMIT_MIN_MB } from '@fizz/contracts/types'
 import type { ContainerProjectsSnapshot } from '@fizz/contracts/types'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import { useStateValue } from '@fizz/agent-kit/shared/lib/state-ws'
+import { writeClipboard } from '@fizz/agent-kit/shared/lib/clipboard'
 import { limitsError } from '@fizz/agent-kit/features/projects/container-limits'
 
 /** 边界常量与服务端共用（`@fizz/contracts/types`），这里只为提示文案 */
@@ -176,8 +177,7 @@ export function ContainerSettingsDialog({
 
   const copyKey = (): void => {
     if (!previewKey) return
-    void navigator.clipboard
-      .writeText(previewKey)
+    void writeClipboard(previewKey)
       .then(() => toast.success('预览 key 已复制'))
       .catch(() => toast.error('复制失败，请手动选中复制'))
   }

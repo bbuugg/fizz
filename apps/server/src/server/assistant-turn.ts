@@ -16,7 +16,7 @@
  *   `read` / `write` / `edit` / `glob` / `grep` / `git_read` / `bash` / `todo` 全部缺席。
  *   全局配置工具也只在这一支里（它们改的是网关 / key / 模型清单、MCP server 清单、
  *   ACP agent 清单，不属于任何单个工作区）；
- * - `terminal`：`profiles/terminal-assistant.ts` —— 只挂客户端带上来的终端工具。
+ * - `terminal`：`profiles/terminal-assistant.ts` —— 绑定远端主机的文件工具与独立 SSH exec。
  *
  * 两套 profile 的产物都交给 `runAgent` 的同一条装配管线（审批壳 / 钩子 / 提示词渲染），
  * 与主会话没有第二条链路。
@@ -42,7 +42,8 @@ import { probeModelsFromUpstream } from './model-probe'
 import { refreshPluginModels } from './plugin-models'
 import { createConfirmGate } from './confirm-gate'
 import { agentPrefs } from './prefs'
-import { buildClientToolset, createClientToolGate } from './client-tool-gate'
+import { createAssistantBackend, startAssistantCommand, waitAssistantCommand } from './ssh/assistant-backend'
+import { sftpService } from './ssh/sftp'
 import { errorPart, foldEventIntoParts } from './agent-parts'
 import { createProject, createWorktree, getDefaultProjectsRoot, isInsideProjectsRoot, listDirs, removeProject } from './projects'
 import {
@@ -92,6 +93,9 @@ export async function startAssistantTurn(input: AssistantSendInput): Promise<Sta
   if (input.permissionMode !== undefined && !isAiPermissionMode(input.permissionMode)) {
     return { ok: false, status: 400, message: 'permissionMode 非法' }
   }
+  if (input.scope !== undefined && input.scope !== 'project' && input.scope !== 'terminal') {
+    return { ok: false, status: 400, message: 'scope 非法' }
+  }
   if (!reserveConversationRunStart(input.sessionId)) {
     return { ok: false, status: 409, message: '这个助手会话正在启动或回复中，请等待当前轮结束' }
   }
@@ -106,6 +110,36 @@ async function startAssistantTurnReserved(
   input: AssistantSendInput,
   text: string
 ): Promise<StartAssistantTurnResult> {
+  const scope = input.scope ?? 'project'
+  // 在创建 run 前完成目标校验，失败时不遗留占着 sessionId 的活跃 run。
+  let remote: { backend: ReturnType<typeof createAssistantBackend>; hostLabel: string } | undefined
+  if (scope === 'terminal') {
+    const target = input.remoteTarget
+    if (!target || typeof target.hostId !== 'string' || !target.hostId.trim()) {
+      return { ok: false, status: 400, message: '终端助手需要绑定 SSH 主机，请先选择执行目标' }
+    }
+    const host = domain.listSshHosts().find((h) => h.id === target.hostId)
+    if (!host || host.kind === 'local') {
+      return { ok: false, status: 404, message: 'SSH 主机不存在或已被删除，请重新选择执行目标' }
+    }
+    if (target.cwd !== undefined && (typeof target.cwd !== 'string' ||
+      (target.cwd !== '' && !target.cwd.startsWith('/')) || /[\0\r\n]/.test(target.cwd))) {
+      return { ok: false, status: 400, message: '工作目录必须是远端 POSIX 绝对路径' }
+    }
+    try {
+      const cwd = await sftpService.realpath(host.id, target.cwd)
+      const stat = await sftpService.stat(host.id, cwd)
+      if (stat?.type !== 'dir') {
+        return { ok: false, status: 400, message: '远端工作目录不存在或不是目录' }
+      }
+      remote = {
+        backend: createAssistantBackend(host.id, cwd),
+        hostLabel: `${host.name} (${host.username}@${host.host}:${host.port})`
+      }
+    } catch (err) {
+      return { ok: false, status: 400, message: describeError(err).message }
+    }
+  }
 
   // 插件注册的模型：解析前刷新（与 chat-turn 同一口径）
   await refreshPluginModels()
@@ -175,7 +209,7 @@ async function startAssistantTurnReserved(
   const gate = createConfirmGate({
     run,
     ownerKey: input.sessionId,
-    title: '项目助手',
+    title: remote ? `SSH 助手 · ${remote.hostLabel}` : '项目助手',
     confirmTimeoutMs: prefs.confirmTimeoutMs
   })
 
@@ -183,21 +217,19 @@ async function startAssistantTurnReserved(
    * 这一轮的作用域:**两组工具互斥**,由请求显式声明(见 `AssistantSendInput.scope`)。
    *
    * - `project`(缺省):项目管理助手 —— 只有项目工具;
-   * - `terminal`:终端标签内嵌的助手 —— 只有客户端带上来的终端工具。
+   * - `terminal`:终端标签内嵌的助手 —— 只有远端文件与命令工具。
    *
    * 为什么互斥而不是「都挂上,用不到的模型自己不用」:工具就是模型的行动能力边界。
    * 全局面板挂着一堆 run_in_terminal,模型迟早会去试;而那条终端根本不是这个面板
    * 的语境(它属于某个终端标签)。反过来,一条绑定终端的会话里出现 create_project,
    * 用户看到的就是「让助手看下日志,它却在建目录」。边界交给装配层,不交给提示词。
    */
-  const scope: 'project' | 'terminal' = input.scope === 'terminal' ? 'terminal' : 'project'
 
   /**
    * 这一轮的工具权限档(客户端在助手输入框左侧那颗 pill 上选的;没带 = `confirm`)。
    *
    * 两种作用域**同一套三档**,别按一个想:
-   * - `terminal`(客户端工具):闸在 `buildClientToolset`,依据是客户端自己声明在
-   *   `ClientToolSpec.mutating` 上的标记;
+   * - `terminal`(远端文件与命令):写文件与执行命令走 `guardWrite`；
    * - `project`(项目 / 模型 / MCP / ACP 配置工具):闸在 `guardMutation`。
    * 两边都是 `readonly` 拒绝、`confirm` 弹卡、`full` 直接放行 —— 用户在输入框选的哪一档，
    * 对助手的所有工具生效（2026-11 反馈过「部分工具不受 pill 控制」，就是因为
@@ -216,39 +248,53 @@ async function startAssistantTurnReserved(
       ? Math.round(input.maxRetries)
       : prefs.maxRetries
   // 起始活权限档写回 run：上面 createRun 缺省是 confirm，这里用请求里的档位对齐，
-  // 之后 POST /api/chat/permission 改的也是它（见 buildClientToolset / buildProjectTools 的 getter）
+  // 之后 POST /api/chat/permission 改的也是它（工具闸每次经 getter 现取）
   run.permissionMode = permissionMode
 
-  /**
-   * 客户端工具(终端操作):**只有 terminal 作用域**才装。
-   * 服务端负责推帧、等客户端执行完回填;**审批闸在服务端**(`buildClientToolset` 按
-   * `mutating` + `permissionMode` 套,帧走 confirm-gate → 助手面板的审批卡)。
-   */
-  const clientGate = createClientToolGate({ run })
-  const clientTools =
-    scope === 'terminal' && input.clientTools?.length
-      ? buildClientToolset(input.clientTools, clientGate, {
-          permissionMode,
-          // 运行中活取：与主会话同一颗 pill，切档立刻生效（改档端点改的是同一个 run 字段）
-          getPermissionMode: () => run.permissionMode,
-          requestConfirm: gate.requestConfirm
-        })
-      : {}
   const assistantParts: AgentChatMessage['parts'] = []
   let turnUsage: TurnUsage | undefined
 
   /**
    * 两套身份的装配都在 `profiles/` 里（提示词 + 工具集），这里只把服务接上：
-   * - `terminal`：客户端带上来的终端工具；
+   * - `terminal`：绑定这轮固定目标的 SSH 文件与命令工具；
    * - `project`：项目 / 模型 / MCP / ACP 配置工具 + `web_fetch`，
    *   **一个文件 / 命令类工具都不挂**（助手是跨项目的，没有唯一工作区根）。
    */
   const assemble =
-    scope === 'terminal'
+    remote
       ? () =>
           buildTerminalAssistantAssembly({
-            tools: clientTools,
-            specs: input.clientTools ?? []
+            hostLabel: remote.hostLabel,
+            backend: {
+              ...remote.backend,
+              exec: (command, options = {}) => waitAssistantCommand({
+                backend: remote.backend,
+                sessionId: input.sessionId,
+                hostLabel: remote.hostLabel,
+                command,
+                options
+              })
+            },
+            options: {
+              permissionMode,
+              getPermissionMode: () => run.permissionMode,
+              requestConfirm: (req) => gate.requestConfirm({
+                ...req,
+                intent: `SSH ${remote.hostLabel} · ${remote.backend.root}${req.intent ? ` · ${req.intent}` : ''}`
+              }),
+              onCommandStart: (id, stop) => run.commandStops.set(id, stop),
+              onCommandEnd: (id) => { run.commandStops.delete(id) },
+              onCommandOutput: (id, stream, delta) => onEvent({
+                type: 'tool-output-delta', toolCallId: id, stream, delta
+              }),
+              onBackgroundCommand: async ({ command, cwd }) => {
+                const task = startAssistantCommand({
+                  backend: remote.backend, sessionId: input.sessionId,
+                  hostLabel: remote.hostLabel, command, options: { cwd, timeoutMs: 0 }
+                })
+                return { id: task.id }
+              }
+            }
           })
       : () =>
           buildProjectAssistantAssembly({
@@ -329,6 +375,7 @@ async function startAssistantTurnReserved(
     skills: [],
     permissionMode,
     requestConfirm: gate.requestConfirm,
+    commandStops: run.commandStops,
     /**
      * 两套身份各自配套：terminal 只有终端提示词 + 终端工具，project 只有项目提示词 + 项目工具。
      * 装配产物统一走 `mountAssembly`（审批壳 / 钩子 / 提示词渲染与主会话同一条管线）。
@@ -367,14 +414,13 @@ async function startAssistantTurnReserved(
     })
     .then((finishReason) => {
       gate.releaseAll()
-      clientGate.releaseAll()
+      run.commandStops.clear()
       finishRun(run, finishReason ?? 'error')
       markDirty(['activeRuns'])
     })
 
   run.controller.signal.addEventListener('abort', () => {
     gate.releaseAll()
-    clientGate.releaseAll()
   })
 
   return { ok: true, run }

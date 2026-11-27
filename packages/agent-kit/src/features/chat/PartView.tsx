@@ -16,7 +16,9 @@
  * ai-elements 期望的形状（`ToolUIPart['type']` / `['state']`）。
  */
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
-import { CheckCircle2, Circle, CircleQuestionMark, FileText, ImageOff, ListTree, Loader2, RotateCw } from 'lucide-react'
+import { CheckCircle2, Circle, CircleQuestionMark, Download, FileText, ImageOff, ListTree, Loader2, RotateCw } from 'lucide-react'
+import { downloadFile } from '@fizz/agent-client/download-file'
+import { hostFetch } from '@fizz/agent-client/api'
 import { toast } from 'sonner'
 import { Button } from '@fizz/ui/button'
 import { ImageViewer } from '@fizz/ui/image-viewer'
@@ -41,7 +43,6 @@ import { t } from '@fizz/i18n'
 import { FileDiffView, DiffStat, type DiffHunk } from '@fizz/agent-kit/features/git/FileDiffView'
 import { useWorkspaceFileOpener } from '@fizz/agent-kit/features/files/open-file'
 import { workspaceRelativePath } from '@fizz/agent-kit/shared/lib/workspace-path'
-import { looksLikeMarkdown } from '@fizz/agent-kit/shared/lib/markdown-text'
 import { diffStat } from '@fizz/agent-kit/shared/lib/diff'
 import {
   ASK_FOLLOWUP_TOOL,
@@ -66,7 +67,7 @@ import {
   terminalOutputForDisplay
 } from '@fizz/agent-kit/shared/lib/terminal/display'
 import { collapsedBody, shouldRefreshSnapshot } from '@fizz/agent-kit/shared/lib/collapse-swap'
-import { loadMediaObjectUrl } from '@fizz/agent-kit/shared/lib/media-url'
+import { loadMediaObjectUrl, resolveServerMediaUrl } from '@fizz/agent-kit/shared/lib/media-url'
 import type { AgentMessagePart, SubagentDelegation, TodoItem } from '@fizz/contracts/types'
 // 值导入：派活句柄的前缀是契约常量（引擎造这句话，界面认这句话）
 import { DELEGATION_HANDLE_PREFIX } from '@fizz/contracts/types'
@@ -552,23 +553,9 @@ function renderAcpDirect(part: AgentMessagePart): DirectResult | null {
         </div>
       )
     } else if (item?.type === 'content' && item.content?.type === 'text' && item.content.text) {
-      /**
-       * text 内容块是 agent 写给**人看**的展示文本 —— 不少 agent 把结果写成 markdown
-       * （最常见的是 ```diff 围栏）。带强信号（围栏 / 首行标题 / 列表块）就走消息正文
-       * 那套 streamdown 渲染；其余仍按等宽 pre 原样展示，免得把原始终端输出重排。
-       * 判定口径与取舍见 `lib/markdown-text.ts`。
-       */
-      const text = item.content.text
-      nodes.push(
-        looksLikeMarkdown(text) ? (
-          // 限高滚动与 diff 直显同参：整篇 diff / 长清单展开时不把消息流撑爆
-          <div key={`text-${i}`} className="max-h-72 overflow-y-auto no-scrollbar">
-            <MessageResponse className="px-2 py-1.5 tracking-[0.02em]">{text}</MessageResponse>
-          </div>
-        ) : (
-          <AcpTextBlock key={`text-${i}`} text={text} />
-        )
-      )
+      // 工具回的文本一律按原样展示（等宽 pre），与其它工具输出同一口径：
+      // 不猜它是不是 markdown，免得把读回来的原文 / 终端输出重排。
+      nodes.push(<AcpTextBlock key={`text-${i}`} text={item.content.text} />)
     } else if (
       item?.type === 'content' &&
       item.content?.type === 'image' &&
@@ -788,6 +775,8 @@ function ErrorTextBlock({ text, onReload, reloading, reloadDisabled }: {
 }
 
 export interface PartViewProps {
+  onStopTool?: (toolCallId: string) => void
+  onStopTurn?: () => void
   part: AgentMessagePart
   /** 由会话宿主绑定目标会话；不从全局焦点推断。 */
   onReload?: () => void
@@ -824,6 +813,8 @@ export interface PartViewProps {
 }
 
 function PartViewInner({
+  onStopTool,
+  onStopTurn,
   part,
   onReload,
   reloading,
@@ -978,7 +969,10 @@ function PartViewInner({
           // 已经在执行 → 只停**那一条**（命令杀进程树 / 抓取 abort / 子任务 abort 子 run，
           // 工具结果收尾成「（已中止）」，整轮继续）；入参还在生成（还没真正跑起来）→
           // 没有可停的，退回中止这一轮。
-          if (isStoppableToolRunning(part)) void stopCommand(toolCallId)
+          if (isStoppableToolRunning(part)) {
+            if (onStopTool) onStopTool(toolCallId)
+            else void stopCommand(toolCallId)
+          } else if (onStopTurn) onStopTurn()
           else void stopTurn()
         }
       : undefined
@@ -1207,7 +1201,7 @@ function PartViewInner({
         onStop={onStop}
       >
         {hasBody && (
-          <div className="flex flex-col gap-2 border border-border rounded-lg mt-2">
+          <div className="flex flex-col gap-2 rounded-lg mt-2">
             {isError && <AcpTextBlock text={toolErrorText(output)} />}
             {fileDiff && (
               // 工具卡里的 diff 只给一个固定视口：长文件不把整条消息撑高；
@@ -1322,6 +1316,8 @@ export const PartView = memo(
   PartViewInner,
   (prev, next) =>
     prev.part === next.part &&
+    prev.onStopTool === next.onStopTool &&
+    prev.onStopTurn === next.onStopTurn &&
     prev.onReload === next.onReload &&
     prev.reloading === next.reloading &&
     prev.reloadDisabled === next.reloadDisabled &&
@@ -1333,11 +1329,11 @@ export const PartView = memo(
 )
 
 /**
- * 附件 part（用户消息里的图片 / PDF）。
+ * 附件 part（用户消息里的图片 / 文档）。
  *
  * 图片的 src 统一经 `loadMediaObjectUrl` 解析：web 同源直用；desktop 没有服务端口，
  * 走 IPC 桥 fetch 成 blob objectURL。加载失败给一个明确的占位（不吞错误）。
- * PDF 渲染成文件 chip（浏览器里直接内嵌 PDF 预览的收益小、泄露面大 —— 只展示文件名）。
+ * 文档不内嵌预览，显示可下载的文件 chip；按需拉 Blob，不占图片 objectURL 缓存。
  *
  * 图片点开的是共享的 `ImageViewer`（全屏缩放 / 旋转 / 平移）。它的下载按钮是**按需渲染**的
  * —— 不传 `onDownload` 就没有那颗按钮，所以消息附件以前只能看不能存。这里把下载接上：
@@ -1374,11 +1370,30 @@ function FilePartView({ part }: { part: Extract<AgentMessagePart, { type: 'file'
   }, [isImage, part.url])
 
   if (!isImage) {
+    const downloadDocument = (): void => {
+      if (downloading) return
+      setDownloading(true)
+      void downloadFile(resolveServerMediaUrl(part.url), part.name, {
+        fetchImpl: part.url.startsWith('/api/uploads/') ? hostFetch : globalThis.fetch
+      })
+        .catch((err: unknown) => toast.error(tr('下载失败：{error}', { error: err instanceof Error ? err.message : String(err) })))
+        .finally(() => setDownloading(false))
+    }
     return (
-      <span className="flex max-w-72 items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={downloadDocument}
+        disabled={downloading}
+        title={`${tr('下载')} ${part.name}`}
+        aria-label={`${tr('下载')} ${part.name}`}
+        className="h-auto max-w-72 gap-1.5 px-2 py-1"
+      >
         <FileText className="size-4 shrink-0 text-muted-foreground" />
         <span className="truncate">{part.name}</span>
-      </span>
+        {downloading ? <Loader2 className="size-3.5 shrink-0 animate-spin" /> : <Download className="size-3.5 shrink-0 text-muted-foreground" />}
+      </Button>
     )
   }
   if (failed) {

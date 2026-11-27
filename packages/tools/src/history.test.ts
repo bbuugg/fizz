@@ -8,7 +8,7 @@ const history: AgentChatMessage[] = [{ id: 'a1', role: 'assistant', createdAt: 1
   { type: 'tool-call', toolCallId: 't1', toolName: 'bash', input: { command: 'typecheck' },
     output: `${'x'.repeat(9000)}TS2322` }
 ] }]
-const options = { toolCallId: 'test', messages: [] }
+const options = { toolCallId: 'test', messages: [], context: {} }
 
 describe('会话证据工具', () => {
   it('长命令日志保留中段错误与尾部退出状态，且不超预算', () => {

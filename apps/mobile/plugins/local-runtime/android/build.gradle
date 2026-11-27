@@ -1,0 +1,17 @@
+buildscript {
+    repositories { google(); mavenCentral() }
+    dependencies { classpath 'com.android.tools.build:gradle:8.13.0' }
+}
+apply plugin: 'com.android.library'
+
+android {
+    namespace = 'cn.codeemo.fizz.runtime'
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig { minSdkVersion 26 }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+}
+repositories { google(); mavenCentral() }
+dependencies { implementation project(':capacitor-android') }

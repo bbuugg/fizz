@@ -2,12 +2,7 @@
  * 内置上传适配器注册表：按 `FIZZ_UPLOAD_BACKEND` 选实现（缺省 local）。
  *
  * ⚠️ `adapterFor`（归属判定）扫描**全部已登记**的适配器，而不是只看当前选中的那个 ——
- * 换了存储后端之后，旧适配器上传的历史附件引用仍然要能通过校验、解析出模型地址。
- *
- * 单独一个文件（而不是塞在 `index.ts` 里）是为了让 `registry.ts`（插件上传源）也能用到
- * 这里选出的适配器 —— 内置上传源就是「选中那个适配器」的封装，`FIZZ_UPLOAD_BACKEND`
- * 配了别的实现时，走内置源的上传同样要落到那个实现上，不能悄悄退回 local。
- * 放在 `index.ts` 会让两侧互相 import（循环）。
+ * 换了存储后端之后，历史附件引用仍然要能通过校验并读回字节。
  */
 import { LocalUploadAdapter } from './local'
 import type { UploadAdapter } from './types'

@@ -6,6 +6,7 @@ import {
   CollapsibleTrigger,
 } from "@fizz/ui/collapsible";
 import { cn } from "@fizz/agent-kit/shared/lib/utils";
+import { writeClipboard } from "@fizz/agent-kit/shared/lib/clipboard";
 import { REVEAL_ON_HOVER_ARROW } from "@fizz/agent-kit/shared/lib/hover-reveal-arrow";
 import { useT } from "@fizz/agent-kit/shared/lib/language";
 import type { ToolUIPart } from "ai";
@@ -37,7 +38,7 @@ import {
 } from "lucide-react";
 import { Button } from "@fizz/ui/button";
 import type { ComponentProps, ReactNode } from "react";
-import { isValidElement, useEffect, useState } from "react";
+import { isValidElement, useEffect, useRef, useState } from "react";
 import { CodeBlock } from "@fizz/agent-kit/shared/ai-elements/code-block";
 import { Loader } from "@fizz/agent-kit/shared/ai-elements/loader";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@fizz/ui/tooltip";
@@ -153,14 +154,18 @@ export type ToolHeaderProps = {
  * ⚠️ 这张表只放**结算 / 审批**两类的静态图标；「还在跑」那两档由 `statusIcon` 换成转圈的
  * loading，见那里的说明。
  */
+/*
+ * 尺寸统一 `size-3.5`（14px）：它和行里的工具名（`text-sm`）等高，比 16px 的类型图标
+ * 小一档，次要信息不抢戏，也与明细 / 增删计数对齐在同一中线。
+ */
 const STATUS_ICONS: Record<ToolUIPart["state"], ReactNode> = {
-  "input-streaming": <CircleIcon className="size-4 shrink-0" />,
-  "input-available": <ClockIcon className="size-4 shrink-0" />,
-  "approval-requested": <ClockIcon className="size-4 shrink-0 text-yellow-600" />,
-  "approval-responded": <CheckCircleIcon className="size-4 shrink-0 text-blue-600" />,
-  "output-available": <CheckCircleIcon className="size-4 shrink-0 text-green-600" />,
-  "output-error": <XCircleIcon className="size-4 shrink-0 text-red-600" />,
-  "output-denied": <XCircleIcon className="size-4 shrink-0 text-orange-600" />,
+  "input-streaming": <CircleIcon className="size-3.5 shrink-0" />,
+  "input-available": <ClockIcon className="size-3.5 shrink-0" />,
+  "approval-requested": <ClockIcon className="size-3.5 shrink-0 text-yellow-600" />,
+  "approval-responded": <CheckCircleIcon className="size-3.5 shrink-0 text-blue-600" />,
+  "output-available": <CheckCircleIcon className="size-3.5 shrink-0 text-green-600" />,
+  "output-error": <XCircleIcon className="size-3.5 shrink-0 text-red-600" />,
+  "output-denied": <XCircleIcon className="size-3.5 shrink-0 text-orange-600" />,
 };
 
 /** 「还在跑」的两档：入参正在生成（模型还在写这个调用）、已收到完整入参（工具在执行） */
@@ -196,7 +201,7 @@ const STATUS_SHRINK = "shrink-[99]";
  */
 const statusIcon = (state: ToolUIPart["state"], live: boolean) =>
   live && RUNNING_STATES.has(state) ? (
-    <Loader size={16} className="shrink-0" />
+    <Loader size={14} className="shrink-0" />
   ) : (
     STATUS_ICONS[state]
   );
@@ -248,7 +253,7 @@ function DetailDialog({
 
   const copy = (): void => {
     // 剪贴板可能不可用（非安全上下文 / 无权限）：弹窗里的文字仍可手动选中复制，不额外报错
-    void navigator.clipboard.writeText(detail).then(
+    void writeClipboard(detail).then(
       () => {
         setCopied(true);
         window.setTimeout(() => setCopied(false), 1200);
@@ -304,6 +309,124 @@ function DetailDialog({
 }
 
 /**
+ * 明细单行文本：溢出时鼠标悬停自动横向滚动（来回跑，露出被裁掉的尾部）。
+ *
+ * 用 `scrollLeft` 逐帧推进，而不是 `scrollTo({ behavior: 'smooth' })`：内容长度未知，
+ * 平滑滚动的时长由浏览器按距离决定，长命令会一闪而过。
+ *
+ * 手动滚动即停：`wheel`（横向 / Shift / Ctrl）或 `pointerdown` 之后，本次悬停不再自动滚，
+ * 指针移出时复位到开头并清掉「手动过」标记，下次悬停重新从 0 开始。
+ * 触屏（`pointerType === "touch"`）与「减少动态效果」都不启用。
+ */
+function HoverAutoScrollSpan({
+  className,
+  children,
+  ...props
+}: ComponentProps<"span">) {
+  const ref = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+    const SPEED = 55; // px/s
+    const EDGE_PAUSE_MS = 600;
+    let raf = 0;
+    let running = false;
+    /** 用户已经手动滚过：本次悬停内不再自动滚 */
+    let manual = false;
+    let direction: 1 | -1 = 1;
+    let last = 0;
+    let holdUntil = 0;
+
+    const limit = () => Math.max(0, el.scrollWidth - el.clientWidth);
+
+    const stop = (): void => {
+      running = false;
+      last = 0;
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+    };
+
+    const tick = (now: number): void => {
+      if (!running) return;
+      const max = limit();
+      if (max <= 0) {
+        stop();
+        return;
+      }
+      if (!last) last = now;
+      const dt = Math.min(now - last, 64) / 1000;
+      last = now;
+      if (now >= holdUntil) {
+        let next = el.scrollLeft + direction * SPEED * dt;
+        if (next >= max) {
+          next = max;
+          direction = -1;
+          holdUntil = now + EDGE_PAUSE_MS;
+        } else if (next <= 0) {
+          next = 0;
+          direction = 1;
+          holdUntil = now + EDGE_PAUSE_MS;
+        }
+        el.scrollLeft = next;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+
+    const enter = (event: PointerEvent): void => {
+      // 触屏没有 hover 语义：pointerenter 是点击时合成的，别在这种设备上自己滚
+      if (event.pointerType === "touch") return;
+      if (manual || running) return;
+      if (limit() <= 0) return;
+      stop();
+      el.scrollLeft = 0;
+      direction = 1;
+      holdUntil = 0;
+      running = true;
+      raf = requestAnimationFrame(tick);
+    };
+
+    const leave = (): void => {
+      stop();
+      manual = false;
+      el.scrollLeft = 0;
+    };
+
+    /** 手动滚动的入口：横向滚轮、Shift/Ctrl + 滚轮、按住拖动。 */
+    const onWheel = (event: WheelEvent): void => {
+      if (Math.abs(event.deltaX) > 0 || event.shiftKey || event.ctrlKey) {
+        manual = true;
+        stop();
+      }
+    };
+    const onPointerDown = (): void => {
+      manual = true;
+      stop();
+    };
+
+    el.addEventListener("pointerenter", enter);
+    el.addEventListener("pointerleave", leave);
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      stop();
+      el.removeEventListener("pointerenter", enter);
+      el.removeEventListener("pointerleave", leave);
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, []);
+
+  return (
+    <span ref={ref} className={className} {...props}>
+      {children}
+    </span>
+  );
+}
+
+/**
  * 触发行里的「标题 + 明细」两段文本（图标与状态图标之外的所有文字）。
  *
  * 工具名 / 意图优先保留，明细作为补充内容在空间不足时视觉截断。
@@ -350,7 +473,7 @@ function ToolHeadLabel({
            *
            * 拦冒泡：不拦的话点这一下会先把卡片开合一次（外层触发器把点击当成了自己）。
            */
-          <span
+          <HoverAutoScrollSpan
             role="button"
             tabIndex={0}
             aria-label={detailAction.label}
@@ -369,9 +492,9 @@ function ToolHeadLabel({
              className="min-w-0 flex-1 cursor-pointer overflow-x-auto no-scrollbar whitespace-nowrap font-mono text-xs transition-colors hover:text-foreground hover:underline focus-visible:text-foreground focus-visible:underline focus-visible:outline-none"
           >
             {detail}
-          </span>
+          </HoverAutoScrollSpan>
         ) : (
-           <span className="min-w-0 flex-1 overflow-x-auto no-scrollbar whitespace-nowrap font-mono text-xs">{detail}</span>
+           <HoverAutoScrollSpan className="min-w-0 flex-1 overflow-x-auto no-scrollbar whitespace-nowrap font-mono text-xs">{detail}</HoverAutoScrollSpan>
         )
       ) : null}
       {/* 增删行数这类「小结论」跟在明细后面：它不带截断、也不参与让位（`shrink-0` 由渲染方给） */}
@@ -548,9 +671,10 @@ export const ToolHeader = ({
       {...props}
     >
       {/*
-       * `items-center`：图标（16px）、标题（`text-sm` / 20px 行高）、状态图标都按**同一
-       * 条中线**排。用 `items-start` 时 16px 的图标会比文字高 2px，右侧那组按钮居中在
-       * 24px 的盒子里又低 4px，整行看着「左边偏高、右边偏低」。
+       * `items-center`：类型图标（16px）、标题（`text-sm` / 20px 行高）、明细
+       * （12px）、增删计数（12px）、状态图标（14px）都按**同一条中线**排。用
+       * `items-start` 时 16px 的图标会比文字高 2px，右侧那组按钮居中在 24px 的盒子里
+       * 又低 4px，整行看着「左边偏高、右边偏低」。
        */}
       {/*
        * ⚠️ `w-full` 不能去掉：触发器是 `items-start`（不拉伸子项），少了它这一行会按

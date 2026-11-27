@@ -27,7 +27,7 @@
 - **多智能体协作**：一条会话里挂若干可配置 agent；`@名字` 只点名对应的 agent，`@` 多个就多个一起处理，不 `@` 则全体判断「这条是不是我的」，无关就静默跳过。Agent 之间用 `SendMessage` 互相投递任务（投递不等待），所有回复都带作者名进同一条时间线。
 - **上下文管理**：接近预算时自动压缩历史（摘要 + 检查点），也可在上下文指示条上手动点「压缩上下文」；压缩后原始消息一条不丢，清除检查点即回到全文。
 - **会话操作**：分叉（从某条消息签出新会话，可顺手建 git worktree）、重命名、归档、搜索（标题 + 正文，归档会话照搜）、把外部 agent 侧已有会话导入绑定、把 ACP 会话转成内置 Agent 会话继续聊。
-- **富媒体输入**：拖入图片 / PDF 直接交给模型；语音输入（按住 `Alt+V` 说话）；回复里的 Markdown 文档自动挂成可点击产物。
+- **富媒体输入**：拖入图片或文档（PDF、DOCX、TXT、Markdown、CSV、JSON）；图片 / PDF 以内联字节交给模型，其余文档提取文字后发送，历史仍保存原文件引用，可点击下载。DOCX 只提取正文与表格文字，不含图片、页眉页脚及原始排版；单文件最多提取 32,000 字符，整轮文档文字最多 100,000 字符，截断会提示。ACP 支持文本文档，PDF 暂不投递；语音输入（按住 `Alt+V` 说话）；回复里的 Markdown 文档自动挂成可点击产物。
 - **实时流式**：SSE 推送思考过程、工具调用与正文，带应用层心跳；断线可用 `requestId` 续接同一轮。
 
 ### 项目与工作区
@@ -56,7 +56,7 @@
 ### 扩展与自动化
 
 - **技能（Skills）**：放一份 `SKILL.md` 进技能目录即可被发现。支持内置（随包分发）、项目级、用户级（`~/.fizz/skills`）、跨智能体共享（`~/.agents/skills`）。系统提示词里只放名称与描述，正文由模型按需读取。
-- **插件（Plugins）**：TS 源码直接加载的插件框架，能注册工具、系统提示词片段、设置项、上传源、模型、Hooks，以及**自己的活动栏图标与 UI 面板**。随包内置 7 个：OSS 存储、API 文件上传、Redis 客户端、storage-to、企业微信通知、RTK 命令重写、系统提示词。
+- **插件（Plugins）**：TS 源码直接加载的插件框架，能注册工具、系统提示词片段、设置项、模型、Hooks，以及 UI 面板。随包内置 6 个：OSS 文件分享、Redis 客户端、storage-to、企业微信通知、RTK 命令重写、系统提示词。对话附件统一使用 JSON + base64 上传到内置存储；发给模型时，图片 / PDF 内联字节，其余受支持文档提取文字。
 - **MCP**：挂载任意 MCP 服务器，把它的工具接进对话。内置 Agent 和外部 ACP Agent 都只接入会话选中的 MCP；ACP 会按外部 Agent 声明的能力过滤传输类型（v1：stdio / HTTP / SSE，v2：stdio / HTTP），由外部 Agent 自行连接。配置在新建或恢复会话时传入；修改后可重启该 ACP 会话生效，不默认热更新。
 - **外部 Agent（ACP）**：通过标准协议接入 Claude Code、Codex 等，支持一键探测本机已安装的 agent；外部 agent 会话也能在同一个界面里继续聊。
 - **项目规则注入**：工作区根目录的 `AGENTS.md`（`CLAUDE.md` 兼容）每轮**全文**进系统提示词，支持行内 `@相对路径` 导入；全局规则放 `<配置目录>/AGENTS.md`；子目录的规则在模型读到该目录时按需追加。
@@ -66,7 +66,7 @@
 
 - **三端同源**：web / 桌面 / 安卓共用同一套 `agent-kit` 外壳与状态层，差异只在宿主能力与版式（手机版是**单标签 + 无活动栏**：顶栏一条、侧栏固定为会话列表抽屉、内容整屏铺满）。
 - **桌面端增强**：托盘常驻、窗口置顶、应用内自动更新（只静默检查，下载与安装都要你点）、局域网远程访问（把进程内 server 暴露成真实端口，手机 / 其他浏览器直连）。
-- **安卓端**：独立 vite 工程 + Capacitor 壳，服务端地址在登录页填写并存本机，同一个 APK 可连不同服务器；与应用内自动更新（静默查 GitHub Release，下载与安装都要你点，安装走系统安装器）。
+- **安卓端**：Capacitor 壳提供两种构建形态：`build:mobile:hosted` 是连接自建服务端的轻量版；正式 APK 将 Linux 用户态、Node.js、Fizz server 与 Android PRoot 一并内置，在手机私有目录启动本机服务。内置模式的本机 JWT 只在进程内存中，用户数据、工作区、Home 与安装工具保存在应用私有目录；引擎升级保留这些数据。它不需要 root、Termux 或电脑，模型/API 服务仍需网络。Android 侧载包使用 target SDK 28/min SDK 26，目标是兼容私有目录内的 Linux 程序执行，并非当前应用商店合规配置。与应用内 APK 更新（静默查 GitHub Release，下载与安装需用户确认）共用既有更新流程。
 - **界面自定义**：明暗模式、内置配色主题、自定义主题（逐项改色）、主题背景（图片或视频）、可拖拽排序的活动栏与面板分屏。
 - **中英双语**：中文为源文案与默认语言，英文缺失项自动回落，不会出现空白。
 
@@ -207,13 +207,31 @@ npm run dist:desktop    # 当前平台安装包（另有 dist:win / dist:mac / d
 
 ### 方式四：安卓端
 
+#### APK 内置本机运行环境
+
+构建完整 APK 需要 Node.js 22、Docker Buildx、可用的 Docker daemon、Android SDK 与 JDK 21；跨架构 ARM64 构建还需要 QEMU（CI 已配置）。产物默认面向 `arm64-v8a`，也可单独构建 `x86_64`：
+
+```bash
+npm ci
+npm run add:android --workspace @fizz/mobile
+npm run build:mobile:runtime -- arm64-v8a  # 或 x86_64；生成 Linux/Node/Fizz 归档及 Android PRoot
+npm run build:mobile                      # 构建 UI、cap sync，并配置本机运行时
+npm run android:build                     # 构建已签名 release APK
+```
+
+`FIZZ_ANDROID_ABI=x86_64` 可用于选择 x86_64 运行时和 APK ABI。生成的运行时归档位于 `apps/mobile/runtime/out/<abi>/`，构建系统会校验清单、压缩包和 PRoot 原生库哈希。APK 安装后首次启动会将 Linux 和 Node 解压到应用私有存储（请预留至少约 2 倍未压缩运行时大小的可用空间），然后在本机 `127.0.0.1` 上运行 Fizz；数据路径位于应用私有目录下的 `fizz-runtime/data`、`workspace` 和 `home`。卸载应用会删除这些私有数据，安装同签名升级则保留。托管版仍由 `npm run build:mobile:hosted` 构建，不含本机运行时。
+
+PRoot 原生组件随 APK 提供许可证与构建来源文件，位置为 APK assets 中的 `fizz-runtime/notices/`。发布本机模式 APK 前，需依据 PRoot GPL-2.0、libtalloc LGPL-3.0-or-later 与各 Linux/npm 依赖许可证完成源码对应提供和再分发义务审查。
+
+#### 托管版与签名
+
 ```bash
 npm run add:android --workspace @fizz/mobile   # 新机器第一次必须先跑
-npm run build:mobile                          # 构建 + cap sync
+npm run build:mobile:hosted                   # 只构建由服务端托管的手机版前端
 npm run android:build                         # 出 release APK
 ```
 
-APK 首次登录必须填服务端绝对地址（页面 origin 是 `https://localhost`），填完存本机，换服务器不用重装。
+托管版 APK 首次登录必须填服务端绝对地址（页面 origin 是 `https://localhost`），填完存本机，换服务器不用重装。本机运行时 APK 启动后自动连自己的服务，不显示远程服务器登录页。
 
 **应用内更新**：APK 会静默检查本仓库 GitHub Release 里的 `Fizz-<version>-android.apk`（与桌面包同一个 Release，由 CI 产出），启动 8 秒后查一次、之后每 6 小时及回到前台再查；发现新版本只在设置 → 通用与右下角提示里通知，**下载与安装都要用户点**。下载走系统 DownloadManager（通知栏可见、可取消），安装调起系统安装器——安卓不允许静默安装，首次需要在系统里允许「安装未知应用」。原生侧是仓库内的本地 Capacitor 插件 `apps/mobile/plugins/app-updater`（`android/` 是生成物，插件随 `cap sync` 链接进工程）。
 

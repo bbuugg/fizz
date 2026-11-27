@@ -5,15 +5,16 @@
  * 主 effect 里，读起来像「建个终端顺手还管剪贴板」。共同点是：都挂在**容器 / term 的 DOM 上**、
  * 都只依赖偏好开关、跟会话生命周期无关 —— 于是抽成一个「挂上去，返回卸载函数」的独立单元。
  *
- * ⚠️ 两处监听必须走 **capture**（且卸载时也要带同一个 capture 参数，否则摘不掉）：
- * xterm 6 把滚轮挂在更深的 `.xterm-scrollable-element` 上、contextmenu 它自己也会
- * `stopPropagation`，冒泡阶段根本收不到。
+ * ⚠️ 容器上的监听必须走 **capture**（且卸载时也要带同一个 capture 参数，否则摘不掉）：
+ * xterm 6 把滚轮挂在更深的 `.xterm-scrollable-element` 上、contextmenu / mouse 事件它自己
+ * 也会 `stopPropagation`，冒泡阶段根本收不到。
  */
 import type { Terminal } from '@xterm/xterm'
 import {
   getTerminalCopyOnSelect,
   getTerminalPasteOnRightClick
 } from '@fizz/agent-kit/shared/lib/terminal-prefs'
+import { writeClipboard } from '@fizz/agent-kit/shared/lib/clipboard'
 
 /**
  * 右键粘贴用：剥掉粘贴文本末尾的换行。
@@ -117,7 +118,9 @@ export function attachTerminalInteractions(options: TerminalInteractionsOptions)
     /**
      * 非安全上下文（用 `http://192.168.x.x` 打开 web 端 / 远程访问）里 `navigator.clipboard`
      * **整个不存在**，直接调会抛 TypeError 把选区回调打断（表现为选不中、拖选卡住）。
-     * 与上面右键粘贴同一道守卫。默认开启后这条路径每次拖选都会走，必须挡住。
+     * 而且不能在这里退回 execCommand：它要聚焦隐藏 textarea 抢走 xterm 的焦点，
+     * 拖选会被打断，`selectionchange` 也不保证带用户手势。这条路径只留给安全上下文，
+     * 非安全上下文交给下面的 `pointerup` 兜底。
      */
     const clipboard = navigator.clipboard
     if (!clipboard?.writeText) return
@@ -125,10 +128,38 @@ export function attachTerminalInteractions(options: TerminalInteractionsOptions)
     void clipboard.writeText(selection).catch(() => {})
   })
 
+  /**
+   * 非安全上下文的「选中即复制」：拖选结束（`pointerup`，真实用户手势）时复制一次。
+   *
+   * 不能放在 `selectionchange` 里走 execCommand 退路：隐藏 textarea 的 `focus()` 会
+   * 抢走 xterm 焦点、打断正在进行的拖选，而且拖选途中的回调不保证还有用户手势。
+   * `pointerup` 时选区已经落定，复制完再把焦点还给终端，接着敲键盘才不会丢。
+   *
+   * 触屏跳过：聚焦 textarea 会弹软键盘；键盘扩选仍走 Ctrl+C（`terminal-key-handler`
+   * 在有选区时是复制，不会发 SIGINT）。
+   */
+  const onPointerUpForCopy = (event: PointerEvent): void => {
+    if (event.button !== 0) return
+    if (event.pointerType === 'touch') return
+    // 安全上下文已经由 selectionchange 实时写过，这里再写一次是重复
+    // （DOM 类型把 clipboard 写成恒存在，非安全上下文运行时其实是 undefined）
+    const clipboard = navigator.clipboard as Clipboard | undefined
+    if (clipboard?.writeText) return
+    if (suppressCopyOnSelect?.()) return
+    if (!getTerminalCopyOnSelect()) return
+    const selection = term.getSelection()
+    if (!selection) return
+    void writeClipboard(selection).catch(() => {})
+    // 退路会 focus 隐藏 textarea；这里同步还回焦点（execCommand 在 writeClipboard 里同步执行）
+    term.focus()
+  }
+  container.addEventListener('pointerup', onPointerUpForCopy, { capture: true })
+
   return () => {
     // 移除时必须与注册时的 capture 一致，否则摘不掉（监听会跟着容器泄漏到重建后的终端）
     container.removeEventListener('wheel', onWheel, { capture: true })
     container.removeEventListener('contextmenu', onContextMenuForPaste, { capture: true })
+    container.removeEventListener('pointerup', onPointerUpForCopy, { capture: true })
     selectionSub.dispose()
   }
 }

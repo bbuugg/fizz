@@ -12,7 +12,7 @@ import type {
   WorkspaceDirEntry,
   WorkspaceStat
 } from '@fizz/contracts/workspace'
-import { readZip, zipRemoteDirectory } from './zip'
+import { createZip, readZip, zipRemoteDirectory } from './zip'
 
 type FakeNode = { type: 'dir' | 'file' | 'symlink'; data?: Buffer }
 
@@ -156,5 +156,31 @@ describe('zipRemoteDirectory', () => {
     const backend = fakeRemoteBackend(sampleTree())
     await expect(zipRemoteDirectory(backend, '/ws/missing')).rejects.toThrow('文件夹不存在')
     await expect(zipRemoteDirectory(backend, '/ws/project/a.txt')).rejects.toThrow('不是文件夹')
+  })
+})
+
+/** 文档读取只展开选中 XML，且不能信任 ZIP 中伪造的解压大小。 */
+describe('有界 ZIP 读取', () => {
+  it('过滤掉的条目不解压，也不消耗展开预算', () => {
+    const zip = createZip([
+      { name: 'image.png', data: Buffer.alloc(1024) },
+      { name: 'document.xml', data: Buffer.from('text') }
+    ])
+    expect(readZip(zip, { include: (name) => name === 'document.xml', maxFileBytes: 4, maxTotalBytes: 4 }))
+      .toEqual([{ name: 'document.xml', data: Buffer.from('text') }])
+  })
+
+  it('实际展开超过上限时中止，即使目录里谎报只有 1 字节', () => {
+    const zip = createZip([{ name: 'document.xml', data: Buffer.alloc(4096, 65) }])
+    const central = zip.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]))
+    zip.writeUInt32LE(1, central + 24)
+    expect(() => readZip(zip, { maxFileBytes: 32, maxTotalBytes: 32 })).toThrow()
+  })
+
+  it('损坏内容不能作为成功解压返回', () => {
+    const zip = createZip([{ name: 'document.xml', data: Buffer.from('text') }])
+    const central = zip.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]))
+    zip.writeUInt32LE(0, central + 16)
+    expect(() => readZip(zip)).toThrow('校验失败')
   })
 })

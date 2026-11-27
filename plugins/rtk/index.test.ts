@@ -5,31 +5,38 @@
  * 而本插件是按**工具名**匹配的 `tool:call` 钩子 —— 名字对不上就原样放行，不报错、不打日志，
  * 用户看到的是「开关打开了，但 `git status` 还是原样跑」。
  *
- * 这里用一个**替身 `rtk` 可执行文件**（`/bin/sh` 脚本）而不是真的 rtk：
- * 单测不该依赖开发机上装没装它、装的是哪个版本。
+ * mock `spawnSync`，不启动真实进程，也不依赖 POSIX 脚本或开发机上的 rtk。
+ * 每条用例重载插件，隔离模块级缓存与「只警告一次」状态。
  */
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
-import rtk from './index'
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('node:child_process', () => ({ spawnSync: vi.fn() }))
 
 type Listener = (toolName: string, input: unknown, next: () => unknown) => unknown
 
-const dir = mkdtempSync(join(tmpdir(), 'fizz-rtk-'))
-/** 替身 rtk：`rtk rewrite <cmd>` → 打印 `rtk <cmd>`，退出码 0（与真 rtk 的改写口径一致） */
-const STUB = join(dir, 'rtk')
-writeFileSync(STUB, '#!/bin/sh\nprintf "rtk %s" "$2"\n')
-chmodSync(STUB, 0o755)
+const BIN = 'rtk-test'
+const spawn = vi.mocked(spawnSync)
+let rtk: typeof import('./index')['default']
 
-afterAll(() => rmSync(dir, { recursive: true, force: true }))
+function result(status: number | null, stdout: string): SpawnSyncReturns<string> {
+  return { pid: 0, output: [null, stdout, ''], stdout, stderr: '', status, signal: null }
+}
+
+beforeEach(async () => {
+  vi.resetModules()
+  vi.stubEnv('RTK_SUPPRESS_HOOK_WARNING', undefined)
+  spawn.mockReset().mockImplementation((_bin, args) => result(0, `rtk ${args?.[1]}`))
+  rtk = (await import('./index')).default
+})
+afterEach(() => vi.unstubAllEnvs())
 
 /** 用最小 ctx 挂载插件，收集它注册的钩子与设置项 */
 function mount(config: Record<string, unknown>) {
   const hooks = new Map<string, Listener>()
   const settings: string[] = []
   const ctx = {
-    logger: { warn: () => undefined },
+    logger: { warn: vi.fn() },
     inject: (_deps: string[], cb: (c: unknown) => unknown) => cb(ctx),
     ui: {
       icon: () => undefined,
@@ -39,8 +46,8 @@ function mount(config: Record<string, unknown>) {
       on: (name: string, listener: Listener) => hooks.set(name, listener)
     }
   }
-  rtk.apply(ctx as never, { bin: STUB, ...config } as never)
-  return { hooks, settings }
+  rtk.apply(ctx as never, { bin: BIN, ...config } as never)
+  return { hooks, settings, warn: ctx.logger.warn }
 }
 
 /** 触发一次工具调用钩子（`next()` 返回原始入参，与真实 waterfall 的 around 范式一致） */
@@ -55,13 +62,18 @@ describe('rtk 插件 · 接线', () => {
     const { hooks, settings } = mount({})
     expect(hooks.size).toBe(0)
     expect(settings).toEqual(['enabled', 'terminal', 'bin', 'timeoutMs'])
+    expect(spawn).not.toHaveBeenCalled()
   })
 
-  it('打开后 bash 的命令被改写', () => {
+  it.each([0, 3])('打开后 bash 的命令被改写（退出码 %s）', (status) => {
+    spawn.mockReturnValue(result(status, 'rtk git status\n'))
     const { hooks } = mount({ enabled: true })
     expect(call(hooks, 'bash', { command: 'git status', description: '查看状态' })).toEqual({
       command: 'rtk git status',
       description: '查看状态'
+    })
+    expect(spawn).toHaveBeenCalledWith(BIN, ['rewrite', 'git status'], {
+      encoding: 'utf8', timeout: 300, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore']
     })
   })
 
@@ -90,5 +102,27 @@ describe('rtk 插件 · 接线', () => {
     const { hooks } = mount({ enabled: true })
     expect(call(hooks, 'bash', { command: '   ' })).toEqual({ command: '   ' })
     expect(call(hooks, 'bash', {})).toEqual({})
+  })
+
+  it.each([1, 2, null])('未改写、拒绝或超时保留原输入（退出码 %s）', (status) => {
+    spawn.mockReturnValue(result(status, 'rtk git status'))
+    const { hooks } = mount({ enabled: true })
+    const input = { command: 'git status' }
+    expect(call(hooks, 'bash', input)).toBe(input)
+  })
+
+  it('可执行文件不可用只警告一次，不缓存失败，恢复后重新改写', () => {
+    spawn.mockReturnValueOnce({
+      ...result(null, ''), error: Object.assign(new Error('not found'), { code: 'ENOENT' })
+    }).mockReturnValueOnce({
+      ...result(null, ''), error: Object.assign(new Error('not found'), { code: 'ENOENT' })
+    })
+    const { hooks, warn } = mount({ enabled: true })
+    const input = { command: 'git status' }
+    expect(call(hooks, 'bash', input)).toBe(input)
+    expect(call(hooks, 'bash', input)).toBe(input)
+    expect(warn).toHaveBeenCalledOnce()
+    expect(call(hooks, 'bash', input)).toEqual({ command: 'rtk git status' })
+    expect(spawn).toHaveBeenCalledTimes(3)
   })
 })

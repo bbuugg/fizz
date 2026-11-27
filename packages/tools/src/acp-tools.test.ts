@@ -7,6 +7,7 @@
  * - **update 把没传的字段清掉**：args 只在显式传入时才带，否则应沿用原值；
  * - **删了不报剩哪些**：模型要能据此告诉用户「还剩哪几条」；
  * - **detect 不看是否已添加**：重复添加会被领域层挡下，模型却以为成功。
+ * - **移除的设置从工具侧复活**：schema、摘要与保存入参都不应暴露或转发旧类型 / 放行策略。
  */
 import { describe, expect, it, vi } from 'vitest'
 import { ACP_TOOLS, buildAcpTools, type AcpAgentSummary, type AcpToolsDeps } from './acp-tools'
@@ -19,7 +20,6 @@ function deps(over: Partial<AcpToolsDeps['acp']> = {}, confirm = true): AcpTools
       name: 'opencode',
       command: 'opencode',
       args: ['acp'],
-      type: 'opencode',
       models: [
         { value: 'm-a', name: 'Model A' },
         { value: 'm-b', name: 'Model B' }
@@ -36,9 +36,7 @@ function deps(over: Partial<AcpToolsDeps['acp']> = {}, confirm = true): AcpTools
           id: input.id ?? 'new-id',
           name: input.name,
           command: input.command,
-          args: input.args ?? [],
-          ...(input.type ? { type: input.type } : {}),
-          ...(input.allowStrategy ? { allowStrategy: input.allowStrategy } : {})
+          args: input.args ?? []
         }
         const index = store.findIndex((a) => a.id === saved.id)
         if (index >= 0) store[index] = saved
@@ -74,9 +72,33 @@ describe('工具清单', () => {
   it('ACP_TOOLS 与实际挂载的工具名逐字一致', () => {
     expect(Object.keys(buildAcpTools(deps())).sort()).toEqual([...ACP_TOOLS].sort())
   })
+
+  it.each(['create_acp_agent', 'update_acp_agent'])('%s 不再暴露类型或放行策略', (name) => {
+    const schema = buildAcpTools(deps())[name].inputSchema as unknown as { shape: Record<string, unknown> }
+    expect(schema.shape).not.toHaveProperty('type')
+    expect(schema.shape).not.toHaveProperty('allowStrategy')
+  })
+
+  it.each(['create_acp_agent', 'update_acp_agent'])('%s 忽略历史调用里的旧设置', async (name) => {
+    const instance = deps()
+    await run(instance, name, {
+      ...(name === 'update_acp_agent' ? { id: 'a2' } : {}),
+      name: 'Pi', command: 'wrapper', type: 'pi', allowStrategy: 'always',
+    })
+    expect(instance.acp.save).toHaveBeenCalledWith({
+      ...(name === 'update_acp_agent' ? { id: 'a2' } : {}),
+      name: 'Pi', command: 'wrapper',
+    })
+  })
 })
 
 describe('list_acp_agents', () => {
+  it('旧配置内部身份不重新变成可编辑的模式或放行设置', async () => {
+    const legacy = { id: 'pi', name: 'Pi', command: 'wrapper', args: [], type: 'pi', allowStrategy: 'always' }
+    const parsed = JSON.parse(await run(deps({ list: () => [legacy] }), 'list_acp_agents', {}))
+    expect(parsed[0]).not.toHaveProperty('type')
+    expect(parsed[0]).not.toHaveProperty('allowStrategy')
+  })
   it('空配置给一条可执行的下一步', async () => {
     const out = await run(deps({ list: () => [] }), 'list_acp_agents', {})
     expect(out).toContain('detect_acp_agents')
@@ -188,14 +210,12 @@ describe('create_acp_agent', () => {
     const out = await run(instance, 'create_acp_agent', {
       name: ' Gemini ',
       command: ' gemini ',
-      args: ['--acp'],
-      type: 'generic'
+      args: ['--acp']
     })
     expect(instance.acp.save).toHaveBeenCalledWith({
       name: 'Gemini',
       command: 'gemini',
-      args: ['--acp'],
-      type: 'generic'
+      args: ['--acp']
     })
     expect(out).toContain('外部 Agent')
     expect(out).toContain('新建会话')

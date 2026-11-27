@@ -4,6 +4,17 @@
  * key = 中文原文；未翻译的条目自动回落到中文。
  */
 export const COMMON: Record<string, string> = {
+  'Fizz 在手机上运行': 'Fizz runs on your phone',
+  '正在安装手机本地环境…': 'Installing the on-device environment…',
+  '正在启动本机引擎…': 'Starting the local engine…',
+  '正在连接本机引擎…': 'Connecting to the local engine…',
+  '正在停止本机引擎…': 'Stopping the local engine…',
+  '本机引擎已停止': 'The local engine is stopped',
+  '本机引擎启动失败': 'The local engine failed to start',
+  '启动本机引擎': 'Start local engine',
+  '运行日志': 'Runtime logs',
+  '本机引擎未提供连接凭据': 'The local engine did not provide connection credentials',
+  '首次打开会解压 APK 内的 Linux 和 Node 环境，无需电脑、服务器或 Termux。模型服务仍需要网络。': 'On first launch, Linux and Node are extracted from the APK. No computer, server or Termux is required. Model services still need a network connection.',
   '设置': 'Settings',
   '关闭': 'Close',
   '取消': 'Cancel',

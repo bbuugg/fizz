@@ -8,12 +8,12 @@
  * 内容本体是与设置页共用的 `shared/components/PluginsPanel`，按本仓库分层约定放在
  * `shared/`（被 ≥2 个功能区引用）。
  *
- * 生效时机**按能力分**（面板里有说明）：工具 / 提示词 / 钩子挂在 turn context 上 →
- * 下一轮对话；上传源挂在长驻 context 上 → 回到输入框重开附件菜单即可选到。
+ * 工具 / 提示词 / 钩子挂在 turn context 上，下一轮对话生效。
  */
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@fizz/ui/dialog'
 import { PluginsPanel } from '@fizz/agent-kit/shared/components/PluginsPanel'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
+import { useT } from '@fizz/agent-kit/shared/lib/language'
 
 export function PluginsDialog({
   app,
@@ -27,6 +27,7 @@ export function PluginsDialog({
   open: boolean
   onClose: () => void
 }) {
+  const tr = useT()
   return (
     <Dialog open={open} onOpenChange={(next) => (next ? undefined : onClose())}>
       {/*
@@ -39,11 +40,9 @@ export function PluginsDialog({
         没必要为它多引入一个任意值类名。
       */}
       <DialogContent className="flex h-[min(36rem,85dvh)] flex-col overflow-hidden sm:max-w-2xl">
-        <DialogTitle>项目插件</DialogTitle>
+        <DialogTitle>{tr('项目插件')}</DialogTitle>
         <DialogDescription>
-          这里管的是这个项目自己的插件（{'{项目}'}/.fizz/plugins）。用户级（全局）插件
-          对所有项目生效，请到 设置 →「插件」里开关。生效时机看能力：工具 / 提示词 / 钩子
-          下一轮对话生效，上传源重开附件菜单即生效。
+          {tr('这里管理项目自己的插件（.fizz/plugins）。全局插件请到设置 →「插件」管理。工具、提示词和钩子在下一轮对话生效。')}
         </DialogDescription>
 
         {/* `data-dialog-scroll`：滚动条贴弹窗右沿 + 没条时右侧也留满 16px（见 styles.css）。

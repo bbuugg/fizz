@@ -9,7 +9,7 @@
  * - `url` 留空 = 同源；填了地址就是跨源，需要 server 侧自行处理跨域。
  * - 对话是 SSE：`event: <start|event|end>` + `data: <ChatStreamFrame>`。
  */
-import { API_ROUTES, FILES_API } from "@fizz/contracts/agent-api";
+import { API_ROUTES, FILES_API, normalizeUploadMediaType } from "@fizz/contracts/agent-api";
 import type { AppLanguage, BrowserProfileUsage, BrowserSettings, PrefsPatch, PrefsResult } from "@fizz/contracts";
 import type {
   AppLogFrame,
@@ -74,11 +74,13 @@ import type {
   ConfirmReplyInput,
   ClientToolResultInput,
   ConversationSummary,
+  ConversationInput,
   CollabSettings,
   CollabStateResult,
   CollabCancelResult,
   ConversationSearchHit,
   ConversationTargetInput,
+  ConversationTargetResult,
   UsageSummary,
   SystemMetrics,
   SystemTaskKillInput,
@@ -163,7 +165,7 @@ import type {
 import type { AcpModelChoices, AcpProbeResult } from "@fizz/acp";
 import type { ShellDetectResult } from "@fizz/shells";
 import type { McpServerConfig, McpServerInput, McpToolInfo } from "@fizz/mcp";
-import type { SkillListResult } from "@fizz/skills";
+import type { SkillDocResult, SkillListResult } from "@fizz/skills";
 import type {
   BrowserRuntimeResult,
   PluginRpcResponse,
@@ -171,8 +173,6 @@ import type {
   PluginSurfaceContent,
   PluginSurfacesResult,
   SubagentsResponse,
-  UploadProviderView,
-  UploadProvidersResult,
 } from "@fizz/contracts/agent-api";
 // 系统监控偏好 / 容器型项目类型走根入口（子路径 alias 只在各端列出来的那几个里有效，见 packages/workspace/src/store.ts）
 import type {
@@ -202,7 +202,6 @@ import type {
   PluginDescriptor,
   PluginSettings,
   PluginUiView,
-  PluginUploadSourceInfo,
 } from "@fizz/plugin";
 import type {
   GitActionInput,
@@ -230,13 +229,6 @@ export interface PluginsResponse {
    * 保存走 `api.savePluginConfig`。
    */
   ui: Record<string, PluginUiView>;
-  /**
-   * 插件 id → 它 `ctx.uploads` 注册的**上传源**（没注册 = 没有这个键）。
-   *
-   * 上传源只在「上传时」生效（不是回合能力），所以设置页里要能看出「这个插件给了我一个
-   * 可选的附件上传目标」—— 它出现在输入框左下角回形针菜单的「传到哪儿」里。
-   */
-  uploads: Record<string, PluginUploadSourceInfo[]>;
   /**
    * 加载 / 校验失败的插件（一条一个插件，含失败原因）。
    * 收集 UI 时会把插件真跑一遍 apply，所以这里也涵盖了「工具形状不对」这类装配期错误
@@ -555,7 +547,7 @@ export function createApi(
     // ---------- 附件上传 ----------
 
     /**
-     * 上传对话附件（图片 / PDF）：读成 base64 走 **JSON**（desktop 的 IPC 桥 body 只支持
+      * 上传对话附件（图片 / 文档）：读成 base64 走 **JSON**（desktop 的 IPC 桥 body 只支持
      * 字符串，FormData 会被静默丢掉，两端必须同一条协议）。
      *
      * 进度的两种现实：web 走 XHR（`upload.onprogress` 真进度）；desktop 进程内直连秒传，
@@ -570,10 +562,6 @@ export function createApi(
          * 发显式 IPC 取消请求（服务端持续运行的后台任务仍要走自己的 cancel API）。
          */
         signal?: AbortSignal;
-        /** 用哪个上传源；缺省 = 服务端的内置存储（见 `listUploadProviders`） */
-        provider?: string;
-        /** 这次上传属于哪个项目（带项目级插件提供的上传源才用得上） */
-        workspaceId?: string;
       },
     ): Promise<UploadResult> {
       const onProgress = opts?.onProgress;
@@ -581,10 +569,8 @@ export function createApi(
       if (signal?.aborted) throw new DOMException("已取消上传", "AbortError");
       const input: UploadInput = {
         name: file.name,
-        mediaType: file.type || "application/octet-stream",
+        mediaType: normalizeUploadMediaType(file.name, file.type) ?? "application/octet-stream",
         dataBase64: await fileToBase64(file),
-        ...(opts?.provider ? { provider: opts.provider } : {}),
-        ...(opts?.workspaceId ? { workspaceId: opts.workspaceId } : {}),
       };
       // 读文件（大图 base64）期间也可能被取消，这时一个字节都没发出去
       if (signal?.aborted) throw new DOMException("已取消上传", "AbortError");
@@ -832,25 +818,6 @@ export function createApi(
           ...(signal ? { signal } : {}),
         },
       );
-    },
-
-    /**
-     * 可用的上传源清单（内置存储 + 插件注册的）。
-     *
-     * 两个用途：**放宽本地预校验**（`splitUploadable` 默认按契约白名单拦文件，插件上传源
-     * 可以声明自己的 accept，所以要按并集判）与**渲染「传到哪儿」选择器**。
-     * 不传 `workspaceId` 也能拿到（只有插件 + 内置）—— 上传可能发生在还没选项目时。
-     */
-    listUploadProviders: async (
-      workspaceId?: string,
-    ): Promise<UploadProviderView[]> => {
-      const query = workspaceId
-        ? `?workspaceId=${encodeURIComponent(workspaceId)}`
-        : "";
-      const result = await request<UploadProvidersResult>(
-        `${API_ROUTES.uploadProviders}${query}`,
-      );
-      return result.providers ?? [];
     },
 
     // ---------- 模型 ----------
@@ -1294,6 +1261,8 @@ export function createApi(
       reasoningEffort?: AiReasoningEffort;
       /** 导入 agent 侧既有会话时带上它的 sessionId */
       acpSessionId?: string;
+      /** 分叉 / 导入 ACP 会话时保留原会话的权限答复策略 */
+      acpPermissionMode?: ConversationInput["acpPermissionMode"];
       /** 创建时就定下这个会话允许用哪些 MCP server（缺省 = 全不选） */
       mcpServerIds?: string[];
       /**
@@ -1387,9 +1356,8 @@ export function createApi(
           `?conversationId=${encodeURIComponent(conversationId)}&sessionId=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(cwd)}`,
       ),
     /**
-     * 重启 acp 会话：杀掉 agent 进程、**保留 sessionId** —— 下一轮发消息时走 session/load
-     * 把原上下文接回来（是「重连」不是「新建」）。用它让 agent 侧的变更生效（新装的权限扩展、
-     * 改过的项目信任设置…）。会话未激活时是幂等空操作，照样返回 ok。
+     * 兼容旧客户端的 ACP 重启接口：保留 sessionId，空闲时立即重连并同步服务端历史快照。
+     * 与 transcript 共用恢复锁；生成或等待答复时返回冲突，不再打断当前轮次。
      */
     restartAcpAgentSession: (id: string, conversationId: string) =>
       request<{ ok: boolean; error?: string }>(
@@ -1510,7 +1478,7 @@ export function createApi(
      * `target` 字段显式传 null = 清除，回到「默认」。
      */
     setConversationTarget: (id: string, target: ConversationTargetInput) =>
-      request<null>(API_ROUTES.conversationTarget.replace(":id", id), {
+      request<ConversationTargetResult | null>(API_ROUTES.conversationTarget.replace(":id", id), {
         method: "PATCH",
         body: JSON.stringify(target),
       }),
@@ -1544,9 +1512,10 @@ export function createApi(
      * 「开始新对话」页选中 ACP agent 时调：那时还没有会话，而模式 / 思考档 pill 的数据
      * 平时只存在会话配置里。同 `/models` 一样是起一次进程问一句、问完收掉。
      */
-    probeAcpCapabilities: (agentId: string) =>
+    probeAcpCapabilities: (agentId: string, modelId?: string) =>
       request<AcpProbeResult>(
-        API_ROUTES.acpAgentCapabilities.replace(":id", agentId),
+        API_ROUTES.acpAgentCapabilities.replace(":id", agentId) +
+          (modelId ? `?modelId=${encodeURIComponent(modelId)}` : ''),
       ),
     /** 清空会话（删掉全部消息，保留会话本身） */
     clearConversation: (id: string) =>
@@ -1861,6 +1830,16 @@ export function createApi(
       request<HostConfig[]>(`${API_ROUTES.sshHosts}/${id}`, {
         method: "DELETE",
       }),
+    /**
+     * 复制一条主机条目（SSH 主机 / 本机终端）→ 最新列表。
+     *
+     * 凭据由服务端克隆：客户端只有 `hasPassword` 这类脱敏标记，重新 `saveSshHost`
+     * 一遍会把密码 / 私钥 / passphrase 全清空。
+     */
+    duplicateSshHost: (id: string) =>
+      request<HostConfig[]>(`${API_ROUTES.sshHosts}/${id}/duplicate`, {
+        method: "POST",
+      }),
 
     // ---------- 主机分组（主机 / 终端共用的多级归类树） ----------
     /** 全部分组（多级，按显示顺序的 DFS 前序） */
@@ -2078,6 +2057,12 @@ export function createApi(
         method: "POST",
         body: JSON.stringify({ disabled, extraDirs }),
       }),
+    /**
+     * 读某个技能的 SKILL.md 原文（设置页技能列表的预览弹窗用）。
+     * id 用 `listSkills` 回来的 `skill.id`；服务端只认自己扫出来的那份，其它一律 404。
+     */
+    readSkill: (id: string) =>
+      request<SkillDocResult>(`${API_ROUTES.skillsContent}?id=${encodeURIComponent(id)}`),
 
     // ---------- 子任务（subagent） ----------
     /** 读子任务偏好（默认全关） */

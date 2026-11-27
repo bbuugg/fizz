@@ -3,13 +3,13 @@
 import { useCallback } from 'react'
 import { toast } from 'sonner'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
-import { isConversationTabKey, NEW_TAB_KEY } from '@fizz/agent-kit/shared/lib/panel-tabs';
 import { renameToolTab } from '@fizz/agent-kit/shared/lib/tool-tabs'
 import { requestReloadTab } from '../tab-reload'
 import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
 import {
   activateTab,
   activeTabKey,
+  conversationOfTab,
   cycleTab,
   getPanelState,
   requestCloseGroup,
@@ -44,20 +44,22 @@ export function useGroupActions(): GroupActions {
 
   const syncConversation = useCallback(
     (key: string): void => {
-      if (!isConversationTabKey(key)) return
-      if (key === NEW_TAB_KEY) {
+      // 标签 key 不是会话 id：指向谁问 store（`undefined` = 工具标签，不参与）
+      const conversationId = conversationOfTab(key)
+      if (conversationId === undefined) return
+      if (conversationId === null) {
         if (app.activeConversationId === null) return
-        app.openConversation(null)
+        app.openConversation(null, { keepScroll: true })
         return
       }
-      if (key === app.activeConversationId) return
+      if (conversationId === app.activeConversationId) return
       /*
        * `keepScroll`：**切标签不是「打开会话」**。这条会话的面板一直在内存里（后台标签
        * 只是 `hidden`，滚动盒与 scrollTop 都还在），用户翻在上面读的时候点到别的标签再
        * 点回来，不该被复位落底（用户报的「切回来列表自己跳到底部」）。
        * 从侧栏 / 通知 / 深链打开走的是别的入口，那边照旧落底。
        */
-      openConversation(key, undefined, { keepScroll: true })
+      openConversation(conversationId, undefined, { keepScroll: true })
     },
     [app, openConversation]
   )
@@ -150,12 +152,13 @@ export function useGroupActions(): GroupActions {
    */
   const renameTab = useCallback(
     (key: string, title: string): void => {
-      if (key === NEW_TAB_KEY) return
-      if (isConversationTabKey(key)) {
-        void app.renameConversation(key, title)
+      const conversationId = conversationOfTab(key)
+      if (conversationId === undefined) {
+        renameToolTab(key, title)
         return
       }
-      renameToolTab(key, title)
+      if (conversationId === null) return
+      void app.renameConversation(conversationId, title)
     },
     [app]
   )
@@ -174,17 +177,19 @@ export function useGroupActions(): GroupActions {
    */
   const reloadTab = useCallback(
     (key: string): void => {
-      if (key !== NEW_TAB_KEY && isConversationTabKey(key)) {
+      const conversationId = conversationOfTab(key)
+      if (conversationId) {
         // 正在生成时 store 会拒绝（权威历史会把流式现场整段盖掉）—— 这里先说清为什么没反应。
         // 现读 store 而不是 `app.runningConversations`：外壳投影已冻结这份聚合状态
         // （见 `useAgentApp` 的 shellKeys），读 app 会拿到旧值。
-        if (useAgentStore.getState().runningConversations[key]) {
+        if (useAgentStore.getState().runningConversations[conversationId]) {
           toast('这一轮还在生成，先停止再刷新')
           return
         }
-        void app.reloadConversation(key)
+        void app.reloadConversation(conversationId)
         return
       }
+      // 草稿标签（没有会话可加载）与工具标签：卸载重挂一次，先过标签自己的守卫
       void requestReloadTab(key)
     },
     [app]

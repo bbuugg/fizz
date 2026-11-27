@@ -19,13 +19,12 @@ import {
   builtinSlashCommands,
   resolveSlashDispatchFor,
 } from "@fizz/agent-kit/shared/lib/slash-commands";
-import type { UploadFileRef, UploadProviderView } from "@fizz/contracts/agent-api";
+import type { UploadFileRef } from "@fizz/contracts/agent-api";
 import { ComposerToolbar } from "@fizz/agent-kit/features/chat/ComposerToolbar";
 import type { AgentApp } from "@fizz/agent-kit/shared/hooks/useAgentApp";
 import { useT } from "@fizz/agent-kit/shared/lib/language";
 import { type AgentChatMessage } from "@fizz/contracts/types";
 import { AcpModePill } from "@fizz/agent-kit/features/chat/AcpModePill";
-import { AcpThoughtLevelSelect } from "@fizz/agent-kit/features/chat/AcpThoughtLevelSelect";
 import { ComposerStatusBar } from "@fizz/agent-kit/features/chat/ComposerStatusBar";
 import { EditMessageBar } from "@fizz/agent-kit/features/chat/EditMessageBar";
 import { McpSelect } from "@fizz/agent-kit/features/chat/McpSelect";
@@ -76,19 +75,8 @@ export function useMainComposerProps(
     onEditSteer?: (item: AgentChatMessage) => void;
     /** 待发送附件（输入卡片 header 的预览行 + 发送门控）；不传 = 无附件交互 */
     attachments?: ChatAttachment[];
-    /** 上传入口选中文件（回形针 → 图片 / PDF）；不传 = 不渲染上传按钮、也不接管粘贴与拖放 */
+    /** 上传入口选中文件（回形针 → 图片 / 文档）；不传 = 不渲染上传按钮、也不接管粘贴与拖放 */
     onPickFiles?: (files: FileList | File[]) => void;
-    /** 可用上传源（内置 + 插件注册的）；不传 / 只有一个 = 上传菜单里不出现选择器 */
-    uploadProviders?: UploadProviderView[];
-    /** 当前选中的上传源（null = 用服务端的缺省那个） */
-    uploadProviderId?: string | null;
-    /** 切换上传源（选择状态归 ChatPanel 持有） */
-    onSelectUploadProvider?: (id: string) => void;
-    /**
-     * 重新拉一遍上传源清单。上传按钮在**菜单打开时**调它 —— 这样在设置里刚启用的
-     * 上传插件不必等切换项目 / 刷新页面。
-     */
-    onRefreshUploadProviders?: () => void;
     /**
      * 粘贴（截图 / 复制的图片）或拖拽进来的文件 —— 与 `onPickFiles` 是同一条链路，
      * 只是入口不同。不传 = 输入框不接管粘贴与拖放（空态）。
@@ -107,6 +95,13 @@ export function useMainComposerProps(
     quotes?: MessageQuote[];
     /** 移除一片引用 */
     onRemoveQuote?: (id: string) => void;
+    /**
+     * 这个输入框所属**标签**的 key（必填）：输入卡片下方那条状态横条（git 分支 / 文件入口
+     * / 权限档 / 上下文）要改**本标签**的面板现场，得知道自己是哪颗标签。「开始新对话」页
+     * 是一颗草稿标签，同样有 key、同样有状态横条 —— 别写成「没有 key 就不渲染」，
+     * 那样新对话页会整条横条消失。
+     */
+    panelKey: string;
   },
 ): ChatComposerProps {
   const t = useT()
@@ -248,14 +243,10 @@ export function useMainComposerProps(
     allowEmptySend:
       (opts.attachments ?? []).length > 0 || (opts.quotes ?? []).length > 0,
     /**
-     * 「发送即建会话」期间发送钮转圈（见 store 的 `creatingConversation`）。
-     *
-     * 只有**还没打开会话**时才有意义：已打开的会话发消息不建会话，`send` 直接进
-     * `runRound` 的流式那一段，转圈会变成「点了没反应又忽然开始流」。ACP 那条路最慢
-     * （起外部 agent 进程 + `session/new`），内置模型也一并转 —— 反正都是同一条建会话链路，
-     * 分支只会多一处不一致。
+     * 新建会话，以及已有 ACP 会话发送前的检测 / 恢复期间，发送钮转圈并拦住重复提交。
+     * 准备失败时不触发 onStarted，正文、附件与引用继续留在输入框里。
      */
-    sending: !app.activeConversationId && app.creatingConversation,
+    sending: app.preparingSend || (!app.activeConversationId && app.creatingConversation),
     // 提示语不按工作区分支：没选项目也能聊（发送时服务端建临时工作区），
     // 换一句「不指定项目」的文案只会让人以为这里少了什么。
     placeholder: t("想让我帮你做什么…（Enter 发送，Shift+Enter 换行）"),
@@ -368,23 +359,15 @@ export function useMainComposerProps(
      * 工作区入口不在这里 —— 它在「开始新对话」页的标题句里（见 `NewTaskView`）。
      * `running` 传给横条：只有「这一轮正在跑」时 git 分支才置灰。
      */
-    below: <ComposerStatusBar app={app} running={streaming} />,
+    below: <ComposerStatusBar app={app} panelKey={opts.panelKey} running={streaming} />,
     leading: (
       <>
-        {/* 上传附件：排在最左，与 ainav 的回形针一致。
-            ⚠️ 闸门是 `attachmentsSupported`（内置 = 恒可；ACP = 看 agent 广告的
-            `promptCapabilities.image`），**不是**「是不是 ACP」——ACP 里图片走
-            `ContentBlock::Image` 同样能发（见 runAcpAgent 的 attachments）。
-            也不是「选没选工作区」：初始页常常还没选项目（「未指定工作区」），而上传
-            本身不要求工作区（内置存储是全局的，插件源按选中那一刻的 workspaceId 走）。 */}
-        {attachmentsSupported(app) && opts.onPickFiles && (
+        {/* 上传不要求工作区；ACP 的图片能力只禁用图片选项，文档仍可提取为文字。 */}
+        {opts.onPickFiles && (
           <AttachmentUploadButton
             disabled={!app.api}
+            imagesSupported={attachmentsSupported(app)}
             onPick={opts.onPickFiles}
-            providers={opts.uploadProviders}
-            providerId={opts.uploadProviderId}
-            onSelectProvider={opts.onSelectUploadProvider}
-            onMenuOpen={opts.onRefreshUploadProviders}
           />
         )}
       </>
@@ -399,7 +382,6 @@ export function useMainComposerProps(
           两者没有对应能力时都返回 null。
         */}
         <AcpModePill app={app} />
-        <AcpThoughtLevelSelect app={app} />
         <ModelSelect app={app} />
       </>
     ),

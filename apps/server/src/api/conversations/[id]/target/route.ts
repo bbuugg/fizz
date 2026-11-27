@@ -5,7 +5,8 @@
  * body: ConversationTargetInput
  * 字段显式传 null = 清除（回到「默认」）；undefined = 不动该项。
  */
-import type { ConversationTargetInput } from '@fizz/contracts/agent-api'
+import type { ConversationTargetInput, ConversationTargetResult } from '@fizz/contracts/agent-api'
+import { setAcpSessionModel } from '@fizz/acp'
 import {
   agentBrowserSessionId,
   DEFAULT_BROWSER_SETTINGS,
@@ -14,6 +15,8 @@ import {
 } from '@fizz/contracts'
 import { browserSessions } from '@fizz/tools'
 import { domain } from '@/lib/server/state'
+import { acpMcpServers } from '@/lib/server/acp-mcp'
+import { refreshAcpSessionState } from '@/lib/server/acp-session-state'
 import { describeError, jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 
 export async function PATCH(
@@ -26,6 +29,25 @@ export async function PATCH(
   try {
     const before = domain.getConversation(id)
     const next = domain.setConversationTarget(id, body)
+    if (next.backend === 'acp' && next.configId && typeof body.modelId === 'string' && next.modelId) {
+      const workspace = domain.getWorkspace(next.workspaceId)
+      if (!workspace?.path) return jsonError(400, 'ACP 会话需要绑定到有目录的工作区')
+      const result = await setAcpSessionModel(next.configId, id, next.modelId, {
+        agent: domain.resolveAcpAgent(next.configId),
+        workspacePath: workspace.path,
+        mcpServers: acpMcpServers(domain.listMcpServers(), next.mcpServerIds),
+        ...(next.acpSessionId ? { loadSessionId: next.acpSessionId } : {})
+      })
+      if (!result.ok) return jsonError(400, result.error ?? '切换模型失败')
+      if (!result.deferred) {
+        refreshAcpSessionState(id, next.configId)
+        const current = domain.getConversation(id)!
+        return Response.json({ acpSessionState: {
+          modes: current.acpModes ?? null,
+          thoughtLevel: current.acpThoughtLevel ?? null
+        } } satisfies ConversationTargetResult)
+      }
+    }
     /**
      * 只有**来源（`channel`）真的变了**才把这个会话的浏览器收掉：引擎 `start()` 头一行是
      * 「已经有 browser 就直接返回」，不收的话面板里还是旧来源，看起来像「设置没生效」。

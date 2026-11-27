@@ -106,6 +106,9 @@ export interface ContextCompactionState {
  */
 export interface ConvSlice {
   messages: AgentChatMessage[];
+  /** ACP 换模型后的配置同步现场，只在内存中按会话隔离。 */
+  acpConfigLoading?: boolean;
+  acpConfigError?: string | null;
   /**
    * 最近一次上下文交接文档（流式生成中 / 已完成）。
    *
@@ -115,6 +118,8 @@ export interface ConvSlice {
   compaction: ContextCompactionState | null;
   /** 这个会话正在流式（本地订着一轮，帧在往 `messages` 里追加） */
   streaming: boolean;
+  /** 发送前正在检查 ACP 会话或等待恢复；只在内存中按会话隔离，尚未消费草稿。 */
+  preparingSend: boolean;
   /**
    * 正在**回放现场**：断线重连后，服务端从帧日志头部把这一轮重放一遍，客户端先把
    * 这一轮的 parts 清空再逐帧重建（见 `attachRun` 的重接循环）。
@@ -166,6 +171,8 @@ export interface ConvSlice {
   queuePaused: boolean;
   /** 历史装载中（打开会话后拉存档 / acp 回放的窗口）：消息区此时显示装载中而不是旧列表 */
   loading: boolean;
+  /** 恢复请求的实际阶段；仅内存现场，不持久化。所有恢复入口共用它作为操作锁。 */
+  recoveryPhase: "checking" | "restoring" | "syncing" | null;
   /**
    * 正在删消息（「仅本条」/「本条及其后」/ 编辑重发里的那一步）。
    *
@@ -283,6 +290,8 @@ export interface ContextNotice {
  */
 export interface DraftAcpState {
   agentId: string;
+  /** 能力取决于具体模型；缺省表示 agent 默认模型。仅为内存草稿，不落盘。 */
+  modelId?: string;
   /** 探针在跑（pill 上转圈） */
   loading: boolean;
   /** 探针失败的原因（agent 起不来 / 超时）；pill 退化成「默认档」 */
@@ -415,7 +424,7 @@ export interface ConversationSlice {
    * 幂等：同一个 agent 已经探过（成功或失败）就直接返回，别每次点下拉都起一个进程。
    * 探针失败只写 `error`，不抛 —— 页面上退化成「默认档」，不挡用户发送。
    */
-  probeDraftAcp: (agentId: string) => Promise<void>;
+  probeDraftAcp: (agentId: string, modelId?: string) => Promise<void>;
   /** 新任务页选模式（null = 跟随 agent 默认）；没有 draftAcp 时忽略 */
   setDraftAcpMode: (modeId: string | null) => void;
   /** 新任务页选思考档（null = 跟随 agent 默认）；没有 draftAcp 时忽略 */
@@ -508,7 +517,8 @@ export interface ConversationSlice {
    *
    * `opts.keepScroll`：**不要**复位消息区的滚动位置。给「切标签」用 —— 那条会话的面板
    * 从来没卸载过（后台标签只是 `hidden`），用户翻到哪儿就该留在哪儿；而「从侧栏 / 通知 /
-   * 深链打开一条会话」是明确的「我要看最新的」，照旧复位落底。
+     * 深链打开一条会话」是明确的「我要看最新的」，照旧复位落底。
+     * 目标为 null 时表示切回已有草稿，保留它的模型 / MCP / 思考强度 / ACP 档位。
    */
   openConversation: (
     conversationId: string | null,
@@ -519,12 +529,11 @@ export interface ConversationSlice {
    * 重新加载一条 ACP 会话：空闲时用 `session/load` 整体重建消息；
    * 运行中只读历史快照并接回当前轮，不重启 agent 进程。
    *
-   * 与「重启会话」（`restartAcpSession`）的分工：重启会立刻 `session/load` 重连，但视图
-   * 一动不动（用途是让 agent 侧启动期读的配置生效）；本项是**把视图拉回来对齐** ——
-   * agent 侧会话在别处被改过、打开时回放只回来半截、视图与 agent 侧对不上时用它。
+   * 统一「重启 + 同步历史」：空闲时从干净进程恢复原 session 并补装权限扩展，
+   * 配置变更和历史不完整都用本项；加载失败保留已有消息。侧栏与错误重试共享恢复锁。
    *
    * 服务端**不需要新路由**：直接复用 `GET /api/acp/agents/:id/transcript` —— 那条路由
-   * 就是 `session/load` 回放（内部先 teardown 旧进程，保证从干净进程 load）。
+   * 空闲时走 `session/load` 回放，运行中仅取快照；后端与新一轮发送互斥，避免误杀进程。
    *
    * 成功 `true`；缺 agent 侧会话 / 找不到工作区目录 / 回放失败 `false`（原因进 `error`）。
    */
@@ -643,6 +652,11 @@ export interface ConversationSlice {
     scope?: string | null,
   ) => Promise<void>;
   /**
+   * 分叉指定 ACP 会话的完整 agent session，绑定到同工作区的新 ACP 会话。
+   * 返回新本地会话 id，由外壳打开独立标签；失败返回 null（具体原因进 error）。
+   */
+  forkAcpConversation: (conversationId: string) => Promise<string | null>;
+  /**
    * 把一条 ACP 会话的内容转成**内置 agent 会话**：现拉 agent 侧转录 → 洗成内置格式 →
    * 新建一条 内置会话（同工作区、带历史）→ 刷新列表并切过去。
    * 成功 `true`；拉不到转录 / 建会话失败 `false`（原因进 error）。
@@ -681,6 +695,8 @@ export interface ConversationSlice {
     onStarted?: () => void,
     /** 发到哪条会话（`null` = 新对话页 → 建新会话）。语义同 `send` 的 `scope` */
     scope?: string | null,
+    /** 新对话页发起建会话的主区域标签身份；会话建好后仅此标签可接收它 */
+    draftTabKey?: string,
   ) => Promise<boolean>;
   /**
    * 带附件时允许空正文（files 非空即可发）；流式中 → 入队，本轮结束由泵自动发出。
@@ -704,6 +720,8 @@ export interface ConversationSlice {
      * 分屏下这是必须的：两个标签同时可见，用户在非焦点标签里发消息不能发到焦点会话上。
      */
     scope?: string | null,
+    /** 新对话页发起建会话的主区域标签身份；不传时不做草稿标签来源绑定 */
+    draftTabKey?: string,
   ) => Promise<boolean>;
   /**
    * 运行中插话：活跃会话在跑 → 递服务端收件箱（agent 下一个工具步骤边界注入）；

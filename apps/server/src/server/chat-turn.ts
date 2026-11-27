@@ -46,7 +46,6 @@ import { serverSkillsForAgent } from './skill-roots'
 import {
   createAttachmentResolver,
   readAttachmentBytes,
-  resolveUploadModelUrl,
   validateUploadFiles
 } from './upload/index'
 import { acpPromptAttachments } from './acp-attachments'
@@ -78,6 +77,7 @@ import {
 } from './chat-run'
 import { startBackgroundTask } from './background-tasks'
 import { refreshAcpSessionState } from './acp-session-state'
+import { pickAcpAutoPermissionOption } from './acp-permission'
 import { appendAcpTranscript } from './acp-transcripts'
 import { describeError } from './lib/http'
 import { buildAssistantMessage } from './assistant-message'
@@ -293,22 +293,19 @@ export async function drainSteerInbox(
  * （队列 worker → `await run.done`），都行 —— 这正是抽成服务的原因。
  * 失败不抛：返回 `{ ok: false }` 让调用方决定回 400 还是记任务失败。
  */
-export async function startTurn(input: ChatRequest, opts?: { origin?: string }): Promise<StartTurnResult> {
+export async function startTurn(input: ChatRequest): Promise<StartTurnResult> {
   const conversationId = input.conversationId
   if (conversationId && !reserveConversationRunStart(conversationId)) {
     return { ok: false, status: 409, message: '这个会话正在启动或回复中，请等待当前轮结束' }
   }
   try {
-    return await startTurnReserved(input, opts)
+    return await startTurnReserved(input)
   } finally {
     if (conversationId) releaseConversationRunStart(conversationId)
   }
 }
 
-async function startTurnReserved(
-  input: ChatRequest,
-  opts?: { origin?: string }
-): Promise<StartTurnResult> {
+async function startTurnReserved(input: ChatRequest): Promise<StartTurnResult> {
   const text = input.text?.trim()
   const files = input.files ?? []
   if (!input.conversationId || (!text && files.length === 0)) {
@@ -332,7 +329,7 @@ async function startTurnReserved(
    * `container-projects/turn.ts`）。分派点刻意放在**用户消息落盘之前** —— 那边自己落
    * （同一份 `beginTurnUserMessage`），这边再落一遍就是重复追加一条用户消息。
    */
-  if (domain.getWorkspace(conversation.workspaceId)?.container) return startContainerTurn(input, opts)
+  if (domain.getWorkspace(conversation.workspaceId)?.container) return startContainerTurn(input)
 
   // 用户消息落盘：内置会话全量落；acp 会话的消息保存在 agent 侧（session/load 接回），
   // 本地只留会话元数据 —— 首轮顺手把自动标题补上（与容器型项目共用同一份口径）
@@ -543,11 +540,10 @@ async function startTurnReserved(
    * ACP 的权限请求答复。
    *
    * - 会话档 `confirm`（缺省）：答复体带用户挑中的 optionId，原样回给 agent（弹确认卡）；
-   * - 会话档 `allow`：应用层直接放行，请求不变成卡。**缺省只回 `allow_once`**（见下）。
+   * - 会话档 `allow`：仅自动答 `allow_once`，Agent 未提供时仍弹确认卡。
    *
-   * ⚠️ `allow` **默认绝不能回 `allow_always`**：那会被 agent 自己**永久记住**，之后把会话
-   * 切回「确认」也要不回询问了（实测踩过）。回哪个由 agent 配置的 `allowStrategy` 决定
-   * （缺省 `once` = 只允许一次，下次仍会问）。
+   * ⚠️ `allow` **绝不能自动回 `allow_always`**：那会被 agent 自己**永久记住**，之后把会话
+   * 切回「确认」也要不回询问了（实测踩过）。自动答复统一只允许本次，不读旧 agent 策略。
    * ⚠️ 拿不到想要的选项时**退回弹卡**，不替用户答一个更宽的 —— 宁可见到卡片，
    * 也别悄悄把「还会问我」这件事送掉。
    * ⚠️ 只在 agent 真的发问时生效：agent 自己配成 `deny` 时它根本不发这个请求。
@@ -561,14 +557,8 @@ async function startTurnReserved(
    */
   const requestPermission = (req: AgentConfirmInput) => {
     const acpMode = domain.getConversation(conversation.id)?.acpPermissionMode
-    if (acpMode === 'allow') {
-      const options = req.options ?? []
-      const once = options.find((option) => option.kind === 'allow_once')
-      const always = options.find((option) => option.kind === 'allow_always')
-      // 缺省 once；显式配了 always 才回 allow_always（没有 always 就退回落 once）
-      const picked = (acpAgent?.allowStrategy ?? 'once') === 'always' ? (always ?? once) : once
-      if (picked) return Promise.resolve({ approved: true, optionId: picked.optionId })
-    }
+    const picked = pickAcpAutoPermissionOption(acpMode, req.options)
+    if (picked) return Promise.resolve({ approved: true, optionId: picked.optionId })
     return waitForConfirmReply(req)
   }
 
@@ -791,7 +781,7 @@ async function startTurnReserved(
      * 只记一行日志（`loadPlugins` 内部逐项 try/catch），绝不因为一个坏插件拖垮整轮对话。
      *
      * 停用清单按来源分开（内置 / 用户级认全局偏好，项目级认项目偏好），组装规则只有一份：
-     * `discoverServerPlugins`（见 `plugin-roots.ts`）—— 这里、插件路由、上传源目录共用它，
+     * `discoverServerPlugins`（见 `plugin-roots.ts`）—— 这里、插件路由、模型收集共用它，
      * 免得某处漏扫了内置插件。
      */
     // 远端工作区首期不加载项目级 / 用户级插件：它们的工具与配置都按本地路径装配
@@ -990,14 +980,8 @@ async function startTurnReserved(
       // 运行中活取权限档：用户在整轮中途切档时闸门立刻按新档裁决（改档端点改的就是 run 上这个字段）
       getPermissionMode: () => run.permissionMode,
       requestConfirm,
-      // 附件 URL 绝对化 / 可取得化：内置存储拼绝对地址（FIZZ_PUBLIC_BASE_URL 优先，
-      // 否则按请求 origin），插件上传源一般不实现（它交回来的就是公网绝对地址）→ 原样返回
-      resolveFileUrl: (url) => resolveUploadModelUrl(url, opts?.origin ?? ''),
-      /**
-       * 附件投递：没有公网地址（桌面端 / 局域网 / 本地开发）时把文件读回来内联发送，
-       * 云端 provider 不再回连 `127.0.0.1`。判据与环境变量见 `upload/attachments.ts`。
-       */
-      resolveAttachment: createAttachmentResolver(opts?.origin ?? ''),
+      // 所有附件统一读取字节，由模型 SDK 编码为 base64 内联发送。
+      resolveAttachment: createAttachmentResolver(),
       // 单条命令停止表（POST /api/chat/command/stop 命中它；run 级，收尾时清空）
       commandStops: run.commandStops,
       /**
@@ -1165,7 +1149,7 @@ async function startTurnReserved(
           requestId,
           confirmTimeoutMs,
           ...(requestedModelId ? { modelId: requestedModelId } : {}),
-          // 会话记住的权限档 / 思考档：每轮发送前幂等下发（load 之后 agent 重置了也会补回）
+          // 会话记住的模式 / 思考档：每轮发送前幂等下发（load 之后 agent 重置了也会补回）
           ...(conversation.acpModes?.current ? { modeId: conversation.acpModes.current } : {}),
           ...(conversation.acpThoughtLevel?.current
             ? { thoughtLevel: conversation.acpThoughtLevel.current }
@@ -1180,7 +1164,7 @@ async function startTurnReserved(
           ...(acpTurnAttachments?.attachments.length
             ? { attachments: acpTurnAttachments.attachments }
             : {}),
-          // 有附件没带上时给 agent 一句说明，别让它以为用户只发了文字
+          // 文档提取结果和未发送附件的说明统一作为文本块交给 ACP
           ...(acpTurnAttachments?.note ? { attachmentNote: acpTurnAttachments.note } : {}),
           // 会话就绪（session/new 建成 或 session/load 恢复）：绑定 sessionId + 回写广告的档位
           onSessionCreated: (info) => {

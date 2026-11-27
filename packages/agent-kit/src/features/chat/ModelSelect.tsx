@@ -15,6 +15,7 @@ import { isRemoteWorkspace } from '@fizz/contracts/types'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import { ModelPicker } from '@fizz/agent-kit/features/chat/ModelPicker'
 import { ReasoningEffortPanel } from '@fizz/agent-kit/features/chat/ReasoningEffortPanel'
+import { AcpThoughtLevelSelect, acpThoughtLevelState } from '@fizz/agent-kit/features/chat/AcpThoughtLevelSelect'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { t } from '@fizz/i18n'
@@ -59,7 +60,7 @@ export function ModelSelect({ app }: { app: AgentApp }) {
    *
    * - ACP 会话一律没有（`activeConversation.backend === 'acp'`）：即使绑定的 agent
    *   被删、下拉临时退回内置清单，这一轮的 backend 也已经锁死，档位不会生效；
-   * - 切到外部 Agent（ACP）→ 隐藏（ACP 的思考档归 `AcpThoughtLevelSelect`）；
+   * - 切到外部 Agent（ACP）→ 使用同一卡片内的能力驱动面板；
    * - 选中的配置还没有具体模型 → 隐藏（没有可作用的档位）。
    *
    * 它读的是 `app.chatTarget`，所以在下拉里换模型时会立即跟着变。
@@ -69,6 +70,7 @@ export function ModelSelect({ app }: { app: AgentApp }) {
     app.chatTarget?.backend === 'builtin' &&
     !!app.chatTarget.configId &&
     !!app.chatTarget.modelId
+  const showAcpThought = acpThoughtLevelState(app).visible
 
   return (
     <ModelPicker
@@ -100,7 +102,7 @@ export function ModelSelect({ app }: { app: AgentApp }) {
               />
             ),
           }
-        : {})}
+         : showAcpThought ? { footer: <AcpThoughtLevelSelect app={app} /> } : {})}
     />
   )
 }

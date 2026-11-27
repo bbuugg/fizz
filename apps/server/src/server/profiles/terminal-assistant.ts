@@ -1,59 +1,42 @@
-/**
- * 终端助手 profile：挂在某一条终端标签上的会话。
- *
- * 与项目管理助手是**两套身份**：这里刻意不出现任何项目管理内容 —— 那条会话绑定的是
- * 某一条终端，模型的任务是「看输出、跑命令」。项目能力在装配层就整组缺席。
- */
-import { rawToolsPlugin, type AgentAssembly } from '@fizz/agent'
+/** SSH 终端助手：文件与命令绑定远端 backend，和用户的交互式终端分离。 */
+import { fileToolsPlugin, type AgentAssembly } from '@fizz/agent'
+import type { AgentToolOptions } from '@fizz/tools'
+import type { WorkspaceBackend } from '@fizz/contracts/workspace'
 
-/** 终端助手的一轮装配输入 */
 export interface TerminalAssistantDeps {
-  /** 客户端声明并实现、由服务端转发执行的终端工具 */
-  tools: Record<string, unknown>
-  /** 同批工具的元信息（用来在提示词里列出可用能力） */
-  specs: Array<{ name: string; description: string }>
+  hostLabel: string
+  backend: WorkspaceBackend
+  options: Omit<AgentToolOptions, 'backend' | 'includeTools'>
 }
 
-export function buildTerminalAssistantInstructions(): string {
-  const now = new Date().toLocaleString('zh-CN', { hour12: false })
+export function buildTerminalAssistantInstructions(hostLabel: string, cwd: string): string {
   return [
-    '你是 Fizz 的终端助手，挂在一个终端标签上，服务的是**这个终端**。',
-    `当前时间：${now}。`,
+    '你是 Fizz 的 SSH 终端助手，负责排查和操作绑定的远端主机。',
+    `执行目标：${hostLabel}。默认工作目录：${cwd}。`,
+    '文件工具 read / write / edit / glob / grep 全部作用于这台远端主机，bash 经独立 SSH exec 通道执行。',
     '约定：',
-    '- 你可以读取该终端的输出、执行命令、发送按键（工具清单见下），作用于用户眼前这一条终端；',
-    '- 执行命令前先简要说明要做什么；优先使用安全、无破坏性的命令（先看状态再动手）；',
-    '- 涉及删除文件、重启服务、修改配置等危险操作时，先说明影响再执行；',
-    '- 命令是串行执行的：上一条跑完并读到输出后下一条才开始，不要并发下发；',
-    '- 执行命令后终端原始输出即为事实依据；失败时结合输出排查原因再尝试，不要盲目重试同一条命令；',
-    '- 交互式 / 前台程序（htop、top、vim、nano、less、man、watch、python、node 等）会占住终端不返回提示符：执行这类命令后不要继续输入新命令，先用发送按键退出（多数用 "q"，卡住用 "C-c"，个别用 "exit" / "C-d"），确认回到 shell 提示符后再继续；',
+    '- 用户眼前的终端是独立的交互式 shell：你不能读取它的屏幕、向它输入命令或发送按键。不要声称看到了终端输出。',
+    '- 绝对路径指远端文件系统；相对路径基于上述默认目录。可按需访问 /etc、/var/log 等目录，权限由远端 SSH 账号决定。',
+    '- 每条 bash 命令独立执行，不继承用户终端或上一次命令的 cd、export、虚拟环境、sudo 状态；用 workdir 指定目录，初始化与实际命令放在同一次调用。',
+    '- 优先用 read / glob / grep 读取和搜索，用 write / edit 修改文件；修改已有文件前先 read，避免覆盖用户刚做的修改。',
+    '- 先查看状态再修改；执行命令前简要说明目的，删除、重启服务、修改配置前说明影响。遵守工具权限审批。',
+    '- 有依赖的操作按顺序执行，确认上一条命令结果后再继续；以工具返回的实际输出和退出状态为依据。',
+    '- 使用非交互命令：例如 top -b -n 1、tail -n 100；不要启动 vim / less / 交互式 sudo。需要提权时用 sudo -n，失败就说明原因。',
+    '- 长构建、安装、持续服务可用 run_in_background，任务日志与取消入口在后台任务面板。已转后台的命令不会因为关闭面板或本轮结束而停止。',
+    '- 不负责项目、模型、MCP、ACP 等全局配置管理，这类请求请用户去项目助手。',
     '- 用简洁的中文回复。'
   ].join('\n')
 }
 
 export function buildTerminalAssistantAssembly(deps: TerminalAssistantDeps): AgentAssembly {
-  /** 给模型一段「你能操作终端」的说明，并列出可用工具名 */
-  const terminalHint = deps.specs.length
-    ? [
-        '',
-        '你**绑定了一个终端**(用户当前正在看的那个)。你可以通过下面这些工具直接操作它 —— 执行命令、读取输出、发送按键:',
-        ...deps.specs.map((t) => `- ${t.name}:${t.description}`),
-        '执行命令后终端输出即为事实依据;涉及删除 / 重启 / 改配置等危险操作前先说明影响。命令是串行执行的,不要并发下发。',
-        '你不负责项目管理(建 / 删项目、worktree、定时任务),这类请求请让用户去项目面板或全局助手。'
-      ].join('\n')
-    : ''
-
   return {
-    instructions: buildTerminalAssistantInstructions() + terminalHint,
-    plugins:
-      deps.specs.length > 0
-        ? [
-            {
-              plugin: rawToolsPlugin('assistant:terminal', deps.tools, {
-                origin: 'plugin',
-                source: 'client'
-              })
-            }
-          ]
-        : []
+    instructions: buildTerminalAssistantInstructions(deps.hostLabel, deps.backend.root),
+    plugins: [{
+      plugin: fileToolsPlugin(deps.backend.root, {
+        ...deps.options,
+        backend: deps.backend,
+        includeTools: ['read', 'write', 'edit', 'glob', 'grep', 'bash']
+      })
+    }]
   }
 }

@@ -36,6 +36,12 @@ interface PooledExec {
   client: Client
   dispose: () => void
   idleTimer?: NodeJS.Timeout
+  active: number
+}
+
+/** 后台任务取消回包前需要等远端进程组清理完成。timeoutMs: 0 表示不设执行超时。 */
+export interface RemoteExecOptions extends WorkspaceExecOptions {
+  waitForCleanup?: boolean
 }
 
 class RemoteExecService {
@@ -71,7 +77,8 @@ class RemoteExecService {
       hostId,
       title,
       client: chain.client,
-      dispose: chain.dispose
+      dispose: chain.dispose,
+      active: 0
     }
     chain.client.on('error', () => this.drop(hostId))
     chain.client.on('close', () => this.drop(hostId))
@@ -81,6 +88,7 @@ class RemoteExecService {
 
   private touch(entry: PooledExec): void {
     if (entry.idleTimer) clearTimeout(entry.idleTimer)
+    if (entry.active > 0) return
     entry.idleTimer = setTimeout(() => this.close(entry.hostId), IDLE_MS)
     entry.idleTimer.unref?.()
   }
@@ -92,8 +100,12 @@ class RemoteExecService {
       const done = (): void => {
         if (settled) return
         settled = true
+        clearTimeout(timer)
+        entry.client.removeListener('close', done)
         resolve()
       }
+      const timer = setTimeout(done, 5_000)
+      entry.client.once('close', done)
       try {
         entry.client.exec(command, (err, stream) => {
           if (err || !stream) {
@@ -110,7 +122,7 @@ class RemoteExecService {
     })
   }
 
-  exec(hostId: string, command: string, opts: WorkspaceExecOptions = {}): Promise<WorkspaceExecResult> {
+  exec(hostId: string, command: string, opts: RemoteExecOptions = {}): Promise<WorkspaceExecResult> {
     const timeoutMs = opts.timeoutMs ?? 120_000
     const maxBytes = opts.maxBytes ?? MAX_CAPTURE
 
@@ -160,7 +172,7 @@ class RemoteExecService {
     entry: PooledExec,
     command: string,
     limits: { timeoutMs: number; maxBytes: number },
-    opts: WorkspaceExecOptions,
+    opts: RemoteExecOptions,
     resolve: (result: WorkspaceExecResult) => void
   ): void {
     if (opts.signal?.aborted) {
@@ -168,6 +180,8 @@ class RemoteExecService {
       return
     }
     const pidId = randomUUID().replace(/-/g, '')
+    entry.active++
+    this.touch(entry)
     const script = buildExecScript(command, {
       pidId,
       ...(opts.cwd ? { cwd: opts.cwd } : {})
@@ -193,7 +207,18 @@ class RemoteExecService {
       opts.signal?.removeEventListener('abort', onAbort)
       stdout += decodeOut.flush()
       stderr += decodeErr.flush()
-      this.touch(entry)
+      const release = (): void => {
+        entry.active--
+        this.touch(entry)
+      }
+      const result: WorkspaceExecResult = {
+        stdout,
+        stderr,
+        exitCode,
+        reason,
+        ...(error ? { error } : {}),
+        truncated
+      }
       if (reason === 'timeout' || reason === 'aborted') {
         /**
          * 结果**立即**返回（与本地 abort 一致），但进程还没死透：2 秒后补 `KILL`，
@@ -201,22 +226,19 @@ class RemoteExecService {
          * 整棵进程树就留在远端了。
          */
         killTimer = setTimeout(() => {
-          void this.runAux(entry, buildKillScript(pidId, 'KILL')).then(() =>
-            this.runAux(entry, buildCleanupScript(pidId))
-          )
+          void this.runAux(entry, buildKillScript(pidId, 'KILL'))
+            .then(() => this.runAux(entry, buildCleanupScript(pidId)))
+            .finally(() => {
+              release()
+              if (opts.waitForCleanup) resolve(result)
+            })
         }, KILL_GRACE_MS)
-        killTimer.unref?.()
+        if (!opts.waitForCleanup) killTimer.unref?.()
       } else {
+        release()
         void this.runAux(entry, buildCleanupScript(pidId))
       }
-      resolve({
-        stdout,
-        stderr,
-        exitCode,
-        reason,
-        ...(error ? { error } : {}),
-        truncated
-      })
+      if (!opts.waitForCleanup || (reason !== 'timeout' && reason !== 'aborted')) resolve(result)
     }
 
     const terminate = (reason: 'timeout' | 'aborted'): void => {
@@ -226,7 +248,7 @@ class RemoteExecService {
     }
 
     const onAbort = (): void => terminate('aborted')
-    const timer = setTimeout(() => terminate('timeout'), limits.timeoutMs)
+    const timer = limits.timeoutMs > 0 ? setTimeout(() => terminate('timeout'), limits.timeoutMs) : undefined
     opts.signal?.addEventListener('abort', onAbort, { once: true })
 
     const append = (stream: 'stdout' | 'stderr', chunk: string): void => {

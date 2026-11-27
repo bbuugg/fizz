@@ -30,12 +30,12 @@
 import type { StateCreator } from 'zustand'
 import type {
   AgentChatMessage,
+  AssistantRemoteTarget,
   AgentConfirmRequest,
   ChatStreamFrame
 } from '@fizz/contracts/agent-api'
 import type { AiPermissionMode } from '@fizz/contracts/types'
 import { applyEvent } from '@fizz/agent-kit/shared/lib/parts'
-import { clientToolsFor, handleClientToolCall } from '@fizz/agent-kit/shared/lib/client-tools'
 import { errorMessage, nextLocalId } from '@fizz/agent-kit/shared/lib/stores/shared'
 import { dispatchProjectUiAction, uiActionsFromEvent } from '@fizz/agent-kit/shared/lib/tool-actions'
 import type { AssistantTarget } from '@fizz/agent-kit/shared/lib/assistant-target'
@@ -80,6 +80,8 @@ export interface AssistantSessionState {
   scrollResetSeq: number
   /** 最后更新时间（会话切换器按它排序；落盘时一起存） */
   updatedAt: number
+  /** 会话绑定的远端目标，不随挂载位置或焦点标签变化。 */
+  remoteTarget?: AssistantRemoteTarget
 }
 
 const emptySession = (): AssistantSessionState => ({
@@ -103,7 +105,7 @@ const persistTimers = new Map<string, ReturnType<typeof setTimeout>>()
 /** 还没落盘的那份快照（会话 id → 内容）；页面被关掉时用它补最后一次写 */
 const pendingWrites = new Map<
   string,
-  { messages: AgentChatMessage[]; updatedAt: number }
+  { messages: AgentChatMessage[]; updatedAt: number; remoteTarget?: AssistantRemoteTarget }
 >()
 
 /** 立刻把待写的快照落盘（关页面 / 切到后台时调，别丢最后几百毫秒的回答） */
@@ -113,7 +115,7 @@ function flushPendingWrites(): void {
     const timer = persistTimers.get(id)
     if (timer) clearTimeout(timer)
     persistTimers.delete(id)
-    saveAssistantConversation(id, entry.messages, entry.updatedAt)
+    saveAssistantConversation(id, entry.messages, entry.updatedAt, entry.remoteTarget)
   }
   pendingWrites.clear()
 }
@@ -149,7 +151,8 @@ function hydrate(): {
       ...emptySession(),
       sessionId: entry.sessionId,
       messages: entry.messages,
-      updatedAt: entry.updatedAt
+      updatedAt: entry.updatedAt,
+      ...(entry.remoteTarget ? { remoteTarget: entry.remoteTarget } : {})
     }
   }
   // 存档里的 activeId 可能指向一段已空（没消息就没落盘）的会话：那种情况按「没有当前会话」
@@ -179,21 +182,25 @@ export interface AssistantSlice {
   deleteAssistantSession(sessionId: string): void
   /** 改当前会话的输入框草稿（不落盘，只为「收起再展开」保住半句话） */
   setAssistantDraft(text: string): void
+  /** 用户显式改目标；运行中拒绝改动。 */
+  setAssistantRemoteTarget(target: AssistantRemoteTarget): void
   /**
    * 在当前会话里发一句话。
    * `scope` 决定挂哪组工具（互斥）：`'project'` 只有项目工具，`'terminal'` 只有该终端的工具。
-   * `terminalTabKey` 只在 `scope === 'terminal'` 时用于取终端工具。
+    * `remoteTarget` 是显式远端执行目标，首次绑定后以会话保存的目标为准。
    * `permissionMode` 是这一轮的工具权限档（输入框左侧那颗 pill）；不传 = 服务端按 `confirm`。
    */
   sendAssistant(
     text: string,
     scope: 'project' | 'terminal',
     target?: AssistantTarget,
-    terminalTabKey?: string | null,
+    remoteTarget?: AssistantRemoteTarget,
     permissionMode?: AiPermissionMode
   ): Promise<void>
   /** 停掉当前会话正在跑的那一轮 */
-  stopAssistant(): void
+  stopAssistant(sessionId?: string): void
+  /** 单条命令停止按面板所属会话定位，不借用主聊天的 requestId。 */
+  stopAssistantCommand(toolCallId: string, sessionId: string): Promise<void>
   /**
    * 编辑并重发：把该条及其后的全部消息截掉，再用改后的文本发一轮。
    *
@@ -213,7 +220,7 @@ export interface AssistantSlice {
     text: string,
     scope: 'project' | 'terminal',
     target?: AssistantTarget,
-    terminalTabKey?: string | null,
+    remoteTarget?: AssistantRemoteTarget,
     permissionMode?: AiPermissionMode
   ): Promise<boolean>
   /**
@@ -248,13 +255,16 @@ export const createAssistantSlice: StateCreator<AgentStore, [], [], AssistantSli
   const persistSoon = (session: AssistantSessionState): void => {
     const id = session.sessionId
     cancelPersist(id)
-    pendingWrites.set(id, { messages: session.messages, updatedAt: session.updatedAt })
+    pendingWrites.set(id, {
+      messages: session.messages, updatedAt: session.updatedAt,
+      ...(session.remoteTarget ? { remoteTarget: session.remoteTarget } : {})
+    })
     persistTimers.set(
       id,
       setTimeout(() => {
         persistTimers.delete(id)
         pendingWrites.delete(id)
-        saveAssistantConversation(id, session.messages, session.updatedAt)
+        saveAssistantConversation(id, session.messages, session.updatedAt, session.remoteTarget)
       }, PERSIST_DELAY)
     )
   }
@@ -371,16 +381,6 @@ export const createAssistantSlice: StateCreator<AgentStore, [], [], AssistantSli
       }))
       return
     }
-    /**
-     * 客户端工具调用：**就地执行**（驱动本机终端）再回填。
-     * 与 confirm 同一类反向通道 —— 不阻塞这一帧的处理（执行是异步的，回填走另开的
-     * HTTP），但必须在帧到达时就派出去，否则服务端那条 await 只能等超时。
-     */
-    if (frame.type === 'client-tool-call') {
-      const api = get().getApi()
-      if (api) void handleClientToolCall(frame, api)
-      return
-    }
     if (frame.type === 'end') return
     if (frame.type !== 'event' || !frame.event) return
     const event = frame.event
@@ -460,13 +460,26 @@ export const createAssistantSlice: StateCreator<AgentStore, [], [], AssistantSli
       writeSession(activeId, (s) => (s.draft === text ? s : { ...s, draft: text }), false)
     },
 
-    sendAssistant: async (text, scope, target, terminalTabKey, permissionMode) => {
+    setAssistantRemoteTarget: (target) => {
+      const key = get().assistantActiveId
+      if (!key || !target.hostId) return
+      writeSession(key, (s) => s.streaming ? s : { ...s, remoteTarget: { ...target }, error: null })
+    },
+
+    sendAssistant: async (text, scope, target, remoteTarget, permissionMode) => {
       const api = get().getApi()
       if (!api) return
       // 没有当前会话就先建一个（正常路径上挂载时已经 ensure 过）
       const key = get().ensureAssistantSession()
       const current = get().assistantConversations[key]
       if (!current || current.streaming) return
+      // 拍下本次发送的目标；await 停止收尾期间切标签也不能换主机。
+      const selectedTarget = current.remoteTarget ?? remoteTarget
+      const executionTarget = scope === 'terminal' && selectedTarget ? { ...selectedTarget } : undefined
+      if (scope === 'terminal' && !executionTarget?.hostId) {
+        writeSession(key, (s) => ({ ...s, error: '请先选择 SSH 执行目标' }))
+        return
+      }
       /**
        * 上一轮刚被「停止」、服务端还在收尾：等它把 run 摘干净再发。
        * 不等就会撞上 `startAssistantTurn` 的 409（那里按 sessionId 查活跃 run）。
@@ -491,15 +504,9 @@ export const createAssistantSlice: StateCreator<AgentStore, [], [], AssistantSli
         get().assistantConversations[sessionId]?.sessionId === sessionId
       const controller = new AbortController()
       const assistantId = nextLocalId('a')
-      /**
-       * 客户端工具（终端操作）：**只有 terminal 作用域**才取清单随请求上送。
-       * 全局助手（project）走 `clientToolsFor(undefined)` → 直接返回 undefined，
-       * 于是它这一轮根本没有终端工具可调。
-       */
-      const clientTools =
-        scope === 'terminal' ? await clientToolsFor(terminalTabKey ?? null) : undefined
       writeSession(sessionId, (s) => ({
         ...s,
+        ...(executionTarget ? { remoteTarget: executionTarget } : {}),
         streaming: true,
         request: { id: '', assistantId, controller },
         error: null,
@@ -527,8 +534,7 @@ export const createAssistantSlice: StateCreator<AgentStore, [], [], AssistantSli
             scope,
             // 面板的模型偏好:带了就让服务端严格解析(悬空给 400 人话),不带走服务端缺省
             ...(target ? { configId: target.configId, modelId: target.modelId } : {}),
-            // 客户端工具(终端操作):只有 terminal 作用域会有值
-            ...(clientTools ? { clientTools } : {}),
+            ...(executionTarget ? { remoteTarget: executionTarget } : {}),
             // 工具权限档:服务端据此给客户端工具(以及项目工具的 readonly)套闸
             ...(permissionMode ? { permissionMode } : {}),
             /**
@@ -560,17 +566,24 @@ export const createAssistantSlice: StateCreator<AgentStore, [], [], AssistantSli
       }
     },
 
-    stopAssistant: () => {
-      const activeId = get().assistantActiveId
+    stopAssistant: (sessionId) => {
+      const activeId = sessionId ?? get().assistantActiveId
       if (activeId) stopSession(activeId)
     },
 
-    resendAssistantMessage: async (messageId, text, scope, target, terminalTabKey, permissionMode) => {
+    stopAssistantCommand: async (toolCallId, sessionId) => {
+      const request = get().assistantConversations[sessionId]?.request
+      if (!request?.id) return
+      await get().getApi()?.stopCommand(request.id, toolCallId).catch(() => undefined)
+    },
+
+    resendAssistantMessage: async (messageId, text, scope, target, remoteTarget, permissionMode) => {
       const key = get().assistantActiveId
       if (!key) return false
       const current = get().assistantConversations[key]
       // 跑着不发：截断放在这里做，一旦放行就是「先删后发」——所以守卫必须在切片之前
       if (!current || current.streaming) return false
+      if (scope === 'terminal' && !(current.remoteTarget ?? remoteTarget)?.hostId) return false
       const index = current.messages.findIndex((m) => m.id === messageId)
       if (index < 0) return false
       /**
@@ -583,7 +596,7 @@ export const createAssistantSlice: StateCreator<AgentStore, [], [], AssistantSli
        * 的「已发出」回包晚一整轮 —— 面板据此清草稿时，输入框会在整个回复期间一直挂着
        * 已经发出去的文本（用户报的就是这个）。发起即返回，失败由会话自己的 `error` 承载。
        */
-      void get().sendAssistant(text, scope, target, terminalTabKey, permissionMode)
+      void get().sendAssistant(text, scope, target, remoteTarget, permissionMode)
       return true
     },
 

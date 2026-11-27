@@ -8,6 +8,7 @@ import { createRoot } from 'react-dom/client'
 import { getAgentHost, setServerBase } from '@fizz/agent-client/host'
 import { normalizeServerBase } from '@fizz/agent-client/api'
 import { loadServerUrl } from './server-url'
+import { hasLocalRuntime } from './runtime/bridge'
 import { bootstrapLanguage, hydrateConnection } from '@fizz/agent-kit'
 import { setSingleTabMode } from '@fizz/agent-kit/shared/lib/panel-store'
 import { bootstrapColorTheme } from '@fizz/agent-kit/shared/hooks/useColorTheme'
@@ -37,17 +38,19 @@ if (!container) throw new Error('找不到 #root 容器')
  * 3. 已保存连接里的 `serverBase`：老版本 APK 升级上来的兜底（那时地址是烘进来的，
  *    连接记录里带着它，但还没有单独存地址）。
  *
- * 都没有 = 未配置：APK 登录页会要求先填地址；hosted 版（server 托管的 `/m/`）保持
- * 同源，相对路径照常能通。
+ * 都没有 = 未配置：hosted APK 登录页会要求先填地址；server 托管的 `/m/` 保持同源。
+ * 内置本机运行时的 APK 跳过这条分支，由原生桥提供 loopback 连接。
  *
  * ⚠️ 必须在 `hydrateConnection()` **之前**注入：`hydrateConnection` 读的是
  * `host.loadConnection()`，覆盖值就是在那一步补进 `Connection.serverBase` 的；
  * 晚一步的话 store 会先按同源建好 api 并缓存，后面再改也无效。
  */
-const queryServer = normalizeServerBase(new URLSearchParams(location.search).get('server'))
-const storedServer = normalizeServerBase(getAgentHost().loadConnection()?.serverBase)
-const serverBase = queryServer ?? loadServerUrl() ?? storedServer
-if (serverBase) setServerBase(serverBase)
+if (!hasLocalRuntime) {
+  const queryServer = normalizeServerBase(new URLSearchParams(location.search).get('server'))
+  const storedServer = normalizeServerBase(getAgentHost().loadConnection()?.serverBase)
+  const serverBase = queryServer ?? loadServerUrl() ?? storedServer
+  if (serverBase) setServerBase(serverBase)
+}
 
 // 现场恢复兼防回归：store 创建时（bootstrap 已注入宿主）已按 `fizz.mobile.*` 读过一次；
 // 这里再同步一遍是防线 —— 若哪天宿主注入又晚于 store 初值，一律以宿主为准（见 agent-store.ts）

@@ -112,6 +112,7 @@ import { askTabCloseGuards, registerTabCloseGuard } from '@fizz/agent-kit/shared
 import { useContainerWidth } from '@fizz/agent-kit/features/chat/SidePanel'
 import { treeIndent } from '@fizz/agent-kit/shared/lib/tree-indent'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { writeClipboard } from '@fizz/agent-kit/shared/lib/clipboard'
 import {
   FILES_PANE_MIN_WIDTH,
   FILES_SINGLE_PANE_BELOW_WIDTH,
@@ -328,7 +329,7 @@ function copyText(text: string, label: string): void {
     toast.error(t('没有可复制的内容'))
     return
   }
-  navigator.clipboard.writeText(text).then(
+  writeClipboard(text).then(
     () => toast.success(label),
     (err: unknown) => toast.error(t('复制失败：{error}', { error: err instanceof Error ? err.message : String(err) }))
   )

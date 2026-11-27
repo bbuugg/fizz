@@ -9,6 +9,8 @@ import { isRemoteWorkspace } from '@fizz/contracts/types'
 import { abortAcpTurn, createAcpSession } from '@fizz/acp'
 import { domain, markDirty } from '@/lib/server/state'
 import { ensurePiConfirmExtension } from '@/lib/server/acp-extension'
+import { acpMcpServers } from '@/lib/server/acp-mcp'
+import { refreshAcpSessionState } from '@/lib/server/acp-session-state'
 import {
   conversationCreateFields,
   type ConversationCreateBody
@@ -108,7 +110,9 @@ export async function POST(request: Request) {
       const ready = await createAcpSession({
         agent,
         conversationId: id,
-        workspacePath
+        workspacePath,
+        modelId: input.modelId,
+        mcpServers: acpMcpServers(domain.listMcpServers(), input.mcpServerIds)
       })
       const conversation = domain.saveConversation({
         ...conversationCreateFields(input),
@@ -121,6 +125,7 @@ export async function POST(request: Request) {
         ...(ready.modes ? { acpModes: ready.modes } : {}),
         ...(ready.thoughtLevel ? { acpThoughtLevel: ready.thoughtLevel } : {})
       })
+      refreshAcpSessionState(id, agent.id)
       // `session/new` 之前那次 initialize 已经探测到「这个 agent 收不收图」，推一次
       // Agent 列表快照，输入区的回形针不用等下一轮对话就能按真实能力决定显不显示
       markDirty(['acpAgents'])
@@ -145,4 +150,3 @@ export async function POST(request: Request) {
     return jsonError(status, message)
   }
 }
-

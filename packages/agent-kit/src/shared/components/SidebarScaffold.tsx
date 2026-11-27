@@ -7,7 +7,7 @@
  *
  * ```
  * ActivitySidebar          几何：桌面占位 / 手机抽屉、宽度、遮罩
- * └─ SidebarProvider       提供 state / toggle，Ctrl+B 可折叠
+ * └─ SidebarProvider       提供 state / toggle，快捷键由应用配置统一分发
  *    └─ Sidebar            **透明底**（压掉原语自带的 `bg-sidebar`）+ `text-sidebar-foreground`
  *       ├─ header（可选） 手机抽屉的品牌行，见下
  *       ├─ SidebarContent  只留滚动容器，滚动交给内层 StackedSections
@@ -108,8 +108,8 @@ export function SidebarScaffold({
       forceDrawer={forceDrawer}
     >
       {/*
-        `open` 绑到全局折叠状态（活动栏那颗按钮 / `CommandOrControl+Alt+B` 写的是同一份），
-        Provider 自带的 `Ctrl/Cmd+B` 于是也走这里 —— 两条入口不会各记一份状态。
+        `open` 绑到全局折叠状态（活动栏按钮 / 应用配置的侧栏快捷键写的是同一份）。
+        Provider 不另挂快捷键监听，避免绕过设置里的改键 / 禁用和录制状态。
         `className` 压掉自带的 `min-h-svh`：侧栏是列布局里的一格，高度由 `h-full` 决定。
       */}
       <SidebarProvider

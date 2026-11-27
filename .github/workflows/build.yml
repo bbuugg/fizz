@@ -171,6 +171,16 @@ jobs:
       - name: Add Android platform
         run: npm run add:android --workspace @fizz/mobile
 
+      # ARM64 Linux / Node / Fizz 和 Android PRoot 一起打入 APK；手机无需另装环境。
+      - name: Setup ARM64 build emulation
+        uses: docker/setup-qemu-action@v3
+
+      - name: Setup runtime builder
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build on-device runtime
+        run: npm run build:mobile:runtime
+
       # vite build + cap sync + 把入库的图标/启动屏铺回 res/
       - name: Build web assets & sync
         run: npm run build:mobile

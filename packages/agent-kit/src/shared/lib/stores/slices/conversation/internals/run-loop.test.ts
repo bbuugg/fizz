@@ -571,3 +571,78 @@ describe('loadConversation · 收尾恰好发生在装载途中', () => {
     ])
   })
 })
+
+/**
+ * 「跑动中重载」把本地历史整段挂到了新消息后面（回归测试）。
+ *
+ * ## 防的是什么
+ *
+ * 用户报的：「我发出的消息跑到了上一条 AI 回复的上方」——ACP 会话在后台被回收后重新
+ * 拉取（`session/load`）会重建出一份消息列表，回放的 id 是现编的（`u-replay-N` /
+ * `a-replay-N`）。客户端此时已经把这一轮发出去了（快照末尾追加了那条用户消息），重载
+ * 回来走 `mergeHistory`：历史在前、本地独有的接在后面。按 id 求差时两批基本对不上，
+ * 本地那一整段历史就被当成「历史里没有的新消息」接在了末尾 —— 界面读作「刚发出的消息
+ * 下面又跟了一整套旧对话」，直到这一轮结束走「整份替换」才复位。
+ *
+ * 服务端已经按轮把 id 换回去了（`carryOverIds`），这里钉住**第二道闸**：角色序列对得上
+ * 时，本地那一段算「已被历史覆盖」，只接真正的尾巴，绝不整段重复。
+ */
+describe('mergeHistory · 快照 id 与本地历史对不上时不能重复挂一整段', () => {
+  it('角色序列对得上就只接尾巴，历史在前、直播在后', async () => {
+    const gate = deferred<{ run: { requestId: string; assistantMessageId: string } }>()
+    /** 服务端快照：历史两轮都是回放现编的 id，末尾那条是本轮用户消息（id 与客户端一致） */
+    const snapshot: AgentChatMessage[] = [
+      { id: 'u-replay-1', role: 'user', parts: [{ type: 'text', text: '更早的问题' }], createdAt: 1 },
+      { id: 'a-replay-2', role: 'assistant', parts: [{ type: 'text', text: '更早的回复' }], createdAt: 2 },
+      { id: 'u-2', role: 'user', parts: [{ type: 'text', text: '这一轮的提问' }], createdAt: 3 }
+    ]
+    const api = {
+      getConversation: vi.fn(async (id: string) => ({
+        id,
+        backend: 'acp' as const,
+        configId: 'cfg-1',
+        acpSessionId: 'sess-1',
+        workspaceId: 'ws-1',
+        title: 'acp 会话',
+        createdAt: 1,
+        updatedAt: 1,
+        messages: [] as AgentChatMessage[]
+      })),
+      activeRun: vi.fn(async () => gate.promise),
+      getAcpTranscript: vi.fn(async () => ({ messages: snapshot })),
+      attachRun: vi.fn(async () => undefined)
+    }
+    const { state, read, loadConversation } = makeStore(api)
+    const done = loadConversation(CONVERSATION_ID)
+    // loadMessages 已收尾、正在等这一轮的探测 —— 这时本地现场是本轮之前的客户端 id
+    await vi.waitFor(() => expect(api.activeRun).toHaveBeenCalledTimes(1))
+    const slices = state.slices as Record<string, ConvSlice>
+    slices[CONVERSATION_ID] = {
+      ...emptySlice(),
+      messages: [
+        { id: 'u-1', role: 'user', parts: [{ type: 'text', text: '更早的问题' }], createdAt: 1 },
+        { id: 'a-1', role: 'assistant', parts: [{ type: 'text', text: '更早的回复' }], createdAt: 2 },
+        { id: 'u-2', role: 'user', parts: [{ type: 'text', text: '这一轮的提问' }], createdAt: 3 },
+        { id: 'a-live', role: 'assistant', parts: [{ type: 'text', text: '直播出来的正文' }], createdAt: 4 }
+      ],
+      streaming: true,
+      request: { id: 'r-1', controller: new AbortController(), assistantId: 'a-live' },
+      loadGen: 1
+    }
+    state.runningConversations = { [CONVERSATION_ID]: true }
+
+    gate.resolve({ run: { requestId: 'r-1', assistantMessageId: 'a-live' } })
+    await done
+
+    // 没有多出来的旧对话：本地那两轮被判成「已被历史覆盖」，只接本轮直播那条
+    expect(read(CONVERSATION_ID).messages.map((m) => m.id)).toEqual([
+      'u-replay-1',
+      'a-replay-2',
+      'u-2',
+      'a-live'
+    ])
+    expect(read(CONVERSATION_ID).messages.find((m) => m.id === 'a-live')?.parts).toEqual([
+      { type: 'text', text: '直播出来的正文' }
+    ])
+  })
+})

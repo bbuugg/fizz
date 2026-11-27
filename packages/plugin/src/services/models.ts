@@ -114,7 +114,7 @@ export class ModelsService extends Service {
   /**
    * 注册一份模型配置；返回 disposer（随插件 fiber 卸载自动回收）。
    *
-   * 同一个 id 重复注册时**保留先注册的**并告警（与 `ctx.uploads.register` 同一取舍：
+   * 同一个 id 重复注册时**保留先注册的**并告警（避免静默覆盖：
    * 抛错会把整轮对话 / 整个设置页带停，代价远大于一条冲突）。
    */
   register(input: PluginModelConfig, opts: { source?: string } = {}): Dispose {

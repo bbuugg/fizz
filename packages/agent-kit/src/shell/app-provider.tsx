@@ -15,7 +15,7 @@
  * - **主区域**：只有 `PanelView` 一套多标签面板（流程视图已整个删除，见
  *   `shared/hooks/use-app-context.ts` 的头注释），数据从 `useAppContext()` 拿。
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import type { ShellDetectResult } from '@fizz/shells'
 import type { WorkspaceConfigSnapshot } from '@fizz/contracts/workspace-config'
@@ -27,21 +27,28 @@ import { useTerminalShell, getTerminalShell } from '@fizz/agent-kit/shared/lib/t
 import { toTerminalInput } from '@fizz/agent-kit/shared/lib/terminal-input'
 import { prunePanelWidths } from '@fizz/agent-kit/shared/lib/panel-width'
 import { setMobileSidebarOpen, useMobileSidebarOpen } from '@fizz/agent-kit/shared/lib/mobile-sidebar'
-import { allTabKeys, activeTabKey, openTab, useIsTabOpen } from '@fizz/agent-kit/shared/lib/panel-store'
-import { isConversationTabKey, NEW_TAB_KEY } from '@fizz/agent-kit/shared/lib/panel-tabs'
+import {
+  activeTabKey,
+  conversationOfTab,
+  openChatTab,
+  openTabKeys,
+  useDraftTabKey,
+  useOpenTabsVersion,
+  useTabOfConversation
+} from '@fizz/agent-kit/shared/lib/panel-store'
+import { isConversationTabKey } from '@fizz/agent-kit/shared/lib/panel-tabs'
 // 名字避开本组件自己导出的 `openSettingsTab`（那个是「带分组打开」的对外动作），
 // 这里要的是底层那条「把设置标签开出来」的工具函数
 import { openSettingsTab as openSettingsPanelTab } from '@fizz/agent-kit/shared/lib/tool-tabs'
 import {
   aliveTabs,
-  draftPanelKey,
+  DRAFT_PANEL_SCOPE,
   focusTab,
-  isDraftPanelKey,
   isTabMounted,
   isTerminalTabKey,
-  mergeDraftPanel,
   resolvePanelWorkspace,
   resolveTerminalCwd,
+  retargetPanelWorkspace,
   terminalTabKey,
   withSideTab,
   withoutMounted,
@@ -57,7 +64,7 @@ import {
 } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import type { TerminalProcess } from '@fizz/agent-client/web-host'
 
-/** 面板实例自增 id：渲染 key 用它，草稿 → 首个会话迁移时 key 不变、组件不重挂 */
+/** 面板实例自增 id：渲染 key 用它，标签换指向（草稿 → 会话）时不变、组件不重挂 */
 let panelSeq = 0
 
 /**
@@ -120,10 +127,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
    * （2026-10 反馈）。标签激活属于「用户手势」的一部分，只能在这里做 ——
    * `PanelView` 那条同步 effect 只认 `activeConversationId` 的**变化**。
    *
-   * 唯一的例外：面板里**只有「新对话」占位标签**时不在这里开。那一支要就地替换占位
-   * 标签、并把草稿的面板现场交给新会话（`adoptDraftPanel`），由 `PanelView` 的 effect
-   * 负责；这里先插一条会把它挤成「两个标签」而绕开那段逻辑，草稿标签里开着的终端现场
-   * 会连同标签一起丢。
+   * 标签的 key 不是会话 id（见 `panel-tabs.ts` 的铁律），所以走 `openChatTab`：它按
+   * 指向表查「这条会话有没有标签」，有就只切过去，没有才新开一颗。
    */
   const openConversation = useCallback(
     (
@@ -141,7 +146,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
        *
        * 原来只在显式传了 `workspaceId` 时才切，于是通知点击（`use-notify-watcher`
        * 只有会话 id）会留下「对话标签是 A、`activeWorkspaceId` 还是 B」的错位：
-       * 顶栏按会话显示 A，但快捷操作 / 上传源 / 终端入口 / git 状态都读全局
+       * 顶栏按会话显示 A，但快捷操作 / 终端入口 / git 状态都读全局
        * `activeWorkspaceId`，全落到 B 上（用户实测：从通知跳回旧工作区后快捷操作
        * 整颗没了）。工作区能从会话清单反查，缺省就自己补上。
        *
@@ -167,8 +172,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         app.selectWorkspace(targetWorkspaceId, false)
       }
       void app.openConversation(conversationId, opts)
-      const open = allTabKeys()
-      if (!(open.length === 1 && open[0] === NEW_TAB_KEY)) openTab(conversationId)
+      openChatTab(conversationId)
     },
     [app]
   )
@@ -221,35 +225,68 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const clearSettingsTab = useCallback((): void => {}, [])
 
   // ---------------------------------------------------------------------------
-  // 会话面板现场：**按会话常驻、隐藏不销毁**（状态在这里，跨导航存活）
+  // 面板现场：**每颗对话标签各一份、常驻、隐藏不销毁**（状态在这里，跨导航存活）
   // ---------------------------------------------------------------------------
-  const [panelSessions, setPanelSessions] = useState<Record<string, PanelSession>>({})
   /**
-   * 最新面板现场的 ref：`openTerminalTabOf` 要在 **setState 之外**同步解析目录（见那边
-   * 的注释），又不能把 `panelSessions` 整个塞进 useCallback 依赖（每开一条终端都重建，
-   * 快捷命令 / 顶栏按钮会跟着换引用）。
+   * 真源是 ref，不是 `useState` —— 理由见 `commitPanelSessions`。
+   *
+   * 现场按**标签 key** 存（不是会话 id）：现场属于标签，标签活着现场就在。草稿标签发出
+   * 第一条消息只是换了个指向，key 不变，终端 / 文件现场原地不动。
    */
-  const panelSessionsRef = useRef(panelSessions)
-  panelSessionsRef.current = panelSessions
+  const panelSessionsRef = useRef<Record<string, PanelSession>>({})
+  const [, bumpPanelSessions] = useReducer((n: number) => n + 1, 0)
+  /** 渲染期读到的现场（真源是 ref，这个别名只是让下面的读取不用到处写 `.current`） */
+  const panelSessions = panelSessionsRef.current
+  /**
+   * 写面板现场的**唯一入口**：先写 ref，再触发一次重渲染。
+   *
+   * ## 为什么不能拿 `useState` 当真源
+   *
+   * 命令式动作（`openTerminalTabOf`、`showSideTabOf`…）经常在同一个同步块里**写完现场
+   * 紧接着读**（开终端要同步返回终端 id、并让下一帧的 `ConversationTab` 读到它）。React
+   * state 要等下一次渲染才可见，那一帧读到的是旧现场 ⇒ 面板空一拍。写进 ref 后立刻可读，
+   * state 只负责让消费方重渲染。
+   */
+  const commitPanelSessions = useCallback(
+    (updater: (prev: Record<string, PanelSession>) => Record<string, PanelSession>): void => {
+      const prev = panelSessionsRef.current
+      const next = updater(prev)
+      if (next === prev) return
+      panelSessionsRef.current = next
+      bumpPanelSessions()
+    },
+    []
+  )
   // 手机形态的侧栏抽屉：对话工具条的汉堡按钮和外壳都要读写。
   // ⚠️ 这份状态**只有一份**，而且不在这棵 React 树的 useState 里（模块级 + 落盘，
   // 见 `app/layout/mobile-sidebar.ts`）：活动栏竖条在不在是**从它派生**的
   // （`AppShell` 的 `railHidden`），两边各有一份就一定会不同步 —— 而不同步的那一瞬就是
   // 「竖条没了、侧栏还开着」的半截形态（用户明确要求这两个一起进出）。
   const mobileSidebarOpen = useMobileSidebarOpen()
-  const sessionKey = app.activeConversationId ?? draftPanelKey(app.activeWorkspaceId)
   /**
-   * 「新对话」占位标签是不是开着。
+   * 「当前会话的现场」挂在哪颗标签下：承载当前会话的那颗；当前没有会话（空态页）就是
+   * 那颗草稿。两者都没有 = `null`（比如当前只开着一颗工具标签）。
    *
-   * 草稿（`draft:*`）面板的**存活期跟着这个标签**，而不是跟着「当前会话」—— 后者会让
-   * 它一离开焦点就被回收（切一下标签，草稿标签里的终端现场连同 PTY 一起没）。
-   * 快照是布尔，所以只有开 / 关那一下才重渲染（见 `panel-store` 的 `useIsTabOpen`）。
+   * 下面那批不带 `Of` 的动作（`showSideTab` / `toggleSideTab` / `patchActivePanel`…）都是
+   * 绑上它的薄壳，供快捷键 / 命令面板 / 外壳用；标签自己的操作一律走 `xxxOf(标签 key, …)`。
    */
-  const draftTabOpen = useIsTabOpen(NEW_TAB_KEY)
-  const activePanel = panelSessions[sessionKey]
+  const draftTab = useDraftTabKey()
+  const sessionKey = useTabOfConversation(app.activeConversationId) ?? draftTab
+  /** 草稿标签的 key（没开着 = null）。草稿现场跟着它活，所以这里订阅它 */
+  const draftTabOpen = draftTab !== null
+  const activePanel = sessionKey ? panelSessions[sessionKey] : undefined
   const sideTab = activePanel?.sideTab ?? null
-  /** 读任意会话的面板现场：多标签 / 分屏下每个对话标签读自己那份（见 AppContextValue） */
-  const panelOf = useCallback((key: string): PanelSession | undefined => panelSessions[key], [panelSessions])
+  /**
+   * 读任意标签的面板现场：多标签 / 分屏下每个对话标签读自己那份（见 AppContextValue）。
+   *
+   * 读 ref 而不是 state，且**依赖为空**：命令式动作刚写完现场，订阅方可能由外部 store
+   * （`panel-store` 的 sync lane）驱动先渲染一步，本组件还没重渲染、闭包仍是旧的 ——
+   * 只有读 ref 才能看到最新现场。
+   */
+  const panelOf = useCallback(
+    (key: string): PanelSession | undefined => panelSessionsRef.current[key],
+    []
+  )
 
   /**
  * 会话 / 工作区 id 列表（join 成字符串）：给面板回收 effect / `patchPanelOf` 当依赖用。
@@ -276,13 +313,14 @@ const containerWorkspaceIdList = app.workspaces
   /**
    * 新建一个空白面板现场（首次打开时才真正落库，之后常驻）：面板收起、一个标签都没挂出。
    *
-   * 按**会话 key** 取工作区：多标签 / 分屏之后每个会话各有一份面板，非当前会话的现场也得
-   * 按它自己所属的工作区建（否则文件树 / 终端会挂到错误的工作区上）。
+   * 按**标签指向的会话**取工作区：多标签 / 分屏之后每颗对话标签各有一份面板，非当前
+   * 标签的现场也得按它自己所属的工作区建（否则文件树 / 终端会挂到错误的工作区上）。
+   * 草稿标签没有会话，落到现场已有的 / 当前选中的工作区。
    */
-  function blankPanelFor(key: string): PanelSession {
+  function blankPanelFor(tabKey: string): PanelSession {
     // 工作区 / cwd 的解析统一走纯函数（列表没就绪时会得到 null，见下面补算的 effect）
     const { workspaceId, cwd } = resolvePanelWorkspace(
-      key,
+      conversationOfTab(tabKey) ?? null,
       '',
       app.conversations,
       app.workspaces,
@@ -307,19 +345,21 @@ const containerWorkspaceIdList = app.workspaces
   }
 
   /**
-   * 改**指定会话**的面板现场（该会话还没有现场就按它自己的工作区建一个）。
+   * 改**指定标签**的面板现场（该标签还没有现场就按它自己的工作区建一个）。
    *
    * 这是所有面板变更的**唯一入口**：当前会话那批动作（`patchActivePanel` /
    * `showSideTab` / `toggleSideTab` / `closeSideTab` / `collapseSidePanel` /
    * `toggleSidePanel`）都只是它绑上 `sessionKey` 的薄壳；多标签 / 分屏下再由
-   * `xxxOf(key, …)` 显式指向某个会话 —— 否则「在 A 标签点终端」会误改当前会话的现场。
+   * `xxxOf(标签 key, …)` 显式指向某个标签 —— 否则「在 A 标签点终端」会误改当前会话的现场。
    *
+   * `key` 为 `null`（当前会话没有承载它的标签）= 什么都不做：没有标签就没有现场可改。
    * `fn` 原样返回入参（`next === base`）或返回 `null` = 本次无变化，**不落库**：
    * 「收起一个本来就收着的面板」不该凭空建出一个空现场。
    */
   const patchPanelOf = useCallback(
-    (key: string, fn: (base: PanelSession) => PanelSession | null): void => {
-      setPanelSessions((prev) => {
+    (key: string | null, fn: (base: PanelSession) => PanelSession | null): void => {
+      if (!key) return
+      commitPanelSessions((prev) => {
         const base = prev[key] ?? blankPanelFor(key)
         const next = fn(base)
         if (!next || next === base) return prev
@@ -349,7 +389,7 @@ const containerWorkspaceIdList = app.workspaces
    * 不能被这次补算重挂。
    */
   useEffect(() => {
-    setPanelSessions((prev) => {
+    commitPanelSessions((prev) => {
       const known = new Set(app.workspaces.map((w) => w.id))
       let changed = false
       const next: Record<string, PanelSession> = {}
@@ -359,7 +399,7 @@ const containerWorkspaceIdList = app.workspaces
           continue
         }
         const resolved = resolvePanelWorkspace(
-          key,
+          conversationOfTab(key) ?? null,
           panel.workspaceId,
           app.conversations,
           app.workspaces,
@@ -383,12 +423,40 @@ const containerWorkspaceIdList = app.workspaces
   }, [workspacePathList, conversationIdList, app.activeWorkspaceId])
 
   /**
+   * 「新对话」页换了目标工作区 → 把草稿面板的**归属**跟着换（只改归属，现场不动）。
+   *
+   * 草稿标签的 key 是稳定的身份，现场挂在它下面：`activeWorkspaceId` 一变（工作区入口里
+   * 换项目 / 点开别的工作区的对话 / 发消息时服务端建临时工作区）**不能**让现场换地方，
+   * 否则右侧面板整块卸载、终端 PTY 被 kill（用户报的「选个工作区，终端历史全没了」）。
+   *
+   * 所以只改归属：已经开着的终端各自记着自己的 `cwd`（`TerminalTab.cwd`），继续跑；
+   * 文件 / git 面板读归属，跟着切到新工作区。
+   */
+  const draftWorkspaceRef = useRef(app.activeWorkspaceId)
+  useEffect(() => {
+    const prev = draftWorkspaceRef.current
+    draftWorkspaceRef.current = app.activeWorkspaceId
+    if (prev === app.activeWorkspaceId) return
+    if (!draftTab) return
+    const nextId = app.activeWorkspaceId ?? ''
+    const nextCwd = app.workspaces.find((w) => w.id === nextId)?.path ?? null
+    commitPanelSessions((prevSessions) => {
+      const panel = prevSessions[draftTab]
+      if (!panel) return prevSessions
+      const next = retargetPanelWorkspace(panel, nextId, nextCwd)
+      return next === panel ? prevSessions : { ...prevSessions, [draftTab]: next }
+    })
+    // app 每次渲染都是新引用：只用「选中工作区」与「草稿标签的 key」驱动
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [app.activeWorkspaceId, draftTab])
+
+  /**
    * 关掉**指定会话**的某个标签（内容随之卸载：该条终端会话被掐、文件树的展开状态丢掉）。
    * 正看着它就切到另一个还挂着的标签；一个都不剩才把面板收起来 —— 与根应用同一套兜底，
    * 免得「关掉 A 却把还开着的 B 一起收了」。
    */
   const closeSideTabOf = useCallback(
-    (key: string, tabKey: PanelTabKey): void => {
+    (key: string | null, tabKey: PanelTabKey): void => {
       patchPanelOf(key, (base) => {
         // 终端标签只是从列表里摘掉（组件卸载 → 对应 PTY 被 kill）；
         // files / git 是清挂出标记。两边都要从 tabOrder 里删掉。
@@ -416,8 +484,10 @@ const containerWorkspaceIdList = app.workspaces
    * 「挂出 + 切过去」，语义与根应用一致：只切标签，**从不关标签** ——
    * 关是标签条上那个 ×（`closeSideTab`）的事。终端标签已存在于 `terminals`，这里只补 tabOrder。
    */
+  // 下面几个 `xxxOf` 的 key 都收 `string | null`：它们多半是绑上 `sessionKey` 的薄壳，
+  // 而「当前会话没有承载它的标签」时 `sessionKey` 就是 `null` —— 那时什么都不做。
   const showSideTabOf = useCallback(
-    (key: string, tabKey: PanelTabKey): void => {
+    (key: string | null, tabKey: PanelTabKey): void => {
       patchPanelOf(key, (base) => focusTab(base, tabKey))
     },
     [patchPanelOf]
@@ -433,7 +503,7 @@ const containerWorkspaceIdList = app.workspaces
    * （终端不常用这套 —— 一个会话可能有多条终端，走 `toggleTerminalPanel`。）
    */
   const toggleSideTabOf = useCallback(
-    (sessionId: string, key: SideTabKey): void => {
+    (sessionId: string | null, key: SideTabKey): void => {
       patchPanelOf(sessionId, (base) =>
         base.sideTab === key ? withSideTab(base, null) : focusTab(base, key)
       )
@@ -453,7 +523,7 @@ const containerWorkspaceIdList = app.workspaces
 
   /** 收起面板（一个标签都不关）；无变化时不落库 */
   const collapseSidePanelOf = useCallback(
-    (key: string): void => {
+    (key: string | null): void => {
       patchPanelOf(key, (base) => (base.sideTab === null ? null : withSideTab(base, null)))
     },
     [patchPanelOf]
@@ -465,7 +535,7 @@ const containerWorkspaceIdList = app.workspaces
 
   /** 收起 / 恢复到**上次看的**那个标签（那个已经关掉了就退到最后一个还挂着的） */
   const toggleSidePanelOf = useCallback(
-    (key: string): void => {
+    (key: string | null): void => {
       patchPanelOf(key, (base) => {
         if (base.sideTab !== null) return withSideTab(base, null)
         const last = base.lastSideTab
@@ -509,6 +579,8 @@ const containerWorkspaceIdList = app.workspaces
         : false) ?? false
   )
   useEffect(() => {
+    // 没有承载当前会话的标签 = 没有现场可写（只开着工具标签时）
+    if (!sessionKey) return
     if (chatStreaming || !gitWorkspaceId || !gitWorkspacePath) return
     let cancelled = false
     void gitStatusRef
@@ -536,76 +608,42 @@ const containerWorkspaceIdList = app.workspaces
   }, [chatStreaming, sessionKey, gitWorkspaceId, gitWorkspacePath])
 
   /**
-   * 「草稿态 → 首个会话」：把草稿的面板现场交给新会话（保留终端 / 文件现场）。
+   * 回收失效的面板现场：标签关了，它的现场就没（终端记录、挂出标记、git 信息一起走）。
    *
-   * ⚠️ **由 `PanelView` 在「占位标签被就地替换」那一刻显式调用**，不是「`sessionKey` 一变
-   * 就迁移」。老实现是后者，于是有个很难查的坑：用户在新对话标签里开着终端，只要点了
-   * **别的**会话标签（`sessionKey` 从草稿变成那条会话），草稿现场就被搬走了 —— 那个会话
-   * 凭空多出几条终端，草稿标签自己反而空了。现场属于**标签**，只有标签本身被换掉才该搬家。
+   * 现场按标签 key 存，所以判据只有一条 —— 这颗标签还开着吗。没有「草稿」「当前会话」
+   * 之类的特例：草稿标签关了同样是关；切到别的标签只是切焦点，标签还开着，现场不动。
    *
-   * 找不到草稿现场（用户压根没在草稿里开过东西）或目标已有现场时不做事 —— 绝不覆盖。
+   * 面板宽度（`lib/panel-width.ts`）是**按会话**持久化的偏好（跨刷新要留着），所以它
+   * 另按会话清单清：
+   *
+   * ⚠️ 必须等列表**真的加载完**（`conversationsLoaded`）才清：加载前 id 清单是空的，
+   * 那会把 localStorage 里所有会话的宽度一次性误删 —— 页面一刷新全丢。
+   * （面板现场本身不用这层保护：它是内存态，刷新后本来就是空的。）
    */
-  const adoptDraftPanel = useCallback(
-    (conversationId: string): void => {
-      setPanelSessions((sessions) => {
-        /*
-         * `from` 按当前工作区算，但**不能只认它**：工作区列表晚到 / 当前工作区被纠正
-         * （持久化的 id 指向已删工作区、被换成第一个真项目）时，草稿现场挂在**旧 key** 上；
-         * 只按新 key 找就会「找不到草稿」→ 草稿里开着的终端留在没人认领的 key 上，
-         * 下一拍被回收 effect 连 PTY 一起清掉（「刷新后点终端打不开」）。
-         */
-        const from = draftPanelKey(app.activeWorkspaceId)
-        const fromKey = sessions[from] ? from : Object.keys(sessions).find(isDraftPanelKey)
-        const draft = fromKey ? sessions[fromKey] : undefined
-        if (!draft) return sessions
-        const next = { ...sessions }
-        if (fromKey) delete next[fromKey]
-        const existing = next[conversationId]
-        /*
-         * 目标已有现场（后台 patch 建的空壳）时也**必须把草稿那份并进来** ——
-         * 直接放弃迁移会把草稿里的终端 / 文件现场整个丢掉。合并口径见 `mergeDraftPanel`。
-         */
-        next[conversationId] = existing ? mergeDraftPanel(existing, draft) : draft
-        return next
-      })
-    },
-    [app.activeWorkspaceId]
-  )
-
-  /**
-   * 回收失效的面板：会话被删除、或「新对话」标签已经关掉（草稿现场跟着它一起走）。
-   *
-   * ⚠️ 草稿那支判的是 `draftTabOpen`（标签开着吗），**不是** `key === sessionKey`（它是不是
-   * 当前会话）。后者会让草稿面板在「切到别的标签」时当场被回收 —— 面板收起、终端 PTY 被 kill，
-   * 切回新对话标签就是一片空白。`draftTabOpen` 变化会驱动本 effect 重跑（见 `useIsTabOpen`）。
-   */
+  const tabsVersion = useOpenTabsVersion()
   useEffect(() => {
-    const ids = new Set(conversationIdList ? conversationIdList.split('\n') : [])
-    setPanelSessions((prev) => {
+    const open = new Set(openTabKeys())
+    commitPanelSessions((prev) => {
       let changed = false
       const next: Record<string, PanelSession> = {}
       for (const [key, value] of Object.entries(prev)) {
-        const keep = isDraftPanelKey(key) ? draftTabOpen : ids.has(key)
-        if (keep) next[key] = value
+        if (open.has(key)) next[key] = value
         else changed = true
       }
       return changed ? next : prev
     })
-    // 面板宽度（`lib/panel-width.ts`）也按会话记，同一批会话没了就一起清。
-    //
-    // ⚠️ 必须等列表**真的加载完**（`conversationsLoaded`）才清：加载前 id 清单是空的，
-    // 那会把 localStorage 里所有会话的宽度一次性误删 —— 页面一刷新全丢。
-    // （面板状态本身不用这层保护：它是内存态，刷新后本来就是空的。）
-    // 草稿标签开着时它的宽度也留着：不然切一趟标签回来，面板宽度就忘了。
-    if (app.conversationsLoaded) {
-      prunePanelWidths([
-        ...ids,
-        sessionKey,
-        ...(draftTabOpen ? [draftPanelKey(app.activeWorkspaceId)] : [])
-      ])
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationIdList, sessionKey, app.conversationsLoaded, draftTabOpen, app.activeWorkspaceId])
+  }, [tabsVersion])
+
+  useEffect(() => {
+    if (!app.conversationsLoaded) return
+    prunePanelWidths([
+      ...conversationIdList.split('\n').filter(Boolean),
+      // 草稿的宽度记在常量作用域下，草稿标签开着就留着
+      ...(draftTab ? [DRAFT_PANEL_SCOPE] : [])
+    ])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationIdList, app.conversationsLoaded, draftTab])
 
   // ---- 工作区快捷功能（.fizz/workspace.json） ----
   // 快照按工作区缓存，供快捷功能菜单 / 快捷功能管理弹窗使用。
@@ -648,14 +686,17 @@ const containerWorkspaceIdList = app.workspaces
    * 两者都不给 = 按项目类型默认：容器型项目进容器，其余走宿主默认 shell
    * —— 容器项目里点终端自然该进容器，宿主 shell 在那个项目里没有意义。
    *
-   * 默认 shell 按**目标会话自己所属的工作区**取（多标签 / 分屏下每个会话的工作区可能不同）。
+   * 默认 shell 按**目标标签指向的会话**所属的工作区取（多标签 / 分屏下每个标签的工作区
+   * 可能不同；草稿标签落到当前选中的工作区）。`targetKey` 为 `null`（没有可挂的标签）
+   * 同样返回 `null`。
    */
   const openTerminalTabOf = useCallback(
     (
-      targetKey: string,
+      targetKey: string | null,
       shellId?: string | null,
       container?: { workspaceId: string; shell?: string }
     ): string | null => {
+      if (!targetKey) return null
       /*
         现场里的 cwd 可能是「工作区列表还没到」或「持久化的工作区已被丢弃」时留下的
         空值 / 旧路径。**点击这一刻再按最新数据解析一次**，并在 setState 之外算好结果
@@ -664,7 +705,7 @@ const containerWorkspaceIdList = app.workspaces
       const live = useAgentStore.getState()
       const existing = panelSessionsRef.current[targetKey]
       const resolved = resolveTerminalCwd(
-        targetKey,
+        conversationOfTab(targetKey) ?? null,
         existing?.workspaceId,
         existing?.cwd,
         live.conversations,
@@ -710,19 +751,16 @@ const containerWorkspaceIdList = app.workspaces
   /**
    * 「当前该往哪份面板现场开终端」。
    *
-   * `sessionKey` 是 **`activeConversationId`** 派生出来的，而「面板正显示哪个标签」是
-   * 另一份状态（`panel-store`）。刷新 / 恢复期间两者会有一小段错位：`PanelView` 先挂出
-   * 「新对话」草稿标签，恢复完成后才把 `activeConversationId` 换成会话 A 并就地替换标签。
-   * 这期间按 `sessionKey`（= A）开终端，终端会落进**还没挂出来的会话 A 面板** ——
+   * 「面板正显示哪个标签」（`panel-store`）与「当前会话」是两份状态，刷新 / 恢复期间会
+   * 有一小段错位。按 `sessionKey` 开终端，终端可能落进**还没挂出来的**会话的面板 ——
    * `TerminalPanel` 不 mount、`onReady` 永远不来，快捷命令只能 5 秒超时报错（用户报的
-   * 「执行命令超时」）。按**焦点标签自己的**面板 key 开就不会错位。
+   * 「执行命令超时」）。所以焦点标签是对话标签时，一律按**它自己的** key 开。
    *
-   * 工具标签（日志 / 主机终端…）与「没有标签」仍沿用 `sessionKey` —— 那些页面没有对话的
-   * 面板现场，顶栏终端语义本来就是「当前会话那份」。
+   * 工具标签（日志 / 主机终端…）与「没有标签」退回 `sessionKey`（当前会话那颗，没有就
+   * 草稿那颗）—— 那些页面没有对话的面板现场，顶栏终端语义本来就是「当前会话那份」。
    */
-  const terminalTargetKey = useCallback((): string => {
+  const terminalTargetKey = useCallback((): string | null => {
     const tab = activeTabKey()
-    if (tab === NEW_TAB_KEY) return draftPanelKey(useAgentStore.getState().activeWorkspaceId)
     if (tab && isConversationTabKey(tab)) return tab
     return sessionKey
   }, [sessionKey])
@@ -741,8 +779,9 @@ const containerWorkspaceIdList = app.workspaces
 
   /** 顶栏「终端」主按钮：正看着某个终端就收起；否则回到最后一个终端，一条都没有就新开一条 */
   const toggleTerminalPanelOf = useCallback(
-    (key: string): void => {
-      const panel = panelSessions[key]
+    (key: string | null): void => {
+      if (!key) return
+      const panel = panelSessionsRef.current[key]
       if (isTerminalTabKey(panel?.sideTab)) {
         collapseSidePanelOf(key)
         return
@@ -756,7 +795,7 @@ const containerWorkspaceIdList = app.workspaces
         toast.error('这个工作区没有可用的目录，打不开终端')
       }
     },
-    [panelSessions, collapseSidePanelOf, showSideTabOf, openTerminalTabOf]
+    [collapseSidePanelOf, showSideTabOf, openTerminalTabOf]
   )
   const toggleTerminalPanel = useCallback(
     (): void => toggleTerminalPanelOf(terminalTargetKey()),
@@ -955,7 +994,6 @@ const containerWorkspaceIdList = app.workspaces
     toggleSidePanelOf,
     openTerminalTabOf,
     toggleTerminalPanelOf,
-    adoptDraftPanel,
     runQuickCommand,
     quickSnapshot,
     saveQuickConfig,

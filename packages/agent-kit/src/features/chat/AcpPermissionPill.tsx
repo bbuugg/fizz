@@ -9,26 +9,25 @@ import { useT } from "@fizz/agent-kit/shared/lib/language";
 /** ACP 权限答复档的中文名（pill 的 tooltip / aria 用） */
 const ACP_PERMISSION_LABELS = {
   confirm: "确认（逐次询问）",
-  allow: "完全放行（不再询问）",
+  allow: "完全放行（逐次自动允许）",
 } as const;
 
 /**
  * 每档的第二行说明（富面板用，与内置权限 pill 同一套排版）。
  *
  * 为什么要它：两档名字只说「问不问」，不说「问了之后会怎样」——「完全放行」到底是
- * 替你答 allow_once 还是 allow_always，只有这行字讲得清（见下面的长注释）。
+ * 完全放行是替你答 allow_once，不是让 Agent 记住授权（见下面的长注释）。
  */
 const ACP_PERMISSION_HINTS = {
   confirm: "每次请求权限都弹确认卡，由你决定是否允许。",
-  allow: "服务端直接替你答复「允许」，确认卡不再出现。",
+  allow: "每次请求仅自动允许本次，不让 Agent 记住授权；不支持单次允许时仍会询问。",
 } as const;
 
 /**
  * ACP 会话的「权限答复」pill（复用内置权限 pill 的位置与外观；**两档**）。
  *
  * - **确认**（缺省）：agent 每次发 `session/request_permission` 都弹确认卡，由你挑；
- * - **完全放行**：服务端在应用层直接替用户答复「允许」（挑 agent 给的 allow_always →
- *   allow_once），确认卡根本不会出现。
+ * - **完全放行**：服务端只选 Agent 提供的 allow_once；缺少时仍弹确认卡，不升级授权。
  *
  * 按**会话**记住（存会话配置，换会话要重选）。一轮运行中切换也有效：服务端在每次
  * `session/request_permission` 到来时现取会话当前的模式，所以切到「完全放行」后

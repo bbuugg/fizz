@@ -22,6 +22,9 @@
  * 它是**复位落底**的信号（`ChatPanel` 把它拼进 `resetKey`），不是「切过去了」的信号。
  * 无条件 bump 的表现是「翻上去读历史 → 点另一个标签 → 点回来，列表自己跳到底部」
  * （用户报的）。切标签走 `keepScroll`，不 bump；侧栏 / 通知 / 深链打开照旧 bump。
+ *
+ * ## 3. 切回仍打开的新对话标签，不能重新初始化它的模型 / MCP / ACP 草稿。
+ * 标签导航（keepScroll）只切焦点，显式新建才初始化草稿。
  */
 import { describe, expect, it, vi } from 'vitest'
 import { createConversationSlice } from '../index'
@@ -182,5 +185,50 @@ describe('openConversation：什么时候复位消息区的滚动位置', () => 
 
     expect(state.activeConversationId).toBe(CONVERSATION_ID)
     expect(sliceOf(CONVERSATION_ID)?.scrollResetSeq).toBe(before + 1)
+  })
+})
+
+describe('openConversation：切回草稿标签', () => {
+  it('保留这个新对话标签已选好的模型、MCP、思考强度与 ACP 档位', () => {
+    const { state, slice } = makeStore(makeApi())
+    const settings = {
+      chatTarget: { backend: 'acp', configId: 'agent-a', modelId: 'model-a' },
+      mcpServerIds: ['mcp-a'],
+      browserSettings: null,
+      reasoningEffort: 'high'
+    }
+    const acp = { agentId: 'agent-a', modelId: 'model-a', mode: 'code' }
+    state.draftSettings = settings
+    state.draftAcp = acp
+
+    ;(slice.openConversation as (
+      id: string | null, opts?: { keepScroll?: boolean }
+    ) => void)(null, { keepScroll: true })
+
+    expect(state.activeConversationId).toBeNull()
+    expect(state.draftSettings).toEqual(settings)
+    expect(state.draftAcp).toEqual(acp)
+  })
+
+  it('显式开始新对话仍初始化草稿，不继承旧 MCP、思考强度或 ACP 档位', () => {
+    const { state, slice } = makeStore(makeApi())
+    state.draftSettings = {
+      chatTarget: { backend: 'acp', configId: 'agent-a' },
+      mcpServerIds: ['mcp-a'],
+      browserSettings: null,
+      reasoningEffort: 'high'
+    }
+    state.draftAcp = { agentId: 'agent-a', mode: 'code' }
+
+    ;(slice.openConversation as (id: string | null) => void)(null)
+
+    expect(state.activeConversationId).toBeNull()
+    expect(state.draftSettings).toEqual({
+      chatTarget: null,
+      mcpServerIds: [],
+      browserSettings: null,
+      reasoningEffort: null
+    })
+    expect(state.draftAcp).toBeNull()
   })
 })

@@ -9,6 +9,8 @@ type SliderProps = React.ComponentProps<typeof SliderPrimitive.Root> & {
   rangeClassName?: string
   rangeStyle?: React.CSSProperties
   thumbClassName?: string
+  /** 语义应落在真正 role=slider 的拇指上，不能只标注外层 Root。 */
+  thumbProps?: Pick<React.ComponentProps<typeof SliderPrimitive.Thumb>, "aria-label" | "aria-valuetext">
 }
 
 function Slider({
@@ -17,6 +19,7 @@ function Slider({
   rangeClassName,
   rangeStyle,
   thumbClassName,
+  thumbProps,
   defaultValue,
   value,
   min = 0,
@@ -64,6 +67,7 @@ function Slider({
       </SliderPrimitive.Track>
       {Array.from({ length: _values.length }, (_, index) => (
         <SliderPrimitive.Thumb
+          {...thumbProps}
           data-slot="slider-thumb"
           key={index}
           className={cn(

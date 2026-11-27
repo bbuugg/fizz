@@ -137,6 +137,7 @@ class V1Connection implements AcpConnection {
   constructor(
     private readonly ctx: acp.ClientContext,
     private readonly release: () => void,
+    private readonly onConfigOptions?: AcpConnectInput['handlers']['onConfigOptions'],
   ) {}
 
   async initialize(): Promise<AcpInitResult> {
@@ -250,6 +251,9 @@ class V1Connection implements AcpConnection {
 
   /** 供 onNotification 路由 session/update 到由 resume 恢复出来的会话 */
   routeUpdate(params: any): void {
+    if (params?.update?.sessionUpdate === 'config_option_update' && Array.isArray(params.update.configOptions)) {
+      this.onConfigOptions?.(params.sessionId, params.update.configOptions)
+    }
     const source = this.manual.get(params?.sessionId)
     if (!source) return
     const update = params.update as { sessionUpdate: string; [k: string]: unknown }
@@ -329,7 +333,7 @@ export const v1Factory: AcpConnectionFactory = {
           if (typeof id === 'string' && id) input.handlers.onElicitationComplete?.(id)
         })
         .connectWith(acp.ndJsonStream(input.toAgent, input.fromAgent), async (ctx) => {
-          connection = new V1Connection(ctx, () => release?.())
+          connection = new V1Connection(ctx, () => release?.(), input.handlers.onConfigOptions)
           resolve(connection)
           await closed
         })

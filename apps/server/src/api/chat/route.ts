@@ -27,8 +27,7 @@ import { pipeRun } from '@/app/api/_lib/chat-stream'
 export async function POST(request: Request) {
   const body = await parseJsonBody<ChatRequest>(request)
   if (!body) return jsonError(400, '请求体不是合法 JSON')
-  // origin 传给 startTurn：附件 URL 的绝对化兜底（FIZZ_PUBLIC_BASE_URL 未设时用）
-  const started = await startTurn(body, { origin: new URL(request.url).origin })
+  const started = await startTurn(body)
   if (!started.ok) return jsonError(started.status, started.message)
   return pipeRun(started.run)
 }

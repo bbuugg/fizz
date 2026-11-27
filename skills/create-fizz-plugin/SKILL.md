@@ -52,7 +52,7 @@ Fizz 插件 = 磁盘上的一个**目录**：目录里必须有 `plugin.json`（
 - **id 重名 → 409**：不悄悄覆盖别人的插件，也不许顶掉内置插件（要更新就先卸载再装）。
 - **装完立刻体检**：`plugin.json` 校验 + apply 一遍，跑不起来 → **删掉刚写的目录并报错**，不留一个每次扫盘都报错的坏目录。
 - **内置插件不能卸载**：它随产品分发（进 git、打包后可能只读），只能用开关停用。
-- 装 / 卸之后**立刻生效**：模块缓存与上传源的长驻 context 当场作废，响应就是重扫后的完整清单 —— 前端直接覆盖，不必再拉一次。
+- 装 / 卸之后**立刻生效**：模块与插件模型缓存当场作废，响应就是重扫后的完整清单 —— 前端直接覆盖，不必再拉一次。
 
 ## 2. 最小插件
 
@@ -79,7 +79,6 @@ export default function myPlugin(ctx) {
 | `ctx.prompt` | 往系统提示词插段 | `section(id, text, { priority, source })`、`remove(id)` |
 | `ctx.hooks` | 拦截 / 通知 Agent 行为 | `on(hookName, listener)` |
 | `ctx.ui` | 声明设置项 / 面板（面板目前只读展示） | `setting(item)`、`panel(item)` |
-| `ctx.uploads` | 注册**上传源**（附件换个地方存） | `register(spec)`、`list()` |
 | `ctx.models` | 往**设置 →「模型」**里注册只读模型配置（网关 + 模型清单 + 每模型配置） | `register(config)`、`list()` |
 | `ctx.workspace` | 这一轮绑定的**工作区根**：把模型给的相对路径解析成绝对路径 | `path`、`label`、`resolve(p)`、`contains(p)` |
 
@@ -197,7 +196,7 @@ export default {
 
 ```ts
 export default {
-  inject: ['uploads'],
+  inject: ['ui'],
   apply(ctx, config) {
     ctx.ui.setting({ id: 'strict', title: '严格模式', type: 'boolean', default: false })
     ctx.ui.setting({ id: 'level', title: '档位', type: 'select', options: [{ label: '低', value: 'low' }] })
@@ -220,68 +219,11 @@ export default {
 
 收集这些声明时宿主会把插件 `apply` 一遍（见 `inspectPluginUi`），所以声明了**自定义服务名**的 `inject` 会因依赖不齐被推迟、声明收集不到。
 
-### 3.4 注册上传源（`ctx.uploads`）
+对话附件由内置上传接口以 JSON + base64 接收，发往模型时内联字节；插件不提供附件上传源。
+需要分享工作区产出物时，可以参考 `plugins/oss/index.ts`，用 `ctx.tools.register` 注册独立的
+上传工具，并通过 `secret: true` 的设置项保存凭据。
 
-换掉「附件存哪儿」：注册之后，输入框回形针菜单里就能选它，字节由你的 `put` 落到自己的存储（图床 / S3 / 对象存储 / 内网服务），**交给输入框的始终只是一条 URL**。
-
-```ts
-export default {
-  name: 'my-cdn',
-  inject: ['uploads'],
-  apply(ctx) {
-    ctx.uploads.register({
-      id: 'my-cdn',                       // 唯一 id（进上传请求与附件引用，定了别改）
-      title: '我的图床',                   // 选择器里的名字
-      urlPrefixes: ['https://cdn.example.com/fizz'],  // ← 必须声明，见下
-      accept: { mime: ['image/png', 'image/webp'], maxBytes: 5 * 1024 * 1024 },
-      async put({ name, mediaType, bytes }) {
-        const url = await uploadToMyCdn(bytes, mediaType, name)  // 你自己的实现
-        return { url }
-      }
-    })
-  }
-}
-```
-
-**`urlPrefixes` 是硬要求，不是装饰**：服务端 `put` 返回后会立刻校验这条 URL 是否落在声明范围内，不在就**整条丢弃并报错**（fail-closed）。原因是附件 URL **直传**给模型（`ImagePart` / `FilePart` 里就是这条地址，服务端不下载、不校验），插件若返回任意地址，等于让模型去取那个地址。必须 https（`http://localhost` 例外），可带路径前缀。
-
-每条成功签发的 URL 会记进服务端的「已签发」表（落盘）：**没走过一次真实上传的 URL 一律进不了历史**（手编一条会 400），服务端重启后老附件仍然有效。
-
-生效时机与别的服务**不同**：上传发生在「还没有回合」的时候，所以 `ctx.uploads` 挂在**长驻 context**（每个项目一份）上，不是 turn context；插件目录改了**下一次上传**即新代码 —— 前端在上传源清单里看，而清单会**在打开回形针菜单时重拉**（不必等下一轮对话，也不必切项目）。缺省的上传源是内置存储（`local`，落数据目录 + `/api/uploads/<uuid>.<ext>`），不注册也能用。设置 →「插件」里能看到每个插件提供了哪些上传源。
-
-**想同时提供「上传源」与「工具」时**（内置的 `plugins/oss/index.ts` 就是这个形态）：两半挂在**不同的 context** 上 —— 工具在每轮对话的 turn context（有 `tools` / `workspace`），上传源在长驻的 upload context（有 `uploads` / `ui`，**没有 `workspace`**）。所以顶层 `inject` 留空（任何 context 都 apply，设置项声明才在设置页那次 inspect 里收得到），两半各自声明：
-
-```ts
-export default {
-  name: 'oss',
-  inject: [],                       // ← 留空：别把 uploads / workspace / ui 写进顶层
-  apply(ctx, config) {
-    ctx.inject(['ui'], (c) => { /* 声明设置项、图标 */ })
-    ctx.inject(['uploads'], (c) => { /* 注册上传源 */ })
-    ctx.inject(['tools', 'workspace'], (c) => { /* 注册工具 */ })
-  }
-}
-```
-
-写成 `inject: ['uploads', 'tools']` 会**两边都不生效**：turn context 缺 `uploads`、upload context 缺 `workspace`，两处都被推迟，插件看起来「装了但什么都没发生」。
-
-凭据**别写进插件源码**：优先声明成 `secret: true` 的设置项（用户在设置页里填，落盘加密、不回传浏览器），
-`process.env` 作为兜底（容器 / 无界面部署）。内置插件目录（`<仓库根>/plugins`）**本身就是要提交进 git 的**，
-项目 / 用户级目录也可能被提交 —— 把 token 写死进去等于把它推上 git。
-可参考现成例子：
-- `<仓库根>/plugins/oss/index.ts`（内置插件，S3 兼容对象存储：**既注册上传源、又注册工具**，
-  两个开关各管一半，手写 AWS SigV4 签名）；
-- `<仓库根>/plugins/api-upload/index.ts`（内置插件，**只要上传源、不要工具** —— 打一个
-  `X-API-Key` 的自建文件上传服务，文档见仓库根 `API_UPLOAD.md`）；
-- `~/.fizz/plugins/storage-to/index.ts`（**用户级**插件的完整例子：走官方三步流程上传到
-  storage.to，API 令牌是一个 `secret: true` 的设置项，图标自绘成几百字节的 SVG）。
-
-上传源还有一条容易漏的规矩：`urlPrefixes` 声明的域名必须**真的覆盖** `put` 返回的地址
-—— 两者不一致是常态（上传接口一个域名、文件对外访问另一个静态域名）。所以要么像
-`api-upload.ts` 那样把它做成一项设置并在上传后**当场比对**、要么像 `oss.ts` 那样让
-用户填 `publicBaseUrl`。宿主会 fail-closed 校验这条，不匹配就抛错，且不带原因。
-
-### 3.5 注册模型配置（`ctx.models`）
+### 3.4 注册模型配置（`ctx.models`）
 
 插件可以往**设置 →「模型」**里加一份或多份**只读**模型配置 —— 和用户手建的完全同构：
 网关（kind / baseURL / apiKey）+ 模型清单 + 每个模型自己的上下文窗口与进阶设置。
@@ -323,7 +265,7 @@ export default {
 5. **注册时机**：服务端启动、每轮对话 / 定时任务 / 助手回合前、保存插件设置 / 安装卸载后都会
    按「插件目录源码 + 设置值」指纹重建；改完插件下一轮对话就生效。
 
-### 3.6 注册界面（`ctx.ui.icon` / `view`）
+### 3.5 注册界面（`ctx.ui.icon` / `view`）
 
 插件在界面上只有两样东西：
 
@@ -388,7 +330,7 @@ export default {
 - 矢量 SVG 最佳：`data:image/svg+xml,` + `encodeURIComponent(svg源码)`，几百字符、任意尺寸都清楚。
 - 没有图标的插件由宿主画一个同尺寸的占位图标，所以各行文字左边界是齐的。
 
-**停用的插件不会出现在插件列表里**（与上传源同一取舍）。改完插件目录 / 设置，下一次请求就是新代码（挂载是每次现挂一次的，见 `apps/server/src/server/plugin-ui.ts`）。
+**停用的插件不会出现在插件列表里**。改完插件目录 / 设置，下一次请求就是新代码（挂载是每次现挂一次的，见 `apps/server/src/server/plugin-ui.ts`）。
 
 ### 3.7 自带前端半（`client`）与 npm 依赖（`dependencies`）
 

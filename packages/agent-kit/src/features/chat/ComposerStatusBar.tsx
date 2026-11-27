@@ -10,9 +10,10 @@
  *   那里面，见 `GitPanel`）；**没选工作区时置灰不可点**。这里负责显示当前分支与未提交
  *   改动数（徽章从顶栏那颗 git 按钮迁过来）。不再兼做分支选择器；
  * - 切换工作区时分支属于旧仓库：先显示 skeleton，读到新的再替换，避免闪一下旧分支名；
+ * - 同一工作区首次加载完成后，轮末刷新保留现有分支与改动数，不再显示 skeleton；
  * - 权限档与上下文圆环从卡片内搬到这一条右侧。
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Cloud, Folder, GitBranch } from 'lucide-react'
 import { Skeleton } from '@fizz/ui/skeleton'
 import { AcpPermissionPill } from '@fizz/agent-kit/features/chat/AcpPermissionPill'
@@ -26,41 +27,64 @@ import { PermissionPill } from '@fizz/agent-kit/features/chat/composer'
 /**
  * git 分支 pill（**常驻、任何时候都可点**）。
  *
- * 点击 = 打开 / 收起当前会话的「源代码管理」侧栏。切分支、建分支、暂存、提交这些操作
+ * 点击 = 打开 / 收起**本标签**的「源代码管理」侧栏。切分支、建分支、暂存、提交这些操作
  * 都在面板里，横条上只展示当前分支（没有工作区 / 不是仓库时仍可点开面板，由面板给出
  * 「初始化仓库」等入口）。
+ *
+ * `panelKey` = 本标签的 key。面板现场按标签存，所以它必须由宿主（`ConversationTab`）
+ * 一路传下来 —— 从 `app.activeConversationId` 反推是错的：那会把别的标签的面板改掉。
  */
-function BranchPill({ app }: { app: AgentApp }) {
+function BranchPill({ app, panelKey }: { app: AgentApp; panelKey: string }) {
   const tr = useT()
-  const { activePanel, patchActivePanel, toggleSideTab, gitBadge } = useAppContext()
-  const branch = activePanel?.gitBranch ?? null
+  const { panelOf, patchPanelOf, toggleSideTabOf } = useAppContext()
   const workspaceId = app.activeWorkspaceId
-  /** 切换工作区后、新仓库的分支读回来之前：显示骨架，别让旧分支名留在横条上 */
+  const panel = panelOf(panelKey)
+  const branch = panel?.gitBranch ?? null
+  const changeCount = panel?.gitChanges?.count ?? 0
+  const gitBadge = changeCount > 0
+    ? `${changeCount}${panel?.gitChanges?.truncated ? '+' : ''}`
+    : null
+  /** 仅当前标签 / 工作区首次加载显示骨架，后续刷新保留现有状态。 */
   const [branchLoading, setBranchLoading] = useState(false)
+  const loadedScope = useRef<{ workspaceId: string; panelKey: string } | null>(null)
 
   const applyStatus = (status: Awaited<ReturnType<typeof app.gitStatus>>): void => {
-    patchActivePanel({
+    patchPanelOf(panelKey, (base) => ({
+      ...base,
+      gitChanges: status.isRepo
+        ? { count: status.changes.length, truncated: status.truncated }
+        : null,
       gitBranch: status.isRepo
         ? (status.branch ?? (status.detached ? tr('HEAD（分离）') : null))
         : null
-    })
+    }))
   }
 
   /**
-   * 切换工作区 → 分支立刻作废：先骨架，再读新仓库的真实分支。
+   * 切换工作区 → 先骨架，再读新仓库的真实分支；同仓库轮末只做静默刷新。
    *
-   * 依赖只写 `workspaceId`：`app` / `patchActivePanel` 每次渲染都是新引用，进依赖会让
+   * 依赖绑定本标签的工作区 / 面板 / 运行状态，轮末也刷新非焦点标签。
+   * `app` 每次渲染都是新引用，进依赖会让
    * effect 每帧重跑（项目里这条坑踩过多次）。
    */
   useEffect(() => {
     if (!workspaceId) {
       // 横条上不能继续挂着上一个工作区的分支名
+      loadedScope.current = null
       setBranchLoading(false)
-      if (branch) patchActivePanel({ gitBranch: null })
+      if (branch || changeCount) {
+        patchPanelOf(panelKey, (base) => ({ ...base, gitBranch: null, gitChanges: null }))
+      }
+      return
+    }
+    if (app.streaming) {
+      setBranchLoading(false)
       return
     }
     let cancelled = false
-    setBranchLoading(true)
+    setBranchLoading(
+      loadedScope.current?.workspaceId !== workspaceId || loadedScope.current?.panelKey !== panelKey
+    )
     void app
       .gitStatus(workspaceId)
       .then((status) => {
@@ -68,13 +92,16 @@ function BranchPill({ app }: { app: AgentApp }) {
       })
       .catch(() => undefined)
       .finally(() => {
-        if (!cancelled) setBranchLoading(false)
+        if (!cancelled) {
+          loadedScope.current = { workspaceId, panelKey }
+          setBranchLoading(false)
+        }
       })
     return () => {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId])
+  }, [workspaceId, panelKey, app.streaming])
 
   const label = branch ?? tr('Git')
   /** 没有工作区时没有「源代码管理」可看，横条置灰且不可点 */
@@ -89,7 +116,7 @@ function BranchPill({ app }: { app: AgentApp }) {
       */}
       <button
         type="button"
-        onClick={() => toggleSideTab('git')}
+        onClick={() => toggleSideTabOf(panelKey, 'git')}
         disabled={disabled}
         title={disabled ? tr('先选择工作区') : tr('打开源代码管理（Git）面板')}
         className={
@@ -126,10 +153,10 @@ function BranchPill({ app }: { app: AgentApp }) {
  *
  * 与 git pill 同一套尺寸与 hover（`h-6` + 淡前景色，见 `BranchPill` 的注释）。
  */
-function WorkspaceLocationPill({ app }: { app: AgentApp }) {
+function WorkspaceLocationPill({ app, panelKey }: { app: AgentApp; panelKey: string }) {
   const tr = useT()
-  const { toggleSideTab } = useAppContext()
-  const workspace = app.workspaces.find((w) => w.id === app.activeWorkspaceId)
+  const { toggleSideTabOf } = useAppContext()
+  const workspace = app.activeWorkspace
   if (!workspace?.path) return null
   const remote = workspace.remote
   const hostName = remote
@@ -143,7 +170,7 @@ function WorkspaceLocationPill({ app }: { app: AgentApp }) {
     <div className="flex min-w-0 items-center text-sm text-muted-foreground">
       <button
         type="button"
-        onClick={() => toggleSideTab('files')}
+        onClick={() => toggleSideTabOf(panelKey, 'files')}
         title={title}
         aria-label={title}
         className="flex h-6 min-w-0 items-center gap-1.5 rounded-md pl-3 pr-1.5 text-left transition-colors hover:bg-foreground/5 hover:text-foreground"
@@ -179,15 +206,24 @@ function LiveTps({ app, running }: { app: AgentApp; running: boolean }) {
   )
 }
 
-export function ComposerStatusBar({ app, running }: { app: AgentApp; running: boolean }) {
+/** `panelKey` = 本标签的 key（状态横条里的入口都改**本标签**的面板现场，见 `BranchPill`） */
+export function ComposerStatusBar({
+  app,
+  panelKey,
+  running,
+}: {
+  app: AgentApp;
+  panelKey: string;
+  running: boolean;
+}) {
   const isAcp = turnIsAcp(app)
   // 定高 `h-8`：右侧权限 / 上下文 pill 是 32px，左侧 pill 是 24px。某些状态（ACP
   // 空会话：无会话 → 权限 pill 与上下文圆环都不渲染）整条只剩左侧 24px，横条会矮一截、
   // 和卡片底部对不上。统一锁到「显示时」的高度。
   return (
     <div className="flex h-8 w-full min-w-0 items-center gap-2">
-      <WorkspaceLocationPill app={app} />
-      <BranchPill app={app} />
+      <WorkspaceLocationPill app={app} panelKey={panelKey} />
+      <BranchPill app={app} panelKey={panelKey} />
       {/* 与输入相关的控件留在卡片里；这两颗是「当前状态 / 全轮生效」的设置，归到横条 */}
       <div className="ml-auto flex shrink-0 items-center gap-1">
         <LiveTps app={app} running={running} />

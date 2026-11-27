@@ -34,10 +34,10 @@ import {
   isSysmonTabKey,
   isTriggersTabKey,
   isTunnelTabKey,
-  NEW_TAB_KEY,
   sftpHostIdOfTabKey,
 } from '@fizz/agent-kit/shared/lib/panel-tabs'
 import { getToolTab } from '@fizz/agent-kit/shared/lib/tool-tabs'
+import { conversationOfTab } from '@fizz/agent-kit/shared/lib/panel-store'
 import type { SshHostConfig } from '@fizz/contracts/types'
 
 /**
@@ -136,12 +136,11 @@ export function TerminalTabContent({ tabKey, active }: { tabKey: string; active:
  */
 export function PanelTabContent({ tabKey, active }: { tabKey: string; active: boolean }): ReactNode {
   if (isConversationTabKey(tabKey)) {
+    // 指向哪条会话问标签 store（草稿 = null）；key 只是不透明的身份，解析不出会话 id
     return (
       <ConversationTab
-        conversationId={tabKey === NEW_TAB_KEY ? null : tabKey}
-        // 守卫表按**标签 key** 索引（关闭 / 刷新都问它），而「新对话」占位标签的 key 是
-        // `__new__`、会话 id 为空 —— 只传 conversationId 的话，草稿标签就登记不上守卫。
-        hostTabKey={tabKey}
+        tabKey={tabKey}
+        conversationId={conversationOfTab(tabKey) ?? null}
         /*
          * 「这个标签正被看着」（本组当前显示的那一个）。标签内容一律常挂载，后台标签只是
          * `hidden` 藏在原地 —— 会话自己的侧栏面板靠它判断「真露在外面」，否则后台标签的

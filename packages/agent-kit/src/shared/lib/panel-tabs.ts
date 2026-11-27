@@ -1,27 +1,41 @@
 /**
  * 主区域面板的**标签 key 方案**（纯函数、零依赖、零 React）。
  *
- * 主区域的面板（`PanelView`）里现在住着**两种东西**：
- * - **对话标签** —— key 就是会话 id（空态是 `__new__`），内容由 `ConversationTab` 渲染，
- *   与「当前会话」一一对应；
- * - **工具标签** —— 连到某台 SSH 主机的终端、以及随手开的本机终端。它们**不对应任何会话**，
+ * ## 一条铁律：标签 key 是**身份**，不是**地址**
+ *
+ * key 只回答「这是哪一颗标签」，在标签的整个生命周期里**不变**。它指向什么（哪条会话、
+ * 哪篇笔记、哪个插件面）一律记在各自的登记表里，**绝不编进 key**：
+ * - 对话标签：`chat:<n>`，指向哪条会话记在 `panel-store` 的指向表（草稿发出第一条消息后
+ *   指向从「没有」变成那条会话，**key 不动**）；
+ * - 笔记 / 外部文件 / 插件 / 本机终端：`note:<n>` 这类不透明 key，归属在 `tool-tabs.ts`。
+ *
+ * 为什么要这条铁律：早先对话标签的 key **就是**会话 id，「新对话」草稿是常量 `__new__`。
+ * 草稿里发出第一条消息，key 就得从 `__new__` 改写成会话 id —— 而按 key 索引的东西太多了
+ * （内容宿主的 React key、落位缓存、刷新代号、关闭守卫、面板现场、终端登记表…），每一样都
+ * 得跟着「交接」，漏一样就出 bug（漏了落位缓存 = 用户报的「发个消息，右侧面板重建」）。
+ * 身份与地址解耦之后，这些表**没有一张需要迁移**。
+ *
+ * 主区域的面板里住着两类标签：
+ * - **对话标签** —— 内容由 `ConversationTab` 渲染，指向一条会话（或者还是草稿）；
+ * - **工具标签** —— 终端、接口请求、笔记、插件界面…它们**不对应任何会话**，
  *   打开 / 关闭都不该动 `activeConversationId`。
  *
- * ## 为什么用「带前缀的 key」而不是给标签加个 type 字段
+ * ## 为什么状态机只认一个字符串
  *
  * `panel-store` / `panel-groups` 那套状态机（拖拽、分屏、合并、`alignToTabs`）只认
- * **一个字符串**。要让工具标签也能被拖、被分屏、被并入，最省事也最不易错的做法就是
- * 「key 自带类型」—— 状态机一行都不用改，类型只在渲染层（`PanelView`）解析一次。
- * 参考实现（dogi）走的是给 `PanelTab` 加 `type` 字段那条路，于是「标签列表」与
- * 「分组状态」两份数据都要带着 type 一起搬，多一处同步点。
+ * **一个字符串**。key 自带类型前缀 = 状态机一行都不用改，类型只在渲染层解析一次。
  *
- * ⚠️ **前缀是保留命名空间**：会话 id 由服务端生成（uuid / 短 id），不会以 `host:` /
- * `local:` 开头；`__new__` 是空态专用的哨兵。新增工具标签类型时**必须**在这里加前缀，
- * 不要在别处临时拼字符串。
+ * ⚠️ **前缀是保留命名空间**：新增标签类型时**必须**在这里加前缀，不要在别处临时拼字符串。
  */
 
-/** 「新对话 / 初始页」这个特殊标签的 key */
-export const NEW_TAB_KEY = '__new__'
+/**
+ * 对话标签：`chat:<n>`（n 由 `panel-store.ts` 的自增源给；每颗标签一条，不复用）。
+ *
+ * ⚠️ **别把会话 id 编进 key**：草稿标签发出第一条消息后才拿到会话 id，编进去就得改 key
+ * （见文件头的铁律）。「一条会话最多一颗标签」由 `panel-store` 的指向表保证
+ * （`tabOfConversation`），不靠 key 去重。
+ */
+const CHAT_TAB_PREFIX = 'chat:'
 
 /** 连到某台 SSH 主机的终端标签：`host:<hostId>#<seq>`（同一台主机**可多开**，seq 区分） */
 const HOST_TAB_PREFIX = 'host:'
@@ -335,11 +349,11 @@ export function isSettingsTabKey(key: string): boolean {
  * 容器型项目的预览**不在此列**：它是会话 SidePanel 的一条标签（`SideTabKey` 的
  * `preview`），不是主区域的工具标签。
  *
- * ⚠️ **新增一种工具标签类型就必须加进这个 OR**：漏了的话它会被 `isConversationTabKey`
- * 判成对话标签，点一下就会去改 `activeConversationId`（顶栏和侧栏高亮跟着跳到别的会话上）。
- * 实测过的症状：漏了 `files:` 时点「文件管理」，面板会去 `openConversation('files:list')`
- * —— 一个不存在的会话 id，于是整块主区域落到 `ConversationTab` 的「新对话」空态上。
- * `panel-tabs.test.ts` 里那组用例就是把这条钉住的（新增前缀往 `cases` 补一行）。
+ * ⚠️ **新增一种工具标签类型就必须加进这个 OR**：`group-actions` 的「点标签 = 切当前会话」
+ * 只认对话标签（`isConversationTabKey`，按 `chat:` 前缀判），不经过这张表；
+ * 但标签条的展示信息（`tab-meta`）与任何「按类型盘点标签」的地方都靠它分类，
+ * 漏了新类型会被当成「未知标签」。`panel-tabs.test.ts` 里那组用例就是把这条钉住的
+ * （新增前缀往 `cases` 补一行）。
  */
 export function isToolTabKey(key: string): boolean {
   return (
@@ -360,12 +374,18 @@ export function isToolTabKey(key: string): boolean {
   )
 }
 
+/** 第 n 颗对话标签的 key（`n` 由 `panel-store.ts` 的自增源给） */
+export function chatTabKey(seq: number): string {
+  return `${CHAT_TAB_PREFIX}${seq}`
+}
+
 /**
- * 是不是**对话标签**（会话 id 或空态哨兵）。
+ * 是不是**对话标签**（含还是草稿的那一颗）。它指向哪条会话要问 `panel-store` 的
+ * `conversationOfTab`，**不能从 key 里取**。
  *
  * 「点标签 = 切当前会话」这条同步只对对话标签成立：点一个主机标签去改
  * `activeConversationId`，会让顶栏 / 侧栏高亮跟着跳到一个跟它无关的会话上。
  */
 export function isConversationTabKey(key: string): boolean {
-  return !isToolTabKey(key)
+  return key.startsWith(CHAT_TAB_PREFIX)
 }

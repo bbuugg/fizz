@@ -11,11 +11,16 @@
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { resolveDataDir } from '@fizz/workspace'
+import { UPLOAD_EXT_BY_MIME } from '@fizz/contracts/agent-api'
 import { jsonError } from '@/app/api/_lib/auth'
-import { mediaResponse, mimeOf } from '@/lib/server/lib/media'
+import { mediaResponse } from '@/lib/server/lib/media'
 
 // 只允许 <uuid>.<ext>：既挡路径穿越，也限定只服务 uploads 目录里的文件
-const NAME_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(png|jpe?g|webp|gif|pdf)$/
+const NAME_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.([a-z0-9]+)$/
+const MIME_BY_EXT: Record<string, string> = {
+  ...Object.fromEntries(Object.entries(UPLOAD_EXT_BY_MIME).map(([mime, ext]) => [ext, mime])),
+  jpeg: 'image/jpeg'
+}
 
 export async function GET(
   request: Request,
@@ -37,8 +42,16 @@ async function handleUpload(
 ) {
   const { name } = await paramsPromise
   if (!NAME_RE.test(name)) return jsonError(400, '非法文件名')
+  const ext = name.slice(name.lastIndexOf('.') + 1)
+  const mediaType = Object.hasOwn(MIME_BY_EXT, ext) ? MIME_BY_EXT[ext] : undefined
+  if (!mediaType) return jsonError(400, '非法文件类型')
   const abs = join(resolveDataDir(), 'uploads', name)
   const stat = await fs.stat(abs).catch(() => null)
   if (!stat?.isFile()) return jsonError(404, '附件不存在或已被清理')
-  return mediaResponse(abs, mimeOf(abs), stat.size, request.headers.get('range'), request.method)
+  const response = mediaResponse(abs, mediaType, stat.size, request.headers.get('range'), request.method)
+  response.headers.set('x-content-type-options', 'nosniff')
+  if (!mediaType.startsWith('image/') && mediaType !== 'application/pdf') {
+    response.headers.set('content-disposition', `attachment; filename="${name}"`)
+  }
+  return response
 }

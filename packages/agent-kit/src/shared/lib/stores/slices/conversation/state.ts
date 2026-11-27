@@ -26,12 +26,14 @@ export const emptySlice = (): ConvSlice => ({
   messages: [],
   compaction: null,
   streaming: false,
+  preparingSend: false,
   replaying: false,
   request: null,
   pendingConfirms: [],
   followupRequests: {},
   queuedMessages: [],
   loading: false,
+  recoveryPhase: null,
   deleting: false,
   error: null,
   queuePausedReason: null,
@@ -49,6 +51,16 @@ export const emptySlice = (): ConvSlice => ({
   touchedAt: Date.now(),
   collab: null,
 });
+
+/** 只描述真实请求阶段；连接与历史回放是同一个响应，不虚构拆开的进度。由视图翻译。 */
+export function recoveryStatusText(phase: ConvSlice["recoveryPhase"]): string {
+  switch (phase) {
+    case "checking": return "正在检查会话状态…";
+    case "restoring": return "正在连接 Agent 并恢复历史…";
+    case "syncing": return "正在同步聊天记录…";
+    default: return "正在重新加载会话…";
+  }
+}
 
 /**
  * 草稿页（「开始新对话」）的空白现场：还没选模型 / 没选 MCP / 没设浏览器偏好。

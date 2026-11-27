@@ -214,8 +214,8 @@ interface ComposerProps {
    */
   compact?: boolean
   /**
-   * 语音快捷键的作用域：本输入框所属的**标签 key**（会话标签的 key 就是会话 id，
-   * 空态是 `__new__`，终端等工具标签是各自的前缀 key）。
+   * 语音快捷键的作用域：本输入框所属的**标签 key**（对话标签是不透明的 `chat:<n>`，
+   * 「新对话」页就是那颗草稿标签；终端等工具标签是各自的前缀 key）。
    *
    * app-shell 广播 `voiceStart / voiceStop` 时会带上焦点组正在显示的那个 key
    * （见 `app-events` 的 `VoiceShortcutDetail`），只有对得上的 Composer 才开麦 ——

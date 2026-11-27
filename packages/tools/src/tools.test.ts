@@ -216,6 +216,20 @@ describe('buildAgentTools · 全部经后端路由', () => {
     expect(backend.exec).not.toHaveBeenCalled()
   })
 
+  it('远端后台命令仅在接入任务登记表且通过权限审批后启动', async () => {
+    const backend = fakeBackend('remote')
+    const onBackgroundCommand = vi.fn().mockResolvedValue({ id: 'ssh-task' })
+    const tools = toolsWith(backend, { permissionMode: 'readonly', onBackgroundCommand })
+    await run(tools, 'bash', { command: 'build', run_in_background: true })
+    expect(onBackgroundCommand).not.toHaveBeenCalled()
+    const requestConfirm = vi.fn().mockResolvedValue(true)
+    const approved = toolsWith(backend, { permissionMode: 'confirm', requestConfirm, onBackgroundCommand })
+    expect(await run(approved, 'bash', { command: 'build', run_in_background: true })).toContain('ssh-task')
+    expect(requestConfirm).toHaveBeenCalledTimes(1)
+    expect(onBackgroundCommand).toHaveBeenCalledWith(expect.objectContaining({ command: 'build', cwd: ROOT }))
+    expect(backend.exec).not.toHaveBeenCalled()
+  })
+
   it('readonly 仍在写操作之前拦住（不触达后端）', async () => {
     const backend = fakeBackend()
     const tools = toolsWith(backend, { permissionMode: 'readonly' })

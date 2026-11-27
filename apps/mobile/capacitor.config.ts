@@ -3,11 +3,11 @@ import type { CapacitorConfig } from '@capacitor/cli'
 /**
  * Fizz 安卓端（Capacitor）配置。
  *
- * ## 本地 `www`（当前形态）
+ * ## 本地 `www`（前端形态）
  *
  * 壳加载的是**本工程自己构建的 `dist`**（`apps/mobile`，独立 vite 工程），页面 origin 是
  * `https://localhost`。API / SSE / WS 因此必须打**绝对地址**，但地址**不烘进产物**：
- * 登录页填写服务地址，存在本机（`fizz.mobile.serverUrl`，见 `src/server-url.ts`），
+ * hosted `/m` 的连接页填写服务地址，存在本机（`fizz.mobile.serverUrl`，见 `src/server-url.ts`），
  * `src/main.tsx` 启动时交给 `setServerBase()`。同一个 APK 可以连不同服务器。
  *
  * 运行期还能用 `?server=http://host:port` 临时覆盖，不用改已保存的地址。
@@ -16,8 +16,9 @@ import type { CapacitorConfig } from '@capacitor/cli'
  *
  * 早先 `server.url` 指向 server、直接加载 server 托管的 `apps/web/dist`，好处是天然同源。
  * 代价是**壳没有自己的前端**：移动端不能单独改一行 UI，且离线时整屏空白。
- * 服务端地址可配之后（`Connection.serverBase`），本地 `www` 这条路才真正成立，
- * 于是默认改成「本地 www + 运行期配置的 API 地址」。
+ * 服务端地址可配之后（`Connection.serverBase`），本地 `www` 这条路才真正成立。
+ * APK 可选择附带 `@fizz/capacitor-local-runtime` 插件与运行时资产，让本机 Fizz server
+ * 在 app 私有目录启动；未打入运行时的 hosted 构建仍在运行期配置 API 地址。
  *
  * 真要临时回到远程加载，把 `server.url` 加回来即可（记得 `/api` 与 WS 同源）。
  */

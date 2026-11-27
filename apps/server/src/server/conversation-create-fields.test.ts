@@ -8,6 +8,7 @@
  *
  * 所以这里钉住的是：**草稿页的两项选择必须原样进 `ConversationInput`**，以及「没给的字段
  * 不要凭空出现」（否则会覆盖会话已有的值）。
+ * ACP 分叉时也必须保留权限答复策略，不能在创建映射里静默丢掉。
  */
 import { describe, expect, it } from 'vitest'
 import { conversationCreateFields } from './conversation-create-fields'
@@ -25,6 +26,15 @@ describe('conversationCreateFields：新建会话要落哪些字段', () => {
 
   it('显式的空选择保留为空数组（= 一个都不用），不能当成「没传」', () => {
     expect(conversationCreateFields({ mcpServerIds: [] }).mcpServerIds).toEqual([])
+  })
+
+  it.each(['allow', 'confirm'] as const)('ACP 分叉继承权限答复策略：%s', (acpPermissionMode) => {
+    expect(conversationCreateFields({ backend: 'acp', acpPermissionMode }))
+      .toEqual({ backend: 'acp', acpPermissionMode })
+  })
+
+  it('非法的 ACP 权限答复策略不进入落库参数', () => {
+    expect(conversationCreateFields({ acpPermissionMode: 'invalid' as never })).toEqual({})
   })
 
   it('没给的字段一律不出现，免得覆盖会话已有的值', () => {

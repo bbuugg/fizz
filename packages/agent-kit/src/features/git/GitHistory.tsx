@@ -25,6 +25,7 @@ import { FileDiffView } from '@fizz/agent-kit/features/git/FileDiffView'
 import { splitDiffByFile } from '@fizz/agent-kit/shared/lib/git-commit-diff'
 import { statusTone } from '@fizz/agent-kit/features/git/ChangeRow'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
+import { writeClipboard } from '@fizz/agent-kit/shared/lib/clipboard'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 
 /** 复制提交哈希后的提示文案（导出来单测，不让文案散在 JSX 里） */
@@ -40,7 +41,7 @@ function copyHash(text: string, kind: 'full' | 'short'): void {
     return
   }
   // 走 promise 而不是 void 一把梭：clipboard 在非安全上下文 / 无焦点时会拒
-  navigator.clipboard.writeText(text).then(
+  writeClipboard(text).then(
     () => toast.success(copyHashToastLabel(kind)),
     (err: unknown) =>
       toast.error(
@@ -55,7 +56,7 @@ function copyCommitMessage(subject: string): void {
     toast.error(t('没有可复制的提交信息'))
     return
   }
-  navigator.clipboard.writeText(subject).then(
+  writeClipboard(subject).then(
     () => toast.success(t('已复制提交信息')),
     (err: unknown) =>
       toast.error(

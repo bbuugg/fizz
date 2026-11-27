@@ -1,11 +1,12 @@
 /**
- * 会话草稿存档的语义：按标签 key 隔离、空内容删除、读写失败静默。
+ * 会话草稿存档的语义：按会话隔离、空内容删除、读写失败静默。
  *
  * 这里没有业务逻辑，坏了的后果是「刷新后草稿串到别的会话」或「悄悄丢字」，
  * 所以把几条边界钉住。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { clearChatDraft, loadChatDraft, saveChatDraft, shouldClearChatDraft } from './chat-draft'
+import { DRAFT_PANEL_SCOPE } from './panel-session'
 
 const PREFIX = 'fizz.agent.chat.draft.v1:'
 
@@ -39,7 +40,7 @@ afterEach(() => {
 })
 
 describe('chat-draft', () => {
-  it('按标签 key 隔离并原样读回', () => {
+  it('按会话隔离并原样读回', () => {
     saveChatDraft('conv-a', '给 A 的半句话')
     saveChatDraft('conv-b', '给 B 的半句话')
 
@@ -48,9 +49,9 @@ describe('chat-draft', () => {
     expect(loadChatDraft('conv-c')).toBeNull()
   })
 
-  it('草稿键是「新对话」的 draft:<工作区> 时也能存', () => {
-    saveChatDraft('draft:/work/repo', '还没建会话')
-    expect(storage.getItem(`${PREFIX}draft:/work/repo`)).toBe('还没建会话')
+  it('草稿键是「新对话」的常量作用域时也能存', () => {
+    saveChatDraft(DRAFT_PANEL_SCOPE, '还没建会话')
+    expect(storage.getItem(`${PREFIX}${DRAFT_PANEL_SCOPE}`)).toBe('还没建会话')
   })
 
   it('空内容 = 删掉这一条，不留空串', () => {

@@ -4,6 +4,7 @@
  */
 import { toBuiltinHistory } from "@fizz/agent-kit/shared/lib/acp-convert";
 import { errorMessage } from "@fizz/agent-kit/shared/lib/stores/shared";
+import { t } from "@fizz/i18n";
 import type { ConvInternals } from "../internals/context";
 import type { ConversationSlice } from "../types";
 
@@ -11,12 +12,81 @@ export function createConversationForkActions(
   ctx: ConvInternals,
 ): Pick<
   ConversationSlice,
-  "forkConversation" | "convertAcpConversation"
+  "forkConversation" | "forkAcpConversation" | "convertAcpConversation"
 > {
   const { set, get, api, readSlice, resolveConvId, preferredTarget, peekActiveRun, persistTarget } =
     ctx;
+  const forkingAcpIds = new Set<string>();
 
   return {
+    /** 整条 agent session 分叉；只绑定并更新清单，标签导航由外壳完成。 */
+    forkAcpConversation: async (conversationId) => {
+      const api = get().getApi();
+      const source = get().conversations.find((c) => c.id === conversationId);
+      if (!api || !source || source.backend !== "acp") return null;
+      if (forkingAcpIds.has(conversationId)) return null;
+      if (!source.configId || !source.acpSessionId) {
+        get().setError(t("这条 ACP 会话尚未绑定 Agent 会话，无法分叉"));
+        return null;
+      }
+      const workspace = get().workspaces.find((w) => w.id === source.workspaceId);
+      if (!workspace?.path || workspace.dirMissing) {
+        get().setError(t("找不到这条会话的工作区目录，无法分叉"));
+        return null;
+      }
+      const local = readSlice(conversationId);
+      if (
+        get().runningConversations[conversationId] || local.streaming ||
+        local.pendingConfirms.length || Object.keys(local.followupRequests).length
+      ) {
+        get().setError(t("这一轮还在运行或等待答复，结束后再分叉"));
+        return null;
+      }
+      // 在第一次 await 前上锁，非焦点会话和重复点击也走同一道守卫。
+      forkingAcpIds.add(conversationId);
+      let forkedSessionId: string | undefined;
+      try {
+        // 别的客户端可能正在跑；探测失败也不能把未知状态当成空闲。
+        const { run } = await api.activeRun(conversationId);
+        if (run) {
+          get().setError(t("这一轮还在运行或等待答复，结束后再分叉"));
+          return null;
+        }
+        const result = await api.forkAcpSession(source.configId, {
+          sessionId: source.acpSessionId,
+          workspacePath: workspace.path,
+        });
+        const sessionId = result.sessionId?.trim();
+        if (!sessionId || sessionId === source.acpSessionId) {
+          throw new Error(t("Agent 未返回新的分叉会话 ID"));
+        }
+        forkedSessionId = sessionId;
+        const created = await api.createConversation({
+          workspaceId: source.workspaceId,
+          title: t("{title}（分支）", { title: source.title.trim() || t("未命名会话") }),
+          backend: "acp",
+          configId: source.configId,
+          modelId: source.modelId,
+          acpSessionId: sessionId,
+          ...(source.mcpServerIds ? { mcpServerIds: source.mcpServerIds } : {}),
+          ...(source.browserSettings ? { browserSettings: source.browserSettings } : {}),
+          ...(source.acpPermissionMode ? { acpPermissionMode: source.acpPermissionMode } : {}),
+        });
+        // 用创建接口的权威回包并入清单，不让额外的列表刷新失败变成“分叉失败”。
+        set((state) => ({
+          conversations: [created, ...state.conversations.filter((c) => c.id !== created.id)],
+        }));
+        return created.id;
+      } catch (err) {
+        const error = t(errorMessage(err));
+        get().setError(forkedSessionId
+          ? t("ACP 分支已创建，但本地绑定失败；可通过“导入会话”找回：{error}", { error })
+          : error);
+        return null;
+      } finally {
+        forkingAcpIds.delete(conversationId);
+      }
+    },
     /**
      * 会话分叉（「从此签出」）：fork **`scope` 那条会话**（不传 = 活跃会话）到某条消息
      * （含），刷新列表并**切到新会话**（走 openConversation 的装载链路）。

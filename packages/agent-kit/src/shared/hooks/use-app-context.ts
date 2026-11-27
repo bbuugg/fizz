@@ -80,8 +80,12 @@ export interface AppContextValue {
   settingsTab: 'models' | 'acp' | null
   openSettingsTab: (tab: 'models' | 'acp') => void
   clearSettingsTab: () => void
-  /** 会话面板现场（终端 / 文件 / git）——跨导航存活的部分 */
-  sessionKey: string
+  /**
+   * 「当前会话的现场」挂在哪颗**标签**下（现场按标签 key 存，见 `panel-session.ts`）：
+   * 承载当前会话的那颗对话标签；当前没有会话就是那颗「新对话」草稿；两者都没有
+   * （只开着工具标签）= `null`，此时下面那批不带 `Of` 的动作都是空操作。
+   */
+  sessionKey: string | null
   /** **当前会话**的面板现场（= `panelOf(sessionKey)`；命令面板 / 快捷键读它） */
   activePanel: PanelSession | undefined
   patchActivePanel: (patch: Partial<PanelSession>) => void
@@ -122,32 +126,32 @@ export interface AppContextValue {
   /** 入口图标右上角的 git 改动数 badge（null = 不显示） */
   gitBadge: string | null
   /**
-   * 关掉**指定会话**的某个面板标签（而不是「当前会话的」）。
+   * 关掉**指定标签**的某个面板标签（而不是「当前会话的」）。
    *
-   * 为什么需要：多标签 / 分屏后每个会话各有一份面板，别的会话的面板虽然不在焦点上，
-   * 但快捷键 / 命令面板 / 它自己的顶栏仍可能去操作它；那时必须改**它自己**那个会话的，
+   * 为什么需要：多标签 / 分屏后每颗对话标签各有一份面板，别的标签的面板虽然不在焦点上，
+   * 但快捷键 / 命令面板 / 它自己的顶栏仍可能去操作它；那时必须改**它自己**那颗标签的，
    * 不能误改当前会话正看着的那个。
    */
   closeSideTabOf: (key: string, tabKey: PanelTabKey) => void
   /**
-   * 读**指定会话**的面板现场（没有现场时 `undefined`）。
+   * 读**指定标签**的面板现场（没有现场时 `undefined`）。
    *
    * 每个对话标签渲染自己的顶栏 / 右侧面板时要读它自己那份现场，而不是「当前会话的」
    * —— 分屏下同时有好几个会话可见，读当前会话那份会串。
    */
   panelOf: (key: string) => PanelSession | undefined
-  /** 改指定会话的面板现场（`fn` 原样返回入参 / 返回 null = 无变化，不落库） */
+  /** 改指定标签的面板现场（`fn` 原样返回入参 / 返回 null = 无变化，不落库） */
   patchPanelOf: (key: string, fn: (base: PanelSession) => PanelSession | null) => void
-  /** 挂出并切到指定会话的某个面板标签 */
+  /** 挂出并切到指定标签的某个面板标签 */
   showSideTabOf: (key: string, tabKey: PanelTabKey) => void
-  /** 指定会话的「文件 / 源码管理」按钮语义：正看着就收起，否则挂出并切过去 */
+  /** 指定标签的「文件 / 源码管理」按钮语义：正看着就收起，否则挂出并切过去 */
   toggleSideTabOf: (key: string, tabKey: SideTabKey) => void
-  /** 收起指定会话的面板（一个标签都不关） */
+  /** 收起指定标签的面板（一个标签都不关） */
   collapseSidePanelOf: (key: string) => void
-  /** 收起 / 恢复指定会话的面板（回到上次看的那个标签） */
+  /** 收起 / 恢复指定标签的面板（回到上次看的那个标签） */
   toggleSidePanelOf: (key: string) => void
   /**
-   * 在指定会话里新开一条终端并切过去，返回标签 id；`null` = 没有可用目录、没开成。
+   * 在指定标签里新开一条终端并切过去，返回标签 id；`null` = 没有可用目录、没开成。
    *
    * `shellId` 显式给了 = 要宿主那个 shell；`container` 给了 = 要容器内终端；
    * 两个都不给 = 按项目类型默认（容器型项目进容器，其余走宿主默认 shell）。
@@ -157,18 +161,8 @@ export interface AppContextValue {
     shellId?: string | null,
     container?: { workspaceId: string; shell?: string }
   ) => string | null
-  /** 指定会话的顶栏「终端」主按钮语义 */
+  /** 指定标签的顶栏「终端」主按钮语义 */
   toggleTerminalPanelOf: (key: string) => void
-  /**
-   * 「新对话」占位标签被第一条消息建出的真实会话**就地替换**：把草稿那份面板现场
-   * 交给新会话（终端 / 文件现场不丢）。
-   *
-   * ⚠️ 只有**就地替换**这一条路径该调它（`PanelView` 里 `activeTabKey() === NEW_TAB_KEY`
-   * 那一支 —— 草稿正被看着、第一条消息把它换成真实会话；旁边还开着别的标签也算）。
-   * 别改成「当前会话一变就把草稿现场交给它」—— 那正是老实现的做法：用户在草稿标签里
-   * 开着终端，只要点了别的会话标签，现场就被搬到那个会话上（草稿标签反而空了）。
-   */
-  adoptDraftPanel: (conversationId: string) => void
   /** 「执行命令」类快捷操作：**每次都新开一条终端**跑（不占用已有的终端） */
   runQuickCommand: (command: string) => Promise<void>
   /** 工作区快捷功能（.fizz/workspace.json） */

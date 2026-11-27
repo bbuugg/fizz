@@ -14,7 +14,7 @@ import { acpProbeCwd } from "@/lib/server/acp-probe";
 import { describeError, jsonError } from "@/app/api/_lib/auth";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
@@ -28,9 +28,11 @@ export async function GET(
   try {
     // 探测只需要一个能起的 cwd：优先用第一个**目录还在**的项目（agent 的启动参数里可能读项目配置）
     const workspacePath = acpProbeCwd();
+    const modelId = new URL(request.url).searchParams.get('modelId')?.trim();
     return Response.json(
       await probeAcpCapabilities({
         agent,
+        ...(modelId ? { modelId } : {}),
         ...(workspacePath ? { workspacePath } : {}),
       }),
     );

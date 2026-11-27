@@ -86,15 +86,14 @@ export async function listWorkspace(workspaceId?: string | null) {
 /**
  * 共用响应装配。
  *
- * 声明（设置项 / 面板 / 界面 / 上传源）**只收已启用**的插件：停用的插件不该在列表里
+ * 声明（设置项 / 面板 / 界面）**只收已启用**的插件：停用的插件不该在列表里
  * 显示「它给了我什么能力」，更不该占着「配置」入口。
  *
  * **但图标例外** —— 见下面 `stoppedIcons`。图标是插件的**身份**（列表里那一格小图），
  * 不是它对外提供的能力：把插件停用之后它在列表里退化成统一占位图，用户会认不出
  * 刚停用的是哪一个，也会以为「停用把插件弄坏了」。
  *
- * 收集声明要真跑一遍 apply，所以这里顺带就是「加载 + 校验」的体检结果（含工具形状报错、
- * 上传源形状报错，见 ToolsService.register / UploadsService.register）。**原样回给前端**，
+ * 收集声明要真跑一遍 apply，所以这里顺带就是「加载 + 校验」的体检结果（含工具形状报错）。**原样回给前端**，
  * 在插件列表里直接显示，别让用户对着一句「执行中」猜。
  *
  * `ui` 还要再过一道 `toPluginUiView`：把**当前值**挂上去（密钥项只给 `hasValue`，值不出网），
@@ -107,7 +106,7 @@ async function respond(
 ) {
   const enabled = plugins.filter((p) => p.enabled)
   const stopped = plugins.filter((p) => !p.enabled)
-  const { ui, uploads, errors } = await inspectPluginUi(withRuntimeConfig(enabled))
+  const { ui, errors } = await inspectPluginUi(withRuntimeConfig(enabled))
 
   /**
    * 停用插件的**图标**：单独再 inspect 一遍，只取 `icon`（为什么只留它，规则写在
@@ -133,7 +132,6 @@ async function respond(
       { ...ui, ...stoppedIcons },
       Object.fromEntries(plugins.map((p) => [p.id, p.name]))
     ),
-    uploads,
     errors
   })
 }

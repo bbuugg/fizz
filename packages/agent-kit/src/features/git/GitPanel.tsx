@@ -5,7 +5,7 @@
  * 切走只是隐藏，提交信息草稿、展开的 diff、拉过的历史都留着，切回来原样还在。
  *
  * 面板自己那一行头部**不写标题**（标签条上已有「源码管理」）：左边是分支下拉与
- * 分离头指针 / ↑↓ / 上游，右边是刷新 / 树状切换 / 更多。拉取、推送（含「推送到…」挑远端）、
+ * 分离头指针 / ↑↓ / 上游，右边是刷新 / 树状切换 / 更多。拉取、推送（多远端时展开选择）、
  * 新建分支、管理远端（增 / 改地址 / 删）都在「更多」里 ——
  * 没有远端时点推送 / 拉取会直接开管理远端；**工作区还不是仓库时推送一律只回一句话**
  * （见 `push-policy.ts`：非仓库 / 状态还没到都不许把「管理远端」弹出来）。
@@ -217,7 +217,7 @@ export function GitPanel({
    */
   visible: boolean
   /**
-   * 本面板所属**标签的 key**（会话 id / 终端 key）。
+   * 本面板所属**标签的 key**（主区域的标签身份，不是会话 id）。
    *
    * 推送快捷键另外还要判一次「这个标签是不是**焦点组**正在显示的那个」
    * （`activeTabKey()`）：分屏时两栏可以同时 `visible`，不判就会一次推两个仓库。
@@ -732,7 +732,7 @@ export function GitPanel({
   /**
    * 推送当前分支。
    *
-   * `remote` 给定时推到那个远端（「推送到…」子菜单挑的）；不给就按上游走 —— 没有上游时
+   * `remote` 给定时推到那个远端（「推送」子菜单挑的）；不给就按上游走 —— 没有上游时
    * 服务端会 `--set-upstream <远端>`（首选 `origin`，没有就退到现有那个远端）。
    * 两种入口共用这一份，**快捷键也是**。
    *
@@ -1204,26 +1204,12 @@ export function GitPanel({
                   <ArrowDown className="size-3.5" />
                   {status.behind > 0 ? t('拉取 {count}', { count: status.behind }) : t('拉取')}
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  title={
-                    status.remotes.length === 0
-                      ? t('还没有远端：先填一个远端地址')
-                      : status.detached
-                        ? t('分离头指针状态下不能推送')
-                        : t('推送到远端（不做强推）')
-                  }
-                  disabled={busy || status.detached}
-                  onSelect={() => void push()}
-                >
-                  <Upload className="size-3.5" />
-                  {status.ahead > 0 ? t('推送 {count}', { count: status.ahead }) : t('推送')}
-                </DropdownMenuItem>
-                {/* 有不止一个远端时才给「推送到…」：只有一个的时候跟上面那条是同一个结果 */}
-                {status.remotes.length > 1 && (
+                {/* 只保留一个「推送」入口，多远端时才展开选择。 */}
+                {status.remotes.length > 1 ? (
                   <DropdownMenuSub>
                     <DropdownMenuSubTrigger disabled={busy || status.detached}>
-                      <Network className="size-3.5" />
-                      {t('推送到…')}
+                      <Upload className="size-3.5" />
+                      {t('推送')}
                     </DropdownMenuSubTrigger>
                     <DropdownMenuSubContent>
                       {status.remotes.map((r) => (
@@ -1238,6 +1224,21 @@ export function GitPanel({
                       ))}
                     </DropdownMenuSubContent>
                   </DropdownMenuSub>
+                ) : (
+                  <DropdownMenuItem
+                    title={
+                      status.remotes.length === 0
+                        ? t('还没有远端：先填一个远端地址')
+                        : status.detached
+                          ? t('分离头指针状态下不能推送')
+                          : t('推送到远端（不做强推）')
+                    }
+                    disabled={busy || status.detached}
+                    onSelect={() => void push()}
+                  >
+                    <Upload className="size-3.5" />
+                    {t('推送')}
+                  </DropdownMenuItem>
                 )}
                 <DropdownMenuSeparator />
                 {/* 「管理远端」（增 / 改地址 / 删）收在这里：以前「没有远端」时状态条上有个

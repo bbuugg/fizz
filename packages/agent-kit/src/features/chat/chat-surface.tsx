@@ -73,6 +73,7 @@ import type { AgentConfirmRequest } from '@fizz/contracts/types'
 import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import type { ContextCompactionState } from '@fizz/agent-kit/shared/lib/stores/slices/conversation'
+import { recoveryStatusText } from '@fizz/agent-kit/shared/lib/stores/slices/conversation'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 
 // ---------------------------------------------------------------------------
@@ -85,6 +86,9 @@ const INITIAL_VISIBLE_MESSAGES = 40
 const LOAD_OLDER_STEP = 40
 
 export interface MessageListProps {
+  /** 助手等独立会话宿主提供自己的取消通道。 */
+  onStopTool?: (toolCallId: string) => void
+  onStopTurn?: () => void
   messages: AgentChatMessage[]
   /**
    * 这些消息属于哪条会话（`ChatPanel` 传当前那条）。
@@ -226,6 +230,8 @@ export interface MessageActionArgs {
  * `resetKey` 变化时让它瞬时落底；其余的跟随 / 停跟交给库。
  */
 export function MessageList({
+  onStopTool,
+  onStopTurn,
   messages,
   liveMessages,
   conversationId,
@@ -257,27 +263,32 @@ export function MessageList({
    * （一条消息都没有常常是历史没拉回来；自动拉一次能救回来就别先让用户自己点）。
    * 自动那一趟静默成功，不从 toast 里冒出来。
    */
-  const [reloading, setReloading] = useState(false)
+  const recoveryPhase = useAgentStore((s) => conversationId ? s.slices[conversationId]?.recoveryPhase ?? null : null)
+  const recoveryError = useAgentStore((s) => conversationId ? s.slices[conversationId]?.error ?? null : null)
+  const reloading = !!recoveryPhase
   const reloadPending = useRef(false)
   const refreshConversation = useCallback(
     async (silent = false) => {
       if (!conversationId || reloadPending.current) return
+      if (useAgentStore.getState().slices[conversationId]?.recoveryPhase) return
       // 本入口在生成期间禁用，避免用户把恢复现场误当成重试生成。
       if (streaming) {
         if (!silent) toast(tr('这一轮还在生成，先停止再重新加载'))
         return
       }
       reloadPending.current = true
-      setReloading(true)
       try {
         const ok = await useAgentStore.getState().reloadConversation(conversationId)
         if (ok && !silent) toast.success(tr('已重新加载会话'))
-        else if (!ok && !silent) toast.error(tr('重新加载会话失败'))
-      } catch {
-        if (!silent) toast.error(tr('重新加载会话失败'))
+        else if (!ok && !silent) toast.error(tr('重新加载会话失败：{error}', {
+          error: useAgentStore.getState().slices[conversationId]?.error ?? tr('未知错误')
+        }))
+      } catch (err) {
+        if (!silent) toast.error(tr('重新加载会话失败：{error}', {
+          error: err instanceof Error ? err.message : String(err)
+        }))
       } finally {
         reloadPending.current = false
-        setReloading(false)
       }
     },
     [conversationId, streaming, tr]
@@ -341,11 +352,8 @@ export function MessageList({
    * 都没有 —— 大概率是历史没拉回来。每个会话只自动试一次，静默进行；拉回来仍是空
    * （本来就没有 / 确实失败）再露出手动按钮，不反复请求。
    *
-   * ⚠️ 服务端还说这条会话在跑时**不能补拉**：那时「一条消息都没有」只是恢复还没走完
-   * （`useAttachRemoteRun` 正在接这一轮的业务），历史与正文都在路上。这时补拉会走
-   * `reloadAcpSession`，用「进程内快照（已摘掉本轮助手消息）」覆盖刚刚 attach 出来的
-   * 现场；随后 `attachRun` 看到本端流还活着直接放行，助手消息再也建不回来，之后每一帧
-   * 都被丢弃 —— 用户看到的就是「输出先出现、历史一到就没了」。
+   * 服务端还在跑时，空列表可能只是恢复未结束，不额外触发空态补拉。
+   * 显式恢复已统一为「快照合并 + 复用直播订阅」，不会覆盖正在输出的助手消息。
    */
   const activity = useConversationActivity(conversationId ?? null)
   const [autoReloadedFor, setAutoReloadedFor] = useState<string | null>(null)
@@ -358,6 +366,7 @@ export function MessageList({
       activity.running ||
       total > 0 ||
       loading ||
+      reloading ||
       streaming ||
       replaying ||
       deleting ||
@@ -372,6 +381,7 @@ export function MessageList({
     activity.running,
     total,
     loading,
+    reloading,
     streaming,
     replaying,
     deleting,
@@ -480,6 +490,21 @@ export function MessageList({
             deleting && 'pointer-events-none opacity-50 transition-opacity'
           )}
         >
+          {reloading && (
+            <div role="status" aria-live="polite" className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+              {tr(recoveryStatusText(recoveryPhase))}
+            </div>
+          )}
+          {!reloading && recoveryError && total > 0 && (
+            <div role="alert" className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+              <span className="min-w-0 break-words">{tr('重新加载会话失败：{error}', { error: recoveryError })}</span>
+              <Button size="sm" variant="ghost" disabled={streaming} onClick={() => void refreshConversation()}>
+                <RotateCw aria-hidden="true" className="size-3.5" />
+                {tr('重试')}
+              </Button>
+            </div>
+          )}
           {header}
           {error ? (
             error
@@ -525,7 +550,7 @@ export function MessageList({
                     ) : (
                       <RotateCw className="size-3.5" />
                     )}
-                    {reloading ? tr('加载中…') : tr('重新加载会话')}
+                    {reloading ? tr(recoveryStatusText(recoveryPhase)) : tr('重新加载会话')}
                   </button>
                 </div>
               ) : null}
@@ -629,6 +654,8 @@ export function MessageList({
                         )
                       ) : (
                         <MessageParts
+                          onStopTool={onStopTool}
+                          onStopTurn={onStopTurn}
                           message={message}
                           index={fullIndex}
                           total={fullTotal}

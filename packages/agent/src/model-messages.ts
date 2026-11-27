@@ -1,10 +1,9 @@
 /**
  * 历史消息 -> 模型消息的转换。
  *
- * **独立成文件的原因**：本文件对 `ai` / contracts 只有 type-only import，验证脚本
- * （`scripts/verify-uploads.mjs`）可以直接加载它做纯函数测试；prompt.ts 对
- * `@fizz/tools` 有运行时 import，整文件不可独立加载。改这里的转换规则时，
- * 两边的测试一起跑。
+ * **独立成文件的原因**：本文件对 `ai` / contracts 只有 type-only import，可直接做纯函数
+ * 测试；prompt.ts 对 `@fizz/tools` 有运行时 import，整文件不可独立加载。附件转换由同目录
+ * `model-messages.attachments.test.ts` 与容器运行时的 `attachments.test.ts` 共同覆盖。
  *
  * 工具过程必须用**原生 tool-call / tool-result 结构**，不能压成
  * `[调用工具 xxx]` / `[工具 xxx 返回] xxx` 这类纯文本摘要 ——
@@ -25,9 +24,8 @@ export type AgentMessagePart =
   | { type: 'text'; text: string }
   | {
       /**
-       * 附件（图片 / PDF）：`url` 是**取文件的地址**，落盘形态与存储无关。
-       * 组装模型消息时由 `resolveAttachment` 决定这一条是给 URL 还是给字节
-       * （见 toModelMessages），仍然不抽文本。
+       * 附件（图片 / 文档）：`url` 是**取文件的地址**，落盘形态与存储无关。
+       * 组装模型消息时由 `resolveAttachment` 读取字节并内联 base64，不把地址发给模型。
        */
       type: 'file'
       url: string
@@ -95,12 +93,12 @@ function toToolOutput(output: unknown, isError?: boolean): ToolResultOutput {
   return isError ? { type: 'error-text', value } : { type: 'text', value }
 }
 
-/** 附件在模型请求里的三种形态（由调用方决定用哪种，本文件零存储知识）。 */
+/** 图片 / PDF 内联字节，其他文档由宿主提取文字；无法读取时省略并附说明。 */
 export type ResolvedAttachment =
-  /** 让 provider 自己去取（公网可达的绝对地址） */
-  | { kind: 'url'; url: string }
   /** 把字节直接塞进请求体：AI SDK 会编码成 data URL，provider 不再回连我们的地址 */
   | { kind: 'inline'; bytes: Uint8Array }
+  /** 文档提取结果（含文件名、截断说明），作为原生文本 part，不把 DOCX 字节塞给模型。 */
+  | { kind: 'text'; text: string }
   /** 不发这一条（读不到 / 太大），`note` 会作为一行说明进上下文 */
   | { kind: 'omit'; note?: string }
 
@@ -112,9 +110,9 @@ export interface UploadLikeFile {
 }
 
 /**
- * 附件投递策略：给一条附件，回答「这次用 URL、内联字节，还是干脆不发」。
+ * 附件读取策略：给一条附件，返回内联字节、提取的文档正文或省略说明。
  *
- * 返回 `undefined` = 不知道 / 不归我管，调用方按 `resolveFileUrl` 的老路走。
+ * 返回 `undefined` = 不知道 / 不归我管，只允许解析已内联的 base64，不回退到 URL。
  * 抛错被当成「读取失败」，降级成一行说明而不是让整轮炸掉。
  */
 export type ResolveAttachment = (file: UploadLikeFile) => Promise<ResolvedAttachment | undefined>
@@ -130,6 +128,8 @@ export type ResolveAttachment = (file: UploadLikeFile) => Promise<ResolvedAttach
  * 的说明）；它挡的是**每轮重发**把请求体顶爆。
  */
 export const MAX_INLINE_TOTAL_BYTES = 15 * 1024 * 1024
+/** 文档文本也要有整轮限制，避免许多小文件把上下文占满。 */
+const MAX_ATTACHMENT_TEXT_CHARS = 100_000
 
 /**
  * 整轮共享的内联预算：一次 run 建一个，主历史与运行中插话共用同一份。
@@ -139,12 +139,13 @@ export const MAX_INLINE_TOTAL_BYTES = 15 * 1024 * 1024
  */
 export interface InlineBudget {
   remainingBytes: number
+  remainingTextChars: number
   /** 已经扣过预算的附件 URL */
   counted: Set<string>
 }
 
 export function createInlineBudget(maxBytes: number = MAX_INLINE_TOTAL_BYTES): InlineBudget {
-  return { remainingBytes: maxBytes, counted: new Set() }
+  return { remainingBytes: maxBytes, remainingTextChars: MAX_ATTACHMENT_TEXT_CHARS, counted: new Set() }
 }
 
 /** 规划后的单条附件 */
@@ -157,16 +158,23 @@ async function resolveOne(
   file: UploadLikeFile,
   resolve: ResolveAttachment | undefined
 ): Promise<ResolvedAttachment> {
-  if (!resolve) return { kind: 'url', url: file.url }
   try {
-    return (await resolve(file)) ?? { kind: 'url', url: file.url }
+    const resolved = await resolve?.(file)
+    if (resolved) return resolved
+    // 容器宿主已把附件转成 data URL；只做本地 base64 解码，绝不请求远程地址。
+    const prefix = `data:${file.mediaType};base64,`
+    if (file.url.startsWith(prefix)) {
+      const binary = atob(file.url.slice(prefix.length))
+      if (binary.length) return { kind: 'inline', bytes: Uint8Array.from(binary, (char) => char.charCodeAt(0)) }
+    }
+    return { kind: 'omit', note: `（附件「${file.name}」读取失败，未随本轮发送）` }
   } catch {
     return { kind: 'omit', note: `（附件「${file.name}」读取失败，未随本轮发送）` }
   }
 }
 
 /**
- * 把一批附件解析成「URL / 内联 / 省略」，并扣一遍总字节预算。
+ * 把一批附件解析成「内联 / 文本 / 省略」，并扣一遍字节与文字预算。
  *
  * 预算**从后往前**分配（`files` 的调用方按「旧 → 新」排列）：超限时先牺牲最旧的，
  * 而不是先到先得把最新的挤掉。
@@ -175,27 +183,26 @@ export async function planAttachments(
   files: UploadLikeFile[],
   opts?: { resolveAttachment?: ResolveAttachment; budget?: InlineBudget; omitCounted?: boolean }
 ): Promise<PlannedAttachment[]> {
-  const planned: PlannedAttachment[] = await Promise.all(
-    files.map(async (file) => ({ file, resolved: await resolveOne(file, opts?.resolveAttachment) }))
-  )
+  const planned: PlannedAttachment[] = new Array(files.length)
   const budget = opts?.budget
-  if (!budget) return planned
   const seenInBatch = new Set<string>()
-  for (let i = planned.length - 1; i >= 0; i--) {
-    const item = planned[i]
-    if (item.resolved.kind !== 'inline') continue
-    if (seenInBatch.has(item.file.url)) {
-      item.resolved = { kind: 'omit', note: `（重复附件「${item.file.name}」本轮只发送一次）` }
+  // 从新到旧串行读取，重复项在读取 / 解压前跳过，避免 Promise.all 同时展开全部历史文档。
+  for (let i = files.length - 1; i >= 0; i--) {
+    const file = files[i]
+    if (budget && (seenInBatch.has(file.url) || (opts?.omitCounted && budget.counted.has(file.url)))) {
+      planned[i] = { file, resolved: { kind: 'omit', note: `（重复附件「${file.name}」本轮只发送一次）` } }
       continue
     }
-    seenInBatch.add(item.file.url)
-    if (budget.counted.has(item.file.url)) {
-      if (opts?.omitCounted) {
-        item.resolved = { kind: 'omit', note: `（重复附件「${item.file.name}」本轮只发送一次）` }
-      }
+    const item = { file, resolved: await resolveOne(file, opts?.resolveAttachment) }
+    planned[i] = item
+    if (!budget || item.resolved.kind === 'omit') continue
+    seenInBatch.add(file.url)
+    if (budget.counted.has(file.url)) continue
+    if (item.resolved.kind === 'text' && item.resolved.text.length > budget.remainingTextChars) {
+      item.resolved = { kind: 'omit', note: `（文档「${file.name}」超出本轮文档文字上限，未随本轮发送）` }
       continue
     }
-    const size = item.resolved.bytes.byteLength
+    const size = item.resolved.kind === 'inline' ? item.resolved.bytes.byteLength : new TextEncoder().encode(item.resolved.text).byteLength
     if (size > budget.remainingBytes) {
       item.resolved = {
         kind: 'omit',
@@ -205,6 +212,7 @@ export async function planAttachments(
     }
     budget.counted.add(item.file.url)
     budget.remainingBytes -= size
+    if (item.resolved.kind === 'text') budget.remainingTextChars -= item.resolved.text.length
   }
   return planned
 }
@@ -216,14 +224,17 @@ export async function planAttachments(
  * （历史组装 / 运行中插话）都调它。
  */
 export function attachmentsToParts(
-  planned: PlannedAttachment[],
-  opts?: { resolveFileUrl?: (url: string) => string }
-): { parts: Array<ImagePart | FilePart>; notes: string[] } {
-  const parts: Array<ImagePart | FilePart> = []
+  planned: PlannedAttachment[]
+): { parts: Array<ImagePart | FilePart | TextPart>; notes: string[] } {
+  const parts: Array<ImagePart | FilePart | TextPart> = []
   const notes: string[] = []
   for (const { file, resolved } of planned) {
     if (resolved.kind === 'omit') {
       notes.push(resolved.note ?? `（附件「${file.name}」未随本轮发送）`)
+      continue
+    }
+    if (resolved.kind === 'text') {
+      parts.push({ type: 'text', text: resolved.text })
       continue
     }
     if (resolved.kind === 'inline') {
@@ -239,20 +250,6 @@ export function attachmentsToParts(
       )
       continue
     }
-    const url = new URL(
-      opts?.resolveFileUrl ? opts.resolveFileUrl(resolved.url) : resolved.url,
-      'http://localhost'
-    )
-    parts.push(
-      file.mediaType.startsWith('image/')
-        ? ({ type: 'image', image: url, mediaType: file.mediaType } satisfies ImagePart)
-        : ({
-            type: 'file',
-            data: url,
-            mediaType: file.mediaType,
-            filename: file.name
-          } satisfies FilePart)
-    )
   }
   return { parts, notes }
 }
@@ -262,25 +259,20 @@ export async function attachmentParts(
   files: UploadLikeFile[],
   opts?: {
     resolveAttachment?: ResolveAttachment
-    resolveFileUrl?: (url: string) => string
     budget?: InlineBudget
     /** 插话已与现有历史同发：已内联过的附件不应再重复占请求体。 */
     omitCounted?: boolean
   }
-): Promise<{ parts: Array<ImagePart | FilePart>; notes: string[] }> {
+): Promise<{ parts: Array<ImagePart | FilePart | TextPart>; notes: string[] }> {
   const planned = await planAttachments(files, opts)
-  return attachmentsToParts(planned, opts)
+  return attachmentsToParts(planned)
 }
 
 /**
  * 渲染端对话历史 -> 模型消息。
  *
- * `resolveFileUrl`：附件 URL 的绝对化策略由调用方注入（server 端经 UploadAdapter
- * 拼 `FIZZ_PUBLIC_BASE_URL ?? origin`）—— 本文件零存储知识。未传时用 localhost
- * base 兜底：`new URL('/api/...')` 会抛错，不能让一条附件把整轮炸掉。
- *
- * `resolveAttachment`：更进一步的投递策略（URL / 内联字节）。不传 = 全部按 URL
- * 直传，行为与从前逐字节一致。
+ * `resolveAttachment` 由宿主读取附件字节；未提供时仅接受已内联的 base64 data URL。
+ * 读取失败会降级为说明，不把远程 URL 交给模型自行抓取。
  *
  * ⚠️ **内联 base64 不占额外 token**：图片 token 由 provider 按**像素**计，传 URL 还是
  * 传字节算出来是同一个数；变的只是请求体大小（×4/3，且每轮重发）。所以真正的闸是
@@ -289,7 +281,6 @@ export async function attachmentParts(
 export async function toModelMessageGroups(
   history: Array<{ role: 'user' | 'assistant'; parts: AgentMessagePart[] }>,
   opts?: {
-    resolveFileUrl?: (url: string) => string
     resolveAttachment?: ResolveAttachment
     /** 整轮共享的内联预算；不传 = 不限总量（调用方自己保证） */
     inlineBudget?: InlineBudget
@@ -351,9 +342,7 @@ export async function toModelMessageGroups(
         omittedImages > 0
           ? `（用户发送了 ${omittedImages} 张图片，但当前模型未开启图片输入，这些图片已省略）`
           : ''
-      const { parts, notes } = attachmentsToParts(plannedByMessage.get(i) ?? [], {
-        ...(opts?.resolveFileUrl ? { resolveFileUrl: opts.resolveFileUrl } : {})
-      })
+      const { parts, notes } = attachmentsToParts(plannedByMessage.get(i) ?? [])
       if (parts.length === 0) {
         const body = [text, omittedNote, ...notes].filter(Boolean).join('\n')
         if (body) messages.push({ role: 'user', content: body })
@@ -450,7 +439,6 @@ export async function toModelMessageGroups(
 export async function toModelMessages(
   history: Array<{ role: 'user' | 'assistant'; parts: AgentMessagePart[] }>,
   opts?: {
-    resolveFileUrl?: (url: string) => string
     resolveAttachment?: ResolveAttachment
     inlineBudget?: InlineBudget
     allowImages?: boolean

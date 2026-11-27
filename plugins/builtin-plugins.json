@@ -3,7 +3,6 @@
   "description": "随 Fizz 分发的内置插件根。这个文件是**目录标记**：宿主探测内置插件目录时，只认带它的目录（光叫 plugins 不算），否则从 cwd 逐级往上找时可能误认一个同名的普通目录。改了它请同步 apps/server/src/server/builtin-dirs.ts 的 BUILTIN_PLUGINS_MARKER。",
   "plugins": [
     "oss",
-    "api-upload",
     "redis",
     "storage-to",
     "wecom-notify",

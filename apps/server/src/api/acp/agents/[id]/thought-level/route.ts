@@ -1,5 +1,5 @@
 /**
- * acp 会话的**思考档**（ACP configOptions 的 `category: 'thought_level'`，`pi` 用它）。
+ * acp 会话的思考档（按 `category: 'thought_level'` 能力广告，支持 OpenCode、pi 等）。
  *
  * POST /api/acp/agents/:id/thought-level  { conversationId, value }  → 切换思考档
  *
@@ -9,6 +9,7 @@
 import { getAcpSessionSnapshot, setAcpSessionThoughtLevel } from '@fizz/acp'
 import { domain } from '@/lib/server/state'
 import { acpMcpServers } from '@/lib/server/acp-mcp'
+import { refreshAcpSessionState } from '@/lib/server/acp-session-state'
 import { jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 
 export async function POST(
@@ -30,6 +31,7 @@ export async function POST(
       ? {
           agent,
           workspacePath: workspace.path,
+          modelId: conversation.modelId,
           mcpServers: acpMcpServers(domain.listMcpServers(), conversation.mcpServerIds),
           ...(conversation.acpSessionId ? { loadSessionId: conversation.acpSessionId } : {})
         }
@@ -38,14 +40,13 @@ export async function POST(
   if (result.ok) {
     // 持久化用户选的档（清单 / configId 以 agent 当前广告的为准）
     const snap = getAcpSessionSnapshot(id, conversationId)
-    const prev = domain.getConversation(conversationId)
-    const options = snap?.thoughtLevel?.options ?? prev?.acpThoughtLevel?.options ?? []
-    const configId = snap?.thoughtLevel?.configId ?? prev?.acpThoughtLevel?.configId ?? ''
-    if (configId) {
+    const thought = snap?.thoughtLevel
+    if (thought) {
       domain.setAcpSessionState(conversationId, {
-        acpThoughtLevel: { configId, current: body.value, options }
+        acpThoughtLevel: { ...thought, current: thought.options.some((o) => o.value === body.value) ? body.value : thought.current }
       })
     }
+    refreshAcpSessionState(conversationId, id)
   }
   return Response.json(result)
 }

@@ -25,6 +25,8 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import { createConversationSlice } from '../index'
+import type { ConversationTargetInput, ConversationTargetResult } from '@fizz/contracts/agent-api'
+import type { AcpProbeResult } from '@fizz/acp'
 
 const FOCUS = 'conv-a'
 const OTHER = 'conv-b'
@@ -34,9 +36,25 @@ const DRAFT_TARGET = {
   modelId: 'model-c'
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}
+const effort = (values: string[], current = values[0]) => ({
+  configId: 'effort', current, options: values.map((value) => ({ value, name: value }))
+})
+const capability = (values: string[]): AcpProbeResult => ({
+  models: { configId: null, options: [], current: null }, modes: null,
+  thoughtLevel: values.length ? effort(values) : null, authMethods: [],
+})
+
 /** 两条会话 + 一份不同的草稿：三者各不相同，断言才有意义 */
 function makeStore() {
-  const api = { setConversationTarget: vi.fn(async () => ({ ok: true })) }
+  const api = {
+    setConversationTarget: vi.fn<(id: string, target: ConversationTargetInput) => Promise<ConversationTargetResult | null>>(async () => null),
+    probeAcpCapabilities: vi.fn<(agentId: string, modelId?: string) => Promise<AcpProbeResult>>(),
+  }
   const conversations = [
     {
       id: FOCUS,
@@ -208,6 +226,98 @@ describe('setChatTarget：作用域', () => {
       FOCUS,
       expect.objectContaining({ configId: 'cfg-c', modelId: 'model-c' })
     )
+  })
+})
+
+// 防回归：模型卡只能用当前模型的档位，迟到响应不能串会话、串模型或复活已删除的能力。
+describe('ACP 模型卡配置同步', () => {
+  it.each([{ loading: true, error: null }, { loading: false, error: '读取失败' }, { loading: false, error: null }])(
+    '模式草稿拒绝未就绪配置或无效候选：%j', ({ loading, error }) => {
+      const { state, slice } = makeStore()
+      const draft = { agentId: 'agent', modelId: 'model', loading, error,
+        modes: { current: 'vendor:build', available: [{ id: 'vendor:build', name: '构建' }, { id: 'vendor:plan', name: '规划' }] },
+        mode: 'vendor:build', thoughtLevel: null, thought: null }
+      state.draftAcp = draft
+      const select = slice.setDraftAcpMode as (value: string | null) => void
+      select(loading || error ? 'vendor:plan' : 'invented')
+      expect(state.draftAcp).toBe(draft)
+    },
+  )
+
+  it('模式草稿保留原始值，允许清除选择；不触碰任何已有会话', () => {
+    const { state, slice, api, conversationOf } = makeStore()
+    state.draftAcp = { agentId: 'agent', modelId: 'model', loading: false, error: null,
+      modes: { current: 'vendor:build', available: [{ id: 'vendor:build', name: '构建' }] },
+      mode: null, thoughtLevel: null, thought: null }
+    const select = slice.setDraftAcpMode as (value: string | null) => void
+    select('vendor:build')
+    expect(state.draftAcp).toHaveProperty('mode', 'vendor:build')
+    select(null)
+    expect(state.draftAcp).toHaveProperty('mode', null)
+    expect(api.setConversationTarget).not.toHaveBeenCalled()
+    expect(conversationOf(FOCUS).modelId).toBe('model-a')
+    expect(conversationOf(OTHER).modelId).toBe('model-b')
+  })
+
+  it('已有会话立即使用 target 回传的新档位，明确 null 会清掉旧档', async () => {
+    const { state, api, slice, conversationOf } = makeStore()
+    const change = slice.setChatTarget as (target: { backend: 'acp'; configId: string; modelId: string }, scope: string) => void
+    Object.assign(conversationOf(OTHER), { backend: 'acp', configId: 'agent', acpThoughtLevel: effort(['low', 'high'], 'high') })
+    const first = deferred<ConversationTargetResult>()
+    api.setConversationTarget.mockReturnValueOnce(first.promise)
+    change({ backend: 'acp', configId: 'agent', modelId: 'new-model' }, OTHER)
+    expect((state.slices as Record<string, { acpConfigLoading: boolean }>)[OTHER].acpConfigLoading).toBe(true)
+    first.resolve({ acpSessionState: { modes: null, thoughtLevel: effort(['medium', 'max']) } })
+    await vi.waitFor(() => expect(conversationOf(OTHER).acpThoughtLevel).toEqual(effort(['medium', 'max'])))
+    api.setConversationTarget.mockResolvedValueOnce({ acpSessionState: { modes: null, thoughtLevel: null } })
+    change({ backend: 'acp', configId: 'agent', modelId: 'plain' }, OTHER)
+    await vi.waitFor(() => expect(conversationOf(OTHER).acpThoughtLevel).toBeUndefined())
+    expect(api.probeAcpCapabilities).not.toHaveBeenCalled()
+    expect(conversationOf(FOCUS).modelId).toBe('model-a')
+  })
+
+  it('快速换模型串行保存，旧响应不能覆盖最终模型和思考档', async () => {
+    const { api, slice, conversationOf } = makeStore()
+    const change = slice.setChatTarget as (target: { backend: 'acp'; configId: string; modelId: string }, scope: string) => void
+    Object.assign(conversationOf(OTHER), { backend: 'acp', configId: 'agent' })
+    const old = deferred<ConversationTargetResult>()
+    api.setConversationTarget.mockReturnValueOnce(old.promise)
+      .mockResolvedValueOnce({ acpSessionState: { modes: null, thoughtLevel: effort(['max']) } })
+    change({ backend: 'acp', configId: 'agent', modelId: 'model-old' }, OTHER)
+    change({ backend: 'acp', configId: 'agent', modelId: 'model-latest' }, OTHER)
+    expect(api.setConversationTarget).toHaveBeenCalledTimes(1)
+    old.resolve({ acpSessionState: { modes: null, thoughtLevel: effort(['low']) } })
+    await vi.waitFor(() => expect(conversationOf(OTHER).acpThoughtLevel).toEqual(effort(['max'])))
+    expect(conversationOf(OTHER).modelId).toBe('model-latest')
+    expect(api.setConversationTarget).toHaveBeenCalledTimes(2)
+  })
+
+  it('草稿按 agent + 模型缓存；新模型保留有效选择、移除无效选择', async () => {
+    const { state, api, slice } = makeStore()
+    const probe = slice.probeDraftAcp as (agent: string, model?: string) => Promise<void>
+    api.probeAcpCapabilities.mockResolvedValueOnce(capability(['low', 'high']))
+      .mockResolvedValueOnce(capability(['high', 'max'])).mockResolvedValueOnce(capability([]))
+    await probe('agent', 'model-a')
+    ;(slice.setDraftAcpThought as (value: string) => void)('high')
+    await probe('agent', 'model-b')
+    expect(state.draftAcp).toMatchObject({ modelId: 'model-b', thought: 'high' })
+    await probe('agent', 'plain')
+    expect(state.draftAcp).toMatchObject({ modelId: 'plain', thought: null, thoughtLevel: null })
+    await probe('agent', 'model-b')
+    expect(api.probeAcpCapabilities).toHaveBeenCalledTimes(3)
+    expect(state.draftAcp).toMatchObject({ modelId: 'model-b', thoughtLevel: effort(['high', 'max']) })
+  })
+
+  it('草稿探测旧响应晚到也不能覆盖刚选的新模型', async () => {
+    const { state, api, slice } = makeStore()
+    const probe = slice.probeDraftAcp as (agent: string, model?: string) => Promise<void>
+    const old = deferred<AcpProbeResult>()
+    api.probeAcpCapabilities.mockReturnValueOnce(old.promise).mockResolvedValueOnce(capability(['max']))
+    const pending = probe('agent', 'model-old')
+    await probe('agent', 'model-latest')
+    old.resolve(capability(['low']))
+    await pending
+    expect(state.draftAcp).toMatchObject({ modelId: 'model-latest', thoughtLevel: effort(['max']), loading: false })
   })
 })
 

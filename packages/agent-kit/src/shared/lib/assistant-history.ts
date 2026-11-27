@@ -25,7 +25,7 @@
  * - 整份 JSON 超过 {@link MAX_CHARS} 就先丢老会话、再对半砍最新那份的消息。
  * 任何一步失败（配额满 / 隐私模式禁用 storage）都只静默放弃落盘 —— 内存里的现场不受影响。
  */
-import type { AgentChatMessage } from '@fizz/contracts/agent-api'
+import type { AgentChatMessage, AssistantRemoteTarget } from '@fizz/contracts/agent-api'
 
 /** v2：会话池。v1 是「按 panelKey 一格」的旧结构，读到时自动迁移 */
 const STORAGE_KEY = 'fizz.agent.assistant.conversations.v2'
@@ -43,6 +43,8 @@ export interface AssistantConversationRecord {
   messages: AgentChatMessage[]
   /** 最后写入时间：排序 + 「丢最老的」用 */
   updatedAt: number
+  /** 显式绑定的远端目标，随会话保存；旧存档没有此字段，首次发送时绑定。 */
+  remoteTarget?: AssistantRemoteTarget
 }
 
 export interface AssistantStore {
@@ -62,7 +64,11 @@ function normalize(entry: unknown): AssistantConversationRecord | null {
   return {
     sessionId: rec.sessionId,
     messages: rec.messages as AgentChatMessage[],
-    updatedAt: typeof rec.updatedAt === 'number' ? rec.updatedAt : 0
+    updatedAt: typeof rec.updatedAt === 'number' ? rec.updatedAt : 0,
+    ...(rec.remoteTarget && typeof rec.remoteTarget.hostId === 'string' && rec.remoteTarget.hostId &&
+      (rec.remoteTarget.cwd === undefined || typeof rec.remoteTarget.cwd === 'string')
+      ? { remoteTarget: { hostId: rec.remoteTarget.hostId, ...(rec.remoteTarget.cwd ? { cwd: rec.remoteTarget.cwd } : {}) } }
+      : {})
   }
 }
 
@@ -199,7 +205,8 @@ function writeStore(store: AssistantStore, keepId?: string): boolean {
 export function saveAssistantConversation(
   sessionId: string,
   messages: AgentChatMessage[],
-  updatedAt: number
+  updatedAt: number,
+  remoteTarget?: AssistantRemoteTarget
 ): void {
   const store = loadAssistantStore()
   if (messages.length === 0) delete store.conversations[sessionId]
@@ -207,7 +214,8 @@ export function saveAssistantConversation(
     store.conversations[sessionId] = {
       sessionId,
       messages: messages.slice(-MAX_MESSAGES),
-      updatedAt
+      updatedAt,
+      ...(remoteTarget ? { remoteTarget } : {})
     }
   if (store.activeId === sessionId && !store.conversations[sessionId]) store.activeId = null
   writeStore(store, sessionId)

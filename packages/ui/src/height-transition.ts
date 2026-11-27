@@ -29,33 +29,29 @@ const DEFAULT_DURATION = 160
 export function useHeightTransition<T extends HTMLElement>(
   ref: React.RefObject<T | null>,
   duration = DEFAULT_DURATION
-): void {
-  /**
-   * 上一次量高度的那个节点。浮层关闭时**外层组件往往还挂着**（`<Dialog open>` 里的
-   * `DialogContent` 每次都会执行），只有里面的 portal 节点被卸载；等下次打开，
-   * 节点是新的，但这个 hook 的 ref 还留着上一次的 `lastHeight` —— 不按节点身份重置的话，
-   * 重新打开会拿「上一次弹窗的高度」当起点，第一下输入就莫名跳一段。
-   */
-  const lastEl = React.useRef<T | null>(null)
+): React.RefCallback<T> {
   /** 上一段动画的目标高度：没有动画在跑时它就是当前高度 */
   const lastHeight = React.useRef<number | null>(null)
   const timer = React.useRef<number | null>(null)
+
+  /**
+   * 必须把返回的 callback 接到 DOM ref：Portal 首次会在外层 layout effect 跑完后才
+   * 挂载节点，单读 ref.current 会漏记初始高度，把第一次切页误当成「首帧不动画」。
+   * 挂载时立即记高度，卸载时清掉旧基准；callback 身份稳定，普通重渲染不重新初始化。
+   */
+  const attach = React.useCallback((el: T | null): void => {
+    ref.current = el
+    lastHeight.current = el?.offsetHeight ?? null
+    if (timer.current !== null) {
+      window.clearTimeout(timer.current)
+      timer.current = null
+    }
+  }, [ref])
 
   // 每次渲染都跑：内容变没变只有量了才知道（高度是算出来的，props 上看不出来）
   React.useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
-
-    // 新节点（浮层刚打开）：首帧不动画，只记下初始高度（Radix 自己还有入场动画）
-    if (lastEl.current !== el) {
-      lastEl.current = el
-      lastHeight.current = el.offsetHeight
-      if (timer.current !== null) {
-        window.clearTimeout(timer.current)
-        timer.current = null
-      }
-      return
-    }
 
     const from =
       timer.current !== null
@@ -100,4 +96,6 @@ export function useHeightTransition<T extends HTMLElement>(
     },
     []
   )
+
+  return attach
 }

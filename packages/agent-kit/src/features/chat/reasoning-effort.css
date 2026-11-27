@@ -2,7 +2,7 @@
  * 思考强度滑块的轨道 / 拇指样式。参考 LeiBox `reasoning-effort-slider` 的观感：
  * 轨道里是一块流动星空，已填充部分按档位比例裁切；拇指是一颗白色果冻块。
  *
- * 所有随拖动实时变化的值都由 `ReasoningEffortPanel` 写成 CSS 变量（rAF 里逐帧写）：
+ * 所有随拖动实时变化的值都由共用 `EffortSlider` 写成 CSS 变量（GSAP ticker 逐帧写）：
  * - `--effort-ratio`：0–1，决定填充裁切、拇指位置与色相；
  * - `--effort-press` / `--effort-jelly-*`：按压缩放与拖速形变。
  * 这里只负责把变量落成几何与颜色，**不要在 CSS 里加 transition 去动画 ratio**：
@@ -37,7 +37,7 @@
   height: 100%;
 }
 
-/* 档位点：两端不放（轨道两头就是端点），只标中间 6 个 */
+/* 档位点：数量由实际候选项决定，随轨道等距排列。 */
 .reasoning-effort-dots {
   position: absolute;
   inset: 0 16px;
@@ -64,6 +64,20 @@
  * 停掉拖动、表现为拖到一半弹回原档位，见 `ResizeHandle` 的同一条教训）。 */
 .reasoning-effort-input {
   cursor: grab;
+}
+
+.reasoning-effort[data-disabled] .reasoning-effort-track {
+  opacity: 0.5;
+}
+
+.reasoning-effort[data-disabled] .reasoning-effort-input,
+.reasoning-effort-stops button:disabled {
+  cursor: not-allowed;
+}
+
+.reasoning-effort-stops button {
+  min-height: 24px;
+  overflow-wrap: anywhere;
 }
 
 .reasoning-effort[data-dragging] .reasoning-effort-input {

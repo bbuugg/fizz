@@ -54,8 +54,7 @@ import {
   useDirtyTabCountSync,
   useExternalFileOpen,
 } from "@fizz/agent-kit/shell/layout/use-external-file-open";
-import { activeTabKey, openTab } from "@fizz/agent-kit/shared/lib/panel-store";
-import { NEW_TAB_KEY } from "@fizz/agent-kit/shared/lib/panel-tabs";
+import { activeTabKey, openDraftTab } from "@fizz/agent-kit/shared/lib/panel-store";
 /*
  * 标签手势（切 / 关 / 聚焦）→ 「当前会话」的同步只有这一份实现，在 `useGroupActions` 里。
  * 快捷键「上一个 / 下一个标签」必须复用它：裸 `cycleTab` 只翻面板 store，不动
@@ -197,8 +196,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       if (detail?.action === "open-workspace") {
         current.selectWorkspace(detail.workspaceId, false);
         current.openConversation(null);
-        // 这是用户/工具明确打开工作区，不是冷启动的空态：此时才创建新对话占位标签。
-        openTab(NEW_TAB_KEY);
+        // 这是用户/工具明确打开工作区，不是冷启动的空态：此时才创建新对话草稿标签。
+        openDraftTab();
         return;
       }
       if (detail?.action === "conversation-created") {
@@ -284,7 +283,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     (workspaceId: string | null): void => {
       app.selectWorkspace(workspaceId, false);
       app.openConversation(null);
-      openTab(NEW_TAB_KEY);
+      openDraftTab();
     },
     [app],
   );
@@ -495,7 +494,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         break;
       case "toggle-sidebar-alt": {
         /*
-         * 侧边栏唯一快捷键（Alt+1）。desktop 标题栏最左那颗按钮也走同一个模块状态。
+         * 侧边栏唯一快捷键（默认 Ctrl/Cmd+B，可在设置中修改）。
+         * desktop 标题栏最左那颗按钮也走同一个模块状态。
          *
          * ⚠️ **手机形态（含把窗口缩到 <768px）写的是另一份状态**：侧栏是覆盖抽屉
          * （`mobile-sidebar.ts`），折叠偏好在窄屏完全无效（`sidebarHidden` 在
@@ -791,8 +791,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     onOpenChatView={() => {
                       // 项目行点击 / 新项目是**显式**开始新对话：创建占位标签并切视图。
                       // ⚠️ 零标签时 PanelView 自己也会补一张草稿标签（见那边的 useLayoutEffect），
-                      // 但用户此刻通常停在别的标签上，所以要显式 openTab 把它摆到前台。
-                      openTab(NEW_TAB_KEY);
+                      // 但用户此刻通常停在别的标签上，所以要显式 openDraftTab 把它摆到前台。
+                      openDraftTab();
                     }}
                     onNewInWorkspace={(
                       kind: NewInWorkspaceKind,

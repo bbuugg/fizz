@@ -163,8 +163,10 @@ import type {
   ContainerProjectState,
   ContainerProjectsSnapshot,
 } from "@fizz/contracts/types";
-import { useRunningConversations } from "@fizz/agent-kit/shared/hooks/useAgentApp";
+import { useRecoveringConversations, useRunningConversations } from "@fizz/agent-kit/shared/hooks/useAgentApp";
 import type { AgentApp } from "@fizz/agent-kit/shared/hooks/useAgentApp";
+import { useAgentStore } from "@fizz/agent-kit/shared/lib/stores/agent-store";
+import { recoveryStatusText } from "@fizz/agent-kit/shared/lib/stores/slices/conversation";
 import { useStateValue } from "@fizz/agent-kit/shared/lib/state-ws";
 import {
   getActivity,
@@ -429,6 +431,7 @@ export function AgentSidebar({
    * （用户点发送的那一下卡顿就来自这里）。只有侧栏需要它，就只重渲侧栏。
    */
   const runningConversations = useRunningConversations();
+  const recoveringConversations = useRecoveringConversations();
   /** 主题色（菜单里选强调色）。就地取用：纯视觉偏好、不进 AppShell 的 prop 链 */
   /** 正在重命名的会话 id（null = 未在编辑） */
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -437,10 +440,9 @@ export function AgentSidebar({
   const [pendingDeleteConversation, setPendingDeleteConversation] = useState<
     AgentApp["conversations"][number] | null
   >(null);
-  /** 正在从 agent 侧重新加载的会话 id（行首转圈；菜单项也据此禁用） */
-  const [reloadingIds, setReloadingIds] = useState<Set<string>>(() => new Set());
-  /** 正在重启的会话 id（同上，重启是一次重新连接，也要有反馈） */
-  const [restartingIds, setRestartingIds] = useState<Set<string>>(() => new Set());
+  /** 分叉期间持续显示进度；ref 在 React 重渲染前就挡住重复提交。 */
+  const [forkingIds, setForkingIds] = useState<Set<string>>(() => new Set());
+  const forkingIdsRef = useRef(new Set<string>());
   /** 要「转为内置 Agent 会话」的会话：非空 = 确认弹窗开着（见会话行「更多」那一项） */
   const [convertTarget, setConvertTarget] = useState<
     AgentApp["conversations"][number] | null
@@ -909,16 +911,17 @@ export function AgentSidebar({
     const running =
       !waiting &&
       (activity.running || !!runningConversations[conversation.id]);
-    /** 外部 ACP agent 驱动的会话：行尾「更多」里的重启 / 重新加载只给它 */
+    /** 外部 ACP agent 驱动的会话：重新加载会同时重连并同步历史 */
     const isAcp = conversation.backend === "acp";
     /** 行首图标：ACP 会话用它绑定的那个 agent 的品牌图标（预设身份优先，已删除 → Bot） */
     const acpAgent = isAcp
       ? app.acpAgents.find((a) => a.id === conversation.configId)
       : undefined;
-    /** 正在重新加载：行首转圈 + 更多菜单里那一项也禁用，避免重复点 */
-    const reloading = reloadingIds.has(conversation.id);
-    /** 正在重启：与重新加载同一种「没有即时产出」的等待，也要有转圈 */
-    const restarting = restartingIds.has(conversation.id);
+    /** 与错误重试 / 标签刷新共享恢复状态，避免不同入口交叉重连。 */
+    const recoveryPhase = recoveringConversations[conversation.id];
+    const reloading = !!recoveryPhase;
+    const reloadLabel = t(recoveryStatusText(recoveryPhase ?? null));
+    const forking = forkingIds.has(conversation.id);
     /**
      * 临时会话（`scratch` 工作区）的目录：`<数据目录>/conversations/<会话 id>`。
      *
@@ -931,10 +934,10 @@ export function AgentSidebar({
       : undefined;
     /** 归档确认态（第一次点变成勾，再点才真归档；鼠标移开该行 = 反悔） */
     const confirmingArchive = pendingArchiveId === conversation.id;
-    const statusText = reloading
-      ? t("正在重新加载会话…")
-      : restarting
-        ? t("正在重启会话…")
+    const statusText = forking
+      ? t("正在分叉 ACP 会话…")
+      : reloading
+        ? reloadLabel
         : waiting
           ? waiting.kind === "confirm"
             ? t("等待确认：{label}", { label: waiting.label })
@@ -983,8 +986,11 @@ export function AgentSidebar({
           acpPreset={acpAgent?.preset}
           waiting={waiting}
           running={running}
-          loading={reloading || restarting}
-          loadingLabel={reloading ? t("正在重新加载会话") : t("正在重启会话")}
+          loading={reloading || forking}
+          loadingLabel={
+            forking ? t("正在分叉 ACP 会话…")
+              : reloadLabel
+          }
         />
         {/*
           定时任务跑出来的会话：**还没被点开过**就点一颗红点。
@@ -1080,7 +1086,7 @@ export function AgentSidebar({
               <Pencil className="size-3.5" />
             </button>
             {/*
-              行尾「更多」：删除 +（仅 acp）重启 / 重新加载会话都收进下拉，与项目行的「更多」同一套。
+              行尾「更多」：删除 +（仅 acp）重新加载会话都收进下拉，与项目行的「更多」同一套。
               删除走弹窗（不再是「点两次就地确认」）：acp 会话要多一个「同时删除 agent 侧会话」
               的复选框，就地按钮塞不下这些信息，所以它本来也该有个「收起来」的地方。
               后两项**只有 acp 会话有**（内置 内置会话没有 agent 进程这个概念）：
@@ -1120,63 +1126,24 @@ export function AgentSidebar({
                 )}
                 {isAcp && (
                   <DropdownMenuItem
-                    // 在跑 / 在等答复时不给重启：那等于把这一轮掐了 —— 想掐用输入框那颗「停止」，
-                    // 打着「重启」的旗号干这事只会让人误判（重启本该是无损的）。
-                    // ⚠️ 等答复时 `running` 是 false（两者互斥，见上面的 `waiting`），必须一起判。
-                    // 重启进行中同样禁用：重新连接可能要好几百毫秒，别让人连点。
-                    disabled={running || !!waiting || restarting}
+                    // 主动重连在空闲时提供；其他恢复入口运行中只取快照并续上直播。
+                    disabled={running || !!waiting || reloading || forking}
+                    title={t("重新连接 Agent 并同步聊天记录，保留原会话和上下文")}
+                    aria-busy={reloading}
                     onSelect={() => {
-                      if (restarting) return;
-                      const agentId = conversation.configId;
-                      if (!agentId) return;
-                      setRestartingIds((prev) => new Set(prev).add(conversation.id));
-                      void app
-                        .restartAcpSession(agentId, conversation.id)
-                        .then((ok) => {
-                          if (ok) toast.success(t("已重启会话并重新连接"));
-                          else toast.error(t("重启会话失败"));
-                        })
-                        .catch(() => {})
-                        .finally(() => {
-                          setRestartingIds((prev) => {
-                            const next = new Set(prev);
-                            next.delete(conversation.id);
-                            return next;
-                          });
-                        });
-                    }}
-                  >
-                    {restarting ? (
-                      <Loader size={16} className="size-4" />
-                    ) : (
-                      <RefreshCw className="size-4" />
-                    )}
-                    {restarting ? t("正在重启…") : t("重启会话")}
-                  </DropdownMenuItem>
-                )}
-                {isAcp && (
-                  <DropdownMenuItem
-                    // 与「重启会话」同一个禁用判据：正在跑 / 正等答复时，agent 侧那份转录还是
-                    // 半截的（这一轮没落回 session），重载回来会缺一段 —— 反而把好视图弄坏。
-                    // ⚠️ 等答复时 `running` 是 false（两者互斥，见上面的 `waiting`），必须一起判。
-                    // 重载进行中同样禁用：网络慢的时候别让人连点。
-                    disabled={running || !!waiting || reloading}
-                    onSelect={() => {
-                      if (reloading) return
-                      setReloadingIds((prev) => new Set(prev).add(conversation.id))
+                      if (useAgentStore.getState().slices[conversation.id]?.recoveryPhase) return;
                       void app
                         .reloadAcpSession(conversation.id)
                         .then((ok) => {
                           if (ok) toast.success(t("已重新加载会话"));
-                          else toast.error(t("重新加载会话失败"));
+                          else toast.error(t("重新加载会话失败：{error}", {
+                            error: useAgentStore.getState().slices[conversation.id]?.error ?? t("未知错误"),
+                          }));
                         })
-                        .catch(() => {})
-                        .finally(() => {
-                          setReloadingIds((prev) => {
-                            const next = new Set(prev);
-                            next.delete(conversation.id);
-                            return next;
-                          });
+                        .catch((err: unknown) => {
+                          toast.error(t("重新加载会话失败：{error}", {
+                            error: err instanceof Error ? err.message : String(err),
+                          }));
                         });
                     }}
                   >
@@ -1185,14 +1152,45 @@ export function AgentSidebar({
                     ) : (
                       <RotateCw className="size-4" />
                     )}
-                    {reloading ? t("正在重新加载…") : t("重新加载会话")}
+                    {reloading ? reloadLabel : t("重新加载会话")}
                   </DropdownMenuItem>
                 )}
                 {isAcp && (
                   <DropdownMenuItem
-                    // 与「重启会话」同一个禁用判据：正在跑 / 正等答复时，agent 侧那份转录是
-                    // 半截的（这一轮还没落回 session），转出来的历史会缺一段。
-                    disabled={running || !!waiting}
+                    disabled={
+                      running || !!waiting || reloading || forking ||
+                      !conversation.configId || !conversation.acpSessionId
+                    }
+                    onSelect={() => {
+                      if (forkingIdsRef.current.has(conversation.id)) return;
+                      forkingIdsRef.current.add(conversation.id);
+                      setForkingIds(new Set(forkingIdsRef.current));
+                      void app.forkAcpConversation(conversation.id)
+                        .then((id) => {
+                          if (!id) return; // 具体原因通过全局 error toast 展示。
+                          onOpenConversation(id, conversation.workspaceId);
+                          onNavigate?.();
+                          toast.success(t("已创建 ACP 分支会话"));
+                        })
+                        .catch((err: unknown) => {
+                          toast.error(t("分叉 ACP 会话失败：{error}", {
+                            error: err instanceof Error ? err.message : String(err),
+                          }));
+                        })
+                        .finally(() => {
+                          forkingIdsRef.current.delete(conversation.id);
+                          setForkingIds(new Set(forkingIdsRef.current));
+                        });
+                    }}
+                  >
+                    {forking ? <Loader size={16} className="size-4" /> : <GitBranch className="size-4" />}
+                    {forking ? t("正在分叉…") : t("分叉 ACP 会话")}
+                  </DropdownMenuItem>
+                )}
+                {isAcp && (
+                  <DropdownMenuItem
+                    // 仅空闲且恢复完成后转换，避免读取尚未落定的历史。
+                    disabled={running || !!waiting || reloading || forking}
                     // 转换是形态变更、且要先确认（顺带选新会话落在哪个工作区），所以开弹窗而不是直接转
                     onSelect={() => setConvertTarget(conversation)}
                   >
@@ -1202,6 +1200,7 @@ export function AgentSidebar({
                 )}
                 <DropdownMenuItem
                   variant="destructive"
+                  disabled={forking}
                   onSelect={() => {
                     setRenamingId(null);
                     setPendingDeleteConversation(conversation);
@@ -2010,14 +2009,18 @@ export function AgentSidebar({
         onDragOver: handleDragOver,
         onDragLeave: handleDragLeave,
         onDrop: handleDrop,
-        className: dropReady ? "bg-primary-soft ring-1 ring-inset ring-primary" : undefined,
+        className: dropReady
+          ? "relative bg-primary-soft ring-1 ring-inset ring-primary"
+          : undefined,
       }}
     >
-      {/* 落点提示贴着列表上沿，位置固定：插进列表中间会让它在拖动时跳动、hover 也跟着错位 */}
+      {/* 落点提示覆盖在列表中央，不参与布局；pointer-events-none 保证不会接管拖拽事件 */}
       {dropReady && (
-        <div className="pointer-events-none mx-2 mb-1 flex items-center gap-1.5 rounded-md border border-dashed border-primary px-2 py-1.5 text-xs text-primary">
-          <FolderInput className="size-3.5 shrink-0" />
-          {t("松开鼠标，把这个目录添加为项目")}
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+          <span className="flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs text-foreground shadow-sm">
+            <FolderInput className="size-3.5 shrink-0 text-muted-foreground" />
+            {t("松开鼠标，把这个目录添加为项目")}
+          </span>
         </div>
       )}
       {/* 刷新后的加载窗口：列表请求还没落地 —— 上骨架屏，别闪「还没有项目」。

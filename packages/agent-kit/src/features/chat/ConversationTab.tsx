@@ -18,8 +18,16 @@
  * 唯一的例外是 `useAttachRemoteRun`：它管的是「**这一个**会话在服务端跑着、而本连接
  * 没有它的流」（别的端发起的轮次），判据天然是按标签的，所以挂在标签上。
  *
- * 面板现场（挂了哪些标签、正看哪个）走 `useAppContext()` 的**按会话**访问器
+ * 面板现场（挂了哪些标签、正看哪个）走 `useAppContext()` 的**按标签**访问器
  * （`panelOf` / `xxxOf(key, …)`）：分屏下同时有好几个会话可见，读「当前会话那份」会串。
+ *
+ * ## 两个 key，各管各的
+ *
+ * - `tabKey`：这颗标签在主区域的**身份**（`panel-store` 的标签 key）。面板现场、关闭守卫、
+ *   语音作用域、输入框 Provider 都按它存 / 比 —— 它终生不变，草稿发出第一条消息只换
+ *   「指向」不换身份，所以这一整棵子树不重挂、右侧面板里的终端 PTY 不被 kill。
+ * - `conversationId`：标签**指向**的会话（草稿为 `null`）。只用于会话数据
+ *   （`useAgentAppView`）和按会话持久化的东西（输入草稿存档、面板宽度）。
  *
  * ## 已知边界
  *
@@ -65,7 +73,7 @@ import { ViewHeader } from '@fizz/agent-kit/shared/components/view-header'
 import { conversationTitle } from '@fizz/agent-kit/shared/lib/conversation-title'
 import { WorkspaceQuickActions } from '@fizz/agent-kit/features/projects/WorkspaceQuickActions'
 import {
-  draftPanelKey,
+  DRAFT_PANEL_SCOPE,
   isTerminalTabKey,
   orderTabs,
   terminalTabKey
@@ -96,21 +104,14 @@ import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 
 export function ConversationTab({
+  tabKey,
   conversationId,
-  hostTabKey,
   active = true
 }: {
+  /** 这颗标签的 key（主区域标签身份，终生不变；见文件头「两个 key」） */
+  tabKey: string
+  /** 这颗标签指向的会话；`null` = 还是「新对话」草稿 */
   conversationId: string | null
-  /**
-   * 这个标签在**主区域标签条**里的 key（`PanelView` 传进来的）。守卫表按标签 key 索引：
-   * 真实会话上它恰好等于 `conversationId`，而「新对话」占位标签的 key 是 `__new__`、
-   * 会话 id 是 null —— 没有它就登记不上守卫（关 / 刷新那个草稿标签会静默杀掉它面板里的终端）。
-   *
-   * ⚠️ 叫 `hostTabKey` 而不是 `tabKey`：本文件下面侧栏那个 `tabs` 映射里有个**同名局部变量**
-   * `tabKey`（那是侧栏标签的 key），沿用同名会被遮蔽（`TerminalPanel` 那边没有这层同名作用域，
-   * 所以它叫 `tabKey`）。
-   */
-  hostTabKey: string
   /**
    * 这个标签是不是它所在组**当前显示的那一个**（`PanelContentLayer` 的 `owner.active`）。
    *
@@ -154,16 +155,13 @@ export function ConversationTab({
   useAttachRemoteRun(conversationId)
 
   /**
-   * 面板现场挂在哪个 key 下：**由这个标签自己决定** —— 有会话就是会话 id；
-   * 「新对话」占位标签用 `draft:<它所属的工作区>`（`draftPanelKey`）。
+   * 这个标签的面板现场挂在哪颗标签下：就是它自己的 key（见文件头「两个 key」）。
    *
-   * ⚠️ 以前这里写的是 `conversationId ?? ctx.sessionKey`，而 `sessionKey` 是「**当前**
-   * 会话」——多标签下它不是这个标签的属性。于是「新对话」标签的面板会跟着当前会话跑：
-   * 点一下别的标签，它就去读**别人**的面板现场（表现为「新对话的面板跟着其他会话走」），
-   * 而它自己那份现场被当成「已离开的草稿」回收掉，终端 PTY 一起没。
-   * 现场属于**标签**，key 必须只由标签自己算出来（工作区在标签切换时不变，所以它是稳的）。
+   * ⚠️ 别再从 `conversationId` / `ctx.sessionKey` 推：前者在草稿 → 会话那一刻会变
+   * （右侧面板整块卸载、PTY 被 kill）；后者是「**当前**会话的」，多标签下不是这个标签的属性
+   * （表现为「新对话的面板跟着其他会话走」）。
    */
-  const key = conversationId ?? draftPanelKey(app.activeWorkspaceId)
+  const key = tabKey
 
   /**
    * 守卫：关闭 / 刷新这个标签之前先问一句。
@@ -193,7 +191,7 @@ export function ConversationTab({
   guardRef.current.running = conversationId ? !!app.runningConversations[conversationId] : false
   guardRef.current.stop = app.stopConversation
   useEffect(() => {
-    return registerTabCloseGuard(hostTabKey, {
+    return registerTabCloseGuard(tabKey, {
       beforeClose: async () => {
         const id = conversationId
         if (!id || !guardRef.current.running) return 'close'
@@ -235,7 +233,7 @@ export function ConversationTab({
         return ok ? 'reload' : 'cancel'
       }
     })
-  }, [hostTabKey, conversationId, confirm, choose, tr])
+  }, [tabKey, conversationId, confirm, choose, tr])
 
   /** 面板容器的实测宽度（算面板默认宽度与拖拽上限） */
   const [contentRef, contentWidth] = useContainerWidth()
@@ -315,7 +313,6 @@ export function ConversationTab({
    * 只剩**浏览器画面**仍按本机预览通道工作，远端下不露头。
    */
   const isRemote = !!workspace?.remote
-  const gitChangeCount = panel?.gitChanges?.count ?? 0
   /** 面板里已挂出的终端条数：顶栏终端按钮右上角挂个徽标（0 条不挂） */
   const terminalCount = panel?.terminals.length ?? 0
 
@@ -464,7 +461,7 @@ export function ConversationTab({
          * 给一颗「启动浏览器」按钮由用户点（见 `BrowserPane` 文件头）；收起面板就是关标签
          * （标签条上的 X 一步到位），顶栏再放一颗只是重复。
          */
-        content: <BrowserPane conversationId={key} />,
+        content: <BrowserPane conversationId={conversationId ?? key} />,
         onClose: () => closeSideTabOf(key, tabKey)
       }
     }
@@ -529,12 +526,7 @@ export function ConversationTab({
             </span>
           ) : undefined
         }
-        /*
-         * 不再挂 `subtitle`（原来显示当前 git 分支）：
-         * 分支名属于「源代码管理」那颗按钮的事（那边有徽标与面板），摆在名字下面只会
-         * 让顶栏多一栏 —— 没有分支时那条空行还会把名字和正文之间的间距撑大。
-         * 现在名字与右侧按钮同处一行，见 `ViewHeader` 的说明。
-         */
+        /* 分支与文件入口集中在 composer 下方状态条，顶栏只留会话标题与其他工具。 */
         trailing={
           <>
             {hasDirectory && !isRemote && (
@@ -664,9 +656,9 @@ export function ConversationTab({
               `browser-active`），这颗按钮是「收起来之后想再看一眼」的**手动入口** ——
               与 Agent 共用同一个浏览器，面板里能自己点、自己输地址（见 `BrowserPane`）。
 
-              ⚠️ 只在真实会话里给：草稿标签的 key 是 `draft:<工作区>`，面板会连到一个
-              不存在的 `agent-browser:` 会话（只显示「浏览器未启动」）。发第一条消息后
-              标签被复用成真实会话，按钮自然出现。
+              ⚠️ 只在真实会话里给：草稿标签没有会话，面板会连到一个不存在的
+              `agent-browser:` 会话（只显示「浏览器未启动」）。发出第一条消息后标签指向
+              真实会话，按钮自然出现。
 
               ⚠️ ACP 会话不给：运行的是外部 Agent，`browser_*` 那套工具它根本用不上，
               这颗入口点开只会是个永远「未启动」的空面板。
@@ -713,58 +705,6 @@ export function ConversationTab({
                 </Tooltip>
               </div>
             )}
-            {/* 下面这些入口（文件 / 源码 / 面板）手机上收进「更多」菜单，
-                见下面 `MobilePanelMenu` —— 顶栏按钮一多就会把标题挤成两三个字。
-                （「打开工作区目录」是**项目级**动作，已搬到左侧栏项目行的「更多操作」，
-                见 `features/projects/OpenWorkspaceItems`。） */}
-            {hasDirectory && (
-              /* 桌面（`sm` 以上）才平铺。⚠️ 不能在 Button 自身写 `hidden sm:inline-flex`：
-                 Button 的 base class 里有 `inline-flex`，同层 display 工具类里
-                 `inline-flex` 会盖过 `hidden`，手机上照样露出来 —— 所以用外层
-                 `<div>` 做显隐（它没有冲突的 base class）。 */
-              <div className="hidden sm:flex">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn('h-7! w-8! p-0!', sideTab === 'files' && 'text-primary')}
-                      aria-label={tr('工作区文件')}
-                      disabled={!workspaceId}
-                      onClick={() => toggleSideTabOf(key, 'files')}
-                    >
-                      <Files className="size-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom">
-                    {sideTab === 'files' ? tr('收起面板') : tr('工作区文件')}
-                  </TooltipContent>
-                </Tooltip>
-              </div>
-            )}
-            {hasDirectory && (
-              <div className="hidden sm:flex">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn('h-7! w-8! p-0!', sideTab === 'git' && 'text-primary')}
-                      aria-label={tr('源代码管理')}
-                      disabled={!workspaceId}
-                      onClick={() => toggleSideTabOf(key, 'git')}
-                    >
-                      <GitBranch className="size-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom">
-                    {sideTab === 'git'
-                      ? tr('收起面板')
-                      : gitChangeCount > 0
-                        ? tr('源代码管理（{count} 处改动）', { count: gitChangeCount })
-                        : tr('源代码管理')}
-                  </TooltipContent>
-                </Tooltip>
-              </div>
-            )}
             {/* 「门」按钮：不挂新标签，只开关面板 */}
             {hasDirectory && tabKeys.length > 0 && (
               <div className="hidden sm:flex">
@@ -790,21 +730,16 @@ export function ConversationTab({
                 </Tooltip>
               </div>
             )}
-            {/* 手机顶栏的溢出菜单：文件 / 源码 / 面板三颗按钮收成一颗「更多」，
-                顶栏因此从七颗降到三颗（快捷功能 / 终端 / 更多），标题不再被挤没。
-                「工作区设置」已随弹窗一起移除 —— 管理快捷功能走 ⚡ 下拉最底部那项，
-                手机顶栏同样有那颗 ⚡，所以不需要在这里再开一个入口。 */}
+            {/* 手机顶栏的溢出菜单：预览 / 浏览器 / 面板开关。
+                文件与 Git 统一从 composer 下方状态条进入。 */}
             {hasDirectory && (
               <MobilePanelMenu
                 sideTab={sideTab}
-                gitChangeCount={gitChangeCount}
                 /* 一个标签都没挂出来时没有「展开面板」可展开 —— 桌面那颗按钮是这么判的，
                    菜单里的这一项也得跟着判，否则手机上会出现一颗点开没反应的开关。 */
                 canExpandPanel={tabKeys.length > 0}
                 showPreview={containerPreview}
                 showBrowser={!isRemote && !!conversationId && !isAcpConversation}
-                onToggleFiles={() => toggleSideTabOf(key, 'files')}
-                onToggleGit={() => toggleSideTabOf(key, 'git')}
                 onTogglePreview={() => toggleSideTabOf(key, 'preview')}
                 onToggleBrowser={() => toggleSideTabOf(key, 'browser')}
                 onTogglePanel={() => toggleSidePanelOf(key)}
@@ -831,7 +766,7 @@ export function ConversationTab({
                     <CollabWorkspace app={app} />
                   </div>
                   <div className="min-h-0 flex-1">
-                    <ChatPanel app={app} panelKey={key} />
+                    <ChatPanel app={app} panelKey={key} draftKey={conversationId ?? DRAFT_PANEL_SCOPE} />
                   </div>
                 </div>
               ) : (
@@ -882,13 +817,13 @@ export function ConversationTab({
                     )}
                     style={{ overflow: 'hidden' }}
                   >
-                    <ChatPanel app={app} panelKey={key} />
+                    <ChatPanel app={app} panelKey={key} draftKey={conversationId ?? DRAFT_PANEL_SCOPE} />
                   </ResizablePanel>
                 </ResizablePanelGroup>
               )}
             </div>
           ) : (
-            <ChatPanel app={app} panelKey={key} />
+            <ChatPanel app={app} panelKey={key} draftKey={conversationId ?? DRAFT_PANEL_SCOPE} />
           )}
         </div>
         <SidePanel
@@ -899,8 +834,9 @@ export function ConversationTab({
           onSelect={(k) => showSideTabOf(key, k)}
           onCollapse={() => collapseSidePanelOf(key)}
           containerWidth={contentWidth}
-          // 宽度按**会话**各记一份（见 lib/panel-width.ts）
-          scope={key}
+          // 宽度是**按会话**持久化的偏好（跨刷新要留着），所以作用域是会话 id；
+          // 草稿没有会话，记在常量作用域下（见 lib/panel-session.ts）
+          scope={conversationId ?? DRAFT_PANEL_SCOPE}
         />
       </div>
     </div>

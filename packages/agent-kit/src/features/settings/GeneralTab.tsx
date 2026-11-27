@@ -38,6 +38,7 @@ import {
 } from '@fizz/contracts'
 import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
+import { writeClipboard } from '@fizz/agent-kit/shared/lib/clipboard'
 import { APP_LANGUAGES } from '@fizz/contracts'
 import { toast } from 'sonner'
 import {
@@ -384,7 +385,7 @@ function RemoteAccessSection({ app }: { app: AgentApp }) {
         aria-label={tr('复制{label}', { label })}
         disabled={!text}
         onClick={() => {
-          void navigator.clipboard.writeText(text).then(
+          void writeClipboard(text).then(
             () => toast.success(tr('已复制{label}', { label })),
             () => toast.error(tr('复制失败，请手动选中'))
           )

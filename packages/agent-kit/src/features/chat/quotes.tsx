@@ -9,7 +9,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, Copy, Quote, X } from 'lucide-react'
+import { toast } from 'sonner'
 import { LiquidGlassSurface } from '@fizz/ui/liquid-glass'
+import { writeClipboard } from '@fizz/agent-kit/shared/lib/clipboard'
 import { nextQuoteId, type MessageQuote } from '@fizz/agent-kit/shared/lib/quotes'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 
@@ -467,15 +469,18 @@ export function MessageQuoteLayer({
   const copy = (): void => {
     const pending = pendingRef.current
     if (!pending) return
-    void navigator.clipboard.writeText(pending.text).then(() => {
-      setCopied(true)
-      ackTimerRef.current = window.setTimeout(() => {
-        ackTimerRef.current = 0
-        // 回执期间用户可能已经划到别处了：那就别动他现在的选区，只收掉勾
-        setCopied(false)
-        if (pendingRef.current?.text === pending.text) dismiss()
-      }, COPIED_MS)
-    })
+    void writeClipboard(pending.text).then(
+      () => {
+        setCopied(true)
+        ackTimerRef.current = window.setTimeout(() => {
+          ackTimerRef.current = 0
+          // 回执期间用户可能已经划到别处了：那就别动他现在的选区，只收掉勾
+          setCopied(false)
+          if (pendingRef.current?.text === pending.text) dismiss()
+        }, COPIED_MS)
+      },
+      () => toast.error('复制失败，请手动选中文字')
+    )
   }
 
   if (!at) return null

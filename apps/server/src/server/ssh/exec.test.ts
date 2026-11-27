@@ -188,4 +188,37 @@ describe('exec', () => {
     await expect(pending).resolves.toMatchObject({ reason: 'aborted' })
     expect(client.exec.mock.calls.some((call) => String(call[0]).includes('kill -TERM'))).toBe(true)
   })
+
+  it('后台任务取消必须等 KILL 和 pid 清理完成才回包', async () => {
+    vi.useFakeTimers()
+    const client = new FakeClient({ hang: true })
+    install(client)
+    const ctrl = new AbortController()
+    let finished = false
+    const pending = remoteExecService.exec('h-cleanup', 'sleep 999', {
+      timeoutMs: 0, signal: ctrl.signal, waitForCleanup: true
+    }).then((value) => { finished = true; return value })
+    await vi.advanceTimersByTimeAsync(0)
+    ctrl.abort()
+    await vi.advanceTimersByTimeAsync(1999)
+    expect(finished).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    await expect(pending).resolves.toMatchObject({ reason: 'aborted' })
+    const scripts = client.exec.mock.calls.map((call) => call[0])
+    expect(scripts.some((script) => script.includes('kill -KILL'))).toBe(true)
+    expect(scripts.at(-1)).toContain('rm -f')
+  })
+
+  it('长时间活跃的后台命令没有执行超时，也不被空闲连接回收', async () => {
+    vi.useFakeTimers()
+    const client = new FakeClient({ hang: true })
+    install(client)
+    const ctrl = new AbortController()
+    const pending = remoteExecService.exec('h-long', 'build', { timeoutMs: 0, signal: ctrl.signal, waitForCleanup: true })
+    await vi.advanceTimersByTimeAsync(30 * 60_000)
+    expect(client.dispose).not.toHaveBeenCalled()
+    ctrl.abort()
+    await vi.advanceTimersByTimeAsync(2000)
+    await expect(pending).resolves.toMatchObject({ reason: 'aborted' })
+  })
 })

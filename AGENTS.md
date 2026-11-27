@@ -86,7 +86,8 @@ Fizz 是自托管的 AI Agent 工作台：**所有能力跑在一个 Node 进程
 - 开外链只有一条路：`openExternal`（`@fizz/agent-client`），**别裸调 `window.open`**；协议白名单只在 `agent-host/src/external-link.ts` 一份。
 - **`IconTip` 不能直接套自带 `data-state` 的 Radix 原语**（`Switch` / `Checkbox` / `Toggle`）：`TooltipTrigger asChild` 会注 `data-state="closed"`，而这些原语把外部 props 排在自带 `data-state` 之后 → `checked` 被盖掉、`data-checked:` 规则全失效，控件整个透明只剩 tooltip（2026-11-01 定时任务那颗启停开关就是这么「消失」的）。包一层 `<span className="inline-flex">` 再套。
 - 往终端写多行输入，行分隔符必须是裸回车 `\r`（用 `toTerminalInput()`）：PowerShell 的 LF 会把行插到上方，顺序整个反过来。
-- **面板现场 / 终端开合有两份手抄实现**：`packages/agent-kit/src/shell/app-provider.tsx`（web / desktop）与 `apps/mobile/src/app/app-provider.tsx`（手机壳），不是共享 hook。`panelSessions` / `openTerminalTabOf` / `adoptDraftPanel` / 回收补算这类逻辑**两边一起改**，可复用的判断抽到 `shared/lib/panel-session.ts`（如 `resolveTerminalCwd` / `mergeDraftPanel`）。只改一份的后果就是「刷新后点终端打不开」修了三天还在（手机端一直跑旧逻辑）。
+- **标签 key 是身份，不是地址**：每颗主区域标签的 key 终生不变；对话标签是不透明的 `chat:<n>`，指向哪条会话记在 `panel-store` 的指向表（草稿 = `null`）。**别写 `openTab(会话 id)`**，对话标签只走 `openChatTab` / `openDraftTab` / `alignConversationTab`；「会话 id ↔ 标签 key」只用 `conversationOfTab` / `tabOfConversation` 互查。草稿发出第一条消息只改指向、不改 key，所以落位缓存 / 刷新代号 / 守卫 / 面板现场 / 终端登记表**一张都不需要迁移**——需要「交接」就说明哪里又把地址编进了身份。按会话持久化的东西（面板宽度、输入草稿存档）才用会话 id 当键，草稿用 `DRAFT_PANEL_SCOPE`。
+- **面板现场 / 终端开合有两份手抄实现**：`packages/agent-kit/src/shell/app-provider.tsx`（web / desktop）与 `apps/mobile/src/app/app-provider.tsx`（手机壳），不是共享 hook。`panelSessions`（按标签 key 存）/ `openTerminalTabOf` / 回收补算这类逻辑**两边一起改**，可复用的判断抽到 `shared/lib/panel-session.ts`（如 `resolveTerminalCwd`）与 `panel-store.ts`（`alignConversationTab` / `staleConversationTabs`，两份 `PanelView` 的同步 effect 都只调它们）。只改一份的后果就是「刷新后点终端打不开」修了三天还在（手机端一直跑旧逻辑）。
 - 主题必须在首帧前定好（preload + `index.html` 内联脚本），**回落规则在 6 处，改一处必须六处同步**。
 - 文案**中文为源**，英文缺失自动回落，新增文案两边都补。
 
@@ -95,7 +96,7 @@ Fizz 是自托管的 AI Agent 工作台：**所有能力跑在一个 Node 进程
 - **只用 vitest**（根 `devDependencies` 里的 `vitest`），不要引入 jest / mocha。命令：`npx vitest run`（**没有** npm script）；单文件 `npx vitest run packages/agent/src/estimate-tokens.test.ts`；watch 直接 `npx vitest`。若某次 `npx` 试图拉别的版本（会改 `package.json` / lock），改用 `./node_modules/.bin/vitest run`。
 - **位置与命名**：与被测模块**同目录**的 `xxx.test.ts`（`src/foo.ts` → `src/foo.test.ts`）。不建 `__tests__/`，也不在根上另起 `tests/`。
 - **显式导入**：`import { describe, expect, it, vi } from 'vitest'` —— 仓库**没开 globals**，不导入直接写 `describe(...)` 会 `ReferenceError`。断言用 `it`，不用 `test`。
-- **只有 node 环境**：没有 `vitest.config`、没有 jsdom / @testing-library。要测的 UI 逻辑**先抽成纯函数再测**（`useColorTheme.test.ts` 测的是 `clampThemeNumber` / `buildStyle`，不渲染 hook）。真要 DOM 环境得先加依赖与 setup 并说清代价，**别偷偷塞 `@vitest-environment jsdom`**。
+- **只有 node 环境**：没有 jsdom / @testing-library。要测的 UI 逻辑**先抽成纯函数再测**（`useColorTheme.test.ts` 测的是 `clampThemeNumber` / `buildStyle`，不渲染 hook）。真要 DOM 环境得先加依赖与 setup 并说清代价，**别偷偷塞 `@vitest-environment jsdom`**。
 - **测试文件进 typecheck**：各包 tsconfig 的 `include` 是 `src/**/*`，测试里的类型错误会让 `npm run typecheck` 直接红。
 - **mock 口径**：`vi.mock('./x', () => ({...}))`；只替一部分时 `vi.mock('ai', async (importOriginal) => ({ ...(await importOriginal<typeof import('ai')>()), streamText: vi.fn() }))`；有状态的假实现（假 SSE 流 / 假 fetch）在 `beforeEach` 里重建，别跨用例复用。
 - **边界**：不起服务器、不连真实网关、不 spawn 真实进程、不写用户目录 —— 一律 mock。

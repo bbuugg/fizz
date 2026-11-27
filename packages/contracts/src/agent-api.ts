@@ -45,7 +45,6 @@ import type {
 import type {
   AcpAgentConfig,
   AcpAgentType,
-  AcpAllowStrategy,
   AcpModelOption,
   AcpProtocolVersion,
 } from "@fizz/acp";
@@ -502,6 +501,13 @@ export const API_ROUTES = {
   workspaceGitAction: "/api/workspaces/:id/git/action",
   skills: "/api/skills",
   /**
+   * 单个技能的 SKILL.md 原文：GET ?id=<技能 id> → `SkillDocResult`。
+   *
+   * id 就是 SKILL.md 的绝对路径，但服务端**只认自己扫出来的那份**（请求里的路径不当
+   * 路径用），扫不到一律 404 —— 否则这条路等于开放任意文件读取。
+   */
+  skillsContent: "/api/skills/content",
+  /**
    * 子任务（subagent）偏好：GET / POST /api/subagents，body
    * `{ enabled?: SubagentId[]; modelConfigId?: string | null; modelId?: string | null }`
    * （POST 缺字段 = 保留原样；模型两项传 `null` = 清空）。**默认全关**，见 `SubagentSettings`。
@@ -699,17 +705,10 @@ export const API_ROUTES = {
    * 上传对话附件（图片 / PDF）：POST /api/uploads
    *
    * body `UploadInput`（JSON + base64，**不是 multipart**——desktop 的 IPC 桥 body 只支持
-   * 字符串，两端走同一条协议），响应 `UploadResult`。返回的 `url` 是对外可访问的地址
-   * （local 适配器为相对 `/api/uploads/<uuid>.<ext>`，由 GET 路由公开服务——`<img>` 带
-   * 不了鉴权头）。存储后端由 `FIZZ_UPLOAD_BACKEND` 选择的 UploadAdapter 决定。
+   * 字符串，两端走同一条协议），响应 `UploadResult`。返回的相对 `url` 只作本地预览
+   * 和历史引用，交给模型时统一读回字节并内联 base64。
    */
   upload: "/api/uploads",
-  /**
-   * 可用上传源清单：GET /api/uploads/providers?workspaceId=xxx。
-   * ⚠️ 必须排在上面的 `upload` 之后读（前缀关系），但两者是不同路径 —— 静态段
-   * `providers` 在 Hono 里优先于 `/api/uploads/:name`，不会被那个动态路由吞掉。
-   */
-  uploadProviders: "/api/uploads/providers",
   /** 发一轮对话，响应是 SSE 流 */
   chat: "/api/chat",
   /**
@@ -1970,7 +1969,14 @@ export interface ClientToolSpec {
   mutating?: boolean;
 }
 
-// ---------- 项目管理助手 ----------
+// ---------- AI 助手 ----------
+
+/** 终端助手的远端执行目标；只传已保存的主机 id，凭据留在服务端。 */
+export interface AssistantRemoteTarget {
+  hostId: string;
+  /** 远端 POSIX 绝对目录；缺省使用 SSH 登录目录。 */
+  cwd?: string;
+}
 
 /** 发一句话给项目助手(POST /api/assistant;会话 id 来自先 POST conversations 新建) */
 export interface AssistantSendInput {
@@ -2002,19 +2008,19 @@ export interface AssistantSendInput {
    *
    * - `'project'`(缺省):项目管理助手。挂 `buildProjectTools`(建 / 删项目、worktree、
    *   定时任务、插件、建会话),**不挂任何终端工具**;
-   * - `'terminal'`:终端标签内嵌的助手。只挂客户端带上来的终端工具(执行命令 / 读输出 /
-   *   发按键),**不挂项目管理工具** —— 它绑定的是某一条终端,「跨项目建目录 / 删项目」
-   *   在这条会话里没有语境。
+   * - `'terminal'`: 绑定 remoteTarget 的 SSH 助手，文件走 SFTP、命令走独立 SSH exec；
+   *   不挂项目管理工具，也不操作用户的交互式终端。
    *
    * 刻意做成**显式字段**而不是「有 clientTools 就当作 terminal」:两组工具的取舍是
    * 产品语义(面板挂在哪),不该由一个可缺省的数组长度隐式决定。
    */
   scope?: "project" | "terminal";
+  /** terminal 作用域必填；每轮开始时固定，不跟随焦点标签变化。 */
+  remoteTarget?: AssistantRemoteTarget;
   /**
    * 随请求携带的客户端工具(见 `ClientToolSpec`)。
    *
-   * **只有 `scope: 'terminal'` 时会装进这一轮** —— 客户端把那个终端的工具带上来,
-   * 模型于是能直接操作用户眼前这台终端;`scope: 'project'` 时一律忽略。
+   * 旧客户端兼容字段；助手不再装配客户端终端工具。
    */
   clientTools?: ClientToolSpec[];
   /**
@@ -2023,10 +2029,8 @@ export interface AssistantSendInput {
    * 缺省 `confirm` —— 助手面板是「一句话就让 agent 动手」的入口，默认裸跑不合适。
    *
    * 落地范围**随 scope 不同**：
-   * - `terminal`：闸在 `buildClientToolset`（按客户端工具的 `mutating` 声明）—— 三档全生效；
-   * - `project`：只有 `readonly` 生效（拒绝全部改动），`confirm` / `full` 一律弹审批 ——
-   *   项目工具的作用域在单个工作区之外，且「一次授权、长期自动执行」，见
-   *   `packages/tools/src/project-tools.ts` 的 `guardMutation`，别按这里的档位去放松它。
+   * - `terminal`：远端 read / glob / grep 只读；write / edit / bash 走 guardWrite；
+   * - `project`：配置改动走 guardMutation。两者都是 readonly 拒绝、confirm 审批、full 放行。
    */
   permissionMode?: AiPermissionMode;
   /**
@@ -2361,6 +2365,14 @@ export interface ConversationTargetInput {
   browserSettings?: BrowserSettings | null;
 }
 
+/** ACP 空闲换模型后的完整会话档位；null 明确清除，缺省表示本次未同步。 */
+export interface ConversationTargetResult {
+  acpSessionState?: {
+    modes: AcpModesState | null;
+    thoughtLevel: AcpThoughtLevelState | null;
+  };
+}
+
 /**
  * 覆盖某个会话的待发送队列：PATCH /api/conversations/:id/queue
  *
@@ -2435,18 +2447,13 @@ export type AcpAgentInput = {
   /** 启动命令（会 spawn 成子进程，工作目录是会话所属工作区） */
   command: string;
   args?: string[];
-  /** 风格（见 `AcpAgentType`）：决定模式 UI 的语义与位置；不传 = 沿用原有 */
+  /** @deprecated 兼容旧客户端的适配身份；不影响模式 / 思考档 UI。不传保留旧值。 */
   type?: AcpAgentType;
   /**
    * 新增时选的预设 id（`ACP_AGENT_PRESETS[].id`）。图标等「身份」信息认它，
    * 不认命令参数 —— 之后改命令 / 参数仍然是同一个 agent。不传 = 沿用原有。
    */
   preset?: string;
-  /**
-   * 「完全放行」时怎么答复权限请求（见 `AcpAllowStrategy`）；不传 = 沿用原有，
-   * 新建缺省 `once`（只允许一次，下次仍会问）。
-   */
-  allowStrategy?: AcpAllowStrategy;
   /**
    * 走哪一版 ACP 协议：`v1`（stable，缺省）/ `v2`（draft）。不传 = 沿用原有，
    * 新建缺省 `v1`。v2 仍是 draft，命令要支持 `session/resume` 才能恢复既有会话。
@@ -2668,7 +2675,7 @@ export type {
 };
 
 // ---------------------------------------------------------------------------
-// 附件上传（图片 / PDF）：客户端与共享的校验 / 拼装规则（服务端在 UploadAdapter 之
+// 附件上传（图片 / 文档）：客户端与共享的校验 / 拼装规则（服务端在 UploadAdapter 之
 // 前也用同一份白名单与 parts 拼装——规则只有一份，两端才不会漂）
 // ---------------------------------------------------------------------------
 
@@ -2680,13 +2687,42 @@ export const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
  * SVG 可以内嵌 `<script>`，而 GET 路由在公开白名单里（`<img>` 带不了鉴权头），
  * 直出 SVG 等于自己开 XSS 面。
  */
-export const UPLOAD_ALLOWED_MIME: ReadonlySet<string> = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "image/gif",
-  "application/pdf",
-]);
+export const UPLOAD_EXT_BY_MIME: Readonly<Record<string, string>> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "application/pdf": "pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "text/plain": "txt",
+  "text/markdown": "md",
+  "text/csv": "csv",
+  "application/json": "json",
+};
+
+export const UPLOAD_ALLOWED_MIME: ReadonlySet<string> = new Set(Object.keys(UPLOAD_EXT_BY_MIME));
+export const UPLOAD_IMAGE_ACCEPT = ".png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif";
+export const UPLOAD_DOCUMENT_ACCEPT = ".pdf,.docx,.txt,.md,.markdown,.csv,.json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown,text/csv,application/json";
+
+/** 浏览器可能不给 MIME，或把 DOCX / CSV 标成 ZIP / Excel；只按已知扩展名兜底。 */
+export function normalizeUploadMediaType(name: string, mediaType: unknown): string | null {
+  const mime = typeof mediaType === "string" ? mediaType.split(";")[0].trim().toLowerCase() : "";
+  const dot = name.lastIndexOf(".");
+  const ext = dot < 0 ? "" : name.slice(dot + 1).toLowerCase();
+  const byExtension = ext === "jpeg" ? "image/jpeg" : ext === "markdown" ? "text/markdown"
+    : Object.entries(UPLOAD_EXT_BY_MIME).find(([, value]) => value === ext)?.[0];
+  if (mime === "text/x-markdown" && (ext === "md" || ext === "markdown")) return "text/markdown";
+  if (mime === "application/vnd.ms-excel" && ext === "csv") return "text/csv";
+  if ((!mime || mime === "application/octet-stream" || (mime === "application/zip" && ext === "docx")) && byExtension) return byExtension;
+  if (mime === "text/plain" && byExtension && ["text/markdown", "text/csv", "application/json"].includes(byExtension)) return byExtension;
+  return isUploadAllowedMime(mime) ? mime : null;
+}
+
+/** 这些文档先提取文字；PDF 仍使用模型原生文件输入。 */
+export function isTextDocumentMime(mediaType: string): boolean {
+  return ["text/plain", "text/markdown", "text/csv", "application/json",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"].includes(mediaType);
+}
 
 export function isUploadAllowedMime(mediaType: string): boolean {
   return UPLOAD_ALLOWED_MIME.has(mediaType);
@@ -2699,18 +2735,6 @@ export interface UploadInput {
   mediaType: string;
   /** 文件字节流的 base64 编码 */
   dataBase64: string;
-  /**
-   * 用哪个上传源；缺省 = 内置存储（`local`）。
-   *
-   * 上传源可以是插件注册的（见 `GET /api/uploads/providers`）：`ctx.uploads.register` 之后，
-   * 字节由插件的 `put` 落到它自己的存储（图床 / S3 / 对象存储…），交回来的就是一条 URL。
-   */
-  provider?: string;
-  /**
-   * 这次上传属于哪个项目（可选）：带了，该项目的**项目级**插件也能提供上传源；
-   * 不带就只有**全局（用户级）**插件那一份 —— 上传允许发生在还没选项目的场景。
-   */
-  workspaceId?: string;
 }
 
 /** POST /api/uploads 的响应体；`url` 直接填进消息的 files 引用 */
@@ -2719,31 +2743,8 @@ export interface UploadResult {
   name: string;
   mediaType: string;
   size: number;
-  /** 实际使用的上传源 id（回填进附件引用，历史回显时能看到它是谁传的） */
-  provider?: string;
-}
-
-/** GET /api/uploads/providers 里的一个上传源（前端选择器 + 本地预校验用） */
-export interface UploadProviderView {
-  id: string;
-  /** 选择器里的显示名 */
-  title: string;
-  /** 该上传源接受的 MIME 精确集合（前端按所有可选源的并集放宽本地校验） */
-  acceptMime: string[];
-  maxBytes: number;
-  /** false = 不出现在选择器里（插件只想被显式指定） */
-  selectable: boolean;
-  /** 缺省上传源（不传 `provider` 时用它） */
-  isDefault: boolean;
-  /** builtin = 内置存储；plugin = 插件注册的 */
-  source: "builtin" | "plugin";
-  /** 人可读来源（插件名 / 'builtin'） */
-  sourceName: string;
-}
-
-/** GET /api/uploads/providers 的响应 */
-export interface UploadProvidersResult {
-  providers: UploadProviderView[];
+  /** 文档提取限制或截断说明，上传后在输入区提示。 */
+  warnings?: string[];
 }
 
 // ---------- 插件界面（`ctx.ui` / 清单注册的面）----------
@@ -3338,14 +3339,11 @@ export function buildUserParts(
   files?: UploadFileRef[],
 ): AgentMessagePart[] {
   return [
-    // `provider` 一并落盘（缺省不写这个键，老数据的形状不变）——历史回显时能看出这条
-    // 附件是内置存储还是某个插件上传源传的
     ...(files ?? []).map((f) => ({
       type: "file" as const,
       url: f.url,
       mediaType: f.mediaType,
       name: f.name,
-      ...(f.provider ? { provider: f.provider } : {}),
     })),
     { type: "text" as const, text },
   ];

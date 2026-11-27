@@ -1,16 +1,16 @@
 /**
- * acp 会话的权限档位（ACP Session Modes 规范：agent 在 session/new / load 里广告
- * `modes.availableModes`，客户端用 `session/set_mode` 切换）。
+ * ACP 会话模式：优先 configOptions 的 mode，兼容旧 Session Modes，不解释为权限档。
  *
  * GET  /api/acp/agents/:id/mode?conversationId=<会话 id>   → 查询档位与当前档
  * POST /api/acp/agents/:id/mode  { conversationId, modeId } → 切换档位
  *
- * 只操作**已激活**的会话（进程活着），不起探针进程；agent 没广告档位时
- * GET 返回 `supported: false`，界面据此隐藏档位切换 pill。
+ * GET 只读已激活会话，不起探针；POST 可恢复所选模型后切换模式。
+ * Agent 未提供模式时 GET 返回 `supported: false`。
  */
 import { getAcpSessionModes, getAcpSessionSnapshot, setAcpSessionMode } from '@fizz/acp'
 import { domain } from '@/lib/server/state'
 import { acpMcpServers } from '@/lib/server/acp-mcp'
+import { refreshAcpSessionState } from '@/lib/server/acp-session-state'
 import { jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 
 export async function GET(
@@ -46,6 +46,7 @@ export async function POST(
           agent,
           workspacePath: workspace.path,
           mcpServers: acpMcpServers(domain.listMcpServers(), conversation.mcpServerIds),
+          ...(conversation.modelId ? { modelId: conversation.modelId } : {}),
           ...(conversation.acpSessionId ? { loadSessionId: conversation.acpSessionId } : {})
         }
       : undefined
@@ -54,8 +55,8 @@ export async function POST(
     // 持久化用户选的档：清单以 agent 当前广告的为准，`current` 记用户意图（下一轮下发 / 刷新后仍在）
     const snap = getAcpSessionSnapshot(id, conversationId)
     const prev = domain.getConversation(conversationId)
-    // configId 有值 = 这条模式走 configOptions 通道（opencode），必须一起持久化
-    const configId = snap?.modes?.configId ?? prev?.acpModes?.configId
+    // 快照已知时连同通道一起采用，不能把旧 configId 补回当前的 Session Modes。
+    const configId = snap ? snap.modes?.configId : prev?.acpModes?.configId
     domain.setAcpSessionState(conversationId, {
       acpModes: {
         available: snap?.modes?.available ?? prev?.acpModes?.available ?? [],
@@ -63,6 +64,7 @@ export async function POST(
         ...(configId ? { configId } : {})
       }
     })
+    refreshAcpSessionState(conversationId, id)
   }
   return Response.json(result)
 }

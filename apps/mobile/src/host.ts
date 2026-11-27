@@ -19,6 +19,7 @@ import { normalizeServerBase, type Connection } from '@fizz/agent-client/api'
 import { getServerBaseOverride, type AgentHost } from '@fizz/agent-client/host'
 import { isNativeShell } from '@fizz/agent-kit/shared/lib/native-notify'
 import { mobileAppUpdate } from '@/update/mobile-update'
+import { getLocalRuntimeConnection, hasLocalRuntime, setLocalRuntimeConnection } from './runtime/bridge'
 
 /**
  * 语音输入能力：`SpeechRecognition` 构造器存在、且页面处于安全上下文时才算有。
@@ -55,6 +56,7 @@ const ACTIVE_CONVERSATION_KEY = 'fizz.mobile.activeConversationId'
 const TERMINAL_FONT_KEY = 'fizz.mobile.terminalFontSize'
 
 function loadConnection(): Connection | null {
+  if (hasLocalRuntime) return getLocalRuntimeConnection()
   try {
     const raw = localStorage.getItem(CONNECTION_KEY)
     if (!raw) return null
@@ -77,6 +79,10 @@ function loadConnection(): Connection | null {
 export const mobileHost: AgentHost = {
   loadConnection,
   saveConnection: (connection) => {
+    if (hasLocalRuntime) {
+      setLocalRuntimeConnection(connection)
+      return
+    }
     if (!connection) localStorage.removeItem(CONNECTION_KEY)
     else localStorage.setItem(CONNECTION_KEY, JSON.stringify(connection))
   },
@@ -140,8 +146,8 @@ export const mobileHost: AgentHost = {
    * （`@fizz/agent-kit` 的 `shared/lib/native-notify.ts`，靠原生桥注入的 `window.Capacitor`
    * 自己识别，不需要宿主表态）。Web Notification API 在安卓 WebView 里根本不存在。
    */
-  showConnectionGate: true,
-  canDisconnect: true,
+  showConnectionGate: !hasLocalRuntime,
+  canDisconnect: !hasLocalRuntime,
   title: 'Fizz',
   /*
    * `platform` 只有 web / desktop 两档，壳按 **web** 报：
@@ -154,7 +160,7 @@ export const mobileHost: AgentHost = {
     nativeTitleBar: false,
     /** 运行时探测：APK 的 WebView 探出来是 false，手机浏览器里的 hosted `/m/` 是 true */
     voice: detectVoiceInput(),
-    localServer: false,
+    localServer: hasLocalRuntime,
     localMediaFetch: false,
     webview: false
   },

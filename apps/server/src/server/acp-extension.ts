@@ -65,11 +65,11 @@ function resolveExtensionSource(): string | null {
 /**
  * 这个外部 agent 是不是 pi —— 决定要不要给它装 pi 专属资源。
  *
- * 优先看用户手选的**类型**（设置 → 外部 Agent）；类型常被留成「通用」，所以再按命令兜一层
- * （`pi-acp`、`npx -y pi-acp` 都算）。
+ * 新配置认稳定的预设身份；兼容旧类型和没有预设的启动命令（包括 npx -y pi-acp）。
+ * 这只是内部资源适配，不参与模式或思考档的能力判断。
  */
 export function isPiAcpAgent(agent: AcpAgentConfig): boolean {
-  if (agent.type === 'pi') return true
+  if (agent.preset === 'pi' || agent.type === 'pi') return true
   return `${agent.command} ${agent.args.join(' ')}`.toLowerCase().includes('pi-acp')
 }
 

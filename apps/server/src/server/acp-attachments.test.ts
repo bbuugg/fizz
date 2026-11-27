@@ -2,7 +2,7 @@
  * ACP 会话的附件读取（`acpPromptAttachments`）。
  *
  * 这条测试在防的回归：
- * 1. **读不到就当没发**：非图片 / 插件源（只回 URL，本机没有字节）/ 读取失败 / 超限，
+ * 1. **读不到就当没发**：非图片 / 历史外部地址 / 读取失败 / 空文件 / 超限，
  *    必须落成一句说明交给 agent，而不是静默消失 —— 用户会以为图发出去了；
  * 2. 上限形同虚设：单张 5MB、整轮 10MB，超了就跳过并说明；
  * 3. 拿假媒体类型往上顶：以 adapter 回的 mimeType 为准（存储层才知道真实类型）。
@@ -16,8 +16,8 @@ import { acpPromptAttachments } from './acp-attachments'
 const get = vi.fn()
 
 vi.mock('./upload/adapters', () => ({
-  // 内置存储：给 get；插件源（url 带 `plugin`）：没有 get，只有 URL
-  adapterFor: (url: string) => (url.includes('plugin') ? {} : { get }),
+  // 只有内置相对引用有本地读取器。
+  adapterFor: (url: string) => (url.startsWith('/api/uploads/') ? { get } : undefined),
 }))
 
 const file = (over: Partial<UploadFileRef> = {}): UploadFileRef => ({
@@ -34,6 +34,24 @@ beforeEach(() => {
 })
 
 describe('acpPromptAttachments', () => {
+  it('文本文档作为具名正文交给 ACP，不要求 agent 支持原生 file 块', async () => {
+    get.mockResolvedValue({ mediaType: 'text/plain', bytes: Buffer.from('文档内容') })
+    const out = await acpPromptAttachments([file({ name: 'notes.txt', mediaType: 'text/plain', url: '/api/uploads/notes.txt' })])
+    expect(out.attachments).toEqual([])
+    expect(out.note).toContain('【文档 "notes.txt"】')
+    expect(out.note).toContain('文档内容')
+  })
+
+  it('多个文档受整轮文字上限保护，超限时附说明', async () => {
+    get.mockResolvedValue({ mediaType: 'text/plain', bytes: Buffer.from('文'.repeat(32_000)) })
+    const out = await acpPromptAttachments(Array.from({ length: 4 }, (_, i) => file({
+      name: `${i}.txt`, mediaType: 'text/plain', url: `/api/uploads/${i}.txt`
+    })))
+    expect(out.note).toContain('【文档 "2.txt"】')
+    expect(out.note).not.toContain('【文档 "3.txt"】')
+    expect(out.note).toContain('文档文字或附件总量上限')
+  })
+
   it('图片读成字节，mimeType 以存储层回的为准', async () => {
     get.mockResolvedValue({ mediaType: 'image/jpeg', bytes: bytes(1024) })
     const out = await acpPromptAttachments([file()])
@@ -54,16 +72,26 @@ describe('acpPromptAttachments', () => {
     expect(get).not.toHaveBeenCalled()
   })
 
-  it('插件源保存的附件取不到字节 → 说明里点名', async () => {
+  it('历史外部地址取不到本地字节，附说明且不下载', async () => {
     const out = await acpPromptAttachments([file({ url: 'https://plugin.example/x.png' })])
     expect(out.attachments).toEqual([])
-    expect(out.note).toContain('插件源')
+    expect(out.note).toContain('本地取不到内容')
+    expect(get).not.toHaveBeenCalled()
   })
 
   it('读取抛错也不炸这一轮', async () => {
     get.mockRejectedValue(new Error('EIO'))
     const out = await acpPromptAttachments([file()])
     expect(out.attachments).toEqual([])
+    expect(out.note).toContain('读取失败')
+  })
+
+  it('空附件不发送，附说明且不影响后续有效图片', async () => {
+    get.mockResolvedValueOnce({ mediaType: 'image/png', bytes: bytes(0) })
+      .mockResolvedValueOnce({ mediaType: 'image/png', bytes: bytes(3) })
+    const out = await acpPromptAttachments([file({ name: 'empty.png' }), file({ name: 'valid.png' })])
+    expect(out.attachments.map((attachment) => attachment.name)).toEqual(['valid.png'])
+    expect(out.note).toContain('empty.png')
     expect(out.note).toContain('读取失败')
   })
 

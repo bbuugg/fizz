@@ -294,10 +294,11 @@ export function WorkspacePicker({
     if (lastTarget.current !== null && Math.abs(lastTarget.current - target) < 0.01) return
     lastTarget.current = target
     /*
-      选工作区会让**整块新对话页重挂** —— 草稿面板的 key 是 `draft:<工作区>`
-      （`panel-session.ts` 的 `draftPanelKey`），ChatPanel 拿它当 Provider 的 key。
-      所以这里不能把「首次挂载」当成「冷启动直接落定」：挂载本身往往就是刚选完工作区，
-      弹簧从空位长度（`spring` 的初始 width）弹到名字宽度，动画才会出现。
+      量宽的时机：这里不能把「首次挂载」当成「冷启动直接落定」—— 挂载本身往往就是刚进
+      新对话页 / 刚加完项目，弹簧从空位长度（`spring` 的初始 width）弹到名字宽度，动画
+      才会出现。
+      （草稿标签的 key 是稳定的身份，换工作区**不会**重挂新对话页：换项目只改面板现场的
+      归属，终端 / 输入框内容都留着，见 `app-provider` 的 retarget effect。）
     */
     springTo(target, false)
   }

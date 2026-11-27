@@ -50,6 +50,13 @@ beforeEach(() => {
   vi.stubGlobal('localStorage', storage)
 })
 
+it('SSH 目标与会话一起落盘恢复，旧存档不凭空绑定目标', () => {
+  saveAssistantConversation('ssh', turn('日志'), 100, { hostId: 'h1', cwd: '/var/log' })
+  saveAssistantConversation('old', turn('项目'), 101)
+  expect(loadAssistantStore().conversations.ssh.remoteTarget).toEqual({ hostId: 'h1', cwd: '/var/log' })
+  expect(loadAssistantStore().conversations.old.remoteTarget).toBeUndefined()
+})
+
 afterEach(() => {
   vi.unstubAllGlobals()
 })

@@ -190,19 +190,8 @@ export interface RunAgentOptions {
    */
   pollSteer?: () => Promise<AgentChatMessage | null>
   /**
-   * 附件 URL 的绝对化策略（历史里 file part 的 url 可能是相对路径）：提交模型前
-   * 对每个附件 url 调一次，返回给 provider 的最终地址。server 端注入
-   * `UploadAdapter.resolveModelUrl`（`FIZZ_PUBLIC_BASE_URL ?? 请求 origin`）；
-   * 不传 = 原样使用（相对地址由 localhost base 兜底，见 model-messages.ts）。
-   */
-  resolveFileUrl?: (url: string) => string
-  /**
-   * 附件投递策略（`resolveFileUrl` 的上一级）：决定一条附件是**给 URL**、
-   * **内联字节**，还是**不发**（附一行说明）。
-   *
-   * server 端注入 `createAttachmentResolver`（`upload/attachments.ts`）：没有公网地址时
-   * 改为内联 base64，云端 provider 不必回连 `127.0.0.1`。不传 = 全部按 URL 直传，
-   * 行为与从前一致。
+   * 附件读取策略：统一以内联 base64 发送，读取失败时附一行说明。
+   * server 注入 `createAttachmentResolver`；容器使用宿主已内联的 data URL。
    */
   resolveAttachment?: ResolveAttachment
   /**
@@ -1411,7 +1400,6 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
           )
         }
         messages = await toModelMessages(compacted.history, {
-          resolveFileUrl: opts.resolveFileUrl,
           resolveAttachment: opts.resolveAttachment,
           inlineBudget,
           allowImages: modelSettings.imageInput
@@ -1716,7 +1704,6 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
            */
           const steerAttachments = await attachmentParts(steerFiles, {
             resolveAttachment: opts.resolveAttachment,
-            resolveFileUrl: opts.resolveFileUrl,
             budget: inlineBudget,
             // 插话会与完整历史一起进入下一次请求，历史已发过的同 URL 附件不再重复内联。
             omitCounted: true

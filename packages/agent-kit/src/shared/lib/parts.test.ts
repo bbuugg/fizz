@@ -40,12 +40,12 @@ describe('toolCardHead · 类别随抬头一起出去', () => {
 /**
  * 待办清单工具在 2026-11 由 `todo` 改名 `todowrite`（见 `tools/todowrite.ts`）。
  *
- * 老会话历史里落的还是 `todo`：显示层两个名字都得认，否则翻旧对话时那一张清单会
- * 掉进「入参 / 结果 JSON」的兜底卡（用户报的「清单变 JSON 了」就是这个）。
+ * 标签只认当前注册名；已移除的旧名与其他未知工具一样按原名兜底。
  */
-describe('待办清单工具名 · 新旧两个名字都认', () => {
-  it('旧名 todo 仍有中文标签', () => {
-    expect(toolLabel('todo')).toBe(toolLabel('todowrite'))
+describe('待办清单工具名 · 当前注册名与未知名兜底', () => {
+  it('todowrite 使用中文标签，不恢复旧名 todo 的标签别名', () => {
+    expect(toolLabel('todowrite')).toBe('更新待办清单')
+    expect(toolLabel('todo')).toBe('todo')
   })
 })
 

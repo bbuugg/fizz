@@ -169,6 +169,8 @@ export interface ZipReadOptions {
   maxTotalBytes?: number
   /** 单个条目解压后上限。默认 32MB */
   maxFileBytes?: number
+  /** 只解压选中的条目（如 DOCX 正文），其余内容不分配解压内存。 */
+  include?: (name: string) => boolean
 }
 
 /**
@@ -215,9 +217,12 @@ export function readZip(buffer: Buffer, options: ZipReadOptions = {}): ZipOutput
     const commentLen = buffer.readUInt16LE(cursor + 32)
     const localOffset = buffer.readUInt32LE(cursor + 42)
     const name = buffer.toString('utf8', cursor + 46, cursor + 46 + nameLen)
+    if (cursor + 46 + nameLen + extraLen + commentLen > buffer.length) {
+      throw new Error('zip 目录已损坏')
+    }
 
     // 目录条目（以 '/' 结尾）不产出文件
-    if (name.endsWith('/')) {
+    if (name.endsWith('/') || (options.include && !options.include(name))) {
       cursor += 46 + nameLen + extraLen + commentLen
       continue
     }
@@ -227,6 +232,7 @@ export function readZip(buffer: Buffer, options: ZipReadOptions = {}): ZipOutput
     if (method !== 0 && method !== 8) {
       throw new Error(`压缩包用了不支持的压缩方式（${method}，只支持 store / deflate）`)
     }
+    if (buffer.readUInt16LE(cursor + 8) & 1) throw new Error('不支持加密的压缩包')
 
     // 目录条目里的 extra 长度可能与本地头不一致，数据起点一律按**本地头**算
     if (localOffset + 30 > buffer.length || buffer.readUInt32LE(localOffset) !== 0x04034b50) {
@@ -237,7 +243,12 @@ export function readZip(buffer: Buffer, options: ZipReadOptions = {}): ZipOutput
     const start = localOffset + 30 + localNameLen + localExtraLen
     if (start + compressedSize > buffer.length) throw new Error('zip 数据超出文件范围')
     const raw = buffer.subarray(start, start + compressedSize)
-    const data = method === 8 ? inflateRawSync(raw) : Buffer.from(raw)
+    // 不信任目录里声明的解压大小：实际解压过程也必须有硬上限。
+    const limit = Math.min(maxFileBytes, maxTotalBytes - totalBytes)
+    if (method === 0 && raw.length > limit) throw new Error('zip 解压大小不合法')
+    const data = method === 8 ? inflateRawSync(raw, { maxOutputLength: Math.max(1, limit) }) : Buffer.from(raw)
+    if (data.length > limit || data.length !== uncompressedSize) throw new Error('zip 解压大小不合法')
+    if (crc32(data) !== buffer.readUInt32LE(cursor + 16)) throw new Error('zip 文件校验失败')
     totalBytes += data.length
     files.push({ name, data })
 

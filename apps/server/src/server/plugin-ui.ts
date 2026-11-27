@@ -5,7 +5,7 @@
  *
  * 插件声明的三个面（`ctx.ui.activityBar` / `sider` / `view`）都带 `render` / `onAction`
  * 回调，那些是**插件自己的闭包**（里面是它的 config、凭据、连接）。长驻 context 要解决
- * 「文件改了 / 设置改了就重建」的缓存失效问题（上传源那套 registry 就是这么做的），
+ * 「文件改了 / 设置改了就重建」的缓存失效问题，
  * 而这里**每次请求现挂一次**就够了：
  *
  * - 挂载只是「跑一遍 apply + 读注册表」，jiti 的模块缓存在进程级（热重载照样生效）；
@@ -27,7 +27,6 @@ import {
   RpcService,
   ToolsService,
   UiService,
-  UploadsService,
   ModelsService,
   createAppContext
 } from '@fizz/plugin'
@@ -276,7 +275,6 @@ async function mountDescriptor(descriptor: PluginDescriptor, workspacePath?: str
   ctx.set('hooks', new HooksService(ctx))
   const ui = new UiService(ctx)
   ctx.set('ui', ui)
-  ctx.set('uploads', new UploadsService(ctx))
   ctx.set('models', new ModelsService(ctx))
   const rpc = new RpcService(ctx)
   ctx.set('rpc', rpc)
@@ -519,7 +517,7 @@ async function withTimeout<T>(
 /**
  * 列出当前可见插件注册的所有界面。
  *
- * 只列**已启用**的（停用的插件不该出现在插件列表里，与上传源同一取舍）。
+ * 只列**已启用**的（停用的插件不该出现在界面清单里）。
  * 单个插件加载失败只进 `errors`，不影响其它插件 —— 界面清单挂掉比它慢更糟。
  */
 export async function listPluginSurfaces(opts: {
@@ -542,7 +540,6 @@ export async function listPluginSurfaces(opts: {
     ctx.set('hooks', new HooksService(ctx))
     const ui = new UiService(ctx)
     ctx.set('ui', ui)
-    ctx.set('uploads', new UploadsService(ctx))
     ctx.set('models', new ModelsService(ctx))
     ctx.set('rpc', new RpcService(ctx))
     try {

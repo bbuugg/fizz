@@ -56,10 +56,9 @@ import {
 import {
   activeTabKey,
   cycleTab,
-  openTab,
+  openDraftTab,
   usePanelState,
 } from "@fizz/agent-kit/shared/lib/panel-store";
-import { NEW_TAB_KEY } from "@fizz/agent-kit/shared/lib/panel-tabs";
 import type { NewInWorkspaceKind } from "@fizz/agent-kit/shared/lib/new-in-workspace";
 import { CommandPalette } from "@fizz/agent-kit/shell/CommandPalette";
 import { AppUpdateNotifier } from "@fizz/agent-kit/shell/AppUpdateNotifier";
@@ -186,8 +185,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       if (detail?.action === "open-workspace") {
         current.selectWorkspace(detail.workspaceId, false);
         current.openConversation(null);
-        // 这是用户/工具明确打开工作区，不是冷启动的空态：此时才创建新对话占位标签。
-        openTab(NEW_TAB_KEY);
+        // 这是用户/工具明确打开工作区，不是冷启动的空态：此时才创建新对话草稿标签。
+        openDraftTab();
         return;
       }
       if (detail?.action === "conversation-created") {
@@ -257,7 +256,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     (workspaceId: string | null): void => {
       app.selectWorkspace(workspaceId, false);
       app.openConversation(null);
-      openTab(NEW_TAB_KEY);
+      openDraftTab();
     },
     [app],
   );
@@ -450,7 +449,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         openSettings();
         break;
       case "toggle-sidebar-alt":
-        // 侧边栏唯一快捷键（Alt+1）；手机版侧栏是覆盖抽屉
+        // 侧边栏唯一快捷键（默认 Ctrl/Cmd+B，可在设置中修改）；手机版侧栏是覆盖抽屉
         setMobileSidebarOpen(!mobileSidebarOpen);
         break;
       case "toggle-terminal":
@@ -683,10 +682,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         */}
               <Sidebar
                 onOpenChatView={() => {
-                  // 项目行点击 / 新项目是**显式**开始新对话：创建占位标签并切视图。
+                  // 项目行点击 / 新项目是**显式**开始新对话：开草稿标签并切视图。
                   // ⚠️ 零标签时 PanelView 自己也会补一张草稿标签（见那边的 useLayoutEffect），
-                  // 这里仍要显式 openTab 才切得过去（单标签模式下它是「替换」）。
-                  openTab(NEW_TAB_KEY);
+                  // 这里仍要显式 openDraftTab 才切得过去（单标签模式下它是「替换」）。
+                  openDraftTab();
                 }}
                 onNewInWorkspace={(
                   kind: NewInWorkspaceKind,

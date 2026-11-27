@@ -1,96 +1,57 @@
-/**
- * 附件投递判据：什么时候该用 URL、什么时候必须内联、什么时候干脆不发。
- *
- * 这一层的错判只有两种后果，都很隐蔽：
- *
- * 1. **该内联却给了 URL** → 桌面端 / 局域网用户的图在云端 provider 那边拉不到，
- *    图片静默丢失（原来的 bug，也是这次改动的起因）。
- * 2. **该给 URL 却内联** → 配了反代 / 隧道的部署白传一遍 base64，请求体 ×4/3。
- */
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createAttachmentResolver, isPubliclyFetchable } from './attachments'
+/** 防止公网部署、旧环境变量或历史插件附件让模型重新收到远程 URL；所有文件只以内联字节投递。 */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createAttachmentResolver } from './attachments'
 
-afterEach(() => {
-  vi.unstubAllEnvs()
+const mocks = vi.hoisted(() => ({
+  get: vi.fn(),
+  adapterFor: vi.fn()
+}))
+vi.mock('./adapters', () => ({ adapterFor: mocks.adapterFor }))
+
+beforeEach(() => {
+  mocks.get.mockReset().mockResolvedValue({ mediaType: 'image/png', bytes: new Uint8Array([0, 128, 255]) })
+  mocks.adapterFor.mockReset().mockReturnValue({ get: mocks.get, resolveModelUrl: () => 'https://public.example/image.png' })
 })
+afterEach(() => vi.unstubAllEnvs())
 
-describe('isPubliclyFetchable —— 基址公网能不能拉到', () => {
-  it('本地 / 私网一律不可拉', () => {
-    for (const base of [
-      '',
-      'http://localhost:7801',
-      'http://127.0.0.1:7801',
-      'http://0.0.0.0:7801',
-      'http://10.1.2.3:7801',
-      'http://192.168.31.7:7801',
-      'http://172.16.0.9',
-      'http://172.31.255.1',
-      'http://169.254.1.1',
-      'http://[::1]:7801',
-      'http://[fe80::1]:7801',
-      'http://[fd00::1]:7801',
-      'http://macbook.local:7801',
-      'http://fizz.internal',
-      'http://host.docker.internal:7801'
-    ]) {
-      expect(isPubliclyFetchable(base), base).toBe(false)
-    }
-  })
-
-  it('公网域名 / 公有 IP 可拉', () => {
-    for (const base of [
-      'https://fizz.example.com',
-      'https://abc-def.trycloudflare.com',
-      'http://172.32.0.1:7801',
-      'http://8.8.8.8'
-    ]) {
-      expect(isPubliclyFetchable(base), base).toBe(true)
-    }
-  })
-
-  it('不是 URL 就当不可拉', () => {
-    expect(isPubliclyFetchable('127.0.0.1:7801')).toBe(false)
-  })
-})
-
-describe('createAttachmentResolver', () => {
+describe('createAttachmentResolver：仅内联附件', () => {
   const file = { url: '/api/uploads/00000000-0000-4000-8000-000000000000.png', mediaType: 'image/png', name: 'a.png' }
 
-  it('没有公网地址 → 不再返回 URL（读不到文件时降级成说明，而不是拼 127.0.0.1）', async () => {
-    vi.stubEnv('FIZZ_PUBLIC_BASE_URL', '')
-    const resolve = createAttachmentResolver('http://127.0.0.1:7801')
-    const result = await resolve(file)
-    expect(result?.kind).toBe('omit')
-    expect(String((result as { note?: string }).note)).toContain('a.png')
+  it('文本文档转成具名文本，不能把文件字节作为原生 file 发给模型', async () => {
+    mocks.get.mockResolvedValue({ mediaType: 'text/markdown', bytes: Buffer.from('# 文档\n内容') })
+    expect(await createAttachmentResolver()({ ...file, name: 'notes.md', mediaType: 'text/markdown' }))
+      .toMatchObject({ kind: 'text', text: expect.stringContaining('# 文档\n内容') })
   })
 
-  it('配了公网基址 → 直接用 URL，不读盘', async () => {
-    vi.stubEnv('FIZZ_PUBLIC_BASE_URL', 'https://fizz.example.com')
-    const resolve = createAttachmentResolver('http://127.0.0.1:7801')
-    const result = await resolve(file)
-    expect(result).toEqual({
-      kind: 'url',
-      url: 'https://fizz.example.com/api/uploads/00000000-0000-4000-8000-000000000000.png'
-    })
+  it('无法解析的文档给出说明，不终止整轮、不回退到二进制', async () => {
+    mocks.get.mockResolvedValue({ mediaType: 'text/plain', bytes: new Uint8Array([0, 128, 255]) })
+    expect(await createAttachmentResolver()({ ...file, name: 'bad.txt', mediaType: 'text/plain' }))
+      .toMatchObject({ kind: 'omit', note: expect.stringContaining('UTF-8') })
   })
 
-  it('FIZZ_ATTACHMENT_DELIVERY=url 强制直传（配了公网基址也一样）', async () => {
+  it('公网部署和旧 URL 模式配置也必须读回字节', async () => {
     vi.stubEnv('FIZZ_PUBLIC_BASE_URL', 'https://fizz.example.com')
     vi.stubEnv('FIZZ_ATTACHMENT_DELIVERY', 'url')
-    const resolve = createAttachmentResolver('http://127.0.0.1:7801')
-    expect((await resolve(file))?.kind).toBe('url')
+    expect(await createAttachmentResolver()(file)).toEqual({ kind: 'inline', bytes: new Uint8Array([0, 128, 255]) })
+    expect(mocks.get).toHaveBeenCalledWith(file.url)
   })
 
-  it('FIZZ_ATTACHMENT_DELIVERY=inline 即便有公网基址也内联', async () => {
-    vi.stubEnv('FIZZ_PUBLIC_BASE_URL', 'https://fizz.example.com')
-    vi.stubEnv('FIZZ_ATTACHMENT_DELIVERY', 'inline')
-    const resolve = createAttachmentResolver('https://fizz.example.com')
-    // 文件不存在 → 走 omit（说明的是「读不到」而不是「不归我管」），证明它没有返回 URL
-    expect((await resolve(file))?.kind).toBe('omit')
+  it('PDF 同样内联', async () => {
+    expect((await createAttachmentResolver()({ ...file, mediaType: 'application/pdf', name: 'a.pdf' }))?.kind).toBe('inline')
   })
 
-  it('插件 / 第三方地址不归这一层管（undefined = 交给 resolveFileUrl 原样返回）', async () => {
-    const resolve = createAttachmentResolver('http://127.0.0.1:7801')
-    expect(await resolve({ url: 'https://cdn.example.com/x.png', mediaType: 'image/png', name: 'x.png' })).toBeUndefined()
+  it.each(['missing', 'error', 'empty', 'oversized'])('读取失败（%s）时给出说明，不退回 URL', async (failure) => {
+    if (failure === 'missing') mocks.get.mockResolvedValue(null)
+    if (failure === 'error') mocks.get.mockRejectedValue(new Error('read failed'))
+    if (failure === 'empty') mocks.get.mockResolvedValue({ bytes: new Uint8Array() })
+    if (failure === 'oversized') mocks.get.mockResolvedValue({ bytes: new Uint8Array(5 * 1024 * 1024 + 1) })
+    const result = await createAttachmentResolver()(file)
+    expect(result).toMatchObject({ kind: 'omit', note: expect.stringContaining(file.name) })
+  })
+
+  it('历史插件 / 第三方地址不再透传给模型', async () => {
+    mocks.adapterFor.mockReturnValue(null)
+    expect(await createAttachmentResolver()({ ...file, url: 'https://cdn.example.com/x.png' })).toMatchObject({ kind: 'omit' })
+    expect(mocks.get).not.toHaveBeenCalled()
   })
 })

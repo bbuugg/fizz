@@ -1,13 +1,15 @@
 /**
  * 会话输入框草稿的本地存档（localStorage）。
  *
- * ## 为什么按「标签 key」而不是按 `activeConversationId` 存
+ * ## 为什么按「会话」存，而不是按标签 key
  *
- * 草稿属于**输入框所在的标签**：真实会话标签的 key 就是会话 id，「新对话」标签的 key
- * 是 `draft:<工作区>`（见 `panel-session.ts` 的 `draftPanelKey`）。拿 `activeConversationId`
- * 当键的话，新对话还没建会话时无处可存；分屏里同一个会话开两个标签时又会互相覆盖。
+ * 草稿要在**刷新之后**读得回来，所以键必须跨刷新稳定 —— 那是会话 id（地址），不是标签 key
+ * （标签 key 是运行期身份，刷新后是新的）。「新对话」页还没有会话，统一记在常量作用域
+ * `DRAFT_PANEL_SCOPE`（见 `panel-session.ts`）下；草稿页发出第一条消息、标签指向了会话之后，
+ * 输入框会把存档搬到会话 id 下（见 `prompt-input.tsx` 的 `PromptInputProvider`）。
+ * 拿 `activeConversationId` 当键是不行的：新对话还没建会话时无处可存。
  *
- * 键直接拼在 localStorage 的 key 上（一个标签一条），刷新后按同一个 key 读回，
+ * 键直接拼在 localStorage 的 key 上（一个会话一条），刷新后按同一个键读回，
  * 不需要维护一份索引或整份 JSON。
  *
  * ## 失败一律静默

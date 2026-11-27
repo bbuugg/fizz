@@ -9,7 +9,7 @@
  * 别再往回堆：
  * - 空态 / 加载：`NewTaskView`（唯一的初始页）、`MessagesLoadError`；
  * - 输入区接线：`use-main-composer-props`（含两个编辑态类型）；
- * - 待发送附件 + 上传源：`use-attachment-draft`（初始页 `NewTaskView` 也用同一份）；
+ * - 待发送附件：`use-attachment-draft`（初始页 `NewTaskView` 也用同一份）；
  * - 编辑条：`EditMessageBar`、`SteerEditBar`；
  * - 待发送队列 / 插话：`QueuedMessages`、`QueuedRow`、`PendingSteers`、`SteerRow`、
  *   `RowIconButton`、`ExpandableRowText`、`queue-list`（两张列表共用的尺寸）；
@@ -76,25 +76,29 @@ import { useAttachmentDraft } from "@fizz/agent-kit/features/chat/use-attachment
  * 的草稿，而草稿持有者（`ChatSurface` 的 `composer`）在面板内部。
  */
 /**
- * @param panelKey 这个 ChatPanel 所属**标签**的面板 key（`ConversationTab` 传它自己那个：
- * 会话 id，或「新对话」标签的 `draft:<工作区>`）。消息下方的文档入口要把右侧「文件」面板
- * 挂出来，**必须挂在这个标签自己的面板上** —— 用 Provider 的 `showSideTab`（那是「当前
- * 会话」）会在多标签 / 分屏下把面板开到别的标签上。
+ * @param panelKey 这个 ChatPanel 所属**标签**的 key（`ConversationTab` 传它自己那颗标签的）。
+ * 面板现场按标签存，消息下方的文档入口要把右侧「文件」面板挂出来，**必须挂在这个标签
+ * 自己的面板上** —— 用 Provider 的 `showSideTab`（那是「当前会话的」）会在多标签 / 分屏下
+ * 把面板开到别的标签上。
+ * @param draftKey 输入草稿的存档键（**按会话**：会话 id，草稿页用常量作用域）。它是地址，
+ * 跨刷新要能按同一条会话读回，所以不跟着标签 key 走。
  */
 export function ChatPanel({
   app,
   panelKey,
+  draftKey,
 }: {
   app: AgentApp;
   panelKey: string;
+  draftKey: string;
 }) {
   return (
     /*
-      `key` + `draftKey` 都绑到标签 key：草稿按会话隔离（真实会话 = 会话 id，
-      「新对话」= `draft:<工作区>`），刷新后由 Provider 从 localStorage 读回。
-      换标签时必须重挂 Provider —— 它只在挂载时读一次存档（见 prompt-input.tsx）。
+      `key` 绑到**标签 key**（身份）：同一颗标签永远复用同一个 Provider，输入框里的
+      附件 / 引用 / 草稿都不因为标签换指向（草稿 → 会话）而丢。
+      `draftKey` 绑到**会话**（地址）：刷新后 Provider 从 localStorage 按会话读回草稿。
     */
-    <PromptInputProvider key={panelKey} draftKey={panelKey}>
+    <PromptInputProvider key={panelKey} draftKey={draftKey}>
       <ChatPanelInner app={app} panelKey={panelKey} />
     </PromptInputProvider>
   );
@@ -227,16 +231,12 @@ function ChatPanelInner({
   );
 
   /**
-   * 待发送附件 + 上传源：整套状态与上传逻辑由 `useAttachmentDraft` 持有 —— 初始页
+   * 待发送附件：整套状态与上传逻辑由 `useAttachmentDraft` 持有 —— 初始页
    * （`NewTaskView`）用的是同一份，否则「新建会话时没有回形针」那种分叉会再犯。
    */
   const {
     attachments,
     onPickFiles,
-    uploadProviders,
-    uploadProviderId,
-    setUploadProviderId,
-    loadUploadProviders,
     removeAttachment,
     cancelUpload,
     restoreAttachments,
@@ -370,6 +370,7 @@ function ChatPanelInner({
 
   /** 输入区接线：发送走重发分支（有编辑起点）/ 插话分支（在编辑插话）还是普通发送 */
   const composer = useMainComposerProps(app, {
+    panelKey,
     textareaRef,
     editing,
     onCancelEdit: cancelEdit,
@@ -379,10 +380,6 @@ function ChatPanelInner({
     attachments,
     onPickFiles,
     onAttachFiles: onPickFiles,
-    uploadProviders,
-    uploadProviderId,
-    onSelectUploadProvider: setUploadProviderId,
-    onRefreshUploadProviders: () => void loadUploadProviders(),
     onRemoveAttachment: removeAttachment,
     onCancelUpload: cancelUpload,
     onRestoreQueueFiles: (files, seed) => restoreAttachments(files, seed),
@@ -468,7 +465,7 @@ function ChatPanelInner({
   // 不绑项目直接聊 —— 多出去一屏拦一道，手机上是白占一屏。
   // 也正因为不再有那道 gate，「项目清单还没拉回来」不会被误判成「没有项目」，
   // 骨架屏（`NewTaskSkeleton`）随之没用，一并删了。
-  if (!app.activeConversationId) return <NewTaskView app={app} voiceScope={panelKey} />;
+  if (!app.activeConversationId) return <NewTaskView app={app} panelKey={panelKey} />;
 
   return (
     <>

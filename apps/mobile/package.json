@@ -1,7 +1,7 @@
 {
   "name": "@fizz/mobile",
-  "version": "0.0.35",
-  "description": "Fizz 安卓壳：Capacitor + 独立 vite 工程（本地 www，服务端地址登录时配置）",
+  "version": "0.0.36",
+  "description": "Fizz 安卓端：Capacitor + APK 内置 Linux / Node 本机运行环境",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,9 +12,9 @@
     "add:android": "cap add android",
     "assets": "node scripts/copy-assets.mjs",
     "icons": "node scripts/generate-icons.mjs",
-    "sync": "cap sync android && npm run assets && node scripts/set-android-version.mjs && node scripts/configure-android-signing.mjs",
+    "sync": "cap sync android && npm run assets && node scripts/set-android-version.mjs && node scripts/configure-android-signing.mjs && node scripts/configure-android-runtime.mjs",
     "open": "cap open android",
-    "build:android": "node scripts/set-android-version.mjs && node scripts/configure-android-signing.mjs && node scripts/build-android.mjs"
+    "build:android": "node scripts/set-android-version.mjs && node scripts/configure-android-signing.mjs && node scripts/configure-android-runtime.mjs && node scripts/build-android.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.3",
@@ -26,6 +26,7 @@
     "@fizz/agent-client": "*",
     "@fizz/agent-kit": "*",
     "@fizz/capacitor-app-updater": "file:./plugins/app-updater",
+    "@fizz/capacitor-local-runtime": "file:./plugins/local-runtime",
     "@fizz/contracts": "*",
     "@fizz/shells": "*",
     "@fizz/ui": "*",

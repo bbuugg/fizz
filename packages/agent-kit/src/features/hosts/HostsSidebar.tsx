@@ -58,7 +58,7 @@
  *
  * - 未分组的主机平铺在**树之后**（与接口请求面板同款：先分组、后散条目）；
  * - 右键：分组行是「添加 / 新建子分组 / 移动到… / 重命名 / 删除分组」，主机行是
- *   「连接 / SFTP / 隧道 / 编辑 / 移出分组 / 删除」；
+ *   「连接 / SFTP / 隧道 / 编辑 / 复制 / 移出分组 / 删除」；
  * - 拖拽：主机可跨组拖、可在组内排序；分组可拖（**整棵子树一起走**）并可改层级；
  * - 折叠 / 展开：整行可点，箭头在**名字右侧**（hover 才浮现，与 AI Agent 侧栏的工作区行
  *   同一套），空分组不参与折叠；
@@ -80,7 +80,7 @@
  *
  * ## 行内动作
  *
- * 编辑 / 删除收在行的**右侧浮层**里（hover 才浮现）—— 与 AI Agent 侧栏的会话行同一套做法：
+ * 编辑 / 复制 / 删除收在行的**右侧浮层**里（hover 才浮现）—— 与 AI Agent 侧栏的会话行同一套做法：
  * 侧栏本来就窄，常驻按钮会把主机名挤没。
  *
  * 原来的「测试连接」按钮已移除：它只是探一次连通性（连上即断、不改状态），而真要连的时候
@@ -92,6 +92,7 @@ import {
   ChevronRight,
   CirclePlus,
   Cloud,
+  Copy,
   FileCode2,
   Folder,
   FolderInput,
@@ -531,6 +532,7 @@ export function HostsSidebar({
       onSftp={openSftp}
       onTunnels={openTunnels}
       onEdit={() => openForm(host)}
+      onDuplicate={() => void app.duplicateSshHost(host.id)}
       onMoveOut={() => moveOutOfGroup(host)}
       onDelete={() => setDeleteTarget(host)}
       onDropHost={dropHost}
@@ -994,7 +996,7 @@ function GroupRow({
             <DropdownMenuContent align="start" className="w-48">
               <DropdownMenuItem onSelect={onAddHost}>
                 <Plus className="size-3.5" />
-                {t('在此分组添加主机 / 终端')}
+                {t('添加主机')}
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={onNewSub}>
                 <FolderPlus className="size-3.5" />
@@ -1007,7 +1009,7 @@ function GroupRow({
       <ContextMenuContent className="w-48">
         <ContextMenuItem onSelect={onAddHost}>
           <Plus className="size-3.5" />
-          {t('在此分组添加主机 / 终端')}
+          {t('添加主机')}
         </ContextMenuItem>
         <ContextMenuItem onSelect={onNewSub}>
           <FolderPlus className="size-3.5" />
@@ -1047,6 +1049,7 @@ function HostRow({
   onSftp,
   onTunnels,
   onEdit,
+  onDuplicate,
   onMoveOut,
   onDelete,
   onDropHost,
@@ -1058,6 +1061,8 @@ function HostRow({
   onSftp: (host: SshHostConfig) => void
   onTunnels: (host: SshHostConfig) => void
   onEdit: () => void
+  /** 复制成新条目（服务端克隆，凭据一起带走；名字自动加「副本」后缀） */
+  onDuplicate: () => void
   onMoveOut: () => void
   onDelete: () => void
   onDropHost: DropHost
@@ -1132,13 +1137,13 @@ function HostRow({
               （行名比行本身更亮会让侧栏里的灰阶层级乱掉）。 */}
           <div
             data-name-text
-            className="min-w-0 flex-1 truncate transition-[padding] group-hover:pe-20 max-md:pe-20"
+            className="min-w-0 flex-1 truncate transition-[padding] group-hover:pe-24 max-md:pe-24"
           >
             {host.name}
           </div>
 
           {/*
-            编辑 / 删除：绝对定位在行尾、hover 整行才浮现（见文件头）。
+            复制 / 编辑 / 删除：绝对定位在行尾、hover 整行才浮现（见文件头）。
 
             ⚠️ `rounded-r-md` 不能省：这层是不透明的渐隐底色，方角压在行上会把行的
             `rounded-md` 右圆角盖掉（表现就是「hover 一行时高亮的右边是直角」）。
@@ -1153,6 +1158,19 @@ function HostRow({
               'group-hover:pointer-events-auto group-hover:opacity-100 max-md:pointer-events-auto max-md:opacity-100'
             )}
           >
+            <IconTip label={t('复制 {name}', { name: host.name })}>
+              <button
+                type="button"
+                aria-label={t('复制 {name}', { name: host.name })}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onDuplicate()
+                }}
+                className={HOST_ACTION}
+              >
+                <Copy className="size-3.5" />
+              </button>
+            </IconTip>
             <IconTip label={t('编辑 {name}', { name: host.name })}>
               <button
                 type="button"
@@ -1214,6 +1232,11 @@ function HostRow({
         <ContextMenuItem onSelect={onEdit}>
           <Pencil className="size-3.5" />
           {t('编辑')}
+        </ContextMenuItem>
+        {/* 复制成新条目：服务端按原条目克隆（凭据一起带走），名字自动加「副本」后缀 */}
+        <ContextMenuItem onSelect={onDuplicate}>
+          <Copy className="size-3.5" />
+          {t('复制')}
         </ContextMenuItem>
         {/* 移出分组：只在真的在某个分组里时才给（未分组的条目点了等于什么都没发生） */}
         {hasGroup && (

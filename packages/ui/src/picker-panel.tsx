@@ -91,7 +91,7 @@ function PickerPanel({
   footer?: React.ReactNode
 }) {
   const panelRef = React.useRef<HTMLDivElement | null>(null)
-  useHeightTransition(panelRef)
+  const attachPanel = useHeightTransition(panelRef)
   // 玻璃外壳（底 / 描边 / 景深 + 跟随指针的边缘流光）与指针追踪统一由 Hook 给，
   // 调用方的同名处理器会在写光圈位置之后接着执行
   const glass = useGlassPanel(props)
@@ -100,7 +100,7 @@ function PickerPanel({
     <PopoverContent
       {...props}
       {...glass.handlers}
-      ref={panelRef}
+      ref={attachPanel}
       // 面板里第一颗就是搜索框（自己 `autoFocus`）；让 Radix 的 FocusScope 别再抢一次焦点
       onOpenAutoFocus={(event) => {
         event.preventDefault()

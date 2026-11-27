@@ -1131,6 +1131,7 @@ var AGENT = {
 	"内置 + 用户级，所有项目共用": "Built-in + user-level, shared by all projects",
 	"暂无插件": "No plugins yet",
 	"项目插件": "Project plugins",
+	"这里管理项目自己的插件（.fizz/plugins）。全局插件请到设置 →「插件」管理。工具、提示词和钩子在下一轮对话生效。": "Manage this project’s plugins (.fizz/plugins) here. Manage global plugins in Settings → Plugins. Tools, prompts, and hooks take effect next turn.",
 	"只在这个项目里生效": "Only active in this project",
 	"这里只列这个项目自己的插件": "Only this project’s own plugins are listed here",
 	"用户级": "User-level",
@@ -1173,10 +1174,6 @@ var AGENT = {
 	"复制插件路径 {name}": "Copy plugin path {name}",
 	"复制插件目录路径": "Copy plugin directory path",
 	"插件路径": "plugin path",
-	"接受：{list}": "Accepts: {list}",
-	"接受：内置白名单（图片 + PDF）": "Accepts: built-in allowlist (images + PDF)",
-	"上传源：": "Upload source: ",
-	"附件菜单": "Attachment menu",
 	"面板": "Panel",
 	"停用插件 {name}": "Disable plugin {name}",
 	"启用插件 {name}": "Enable plugin {name}",
@@ -1733,6 +1730,13 @@ var CHAT = {
 	"压缩中…": "Compacting…",
 	"压缩上下文": "Compact context",
 	"未连接服务端，无法上传附件": "Not connected to the server; cannot upload attachments",
+	"上传附件": "Upload attachments",
+	"上传附件（图片 / 文档）": "Upload attachments (images / documents)",
+	"文档": "Documents",
+	"仅支持图片及 PDF、DOCX、TXT、Markdown、CSV、JSON 文档": "Only images and PDF, DOCX, TXT, Markdown, CSV, JSON documents are supported",
+	"文件大小不能超过 10MB": "Files must not exceed 10MB",
+	"DOCX 仅提取正文与表格文字，不含图片、页眉页脚及原始排版。": "DOCX includes body and table text only, without images, headers, footers or original formatting.",
+	"文档过长，仅发送前 32000 个字符，后续内容已截断。": "This document is too long. Only the first 32,000 characters will be sent; the rest has been truncated.",
 	"当前 Agent 不支持图片输入，请改用文字描述，或把文件放进工作区": "This agent does not accept image input; describe it in text or put the file in the workspace instead",
 	"上传失败": "Upload failed",
 	"连接中断": "Connection lost",
@@ -2146,7 +2150,7 @@ var HOSTS = {
 	"收起分组": "Collapse group",
 	"展开分组": "Expand group",
 	"在「{name}」中添加": "Add to “{name}”",
-	"在此分组添加主机 / 终端": "Add host / terminal to this group",
+	"添加主机": "Add host",
 	"新建子分组": "New sub-group",
 	"移动到…": "Move to…",
 	"删除分组": "Delete group",
@@ -6351,21 +6355,29 @@ function toToolOutput(output, isError) {
 * 的说明）；它挡的是**每轮重发**把请求体顶爆。
 */
 var MAX_INLINE_TOTAL_BYTES = 15728640;
+var MAX_ATTACHMENT_TEXT_CHARS = 1e5;
 function createInlineBudget(maxBytes = MAX_INLINE_TOTAL_BYTES) {
 	return {
 		remainingBytes: maxBytes,
+		remainingTextChars: MAX_ATTACHMENT_TEXT_CHARS,
 		counted: /* @__PURE__ */ new Set()
 	};
 }
 async function resolveOne(file, resolve) {
-	if (!resolve) return {
-		kind: "url",
-		url: file.url
-	};
 	try {
-		return await resolve(file) ?? {
-			kind: "url",
-			url: file.url
+		const resolved = await resolve?.(file);
+		if (resolved) return resolved;
+		const prefix = `data:${file.mediaType};base64,`;
+		if (file.url.startsWith(prefix)) {
+			const binary = atob(file.url.slice(prefix.length));
+			if (binary.length) return {
+				kind: "inline",
+				bytes: Uint8Array.from(binary, (char) => char.charCodeAt(0))
+			};
+		}
+		return {
+			kind: "omit",
+			note: `（附件「${file.name}」读取失败，未随本轮发送）`
 		};
 	} catch {
 		return {
@@ -6375,38 +6387,40 @@ async function resolveOne(file, resolve) {
 	}
 }
 /**
-* 把一批附件解析成「URL / 内联 / 省略」，并扣一遍总字节预算。
+* 把一批附件解析成「内联 / 文本 / 省略」，并扣一遍字节与文字预算。
 *
 * 预算**从后往前**分配（`files` 的调用方按「旧 → 新」排列）：超限时先牺牲最旧的，
 * 而不是先到先得把最新的挤掉。
 */
 async function planAttachments(files, opts) {
-	const planned = await Promise.all(files.map(async (file) => ({
-		file,
-		resolved: await resolveOne(file, opts?.resolveAttachment)
-	})));
+	const planned = new Array(files.length);
 	const budget = opts?.budget;
-	if (!budget) return planned;
 	const seenInBatch = /* @__PURE__ */ new Set();
-	for (let i = planned.length - 1; i >= 0; i--) {
-		const item = planned[i];
-		if (item.resolved.kind !== "inline") continue;
-		if (seenInBatch.has(item.file.url)) {
+	for (let i = files.length - 1; i >= 0; i--) {
+		const file = files[i];
+		if (budget && (seenInBatch.has(file.url) || (opts?.omitCounted && budget.counted.has(file.url)))) {
+			planned[i] = {
+				file,
+				resolved: {
+					kind: "omit",
+					note: `（重复附件「${file.name}」本轮只发送一次）`
+				}
+			};
+			continue;
+		}
+		const item = { file, resolved: await resolveOne(file, opts?.resolveAttachment) };
+		planned[i] = item;
+		if (!budget || item.resolved.kind === "omit") continue;
+		seenInBatch.add(file.url);
+		if (budget.counted.has(file.url)) continue;
+		if (item.resolved.kind === "text" && item.resolved.text.length > budget.remainingTextChars) {
 			item.resolved = {
 				kind: "omit",
-				note: `（重复附件「${item.file.name}」本轮只发送一次）`
+				note: `（文档「${file.name}」超出本轮文档文字上限，未随本轮发送）`
 			};
 			continue;
 		}
-		seenInBatch.add(item.file.url);
-		if (budget.counted.has(item.file.url)) {
-			if (opts?.omitCounted) item.resolved = {
-				kind: "omit",
-				note: `（重复附件「${item.file.name}」本轮只发送一次）`
-			};
-			continue;
-		}
-		const size = item.resolved.bytes.byteLength;
+		const size = item.resolved.kind === "inline" ? item.resolved.bytes.byteLength : new TextEncoder().encode(item.resolved.text).byteLength;
 		if (size > budget.remainingBytes) {
 			item.resolved = {
 				kind: "omit",
@@ -6416,6 +6430,7 @@ async function planAttachments(files, opts) {
 		}
 		budget.counted.add(item.file.url);
 		budget.remainingBytes -= size;
+		if (item.resolved.kind === "text") budget.remainingTextChars -= item.resolved.text.length;
 	}
 	return planned;
 }
@@ -6425,12 +6440,16 @@ async function planAttachments(files, opts) {
 * 形状写错**不会报错**，附件会被静默丢掉，所以这里集中一处产出、两条路
 * （历史组装 / 运行中插话）都调它。
 */
-function attachmentsToParts(planned, opts) {
+function attachmentsToParts(planned) {
 	const parts = [];
 	const notes = [];
 	for (const { file, resolved } of planned) {
 		if (resolved.kind === "omit") {
 			notes.push(resolved.note ?? `（附件「${file.name}」未随本轮发送）`);
+			continue;
+		}
+		if (resolved.kind === "text") {
+			parts.push({ type: "text", text: resolved.text });
 			continue;
 		}
 		if (resolved.kind === "inline") {
@@ -6446,17 +6465,6 @@ function attachmentsToParts(planned, opts) {
 			});
 			continue;
 		}
-		const url = new URL(opts?.resolveFileUrl ? opts.resolveFileUrl(resolved.url) : resolved.url, "http://localhost");
-		parts.push(file.mediaType.startsWith("image/") ? {
-			type: "image",
-			image: url,
-			mediaType: file.mediaType
-		} : {
-			type: "file",
-			data: url,
-			mediaType: file.mediaType,
-			filename: file.name
-		});
 	}
 	return {
 		parts,
@@ -6465,17 +6473,13 @@ function attachmentsToParts(planned, opts) {
 }
 /** 单批附件的快捷入口（运行中插话用：一条消息，不存在跨消息的预算排序） */
 async function attachmentParts(files, opts) {
-	return attachmentsToParts(await planAttachments(files, opts), opts);
+	return attachmentsToParts(await planAttachments(files, opts));
 }
 /**
 * 渲染端对话历史 -> 模型消息。
 *
-* `resolveFileUrl`：附件 URL 的绝对化策略由调用方注入（server 端经 UploadAdapter
-* 拼 `FIZZ_PUBLIC_BASE_URL ?? origin`）—— 本文件零存储知识。未传时用 localhost
-* base 兜底：`new URL('/api/...')` 会抛错，不能让一条附件把整轮炸掉。
-*
-* `resolveAttachment`：更进一步的投递策略（URL / 内联字节）。不传 = 全部按 URL
-* 直传，行为与从前逐字节一致。
+* `resolveAttachment` 由宿主读取附件字节；未提供时仅接受已内联的 base64 data URL。
+* 读取失败会降级为说明，不把远程 URL 交给模型自行抓取。
 *
 * ⚠️ **内联 base64 不占额外 token**：图片 token 由 provider 按**像素**计，传 URL 还是
 * 传字节算出来是同一个数；变的只是请求体大小（×4/3，且每轮重发）。所以真正的闸是
@@ -6519,7 +6523,7 @@ async function toModelMessageGroups(history, opts) {
 			const text = msg.parts.map((p) => p.type === "text" ? p.text : "").join("").trim();
 			const omittedImages = perMessage.get(i)?.omittedImages ?? 0;
 			const omittedNote = omittedImages > 0 ? `（用户发送了 ${omittedImages} 张图片，但当前模型未开启图片输入，这些图片已省略）` : "";
-			const { parts, notes } = attachmentsToParts(plannedByMessage.get(i) ?? [], { ...opts?.resolveFileUrl ? { resolveFileUrl: opts.resolveFileUrl } : {} });
+			const { parts, notes } = attachmentsToParts(plannedByMessage.get(i) ?? []);
 			if (parts.length === 0) {
 				const body = [
 					text,
@@ -8064,22 +8068,6 @@ var Context = class Context {
 		if (!s) throw new Error("models 服务未提供：请先 ctx.set(\"models\", new ModelsService(ctx))");
 		return s;
 	}
-	/**
-	* 上传源注册表（`ctx.uploads`）。
-	*
-	* ⚠️ 只有**长驻的 upload context**（`apps/server/src/server/upload/registry.ts` 建的）才有它 ——
-	* 上传发生在「还没有回合」的时候，turn context 上**刻意不提供**它。所以回合里的插件要想用
-	* 上传源，得写 `inject: ['uploads']`：依赖不齐时框架会**推迟挂载**（那个回合里它干脆不 apply，
-	* 既不报错也不白跑），而不是让 `ctx.uploads.register` 撞一个 undefined。
-	*
-	* 没提供时这里抛错（与 tools / prompt 同款）：真走到了说明宿主漏建了这个能力，
-	* 报错比「静默什么都不做」好查。
-	*/
-	get uploads() {
-		const s = this.get("uploads");
-		if (!s) throw new Error("uploads 服务未提供：这个 context 没有上传能力（上传源注册只挂在长驻 upload context 上，回合里请用 inject: [\"uploads\"] 声明依赖）");
-		return s;
-	}
 	/** 钩子总线（未提供时抛错：说明这轮没建 turn context） */
 	get hooks() {
 		const s = this.get("hooks");
@@ -8089,7 +8077,7 @@ var Context = class Context {
 	/**
 	* 插件 RPC（前端半拿数据的通道，见 `services/rpc.ts`）。
 	*
-	* 只挂在**长驻 context** 上（与 uploads 同级）：前端可能在任意时刻调用它，
+	* 只挂在**长驻 context** 上：前端可能在任意时刻调用它，
 	* 而回合结束时 turn context 已经销毁了。想在回合里注册方法就写 `inject: ['rpc']`。
 	*/
 	get rpc() {
@@ -8105,7 +8093,7 @@ var Context = class Context {
 	* 连它的设置项声明都收不到（设置页就看不到它了）。要工作区的**工具那半**单独用
 	* `ctx.inject(['workspace', 'tools'], …)` 注册即可。
 	*
-	* 没提供时这里抛错（与 tools / uploads 同款）：真走到了说明宿主忘了 set。
+	* 没提供时这里抛错（与 tools 同款）：真走到了说明宿主忘了 set。
 	*/
 	get workspace() {
 		const s = this.get("workspace");
@@ -8614,7 +8602,7 @@ var ModelsService = class extends Service {
 	/**
 	* 注册一份模型配置；返回 disposer（随插件 fiber 卸载自动回收）。
 	*
-	* 同一个 id 重复注册时**保留先注册的**并告警（与 `ctx.uploads.register` 同一取舍：
+	* 同一个 id 重复注册时**保留先注册的**并告警（避免静默覆盖：
 	* 抛错会把整轮对话 / 整个设置页带停，代价远大于一条冲突）。
 	*/
 	register(input, opts = {}) {
@@ -11547,7 +11535,6 @@ async function runAgent(opts) {
 				*/
 				console.warn(`[compaction] 越过阈值但未压缩（${compacted.skipped}）：窗口 ${contextWindow}、base ${baseTokens}、历史 ${opts.history.length} 条`);
 				messages = await toModelMessages(compacted.history, {
-					resolveFileUrl: opts.resolveFileUrl,
 					resolveAttachment: opts.resolveAttachment,
 					inlineBudget,
 					allowImages: modelSettings.imageInput
@@ -11767,7 +11754,6 @@ async function runAgent(opts) {
 					*/
 					const steerAttachments = await attachmentParts(steerFiles, {
 						resolveAttachment: opts.resolveAttachment,
-						resolveFileUrl: opts.resolveFileUrl,
 						budget: inlineBudget,
 						omitCounted: true
 					});

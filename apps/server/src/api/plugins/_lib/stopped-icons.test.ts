@@ -3,7 +3,7 @@
  *
  * 这条测试在防的事：有人为了「停用的插件也能看到它的设置项 / 面板」，把 `iconOnlyUi`
  * 改成原样透传（或只改 `settings: []` 那一行）—— 界面上就会出现「已经停用、却还能配置、
- * 还能在附件菜单里选它的上传源」的半真半假状态。停用只保留**图标**这一个字段。
+ * 还能打开它的面板」的半真半假状态。停用只保留**图标**这一个字段。
  */
 import { describe, expect, it } from 'vitest'
 import type { PluginUiDeclaration } from '@fizz/plugin'

@@ -25,7 +25,6 @@ import { EventsService } from './services/events'
 import { PromptService } from './services/prompt'
 import { ToolsService } from './services/tools'
 import { UiService } from './services/ui'
-import { UploadsService } from './services/uploads'
 import { RpcService } from './services/rpc'
 import { ModelsService } from './services/models'
 import { WorkspaceService } from './services/workspace'
@@ -190,28 +189,6 @@ export class Context {
     return s
   }
 
-  /**
-   * 上传源注册表（`ctx.uploads`）。
-   *
-   * ⚠️ 只有**长驻的 upload context**（`apps/server/src/server/upload/registry.ts` 建的）才有它 ——
-   * 上传发生在「还没有回合」的时候，turn context 上**刻意不提供**它。所以回合里的插件要想用
-   * 上传源，得写 `inject: ['uploads']`：依赖不齐时框架会**推迟挂载**（那个回合里它干脆不 apply，
-   * 既不报错也不白跑），而不是让 `ctx.uploads.register` 撞一个 undefined。
-   *
-   * 没提供时这里抛错（与 tools / prompt 同款）：真走到了说明宿主漏建了这个能力，
-   * 报错比「静默什么都不做」好查。
-   */
-  get uploads(): UploadsService {
-    const s = this.get<UploadsService>('uploads')
-    if (!s) {
-      throw new Error(
-        'uploads 服务未提供：这个 context 没有上传能力（上传源注册只挂在长驻 upload context 上，' +
-          '回合里请用 inject: ["uploads"] 声明依赖）'
-      )
-    }
-    return s
-  }
-
   /** 钩子总线（未提供时抛错：说明这轮没建 turn context） */
   get hooks(): HooksService {
     const s = this.get<HooksService>('hooks')
@@ -222,7 +199,7 @@ export class Context {
   /**
    * 插件 RPC（前端半拿数据的通道，见 `services/rpc.ts`）。
    *
-   * 只挂在**长驻 context** 上（与 uploads 同级）：前端可能在任意时刻调用它，
+   * 只挂在**长驻 context** 上：前端可能在任意时刻调用它，
    * 而回合结束时 turn context 已经销毁了。想在回合里注册方法就写 `inject: ['rpc']`。
    */
   get rpc(): RpcService {
@@ -244,7 +221,7 @@ export class Context {
    * 连它的设置项声明都收不到（设置页就看不到它了）。要工作区的**工具那半**单独用
    * `ctx.inject(['workspace', 'tools'], …)` 注册即可。
    *
-   * 没提供时这里抛错（与 tools / uploads 同款）：真走到了说明宿主忘了 set。
+   * 没提供时这里抛错（与 tools 同款）：真走到了说明宿主忘了 set。
    */
   get workspace(): WorkspaceService {
     const s = this.get<WorkspaceService>('workspace')

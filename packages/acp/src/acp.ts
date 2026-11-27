@@ -14,6 +14,7 @@
  * （optionId / name / kind）原样转给用户挑，挑中的 optionId 原样回传。
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -481,8 +482,10 @@ interface AcpSessionEntry {
    * `session/resume` 恢复出来的手写队列）。新建 / 恢复二选一，轮次循环不区分。
    */
   source: AcpTurnSource | null;
+  /** 上次成功 new/load 时的 MCP 配置摘要；不保存或打印明文凭据。 */
+  mcpConfigHash: string | null;
   /**
-   * agent 广告的权限档位（ACP Session Modes，可选能力）与当前档。
+   * Agent 广告的模式（旧 ACP Session Modes，可选能力）与当前值。
    * 只做**记录与切换**（`session/set_mode`），不做任何语义映射 —— 问不问、怎么问，
    * 策略完全在 agent 侧；档位的名字 / 描述原样给到界面。
    */
@@ -501,6 +504,10 @@ interface AcpSessionEntry {
    * 与 `modelSelector` 并列、各自独立；null = 这个 agent 不支持思考档。
    */
   thoughtLevelSelector: AcpThoughtLevelSelector | null;
+  /** null / 未收到与完整配置中明确缺少某项必须分开处理。 */
+  configOptionsKnown: boolean;
+  /** 服务端订阅这条常驻会话的配置变化，空闲时也同步到会话清单。 */
+  onConfigOptionsChanged?: () => void;
   /**
    * agent 广告的「模式选择器」（configOptions 的 `category: 'mode'`，**opencode 用它**）。
    *
@@ -555,6 +562,18 @@ interface AgentPermissionReply {
 
 /** agentId::conversationId → 常驻会话 */
 const sessions = new Map<string, AcpSessionEntry>();
+
+/** server / 键值项顺序不影响配置，stdio 参数顺序则必须保留。 */
+function mcpConfigHash(servers: AcpMcpServer[] = []): string {
+  const pairs = (items: { name: string; value: string }[]) =>
+    items.map(({ name, value }) => JSON.stringify([name, value])).sort();
+  const normalized = servers.map((server) => JSON.stringify(
+    server.type === "stdio"
+      ? [server.type, server.name, server.command, server.args, pairs(server.env)]
+      : [server.type, server.name, server.url, pairs(server.headers)],
+  )).sort();
+  return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+}
 
 /**
  * ACP agent 进程空闲多久后回收。
@@ -653,7 +672,7 @@ interface AcpThoughtLevelSelector {
 }
 
 /**
- * 从 `session/new` / `session/load` 的 `configOptions` 里挑出**思考档**（`pi` 用它）。
+ * 从 `configOptions` 按能力挑出思考档（OpenCode、pi 等均可提供）。
  *
  * 与 `pickModelSelector` 同构：只认 `type: 'select'` 且 `category: 'thought_level'`
  * （规范里 `thought_level` 是保留的语义分类，见 SDK schema 的 SessionConfigOptionCategory）。
@@ -758,6 +777,20 @@ function pickModeOptionSelector(
  *
  * `.exe` / `.com` 保持直连 —— 少一层 cmd 包装，参数也不会被 cmd 二次解析。
  */
+function updateConfigOptions(entry: AcpSessionEntry, raw: unknown[] | null | undefined): boolean {
+  if (!Array.isArray(raw)) return false;
+  const before = JSON.stringify([entry.configOptionsKnown, entry.modelSelector, entry.thoughtLevelSelector, entry.modeOptionSelector]);
+  const options = raw as acp.SessionConfigOption[];
+  entry.configOptionsKnown = true;
+  entry.modelSelector = pickModelSelector(options);
+  entry.thoughtLevelSelector = pickThoughtLevelSelector(options);
+  entry.modeOptionSelector = pickModeOptionSelector(options);
+  if (before !== JSON.stringify([true, entry.modelSelector, entry.thoughtLevelSelector, entry.modeOptionSelector])) {
+    entry.onConfigOptionsChanged?.();
+  }
+  return true;
+}
+
 function resolveWindowsCommand(command: string): {
   command: string;
   viaCmd: boolean;
@@ -1011,6 +1044,11 @@ async function connectAdapter(
           toAgent,
           fromAgent,
           handlers: {
+            onConfigOptions: (sessionId, options) => {
+              if (sessions.get(key) === entry && entry.source?.sessionId === sessionId) {
+                updateConfigOptions(entry, options);
+              }
+            },
             onPermission: (req) => handlePermission(entry, req),
             onElicitation: (req) =>
               entry.turn?.requestElicitation?.(req) ??
@@ -1057,8 +1095,10 @@ async function ensureSession(
   // 「任务」会话没有工作区目录：ACP agent 仍要一个合法 cwd，落到主目录
   const result = await connection.newSession(workspacePath || homedir(), mcpServers);
   entry.source = result.source;
+  entry.mcpConfigHash = mcpConfigHash(mcpServers);
   const configOptions = (result.configOptions as acp.SessionConfigOption[] | null) ?? null;
-  // 权限档位（ACP Session Modes，可选能力）：只记录，切换走 setAcpSessionMode
+  updateConfigOptions(entry, configOptions);
+  // 旧 Session Modes（可选能力）：只记录，切换走 setAcpSessionMode
   entry.availableModes = (result.modes?.availableModes ?? []) as acp.SessionMode[];
   entry.currentModeId = result.modes?.currentModeId ?? null;
   if (entry.availableModes.length) {
@@ -1104,28 +1144,30 @@ async function loadTurnSource(
   sessionId: string,
   mcpServers: AcpMcpServer[] = [],
 ): Promise<AcpTurnSource> {
-  const connection =
-    entry.connection ?? (await connectAdapter(entry, agent));
-  const result = await connection.resumeSession(sessionId, workspacePath || homedir(), mcpServers);
+  let connection: AcpConnection;
+  try {
+    connection = entry.connection ?? (await connectAdapter(entry, agent));
+  } catch (err) {
+    throw new Error(`Agent 启动或连接失败：${err instanceof Error ? err.message : String(err)}`, { cause: err });
+  }
+  const result = await connection.resumeSession(sessionId, workspacePath || homedir(), mcpServers)
+    .catch((err: unknown) => {
+      throw new Error(`原会话历史加载失败：${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    });
   entry.source = result.source;
+  entry.mcpConfigHash = mcpConfigHash(mcpServers);
   const configOptions = (result.configOptions as acp.SessionConfigOption[] | null) ?? null;
-  entry.modelSelector = entry.modelSelector ?? pickModelSelector(configOptions as acp.SessionConfigOption[] | null);
-  // 恢复响应里同样可能带权限档位：没有记录过就补上
+  updateConfigOptions(entry, configOptions);
+  // 恢复响应里同样可能带旧 Session Modes：没有记录过就补上
   if (result.modes?.availableModes?.length && entry.availableModes.length === 0) {
     entry.availableModes = result.modes.availableModes as acp.SessionMode[];
     entry.currentModeId = result.modes.currentModeId ?? null;
   }
-  // 恢复响应里同样可能带思考档；没记录过才补
-  entry.thoughtLevelSelector =
-    entry.thoughtLevelSelector ?? pickThoughtLevelSelector(configOptions as acp.SessionConfigOption[] | null);
-  // 同理补 configOptions 通道的「模式」（opencode）
-  entry.modeOptionSelector =
-    entry.modeOptionSelector ?? pickModeOptionSelector(configOptions as acp.SessionConfigOption[] | null);
   return result.source;
 }
 
 /**
- * 查某个 acp 会话的权限档位（ACP Session Modes）。
+ * 查某个 ACP 会话的模式（优先 configOptions，兼容旧 Session Modes）。
  * 只读已激活会话的记录 —— **不起进程**：agent 没在跑 / 没广告档位时返回
  * `supported: false`，界面据此隐藏档位切换 pill。
  */
@@ -1139,14 +1181,11 @@ export function getAcpSessionModes(
 } {
   const entry = sessions.get(`${agentId}::${conversationId}`);
   if (!entry) return { supported: false, modes: [], currentModeId: null };
+  const modes = snapshotOf(entry).modes;
   return {
-    supported: entry.availableModes.length > 0,
-    modes: entry.availableModes.map((m) => ({
-      id: m.id,
-      ...(m.name ? { name: m.name } : {}),
-      ...(m.description ? { description: m.description } : {}),
-    })),
-    currentModeId: entry.currentModeId,
+    supported: !!modes?.available.length,
+    modes: modes?.available ?? [],
+    currentModeId: modes?.current ?? null,
   };
 }
 
@@ -1156,24 +1195,24 @@ function snapshotOf(entry: AcpSessionEntry): {
   thoughtLevel: AcpThoughtLevelState | null;
 } {
   const modeOption = entry.modeOptionSelector;
-  const modes: AcpModesState | null = entry.availableModes.length
+  const modes: AcpModesState | null = modeOption
     ? {
-        available: entry.availableModes.map((m) => ({
-          id: m.id,
-          ...(m.name ? { name: m.name } : {}),
-          ...(m.description ? { description: m.description } : {}),
+        available: modeOption.options.map((o) => ({
+          id: o.value,
+          name: o.name,
+          ...(o.description ? { description: o.description } : {}),
         })),
-        current: entry.currentModeId,
+        current: modeOption.current,
+        configId: modeOption.configId,
       }
-    : modeOption
+    : entry.availableModes.length
       ? {
-          available: modeOption.options.map((o) => ({
-            id: o.value,
-            name: o.name,
-            ...(o.description ? { description: o.description } : {}),
+          available: entry.availableModes.map((m) => ({
+            id: m.id,
+            ...(m.name ? { name: m.name } : {}),
+            ...(m.description ? { description: m.description } : {}),
           })),
-          current: modeOption.current,
-          configId: modeOption.configId,
+          current: entry.currentModeId,
         }
       : null;
   const selector = entry.thoughtLevelSelector;
@@ -1197,9 +1236,16 @@ export function getAcpSessionSnapshot(
 ): {
   modes: AcpModesState | null;
   thoughtLevel: AcpThoughtLevelState | null;
+  configOptionsKnown: boolean;
 } | null {
   const entry = sessions.get(`${agentId}::${conversationId}`);
-  return entry ? snapshotOf(entry) : null;
+  return entry ? { ...snapshotOf(entry), configOptionsKnown: entry.configOptionsKnown } : null;
+}
+
+/** 每条常驻会话只保留一个持久化监听器；刷新时替换，不累积订阅。 */
+export function setAcpSessionConfigListener(agentId: string, conversationId: string, listener: () => void): void {
+  const entry = sessions.get(`${agentId}::${conversationId}`);
+  if (entry) entry.onConfigOptionsChanged = listener;
 }
 
 /**
@@ -1209,6 +1255,8 @@ export interface AcpActivateInfo {
   agent: AcpAgentConfig;
   workspacePath: string;
   mcpServers?: AcpMcpServer[];
+  /** 恢复后先应用会话选中的模型，再验证它当前支持的模式或思考档。 */
+  modelId?: string;
   /** 会话记录里绑定的 agent 侧 session id：有则 session/load 恢复上下文，无则 session/new */
   loadSessionId?: string;
 }
@@ -1239,6 +1287,8 @@ async function ensureActivated(
         conversationId,
         workspacePath: info.workspacePath,
       });
+      // 活会话不能重复 load，尤其不能在生成期因切档请求重放它。
+      if (entry.source) return;
       try {
         if (info.loadSessionId) {
           try {
@@ -1283,9 +1333,9 @@ async function ensureActivated(
 }
 
 /**
- * 切换 acp 会话的**模式 / 权限档**，两条通道自动选：
- * - 规范 Session Modes（`session/new.modes`）→ `session/set_mode`；
- * - configOptions 的 `category: 'mode'`（**opencode 走这条**）→ `session/set_config_option`。
+ * 切换 ACP 会话模式，优先 configOptions，缺少它时兼容旧 Session Modes：
+ * - configOptions 的 `category: 'mode'` → `session/set_config_option`；
+ * - 没有以上能力时才兼容旧 Session Modes（`session/new.modes`）→ `session/set_mode`。
  *
  * 会话未激活时若给了 `activate` 信息则**自动激活**（与「重新打开会话」同一条路径：
  * spawn agent 进程 + session/load 恢复上下文），激活后立即切换——用户切档不再被
@@ -1317,35 +1367,40 @@ export async function setAcpSessionMode(
       error: "会话未激活（先在会话里发一条消息，或重新打开会话）",
     };
   }
-  const inSessionModes = entry.availableModes.some((m) => m.id === modeId);
-  const modeOption = entry.modeOptionSelector;
-  if (!inSessionModes && !modeOption?.options.some((o) => o.value === modeId)) {
-    return { ok: false, error: "这个 agent 没有这个模式" };
-  }
-  try {
-    if (inSessionModes) {
-      await entry.connection.setMode(sessionId, modeId);
-      entry.currentModeId = modeId;
-    } else if (modeOption) {
-      const configOptions = await entry.connection.setConfigOption(
-        sessionId,
-        modeOption.configId,
-        modeId,
-      );
-      entry.modeOptionSelector =
-        pickModeOptionSelector(configOptions as acp.SessionConfigOption[] | null) ?? {
-          ...modeOption,
-          current: modeId,
-        };
+  const connection = entry.connection;
+  const change = async (): Promise<{ ok: boolean; error?: string }> => {
+    if (sessions.get(key) !== entry) return { ok: false, error: "会话状态已变化，请稍后重试" };
+    // 空闲时先恢复所选模型，并与模型 / 思考档共用串行链；生成中保留即时切模式能力。
+    if (!entry.turn) await applyAcpModel(entry, activate?.modelId);
+    const modeOption = entry.modeOptionSelector;
+    const inSessionModes = !modeOption && entry.availableModes.some((m) => m.id === modeId);
+    if (!inSessionModes && !modeOption?.options.some((o) => o.value === modeId)) {
+      return { ok: false, error: "这个 agent 没有这个模式" };
     }
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: describeError(err) };
-  }
+    try {
+      if (inSessionModes) {
+        await connection.setMode(sessionId, modeId);
+        entry.currentModeId = modeId;
+      } else if (modeOption) {
+        const configOptions = await connection.setConfigOption(sessionId, modeOption.configId, modeId);
+        if (!updateConfigOptions(entry, configOptions)) {
+          entry.modeOptionSelector = { ...(entry.modeOptionSelector ?? modeOption), current: modeId };
+          entry.onConfigOptionsChanged?.();
+        }
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: describeError(err) };
+    }
+  };
+  if (entry.turn) return change();
+  const queued = entry.chain.then(change, change);
+  entry.chain = queued.catch(() => undefined);
+  return queued;
 }
 
 /**
- * 切换 acp 会话的**思考档**（`session/set_config_option`，`pi` 用它）。
+ * 按 agent 广告的能力切换思考档；运行中拒绝，空闲配置与 prompt 共用串行链。
  * 与 `setAcpSessionMode` 同形：会话未激活时给 `activate` 则自动激活；agent 拒绝 / 值不存在时返回 ok: false。
  */
 export async function setAcpSessionThoughtLevel(
@@ -1355,11 +1410,13 @@ export async function setAcpSessionThoughtLevel(
   activate?: AcpActivateInfo,
 ): Promise<{ ok: boolean; error?: string }> {
   const key = `${agentId}::${conversationId}`;
+  if (sessions.get(key)?.turn) return { ok: false, error: "当前轮次正在生成，请结束后再切换思考档" };
   if (activate) {
     const err = await ensureActivated(agentId, conversationId, activate);
     if (err) return { ok: false, error: err };
   }
   const entry = sessions.get(key);
+  if (entry?.turn) return { ok: false, error: "当前轮次正在生成，请结束后再切换思考档" };
   if (!entry || !entry.connection) {
     return {
       ok: false,
@@ -1373,20 +1430,57 @@ export async function setAcpSessionThoughtLevel(
       error: "会话未激活（先在会话里发一条消息，或重新打开会话）",
     };
   }
-  const selector = entry.thoughtLevelSelector;
-  if (!selector) return { ok: false, error: "这个 agent 不支持思考档" };
-  try {
-    const configOptions = await entry.connection.setConfigOption(
-      sessionId,
-      selector.configId,
-      value,
-    );
-    entry.thoughtLevelSelector =
-      pickThoughtLevelSelector(configOptions as acp.SessionConfigOption[] | null) ?? { ...selector, current: value };
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: describeError(err) };
+  const connection = entry.connection;
+  const change = async (): Promise<{ ok: boolean; error?: string }> => {
+    if (sessions.get(key) !== entry || entry.turn) return { ok: false, error: "会话状态已变化，请稍后重试" };
+    await applyAcpModel(entry, activate?.modelId);
+    const selector = entry.thoughtLevelSelector;
+    if (!selector) return { ok: false, error: "这个 agent 不支持思考档" };
+    if (!selector.options.some((option) => option.value === value)) return { ok: false, error: "当前模型不支持这个思考档" };
+    try {
+      const configOptions = await connection.setConfigOption(sessionId, selector.configId, value);
+      if (!updateConfigOptions(entry, configOptions)) {
+        entry.thoughtLevelSelector = { ...(entry.thoughtLevelSelector ?? selector), current: value };
+        entry.onConfigOptionsChanged?.();
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: describeError(err) };
+    }
+  };
+  const queued = entry.chain.then(change, change);
+  entry.chain = queued.catch(() => undefined);
+  return queued;
+}
+
+/** 空闲会话立即换模型并刷新关联能力；生成中的选择留到下一轮统一应用。 */
+export async function setAcpSessionModel(
+  agentId: string,
+  conversationId: string,
+  modelId: string,
+  activate?: AcpActivateInfo,
+): Promise<{ ok: boolean; deferred?: boolean; error?: string }> {
+  const key = `${agentId}::${conversationId}`;
+  if (sessions.get(key)?.turn) return { ok: true, deferred: true };
+  if (activate) {
+    const error = await ensureActivated(agentId, conversationId, activate);
+    if (error) return { ok: false, error };
   }
+  const entry = sessions.get(key);
+  if (!entry?.connection) return { ok: false, error: "会话未激活" };
+  const change = async (): Promise<{ ok: boolean; deferred?: boolean; error?: string }> => {
+    if (sessions.get(key) !== entry || entry.turn) return { ok: true, deferred: true };
+    if (!entry.modelSelector?.options.some((option) => option.value === modelId)) {
+      return { ok: false, error: "这个 agent 不支持所选模型" };
+    }
+    await applyAcpModel(entry, modelId);
+    return entry.modelSelector?.current === modelId
+      ? { ok: true }
+      : { ok: false, error: "切换模型失败" };
+  };
+  const queued = entry.chain.then(change, change);
+  entry.chain = queued.catch(() => undefined);
+  return queued;
 }
 
 /**
@@ -1416,10 +1510,10 @@ async function applyAcpModel(
       modelId,
     );
     // 响应带回完整的 configOptions（改一项可能影响别的项），以它为准
-    entry.modelSelector = pickModelSelector(configOptions as acp.SessionConfigOption[] | null) ?? {
-      ...selector,
-      current: modelId,
-    };
+    if (!updateConfigOptions(entry, configOptions)) {
+      entry.modelSelector = { ...(entry.modelSelector ?? selector), current: modelId };
+      entry.onConfigOptionsChanged?.();
+    }
     console.log(`[acp] 模型已切到 ${modelId}`);
   } catch (err) {
     // agent 不支持 / 拒绝：只记日志，别把整轮打断
@@ -1428,7 +1522,7 @@ async function applyAcpModel(
 }
 
 /**
- * 把会话记住的**权限档**下发给 agent（`session/set_mode`，opencode 用它）。
+ * 把会话记住的模式按实际能力通道下发给 Agent，不按类型猜测。
  *
  * 幂等：与 entry 当前档一致就直接返回 —— load 之后 agent 恰好已恢复用户选的档时，
  * 不会多发一次请求；被 agent 重置了则这一轮开始前自动补回。
@@ -1440,7 +1534,7 @@ async function applyAcpMode(
 ): Promise<void> {
   if (!modeId) return;
   const modeOption = entry.modeOptionSelector;
-  const inSessionModes = entry.availableModes.some((m) => m.id === modeId);
+  const inSessionModes = !modeOption && entry.availableModes.some((m) => m.id === modeId);
   const inModeOption = !!modeOption?.options.some((o) => o.value === modeId);
   if (!inSessionModes && !inModeOption) return;
   // 幂等：已经是这个档就不发请求
@@ -1465,8 +1559,10 @@ async function applyAcpMode(
         modeOption.configId,
         modeId,
       );
-      entry.modeOptionSelector =
-        pickModeOptionSelector(configOptions as acp.SessionConfigOption[] | null) ?? { ...modeOption, current: modeId };
+      if (!updateConfigOptions(entry, configOptions)) {
+        entry.modeOptionSelector = { ...(entry.modeOptionSelector ?? modeOption), current: modeId };
+        entry.onConfigOptionsChanged?.();
+      }
     }
     console.log(`[acp] 模式已切到 ${modeId}`);
   } catch (err) {
@@ -1495,8 +1591,10 @@ async function applyAcpThoughtLevel(
       selector.configId,
       value,
     );
-    entry.thoughtLevelSelector =
-      pickThoughtLevelSelector(configOptions as acp.SessionConfigOption[] | null) ?? { ...selector, current: value };
+    if (!updateConfigOptions(entry, configOptions)) {
+      entry.thoughtLevelSelector = { ...(entry.thoughtLevelSelector ?? selector), current: value };
+      entry.onConfigOptionsChanged?.();
+    }
     console.log(`[acp] 思考档已切到 ${value}`);
   } catch (err) {
     console.warn(`[acp] 切换思考档失败（${value}）：`, err);
@@ -1577,8 +1675,9 @@ export async function probeAcpCapabilities(opts: {
   agent: AcpAgentConfig;
   /** agent 进程的 cwd；不给就用主目录（探测不需要真实项目） */
   workspacePath?: string;
+  modelId?: string;
 }): Promise<AcpProbeResult> {
-  const conversationId = `probe::${opts.agent.id}`;
+  const conversationId = `probe::${opts.agent.id}::${randomUUID()}`;
   const key = `${opts.agent.id}::${conversationId}`;
   const workspacePath = resolveProbeCwd(opts.workspacePath);
   try {
@@ -1588,6 +1687,7 @@ export async function probeAcpCapabilities(opts: {
       workspacePath,
     });
     await ensureSession(entry, workspacePath, opts.agent);
+    await applyAcpModel(entry, opts.modelId);
     const selector = entry.modelSelector;
     return {
       models: selector
@@ -1930,13 +2030,16 @@ export async function createAcpSession(opts: {
   agent: AcpAgentConfig;
   conversationId: string;
   workspacePath: string;
+  mcpServers?: AcpMcpServer[];
+  modelId?: string;
 }): Promise<AcpSessionReadyInfo> {
   const entry = getOrCreateEntry({
     agent: opts.agent,
     conversationId: opts.conversationId,
     workspacePath: opts.workspacePath,
   });
-  const session = await ensureSession(entry, opts.workspacePath, opts.agent);
+  const session = await ensureSession(entry, opts.workspacePath, opts.agent, undefined, opts.mcpServers);
+  await applyAcpModel(entry, opts.modelId);
   return { sessionId: session.sessionId, ...snapshotOf(entry) };
 }
 
@@ -1962,7 +2065,7 @@ export interface RunAcpAgentOptions {
   agent: AcpAgentConfig;
   conversationId: string;
   requestId: string;
-  /** 仅在新建/恢复时注入；复用活会话时不假定外部 agent 支持 MCP 热更新。 */
+  /** 每轮检查实际配置；变化后先重启并恢复会话，不依赖外部 agent 热更新。 */
   mcpServers?: AcpMcpServer[];
   /**
    * 本轮附带的图片（用户随消息发的）。缺省 = 纯文本，行为与之前逐字节一致。
@@ -1980,9 +2083,9 @@ export interface RunAcpAgentOptions {
   confirmTimeoutMs?: number;
   /** 会话记住的模型（agent 广告的 configOptions 里的一项值）；空 = 用它的默认 */
   modelId?: string;
-  /** 会话记住的权限档（opencode 的 Session Modes）；空 = 用它的默认 */
+  /** 会话记住的模式（按实际 configOptions / Session Modes 能力）；空 = 用它的默认 */
   modeId?: string;
-  /** 会话记住的思考档（pi 的 thought_level configOption）；空 = 用它的默认 */
+  /** 会话记住的思考档（thought_level configOption）；空 = 用它的默认 */
   thoughtLevel?: string;
   onEvent?: (event: AgentStreamEvent) => void;
   /**
@@ -2050,10 +2153,12 @@ function getOrCreateEntry(opts: {
     cwd,
     connection: null,
     source: null,
+    mcpConfigHash: null,
     availableModes: [],
     currentModeId: null,
     modelSelector: null,
     thoughtLevelSelector: null,
+    configOptionsKnown: false,
     modeOptionSelector: null,
     promptCapabilities: null,
     authMethods: [],
@@ -2110,7 +2215,7 @@ export async function runAcpAgent(
   // 若插在中间，会拿到一个正在被拆掉的进程 / 二次 `session/load`（两个窗口同时打开同一
   // 会话时最容易撞上）。回放失败也照常往下走 —— 下面会按干净状态重建。
   await replaying.get(key)?.catch(() => undefined);
-  const current = getOrCreateEntry({
+  const queueEntry = getOrCreateEntry({
     agent: opts.agent,
     conversationId: opts.conversationId,
     workspacePath: opts.workspace.path,
@@ -2126,6 +2231,15 @@ export async function runAcpAgent(
   }
 
   const run = async (): Promise<RunAgentResult> => {
+    await activating.get(key);
+    // 前面排队的轮次可能已重启进程，不能闭包复用旧 entry。
+    const resident = sessions.get(key);
+    let current = getOrCreateEntry({
+      agent: opts.agent,
+      conversationId: opts.conversationId,
+      workspacePath: opts.workspace.path,
+    });
+    if (current !== resident) current.chain = queueEntry.chain;
     /**
      * 本轮耗时的起点 —— 记在 `run` 内部而不是函数入口：上面那段 `current.chain` 排队
      * 是在等**上一轮**结束，用户点完发送后排队等着不算「在工作」。
@@ -2197,6 +2311,26 @@ export async function runAcpAgent(
       else opts.signal.addEventListener("abort", onAbort, { once: true });
     }
     try {
+      if (opts.signal?.aborted) {
+        emit({ type: "finish", finishReason: "aborted", durationMs: elapsedMs() });
+        return { finishReason: "aborted" };
+      }
+      let loadSessionId = opts.loadSessionId;
+      if (current.source && current.mcpConfigHash !== mcpConfigHash(opts.mcpServers)) {
+        // 已等上一轮收场，此刻才重启。保留 sessionId 恢复上下文，同时移交串行链和审批上下文。
+        loadSessionId = current.source.sessionId;
+        const previous = current;
+        teardown(key);
+        current = getOrCreateEntry({
+          agent: opts.agent,
+          conversationId: opts.conversationId,
+          workspacePath: opts.workspace.path,
+        });
+        current.chain = previous.chain;
+        current.turn = previous.turn;
+        previous.turn = null;
+        console.log(`[acp:${opts.agent.name}] MCP 配置已变化，重启进程并恢复会话`);
+      }
       // 会话来源三选一（prompt / nextUpdate 同形，轮次循环不区分）：
       // 1. 已加载的（打开会话时 load 过）→ 直接复用；
       // 2. 进程 / 会话还活着 → 直接复用活会话（**不做 load**：load 会在同一进程上二次建连）；
@@ -2207,19 +2341,19 @@ export async function runAcpAgent(
       const liveSource = current.source;
       if (liveSource) {
         source = liveSource;
-      } else if (opts.loadSessionId) {
+      } else if (loadSessionId) {
         try {
           source = await loadTurnSource(
             current,
             opts.agent,
             opts.workspace.path,
-            opts.loadSessionId,
+            loadSessionId,
             opts.mcpServers,
           );
           source.drainAll();
           // 档位也可能在 load 回包里被刷新（甚至被 agent 重置）：回写会话，界面据此更新
           opts.onSessionCreated?.({
-            sessionId: opts.loadSessionId,
+            sessionId: source.sessionId,
             ...snapshotOf(current),
           });
         } catch (err) {
@@ -2245,7 +2379,7 @@ export async function runAcpAgent(
           opts.mcpServers,
         );
       }
-      // 会话记住的模型 / 权限档 / 思考档在 prompt 前依次下发（没选 / 不支持则静默跳过）。
+      // 会话记住的模型 / 模式 / 思考档在 prompt 前依次下发（没选 / 不支持则静默跳过）。
       // 这一步同时覆盖 `session/load` 之后的场景：agent 可能把档位重置成默认，
       // 这里按会话配置（用户意图）幂等补回；权限请求本身仍由 agent 的策略决定。
       await applyAcpModel(current, opts.modelId);
@@ -2304,8 +2438,8 @@ export async function runAcpAgent(
   };
 
   // 同会话串行：排队等上一轮结束（两个客户端同时提问也不会并发踩同一条会话）
-  const queued = current.chain.then(run, run);
-  current.chain = queued.catch(() => undefined);
+  const queued = queueEntry.chain.then(run, run);
+  queueEntry.chain = queued.catch(() => undefined);
   return queued;
 }
 
@@ -2514,13 +2648,21 @@ async function replayAcpSessionOnce(opts: {
     workspacePath: opts.workspacePath,
   });
   entry.lastActiveAt = Date.now();
-  const source = await loadTurnSource(
-    entry,
-    opts.agent,
-    opts.workspacePath,
-    opts.sessionId,
-    opts.mcpServers,
-  );
+  let source: AcpTurnSource;
+  try {
+    source = await loadTurnSource(
+      entry,
+      opts.agent,
+      opts.workspacePath,
+      opts.sessionId,
+      opts.mcpServers,
+    );
+  } catch (err) {
+    // 失败的恢复不留下半活进程；只清理本次 entry，避免误伤后来建立的新连接。
+    const key = `${opts.agent.id}::${opts.conversationId}`;
+    if (sessions.get(key) === entry) teardown(key);
+    throw err;
+  }
   entry.lastActiveAt = Date.now();
   const inputMemory: AcpInputMemory = new Map();
   const messages: AgentChatMessage[] = [];

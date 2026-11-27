@@ -60,6 +60,7 @@ export function McpPicker({ servers, value, onChange, disabled }: McpPickerProps
   const count = selected.length
 
   const toggle = (id: string, on: boolean): void => {
+    if (disabled) return
     onChange(on ? [...selected, id] : selected.filter((x) => x !== id))
   }
 
@@ -100,6 +101,7 @@ export function McpPicker({ servers, value, onChange, disabled }: McpPickerProps
           <DropdownMenuCheckboxItem
             key={server.id}
             checked={selected.includes(server.id)}
+            disabled={disabled}
             // 受控：勾选状态由外部清单决定，回车 / 点左侧方块都走同一个 toggle。
             // `preventDefault` 是关键 —— 否则 Radix 选中后立刻关闭菜单，多选根本没法连点。
             onCheckedChange={(v) => toggle(server.id, v === true)}

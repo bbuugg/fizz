@@ -27,16 +27,15 @@
  * - **组车身**：按指针在整组矩形里的相对位置分五档 —— 四边各 1/4 = 向那一侧分屏，
  *   中间 = 并入该组。
  *
- * ## 标签有两种（key 自带类型）
+ * ## 标签 key 是身份，不是地址
  *
- * - **对话标签**：key 就是会话 id（显式打开的新对话是 `__new__`），内容 `ConversationTab`；
- *   一个标签都没有时由 `PanelView` 补一张 `__new__` 草稿（落在「开始新对话」页）；
- * - **工具标签**：`host:<hostId>` 连某台 SSH 主机、`local:<n>` 一条本机终端。
- *   它们不对应任何会话 —— 点 / 关 / 拖它们都**不该**动 `activeConversationId`。
+ * 每颗标签的 key 终生不变（`panel-tabs.ts` 的铁律）。对话标签指向哪条会话记在
+ * `panel-store` 的指向表里：「新对话」草稿发出第一条消息，只是那颗标签的指向从「没有」
+ * 变成那条会话 —— key、位置、焦点、内容实例都不动。所以这里**没有任何「替换标签 /
+ * 交接现场」的步骤**，只有「当前会话变了 → 确保它有一颗标签」这一条对齐。
  *
- * 判定全在 `panel-tabs.ts`（纯函数）。之所以用「带前缀的 key」而不是给标签加 type 字段：
- * `panel-store` / `panel-groups` 那套状态机只认一个字符串，key 自带类型 = 状态机一行不改，
- * 类型只在渲染层解析一次。
+ * 工具标签（终端 / 接口 / 笔记…）不对应任何会话 —— 点 / 关 / 拖它们都**不该**动
+ * `activeConversationId`。判定在 `panel-tabs.ts`（纯函数）。
  *
  * ## 内容一律常挂载
  *
@@ -51,30 +50,27 @@ import {
 } from 'react'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { findShortcutByEvent, isShortcutRecording, useShortcuts } from '@fizz/agent-kit/shared/lib/shortcuts'
-import {
-  isConversationTabKey,
-  NEW_TAB_KEY,
-} from '@fizz/agent-kit/shared/lib/panel-tabs'
 import { pruneToolTabs } from '@fizz/agent-kit/shared/lib/tool-tabs'
 import { pruneTabReloads } from './tab-reload'
 import {
   activeTabKey,
+  alignConversationTab,
   allTabKeys,
   closeTabs,
-  ensureTab,
-  openTab,
-  replaceTab,
+  conversationOfTab,
+  openDraftTab,
+  openTabKeys,
+  staleConversationTabs,
   usePanelState,
 } from '@fizz/agent-kit/shared/lib/panel-store'
+import { consumeDraftConversation } from '@fizz/agent-kit/shared/lib/draft-tab-handoff'
 import { useGroupActions } from './panel-view/group-actions'
 import { PanelContentLayer } from './panel-view/PanelContentLayer'
 import { PaneNodeView } from './panel-view/PaneNodeView'
 
-export { NEW_TAB_KEY }
-
 export function PanelView() {
   const state = usePanelState()
-  const { app, adoptDraftPanel } = useAppContext()
+  const { app } = useAppContext()
   const { closeAndSync } = useGroupActions()
 
   const activeConversationId = app.activeConversationId
@@ -84,97 +80,71 @@ export function PanelView() {
    * 「每次渲染都换引用」的东西收进 ref，让下面那些兜底 effect 只由「当前会话 / 面板状态 /
    * 会话清单」变了触发，而不是每次无关重渲染都重跑。
    */
-  const actionsRef = useRef({ app, adoptDraftPanel })
-  actionsRef.current = { app, adoptDraftPanel }
+  const actionsRef = useRef({ app })
+  actionsRef.current = { app }
 
   /**
    * 零标签 → 补一张「新对话」草稿标签（与手机端 `apps/mobile/.../PanelView.tsx` 同一套做法）。
    *
    * 「一个标签都没有」不是一个该被展示的状态：关光所有标签的本意就是收起手头的事，
-   * 而空白页上什么也做不了。补一张 `__new__` 草稿标签后，主区域直接落在「开始新对话」页
+   * 而空白页上什么也做不了。补一张草稿标签后，主区域直接落在「开始新对话」页
    * （没有项目时也是这一页 —— 加项目就在输入框下面那行，见 `ChatPanel` / `WorkspaceSelect`）。
    *
    * `useLayoutEffect`：在浏览器绘制前补上，不先闪一帧空白。
    *
    * ⚠️ **有待恢复的会话时不要补**：刷新 / 冷启动会经 `useAgentApp` 恢复上次的会话，
    * 那一刻先塞草稿的话，下面那个 effect 开完真实会话就会并排多出一张「新对话」。
-   *
-   * ⚠️ 补的是草稿标签，不是给 `activeConversationId` 找一条会话：启动恢复仍是
-   * `useAgentApp` 的事，恢复到位后草稿会被下面的 effect **就地替换**（`replaceTab`）。
    */
   useLayoutEffect(() => {
-    if (allTabKeys(state).length > 0) return
+    if (openTabKeys().length > 0) return
     if (activeConversationId) return
-    openTab(NEW_TAB_KEY)
+    openDraftTab()
   }, [state, activeConversationId])
 
   /**
    * 「选中**具体会话** → 焦点标签」：侧栏选中一条会话 / 启动恢复时同步标签。
    * `null` 不代表「自动打开新对话」：它也意味着刚关完所有标签。冷启动和刷新时若
    * 因为会话尚未恢复就给这个 `null` 自动找一条会话，用户关光的会话会凭空长回来。
-   * **显式**新建仍由侧栏动作打开 `NEW_TAB_KEY`；零标签的情况另有一支（见上面那句
-   * `useLayoutEffect`）—— 补的是一张草稿，不指向任何会话。
+   * **显式**新建仍由侧栏动作开草稿标签；零标签的情况另有一支（见上面那句
+   * `useLayoutEffect`）。
    *
-   * 首次挂载时如果已有主机/终端标签，只补会话、不抢焦点；若显式新建占位标签
-   * 已经是唯一标签，第一条消息建出的真实会话会把它就地替换，不产生并排的两张
-   * —— 那一支还要把草稿的面板现场**交给**新会话（`adoptDraftPanel`），
-   * 否则用户在新对话标签里开着的终端会随着标签被替换一起消失。
+   * 怎么对齐只有一条规则（`alignConversationTab`，三端共用、有单测）：
+   * - 会话已经有标签 → 不动；
+    * - 它是**在草稿页发消息**建出来的 → 只有发起创建的那颗草稿标签可接下它；若该标签
+    *   已关闭，就新开会话标签，不能误绑到后来创建的新草稿（见 `draft-tab-handoff.ts`）；
+   * - 草稿正被看着（启动恢复）→ 同样由草稿接下，不然会并排多出一张「新对话」；
+   * - 其余 → 新开一颗。
+   *
+   * 首次挂载时面板里已经有别的标签（例如刚从「主机」侧栏开出来的主机标签）→ 只补进来、
+   * 不抢焦点。
    */
   const mountedRef = useRef(false)
   useEffect(() => {
     const key = activeConversationId
-    if (!mountedRef.current) {
-      mountedRef.current = true
-      if (!key) return
-      if (activeTabKey() !== null) {
-        ensureTab(key)
-        return
-      }
-    }
     if (!key) return
-    /**
-     * 草稿标签（`__new__`）**正被看着** → 就地把它换成新会话的标签。
-     *
-     * ⚠️ 判据是「草稿是焦点组当前显示的那张」，**不是**「面板上只有这一张草稿」。
-     * 旧判据 `open.length === 1` 只在「面板是干净的」时成立；而最常见的路径恰恰是
-     * 用户在**某条会话 / 终端标签还开着**的时候点「新建对话」，面板上是 `[别的标签, __new__]`，
-     * 于是掉进下面的 `openTab(key)` —— 草稿留着、又并排多出一张会话标签（用户报的
-     * 「发个消息怎么又开了一个对话标签」）。用户刚在草稿里发消息，焦点必然在草稿上，
-     * 所以用 `activeTabKey()` 判既精确又不会误伤「草稿挂在后台」的情况。
-     *
-     * 只换草稿这一颗（`replaceTab`），**其它标签原样保留** —— 不能退回 `syncTabs([key])`，
-     * 那会把用户开着的终端 / 其它会话一起摘掉。
-     *
-     * 先把草稿那份面板现场交给新会话（终端 / 文件现场不丢），再换标签 —— 换完草稿 key
-     * 就没人认领了（回收 effect 会把它当成「标签已关」清掉）。
-     * ⚠️ 只在这一支做：别的分支（草稿挂在后台、或用户点的是既有会话）都不该动草稿现场，
-     * 那会让「新对话」标签开着的东西凭空跑到别的会话上去。
-     */
-    if (activeTabKey() === NEW_TAB_KEY) {
-      actionsRef.current.adoptDraftPanel(key)
-      replaceTab(NEW_TAB_KEY, key)
-      return
-    }
-    openTab(key)
+    const firstMount = !mountedRef.current
+    mountedRef.current = true
+    alignConversationTab(key, {
+      draftHandoff: consumeDraftConversation(key),
+      focus: !(firstMount && activeTabKey() !== null),
+    })
   }, [activeConversationId])
 
   /**
    * 「会话被**删除 / 归档** → 它的标签跟着消失」。
    *
-   * 标签集合是**会话清单的视图**，但以前只有「当前会话 → 焦点标签」这一条同步线
+   * 标签集合是**会话清单的视图**，但只有「当前会话 → 焦点标签」这一条同步线
    * （上面那个 effect 只认 `activeConversationId` 的**变化**）。于是：
    * - 删掉 / 归档一条**没在看的**会话，它的标签原封不动留在标签条上（标题退化成
    *   「对话」，点进去是一条空会话）；
    * - 删掉正在看的那条，store 会把当前会话切到邻居，但**旧标签照样留着**；
    * - 另一台客户端删 / 归档的（状态 WS 推来新清单）本地同样不处理。
-   * 所以这里按**清单**对一次表：清单里没有、或已归档的会话标签，直接裸关。
+   * 所以这里按**清单**对一次表：指向已消失会话的标签，直接裸关。
    *
-   * ⚠️ 四个前提，缺一个就会误关：
+   * ⚠️ 三个前提，缺一个就会误关：
    * 1. `conversationsLoaded`：首屏清单还没落地时，空清单会把所有对话标签判成「已消失」；
-   * 2. 跳过 `NEW_TAB_KEY`：草稿标签不是会话（`isConversationTabKey` 只按「不是工具标签」
-   *    判，草稿 key 会漏进来）；
-   * 3. 裸关（`closeTabs`，不过守卫）：会话都没了，再问一句「确定关掉吗」没有意义；
-   * 4. 关完要把「当前会话」对齐到焦点组现在的活动标签 —— 归档的正是当前会话时，
+   * 2. 裸关（`closeTabs`，不过守卫）：会话都没了，再问一句「确定关掉吗」没有意义；
+   * 3. 关完要把「当前会话」对齐到焦点组现在的活动标签 —— 归档的正是当前会话时，
    *    `activeConversationId` 还指着那条（已归档的）会话，而上面那个 effect 只认
    *    「变化」不会自己纠；更糟的是「零标签补草稿」那条会因为「有 active」而不补，
    *    面板就空在那儿。
@@ -187,24 +157,22 @@ export function PanelView() {
     const alive = new Set(
       app.conversations.filter((c) => !c.archivedAt).map((c) => c.id)
     )
-    const stale = allTabKeys().filter(
-      (k) => k !== NEW_TAB_KEY && isConversationTabKey(k) && !alive.has(k)
-    )
+    const stale = staleConversationTabs(alive)
     if (stale.length) closeTabs(stale)
 
     const current = actionsRef.current.app.activeConversationId
     if (!current || alive.has(current)) return
-    const nextKey = activeTabKey()
-    if (nextKey && nextKey !== NEW_TAB_KEY && isConversationTabKey(nextKey)) {
-      // 面板上还剩别的**会话**标签（关掉那个之后焦点组顺移到了它）→ 当前会话跟着它走。
+    // 面板上焦点组顺移到的标签如果指向一条活着的会话 → 当前会话跟着它走；否则退回空态
+    // （零标签时由上面那条 `useLayoutEffect` 补一张草稿标签）
+    const next = activeTabKey()
+    const nextConversation = next ? conversationOfTab(next) : undefined
+    if (nextConversation) {
       // 用 store 的 `openConversation` 而不是 context 那个：这里只是纠状态，不该顺手
-      // 再 `openTab` 一遍、更不该替用户切视图。
-      actionsRef.current.app.openConversation(nextKey)
+      // 再开标签、更不该替用户切视图。
+      actionsRef.current.app.openConversation(nextConversation)
       return
     }
-    // 面板上剩下的不是会话标签（工具标签 / 空）→ 退回空态；零标签时由上面那条
-    // `useLayoutEffect` 补一张草稿标签
-    actionsRef.current.app.openConversation(null)
+    actionsRef.current.app.openConversation(null, { keepScroll: nextConversation === null })
   }, [app.conversations, app.conversationsLoaded])
 
   /**

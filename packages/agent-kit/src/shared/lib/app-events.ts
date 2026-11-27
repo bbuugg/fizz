@@ -27,7 +27,7 @@ export const APP_EVENTS = {
  * `voiceStart` / `voiceStop` 的 `detail`。
  *
  * `tabKey` = 焦点组（`activeGroupId`）当时正在显示的那个标签 key（`activeTabKey()`）：
- * 会话标签的 key 就是会话 id，空态是 `__new__`，终端等工具标签各是前缀 key。
+ * 对话标签是 `chat:<n>`（草稿页与真实会话同一种 key），终端等工具标签各是前缀 key。
  * 只有自己那一栏的 Composer 该响应 —— 分屏时两栏同时挂载，没有这一项会两边一起开麦。
  */
 export interface VoiceShortcutDetail {

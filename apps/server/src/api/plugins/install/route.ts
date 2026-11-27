@@ -25,8 +25,8 @@
  *
  * ## 热重载
  *
- * 装完清模块缓存（目录里任何文件变化都靠源码指纹失效，这里只是立刻生效）、作废上传源
- * 长驻 context、作废插件模型缓存；响应直接是重扫后的完整列表。
+ * 装完清模块缓存（目录里任何文件变化都靠源码指纹失效，这里只是立刻生效）、作废插件
+ * 模型缓存；响应直接是重扫后的完整列表。
  */
 import { join, resolve, sep } from 'node:path'
 import { mkdir, mkdtemp, rename, rm, stat, writeFile } from 'node:fs/promises'
@@ -40,7 +40,6 @@ import type { PluginDescriptor } from '@fizz/plugin'
 import { discoverServerPlugins, withRuntimeConfig } from '@/lib/server/plugin-roots'
 import { syncPluginRootDeps } from '@/lib/server/plugin-deps'
 import { invalidatePluginModels, refreshPluginModels } from '@/lib/server/plugin-models'
-import { invalidateUploadProviders } from '@/lib/server/upload/registry'
 import { invalidateConversationHooks } from '@/lib/server/conversation-hooks'
 import { jsonError, parseJsonBody } from '@/app/api/_lib/auth'
 import {
@@ -121,7 +120,6 @@ export async function POST(request: Request): Promise<Response> {
   const rollback = async (): Promise<void> => {
     await rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
     invalidatePluginModule()
-    await invalidateUploadProviders(workspace?.id)
     // 全局插件（workspace 为空）影响所有工作区；项目级只影响这一个
     await invalidateConversationHooks(workspace?.id)
     invalidatePluginModels()
@@ -203,7 +201,6 @@ export async function POST(request: Request): Promise<Response> {
 
     // 目录内文件都是新写的：整份缓存清掉最稳（安装是低频操作）
     invalidatePluginModule()
-    await invalidateUploadProviders(workspace?.id)
     await invalidateConversationHooks(workspace?.id)
     invalidatePluginModels()
     if (scope === 'global') await refreshPluginModels()

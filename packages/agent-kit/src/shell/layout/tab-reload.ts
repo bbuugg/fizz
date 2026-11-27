@@ -86,6 +86,9 @@ export function reloadTabContent(key: string): void {
 /**
  * 回收已关闭标签的代号（关标签的路径不止一条 —— 标签上的 ×、右键的一批关闭、`alignToTabs`
  * 的对齐 —— 由 `PanelView` 的兜底 effect 集中做一次，与 `pruneToolTabs` 同款理由）。
+ *
+ * 标签 key 是终生不变的身份（`panel-tabs.ts`），所以代号跟着 key 走就够了：草稿标签
+ * 变成会话标签时 key 不变，代号原地不动，不需要任何「交接」。
  */
 export function pruneTabReloads(openKeys: readonly string[]): void {
   if (gens.size === 0) return

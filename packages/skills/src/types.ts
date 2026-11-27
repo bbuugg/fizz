@@ -56,3 +56,18 @@ export interface SkillListResult {
   roots: SkillRootInfo[]
   settings: SkillSettings
 }
+
+/**
+ * 单个技能的 SKILL.md 原文（设置页「技能」列表点开一行的 Markdown 预览用）。
+ *
+ * `content` 是**磁盘原文**（含 frontmatter），不做解析 —— 预览要让人看到文件里
+ * 到底写了什么，列表里的 name / description 已经是解析过的投影了。
+ */
+export interface SkillDocResult {
+  /** 技能 id（SKILL.md 的绝对路径，与 `SkillInfo.id` 同一份） */
+  id: string
+  /** SKILL.md 绝对路径 */
+  file: string
+  /** SKILL.md 全文 */
+  content: string
+}

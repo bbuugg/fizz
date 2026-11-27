@@ -61,27 +61,62 @@ export function forgetAcpTranscript(conversationId: string): void {
   acpTranscripts.delete(conversationId)
 }
 
+/** 按「用户消息开一轮」切分：每项 = 该轮的用户消息 + 跟在它后面的助手消息 */
+function historyTurns(messages: AgentChatMessage[]): AgentChatMessage[][] {
+  const result: AgentChatMessage[][] = []
+  for (const message of messages) {
+    if (message.role === 'user') result.push([message])
+    else result.at(-1)?.push(message)
+  }
+  return result
+}
+
+function textOfMessage(message: AgentChatMessage): string {
+  return message.parts
+    .filter((p) => p.type === 'text').map((p) => p.text).join('').trim()
+}
+
+/**
+ * 把 `session/load` 重建出来的消息 id 换回上一份快照里的 id。
+ *
+ * 为什么要搬：回放的消息 id 是现编的（`u-replay-N` / `a-replay-N`，见 `replayAcpSessionOnce`），
+ * 而客户端手里那份仍是原来的 id（开跑时那条用户消息就是客户端给的 `userMessageId`）。
+ * 前端的「跑动中重载」是**按 id 求差**合并快照与本地现场的（`mergeHistory`：历史里出现过的
+ * id 用本地版本、本地独有的接在末尾），两边 id 一个都对不上时，本地那份历史会被原样追加到
+ * 末尾 —— 它正好接在这一轮用户消息后面，界面上就是「刚发出的消息下面又跟了一整套旧对话」，
+ * 直到这一轮结束走「整份替换」才复位（用户报的「发出的消息跑到上一条 AI 回复上方」）。
+ *
+ * 只按**轮次**对齐，绝不按位置硬搬：用户消息要求正文一致，助手消息要求该轮两边各恰好一条
+ * （「一轮 = 一条助手消息」是 ACP 侧既有口径，见 `carryOverDurations`）。任何一处对不上就停，
+ * 剩下的保持回放 id —— 那一轮顶多多挂一次，也不能把 id 挪到别的轮上。
+ */
+export function carryOverIds(from: AgentChatMessage[], to: AgentChatMessage[]): void {
+  const fromTurns = historyTurns(from)
+  const toTurns = historyTurns(to)
+  for (const [index, target] of toTurns.entries()) {
+    const source = fromTurns[index]
+    if (!source?.[0] || !target[0]) break
+    if (textOfMessage(source[0]) !== textOfMessage(target[0])) break
+    target[0].id = source[0].id
+    const sourceAssistants = source.filter((message) => message.role === 'assistant')
+    const targetAssistants = target.filter((message) => message.role === 'assistant')
+    if (sourceAssistants.length === 1 && targetAssistants.length === 1) {
+      targetAssistants[0].id = sourceAssistants[0].id
+    }
+  }
+}
+
 /**
  * 运行错误由工作台捕获，agent 的 session/load 不一定回放它，不能随权威正文一起擦掉。
  * 回放 id 会重编，按用户消息的顺序与正文对齐轮次；一旦对不上就停止，避免把旧错误挂错轮。
  * 只补缺失错误；回放已有正文时不复制本地正文，整条失败回复未回放时才保留本地消息。
  */
 export function carryOverErrors(from: AgentChatMessage[], to: AgentChatMessage[]): void {
-  const turns = (messages: AgentChatMessage[]): AgentChatMessage[][] => {
-    const result: AgentChatMessage[][] = []
-    for (const message of messages) {
-      if (message.role === 'user') result.push([message])
-      else result.at(-1)?.push(message)
-    }
-    return result
-  }
-  const textOf = (message: AgentChatMessage): string => message.parts
-    .filter((p) => p.type === 'text').map((p) => p.text).join('').trim()
   const errorsOf = (message: AgentChatMessage) => message.role === 'assistant'
     ? message.parts.filter((p) => p.type === 'text' && p.text.trimStart().startsWith(ERROR_TEXT_PREFIX))
     : []
-  const replayTurns = turns(to)
-  for (const [index, source] of turns(from).entries()) {
+  const replayTurns = historyTurns(to)
+  for (const [index, source] of historyTurns(from).entries()) {
     const target = replayTurns[index]
     const failed = source.filter((message) => errorsOf(message).length > 0)
     if (!target) {
@@ -90,7 +125,7 @@ export function carryOverErrors(from: AgentChatMessage[], to: AgentChatMessage[]
       to.push(...source)
       continue
     }
-    if (textOf(source[0]) !== textOf(target[0])) return
+    if (textOfMessage(source[0]) !== textOfMessage(target[0])) return
     const seen = new Set(target.flatMap(errorsOf).map((p) => p.type === 'text' ? p.text : ''))
     for (const message of failed) {
       const missing = errorsOf(message).filter((p) => {

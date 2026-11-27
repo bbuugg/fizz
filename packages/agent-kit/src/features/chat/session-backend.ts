@@ -37,12 +37,12 @@ export function composerToolbarState(app: AgentApp) {
 }
 
 /**
- * 这一轮能不能带图片附件（输入区回形针的闸门）。
+ * 这一轮能不能带图片附件（只限制图片选项，文档提取为文字后仍可发送）。
  *
  * - **内置会话**：能。模型吃不吃图是服务端在发送时按 `imageInput` 判的，前端不按模型
  *   能力藏按钮 —— 藏了用户根本没机会知道「换个模型就能发」。
  * - **ACP 会话**：只看 agent 广告的 `promptCapabilities.image`（`AcpAgentView.imageInput`）。
- *   它是三态：`false` = agent 明说不收 → 藏；`undefined` = 还没连过（新加的 agent /
+ *   它是三态：`false` = agent 明说不收 → 禁用图片；`undefined` = 还没连过（新加的 agent /
  *   老版本不广告）→ **乐观显示**，真不收由服务端在发送时明确拒绝，别让用户先看到
  *   「为什么我这儿没有回形针」这种更难解释的状态。
  */

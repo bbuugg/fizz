@@ -15,7 +15,6 @@
  *
  * 插件的生效时机**按能力分**（面板里有说明，别写混）：
  * - 工具 / 提示词 / 钩子挂在 turn context 上 → **下一轮对话**；
- * - 上传源（`ctx.uploads`）挂在长驻 context 上 → 回到输入框重开附件菜单即可选到。
  *
  * 插件的**设置项**（`ctx.ui.setting`）在卡片上的「配置」按钮打开的**弹窗**里编辑：值存在服务端
  * （密钥项加密，且只回 `hasValue`），保存后立刻生效（挂载缓存指纹里含设置值）。
@@ -60,6 +59,7 @@ import {
   SelectValue
 } from '@fizz/ui/select'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { writeClipboard } from '@fizz/agent-kit/shared/lib/clipboard'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { getAgentHostOrNull } from '@fizz/agent-client/host'
 import { refreshPluginSurfaces } from '@fizz/agent-kit/shared/lib/plugin-surfaces'
@@ -612,7 +612,7 @@ export function PluginsPanel({
 
   const copyText = async (text: string, what: string): Promise<void> => {
     try {
-      await navigator.clipboard.writeText(text)
+      await writeClipboard(text)
       toast.success(tr('已复制{what}', { what }))
     } catch {
       toast.error(tr('复制失败：剪贴板不可用（可手动选中路径复制）'))
@@ -854,8 +854,6 @@ export function PluginsPanel({
           // 也是插件列表那一行用的同一份），否则用 `ctx.ui.icon`。两个来源都只放行
           // data:image/*，所以这里当图片源用即可（**绝不**把声明内容拼进 DOM）
           const pluginIcon = plugin.manifest.icon ?? decl?.icon
-          // 它注册的上传源：显示出来，用户才知道「这个插件给了我一个附件上传目标」
-          const uploadSources = data?.uploads?.[plugin.id] ?? []
           // 它要的 npm 依赖（按插件根合成后共享一份 node_modules）与自带前端半的界面
           const deps = Object.entries(plugin.manifest.dependencies ?? {})
           return (
@@ -921,31 +919,6 @@ export function PluginsPanel({
                     <Copy className="size-3" />
                   </button>
                 </div>
-                {uploadSources.length > 0 && (
-                  <div className="mt-1.5 space-y-0.5 border-l border-border/60 pl-2">
-                    {uploadSources.map((source) => (
-                      <div
-                        key={`u:${source.id}`}
-                        className="text-[0.625rem] leading-4 text-muted-foreground"
-                        title={
-                          source.acceptMime.length
-                            ? tr('接受：{list}', { list: source.acceptMime.join(', ') })
-                            : tr('接受：内置白名单（图片 + PDF）')
-                        }
-                      >
-                        <span className="text-foreground/80">{tr('上传源：')}{source.title}</span>
-                        <span className="ml-1 rounded bg-muted px-1 text-muted-foreground">
-                          {tr('附件菜单')}
-                        </span>
-                        {source.maxBytes ? (
-                          <span className="ml-1 text-muted-foreground">
-                            ≤{Math.round(source.maxBytes / 1024 / 1024)}MB
-                          </span>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                )}
                 {declPanels.length > 0 && (
                   <div className="mt-1.5 space-y-0.5 border-l border-border/60 pl-2">
                     {declPanels.map((panel) => (

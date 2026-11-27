@@ -12,8 +12,6 @@
  * 预设**不会自动落库**：设置页把它们列出来，点一下只是把默认命令与参数
  * 填进新增表单，用户仍可改参数再保存（`AcpAgentConfig` 的真源永远是用户自己存的那份）。
  */
-import type { AcpAgentType } from '@fizz/acp'
-
 export interface AcpAgentPreset {
   /** 稳定标识，同时也是图标的键（`AcpAgentIcon` 按它对图标） */
   id: string
@@ -23,8 +21,6 @@ export interface AcpAgentPreset {
   command: string
   /** 默认启动参数 */
   args: string[]
-  /** 会话里的模式 UI 语义；缺省 = generic（不显示模式 UI） */
-  type?: AcpAgentType
 }
 
 export const ACP_AGENT_PRESETS: AcpAgentPreset[] = [
@@ -32,12 +28,12 @@ export const ACP_AGENT_PRESETS: AcpAgentPreset[] = [
   { id: 'codex', name: 'Codex CLI', command: 'codex-acp', args: [] },
   { id: 'gemini', name: 'Gemini CLI', command: 'gemini', args: ['--acp'] },
   { id: 'open_claw', name: 'OpenClaw', command: 'openclaw', args: ['acp'] },
-  { id: 'open_code', name: 'OpenCode', command: 'opencode', args: ['acp'], type: 'opencode' },
+  { id: 'open_code', name: 'OpenCode', command: 'opencode', args: ['acp'] },
   { id: 'cline', name: 'Cline', command: 'cline', args: ['--acp'] },
   { id: 'hermes', name: 'Hermes Agent', command: 'hermes', args: ['acp'] },
   { id: 'code_buddy', name: 'CodeBuddy', command: 'codebuddy', args: ['--acp'] },
   { id: 'kimi_code', name: 'Kimi Code', command: 'kimi', args: ['acp'] },
-  { id: 'pi', name: 'Pi', command: 'pi-acp', args: [], type: 'pi' },
+  { id: 'pi', name: 'Pi', command: 'pi-acp', args: [] },
   { id: 'grok', name: 'Grok', command: 'grok', args: ['agent', 'stdio'] },
   { id: 'cursor', name: 'Cursor', command: 'cursor-agent', args: ['acp'] },
   { id: 'deepseek', name: 'DeepSeek Harness', command: 'deepseek-acp', args: [] },

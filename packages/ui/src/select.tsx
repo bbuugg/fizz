@@ -260,7 +260,7 @@ function SelectItem({
       {rich ? (
         <SelectPrimitive.ItemText asChild>
           <div className="flex min-w-0 flex-1 items-start gap-3">
-            {icon ? <span className="mt-px flex shrink-0 items-center">{icon}</span> : null}
+            {icon ? <span className="mt-[3px] flex shrink-0 items-center">{icon}</span> : null}
             <div className="min-w-0">
               <div className="leading-5 font-medium">{children}</div>
               <div className="mt-0.5 text-[13px] leading-5 text-muted-foreground">

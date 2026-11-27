@@ -75,7 +75,7 @@ export function createConversationCore(deps: ConvDeps) {
     const keep = new Set<string>();
     if (keepId) keep.add(keepId);
     for (const [id, s] of entries) {
-      if (s.streaming || s.request || get().runningConversations[id])
+      if (s.streaming || s.preparingSend || s.request || s.recoveryPhase || get().runningConversations[id])
         keep.add(id);
     }
     const rest = entries
@@ -198,8 +198,8 @@ export function createConversationCore(deps: ConvDeps) {
    *
    * 档位（模式 / 思考档）只有起一次 agent 进程问 `session/new` 才拿得到，一次几秒。
    * 原来只认 `draftAcp` 这一个槽位、且只判「同一个 agent 才复用」，所以**在几个外部
-   * Agent 之间来回切每次都要重新转圈几秒**（用户报的就是这个：换一个 provider 就要
-   * 重新加载模式数据）。缓存按 agentId 分开存，切回去是内存命中，pill 立刻就有数据。
+   * Agent 之间来回切每次都要重新转圈几秒**。缓存按 agent + 模型分开存，避免把一个
+   * 模型的思考档挂到另一个模型上；切回已经探过的模型时仍然即时命中。
    *
    * ## 边界
    *
@@ -229,13 +229,23 @@ export function createConversationCore(deps: ConvDeps) {
    * 不挡发送；失败的条目过了 TTL 才会重试。
    */
 
-  const probeDraftAcp = async (agentId: string): Promise<void> => {
+  const probeDraftAcp = async (agentId: string, modelId?: string): Promise<void> => {
     const current = get().draftAcp;
-    const same = current?.agentId === agentId;
-    /** 把探到的能力填进草稿槽（只在槽里还是这个 agent 时写，避免覆盖刚切走的那个） */
+    const sameAgent = current?.agentId === agentId;
+    const same = sameAgent && current.modelId === modelId;
+    const key = JSON.stringify([agentId, modelId ?? null]);
+    const matches = (draft: typeof current): boolean => draft?.agentId === agentId && draft.modelId === modelId;
+    const seed = {
+      agentId, ...(modelId ? { modelId } : {}), loading: true, error: null,
+      modes: sameAgent ? current.modes : null,
+      thoughtLevel: sameAgent ? current.thoughtLevel : null,
+      mode: sameAgent ? current.mode : null,
+      thought: sameAgent ? current.thought : null,
+    };
+    /** 只写仍在看这个 agent + 模型的草稿；迟到的旧响应不能覆盖新选择。 */
     const fill = (probe: AcpProbeResult): void => {
       set((state) =>
-        state.draftAcp?.agentId === agentId
+        matches(state.draftAcp) && state.draftAcp
           ? {
               draftAcp: {
                 ...state.draftAcp,
@@ -243,88 +253,45 @@ export function createConversationCore(deps: ConvDeps) {
                 error: null,
                 modes: probe.modes,
                 thoughtLevel: probe.thoughtLevel,
+                mode: probe.modes?.available.some((o) => o.id === state.draftAcp?.mode) ? state.draftAcp.mode : null,
+                thought: probe.thoughtLevel?.options.some((o) => o.value === state.draftAcp?.thought) ? state.draftAcp.thought : null,
               },
             }
           : state,
       );
     };
 
-    const hit = draftAcpCache.get(agentId);
+    const hit = draftAcpCache.get(key);
+    if (!same) set({ draftAcp: seed });
     if (hit && !(hit instanceof Promise)) {
       if (hit.ok) {
-        // 命中：先把 pill 点亮，再让槽位对上这个 agent（换 agent 时清掉别的 agent 的选择）
-        if (!same) {
-          set({
-            draftAcp: {
-              agentId,
-              loading: false,
-              error: null,
-              modes: hit.value.modes,
-              thoughtLevel: hit.value.thoughtLevel,
-              mode: null,
-              thought: null,
-            },
-          });
-        } else if (current.loading || current.error) {
-          fill(hit.value);
-        }
+        fill(hit.value);
         return;
       }
       // 失败缓存还在 TTL 内：不重新起进程，直接把上次的原因摆出来
       if (Date.now() - hit.at < DRAFT_ACP_FAIL_TTL_MS) {
-        if (!same) {
-          set({
-            draftAcp: {
-              agentId,
-              loading: false,
-              error: hit.reason,
-              modes: null,
-              thoughtLevel: null,
-              mode: null,
-              thought: null,
-            },
-          });
-        } else if (current.loading || !current.error) {
-          set((state) =>
-            state.draftAcp?.agentId === agentId
-              ? {
-                  draftAcp: {
-                    ...state.draftAcp,
-                    loading: false,
-                    error: hit.reason,
-                  },
-                }
-              : state,
-          );
-        }
+        set((state) => matches(state.draftAcp) && state.draftAcp
+          ? { draftAcp: { ...state.draftAcp, loading: false, error: hit.reason } } : state);
         return;
       }
-      draftAcpCache.delete(agentId);
+      draftAcpCache.delete(key);
     }
     // 已经在飞 / 槽里已经是这个 agent 的成功结果：不必重探
-    if (hit instanceof Promise) return;
+    if (hit instanceof Promise) return hit;
     if (same && !current.loading && !current.error) return;
 
     set({
-      draftAcp: {
-        agentId,
-        loading: true,
-        error: null,
-        modes: same ? current.modes : null,
-        thoughtLevel: same ? current.thoughtLevel : null,
-        mode: same ? current.mode : null,
-        thought: same ? current.thought : null,
-      },
+      draftAcp: seed,
     });
     const api = get().getApi();
     if (!api) {
-      draftAcpCache.set(agentId, {
+      draftAcpCache.set(key, {
         ok: false,
         reason: "未连接服务端",
         at: Date.now(),
       });
       set((state) =>
-        state.draftAcp?.agentId === agentId
+        matches(state.draftAcp) && state.draftAcp
           ? {
               draftAcp: {
                 ...state.draftAcp,
@@ -342,14 +309,14 @@ export function createConversationCore(deps: ConvDeps) {
      */
     const run = (async (): Promise<void> => {
       try {
-        const res = await api.probeAcpCapabilities(agentId);
-        draftAcpCache.set(agentId, { ok: true, value: res });
+        const res = await api.probeAcpCapabilities(agentId, modelId);
+        draftAcpCache.set(key, { ok: true, value: res });
         fill(res);
       } catch (err) {
         const reason = errorMessage(err);
-        draftAcpCache.set(agentId, { ok: false, reason, at: Date.now() });
+        draftAcpCache.set(key, { ok: false, reason, at: Date.now() });
         set((state) =>
-          state.draftAcp?.agentId === agentId
+          matches(state.draftAcp) && state.draftAcp
             ? {
                 draftAcp: {
                   ...state.draftAcp,
@@ -361,7 +328,7 @@ export function createConversationCore(deps: ConvDeps) {
         );
       }
     })();
-    draftAcpCache.set(agentId, run);
+    draftAcpCache.set(key, run);
     await run;
   };
 
@@ -378,8 +345,11 @@ export function createConversationCore(deps: ConvDeps) {
     });
   };
 
+  const targetWrites = new Map<string, Promise<unknown>>();
+  const targetRequests = new Map<string, symbol>();
+
   /**
-   * 把模型选择持久化到会话（fire-and-forget：失败不打扰，刷新时以服务端为准）。
+   * 把模型选择持久化到会话；ACP 同步回传的能力，并在模型卡内报告失败。
    * 同时同步本地列表项 —— 会话摘要里带着 backend / configId / modelId，打开会话时要用来恢复。
    *
    * **清单先改、请求后发**（乐观）：分屏时非焦点标签的 pill 与「这一轮用哪个模型」都读
@@ -395,6 +365,11 @@ export function createConversationCore(deps: ConvDeps) {
   ): void => {
     const api = get().getApi();
     if (!api) return;
+    const request = Symbol();
+    targetRequests.set(conversationId, request);
+    if (target?.backend === 'acp') {
+      writeSlice(conversationId, (slice) => ({ ...slice, acpConfigLoading: true, acpConfigError: null }));
+    }
     const applyLocal = (): void => {
       set((state) => ({
         conversations: state.conversations.map((c) =>
@@ -410,8 +385,7 @@ export function createConversationCore(deps: ConvDeps) {
       }));
     };
     applyLocal();
-    void api
-      .setConversationTarget(
+    const send = () => api.setConversationTarget(
         conversationId,
         target
           ? {
@@ -420,9 +394,35 @@ export function createConversationCore(deps: ConvDeps) {
               modelId: target.modelId ?? null,
             }
           : { backend: null, configId: null, modelId: null },
-      )
-      .then(applyLocal)
-      .catch(() => undefined);
+      );
+    // 同一会话的快速切换串行发出，服务端最终模型必须是用户最后一次选择。
+    const previous = targetWrites.get(conversationId);
+    const write = (previous ? previous.then(send, send) : send())
+      .then((result) => {
+        if (targetRequests.get(conversationId) !== request) return;
+        const snapshot = result?.acpSessionState;
+        if (snapshot) {
+          set((state) => ({ conversations: state.conversations.map((c) =>
+            c.id === conversationId && c.backend === target?.backend && c.configId === target?.configId && c.modelId === target?.modelId
+              ? { ...c, acpModes: snapshot.modes ?? undefined, acpThoughtLevel: snapshot.thoughtLevel ?? undefined }
+              : c
+          ) }));
+        }
+      })
+      .catch((error) => {
+        if (targetRequests.get(conversationId) === request && target?.backend === 'acp') {
+          writeSlice(conversationId, (slice) => ({ ...slice, acpConfigError: errorMessage(error) }));
+        }
+      })
+      .finally(() => {
+        if (targetRequests.get(conversationId) !== request) return;
+        targetRequests.delete(conversationId);
+        targetWrites.delete(conversationId);
+        if (get().slices[conversationId]?.acpConfigLoading) {
+          writeSlice(conversationId, (slice) => ({ ...slice, acpConfigLoading: false }));
+        }
+      });
+    targetWrites.set(conversationId, write);
   };
 
   /** 把会话的思考强度持久化（fire-and-forget，同 persistTarget 的约定） */

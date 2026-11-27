@@ -37,7 +37,7 @@
 import { createContext, useContext, useSyncExternalStore } from 'react'
 
 export interface OpenFileRequest {
-  /** 发起方所在标签的面板 key（`ConversationTab` 的 key：会话 id / `draft:<工作区>`） */
+  /** 发起方所在标签的 key（`ConversationTab` 传它自己那颗标签的；不是会话 id） */
   panelKey: string
   /** 目标文件所属工作区（`FilesPanel` 只认自己那一个） */
   workspaceId: string

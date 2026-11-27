@@ -24,7 +24,7 @@ import {
 } from '@fizz/ui/context-menu'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { PanelTab } from '@fizz/agent-kit/shared/components/PanelTab'
-import { NEW_TAB_KEY } from '@fizz/agent-kit/shared/lib/panel-tabs'
+import { isDraftTab } from '@fizz/agent-kit/shared/lib/panel-store'
 import {
   horizontalRatio,
   PANEL_TAB_TYPE,
@@ -94,7 +94,7 @@ export function PanelTabItem({
    * - **工具标签** → 只改主区域标签的**显示名**（内存里的一层别名，关掉重开恢复原名，
    *   不回写主机清单 / 接口清单，见 `renameToolTab`）。
    */
-  const renamable = tabKey !== NEW_TAB_KEY
+  const renamable = !isDraftTab(tabKey)
 
   /**
    * 拖放落点的「并入本组并切过去」要用**最新**的 `onActivate`（= `activateAndSync`）。

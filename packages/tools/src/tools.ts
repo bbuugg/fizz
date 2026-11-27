@@ -1008,8 +1008,8 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
          * 本轮的 abort / 超时都打不到它（那正是「dev server 活过这一轮」的实现方式）。
          */
         if (runInBackground) {
-          // 后台进程归本地任务登记表持有；远端工作区没有对应的进程表（首期不支持）
-          if (backend.kind === 'remote') {
+          // 远端只有显式接入任务登记通道才支持后台执行，绝不回落到本机 spawn。
+          if (backend.kind === 'remote' && !opts.onBackgroundCommand) {
             return '远端工作区首期不支持后台执行（run_in_background），命令**没有**启动。请改为普通执行（受本轮超时约束），或让用户在远端自己开一个终端。'
           }
           if (!opts.onBackgroundCommand) {

@@ -141,11 +141,12 @@ const useOptionalProviderAttachments = () =>
 export type PromptInputProviderProps = PropsWithChildren<{
   initialInput?: string;
   /**
-   * 草稿的持久化键（会话 id 或 `draft:<工作区>`）。传了就把输入内容写进 localStorage，
-   * 刷新页面后按同一个键恢复。
+   * 草稿的持久化键。传了就把输入内容写进 localStorage，刷新页面后按同一个键恢复。
    *
-   * 调用方换键时要给 Provider 加 `key`（ChatPanel 就是这么做的）：这里只在挂载时读一次，
-   * 不监听外部键变化 —— 一个输入框永远属于一个标签。
+   * 它是**地址**（按会话 id 存；「新对话」页用常量作用域 `DRAFT_PANEL_SCOPE`），不是标签的
+   * 身份 —— 标签身份是 Provider 的 `key`。两者分开，所以调用方换键时**不需要**重挂 Provider：
+   * 草稿页发出第一条消息，输入框原地从「草稿」变成某条会话的，正在打的字 / 附件都不丢。
+   * 换键那一刻的存档搬运会自动做（见下面那个 effect）。
    */
   draftKey?: string;
 }>;
@@ -164,21 +165,52 @@ export function PromptInputProvider({
   const [textInput, setTextInput] = useState(() =>
     (draftKey ? loadChatDraft(draftKey) : null) ?? initialTextInput
   );
+  const textInputRef = useRef(textInput);
+  textInputRef.current = textInput;
+  // onStarted 可能仍持有「新对话」时的回调，但此时草稿已迁到会话键；读当前地址，不能清旧键。
+  const draftKeyRef = useRef(draftKey);
+  draftKeyRef.current = draftKey;
+  /**
+   * 存档键换了地址：旧键下的存档作废，输入框里现有的内容落到新键上。
+   *
+   * 什么时候换：「新对话」页发出第一条消息，会话建好，这颗标签（连同它的输入框）从
+   * 「草稿」变成那条会话的 —— 标签身份不变（Provider 不重挂），变的只是「它属于哪条会话」。
+   *
+   * 为什么必须搬：不搬的话，刚才发出去的那段文字还留在草稿作用域下，用户下次点
+   * 「新建对话」，它原样出现在输入框里（像消息没发出去）；而用户在等会话建好期间
+   * 接着敲的新字，则因为还没触发写入、刷新一下就没了。
+   *
+   * ⚠️ 首次挂载不跑（`prev === draftKey`）：那时的内容是从新键自己的存档读回来的，
+   * 没有「旧键」可言。
+   */
+  const prevDraftKeyRef = useRef(draftKey);
+  useEffect(() => {
+    const prev = prevDraftKeyRef.current;
+    if (prev === draftKey) return;
+    prevDraftKeyRef.current = draftKey;
+    if (prev) clearChatDraft(prev);
+    if (draftKey) saveChatDraft(draftKey, textInputRef.current);
+  }, [draftKey]);
   /**
    * 写入发生在 `setInput` / `clear` 里而不是 effect 里：输入是逐字发生的，effect 要等
    * 提交后才跑，用户敲完立刻刷新可能丢最后一笔；同步写一条短字符串的代价可以忽略。
    */
   const setInput = useCallback(
     (value: string) => {
+      textInputRef.current = value;
       setTextInput(value);
-      if (draftKey) saveChatDraft(draftKey, value);
+      const key = draftKeyRef.current;
+      if (key) saveChatDraft(key, value);
     },
-    [draftKey]
+    []
   );
   const clearInput = useCallback(() => {
+    // 同步更新，避免已排队的迁移 effect 在下一次渲染前又把刚发出的正文存回去。
+    textInputRef.current = "";
     setTextInput("");
-    if (draftKey) clearChatDraft(draftKey);
-  }, [draftKey]);
+    const key = draftKeyRef.current;
+    if (key) clearChatDraft(key);
+  }, []);
 
   // ----- attachments state (global when wrapped)
   const [attachmentFiles, setAttachmentFiles] = useState<

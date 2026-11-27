@@ -46,9 +46,8 @@ export const AGENT_SHORTCUT_ACTIONS: AgentShortcutMeta[] = [
   { action: 'open-command-palette', label: '打开命令面板', defaultAccelerator: 'CommandOrControl+Shift+P' },
   { action: 'open-settings', label: '打开设置', defaultAccelerator: 'CommandOrControl+Alt+S' },
   // desktop 标题栏最左那颗按钮也走这个动作（跨树广播）。
-  // 侧边栏只保留这一组键。action 名沿用 `toggle-sidebar-alt`：老配置里
-  // 它已经存着 Alt+1 的会被直接沿用；更早只有 `toggle-sidebar` 的配置不再读取。
-  { action: 'toggle-sidebar-alt', label: '打开 / 关闭侧边栏', defaultAccelerator: 'Alt+1' },
+  // 侧边栏快捷键统一走应用配置，UI 原语不再另挂监听；action 名保持不变以沿用自定义配置。
+  { action: 'toggle-sidebar-alt', label: '打开 / 关闭侧边栏', defaultAccelerator: 'CommandOrControl+B' },
   { action: 'toggle-terminal', label: '打开 / 关闭终端', defaultAccelerator: 'CommandOrControl+Alt+T' },
   { action: 'toggle-files', label: '打开 / 关闭工作区文件', defaultAccelerator: 'CommandOrControl+Alt+F' },
   { action: 'toggle-git', label: '打开 / 关闭源代码管理', defaultAccelerator: 'CommandOrControl+Alt+G' },
@@ -121,6 +120,13 @@ export function isShortcutRecording(): boolean {
 }
 
 const STORAGE_KEY = 'fizz.agent.shortcuts'
+/** 快捷键独立存于 localStorage；旧数组没有版本号，视为 v0。 */
+const DATA_VERSION = 1
+
+interface ShortcutStorage {
+  version: number
+  shortcuts: Partial<AgentShortcutConfig>[]
+}
 
 /** 从 localStorage 读取配置；损坏 / 缺动作时按缺省补齐 */
 export function loadShortcuts(): AgentShortcutConfig[] {
@@ -128,16 +134,32 @@ export function loadShortcuts(): AgentShortcutConfig[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return fallback()
-    const parsed = JSON.parse(raw) as Partial<AgentShortcutConfig>[]
+    const stored = JSON.parse(raw) as Partial<ShortcutStorage> | Partial<AgentShortcutConfig>[] | null
+    const parsed = Array.isArray(stored) ? stored : stored?.shortcuts
     if (!Array.isArray(parsed)) return fallback()
+    const version = !Array.isArray(stored) && typeof stored?.version === 'number' ? stored.version : 0
     // 以缺省清单为准（新增动作能自动补上），只采用用户存过的 accelerator。
-    // 不做「旧默认值 → 新默认值」的迁移：历史配置原样保留，改过的、没改过的都不动。
-    return DEFAULT_AGENT_SHORTCUTS.map((def) => {
-      const found = parsed.find((s) => s.action === def.action)
+    const shortcuts = DEFAULT_AGENT_SHORTCUTS.map((def) => {
+      const found = parsed.find((s) => s?.action === def.action)
       const accelerator =
         typeof found?.accelerator === 'string' ? found.accelerator : def.accelerator
       return { action: def.action, accelerator }
     })
+    if (version < 1) {
+      // v0 → v1：只迁移旧侧栏默认值，保留自定义 / 禁用；新组合被其他动作占用时不抢键。
+      const sidebar = shortcuts.find((s) => s.action === 'toggle-sidebar-alt')
+      const nextAccelerator = 'CommandOrControl+B'
+      const occupied = shortcuts.some((s) => (
+        s.action !== 'toggle-sidebar-alt' &&
+        normalizeAccelerator(s.accelerator) === normalizeAccelerator(nextAccelerator)
+      ))
+      if (sidebar && normalizeAccelerator(sidebar.accelerator) === 'alt+1' && !occupied) {
+        sidebar.accelerator = nextAccelerator
+      }
+    }
+    // 写回版本，确保用户之后主动改回 Alt+1 时不会再次被迁移覆盖。
+    if (version < DATA_VERSION) saveShortcuts(shortcuts)
+    return shortcuts
   } catch {
     return fallback()
   }
@@ -145,7 +167,7 @@ export function loadShortcuts(): AgentShortcutConfig[] {
 
 export function saveShortcuts(shortcuts: AgentShortcutConfig[]): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(shortcuts))
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: DATA_VERSION, shortcuts }))
   } catch {
     // 存不进去也不致命：本次会话内仍生效
   }

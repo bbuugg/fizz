@@ -1,11 +1,11 @@
 /**
- * 附件（图片 / PDF）的前端状态与校验。交互对齐 ainav/sdk 的 ChatInput：
+ * 附件（图片 / 文档）的前端状态与校验。交互对齐 ainav/sdk 的 ChatInput：
  * 选中即占位（图片立刻本地预览）、上传进度、失败标记、发送前剥掉未完成的附件。
  *
  * 真正的上传在 `lib/api.ts` 的 `uploadFile`（desktop 走 IPC 桥、web 走 XHR 带进度），
  * 这里只管「哪些文件能传」与「附件列表条目长什么样」。
  */
-import { UPLOAD_ALLOWED_MIME, UPLOAD_MAX_BYTES, isUploadAllowedMime } from '@fizz/contracts/agent-api'
+import { UPLOAD_MAX_BYTES, normalizeUploadMediaType } from '@fizz/contracts/agent-api'
 import type { AgentMessagePart, UploadFileRef } from '@fizz/contracts/types'
 
 /** 输入框附件区的一条待发送附件（与 ainav 的 ChatAttachment 同形状） */
@@ -25,11 +25,6 @@ export interface ChatAttachment {
   progress: number
   /** 上传失败原因（非空 = 失败态，发送时被剥掉） */
   error?: string
-  /**
-   * 这条附件传到哪个上传源（`local` = 内置存储，其余 = 插件注册的上传源）。
-   * 选中文件时就定下来（整个批次的附件用同一个源），随引用一起提交 / 落盘。
-   */
-  provider?: string
 }
 
 let attachmentSeq = 0
@@ -50,43 +45,29 @@ export function shouldStartAttachmentUpload(
   return !signal.aborted && pickedConversationId === activeConversationId
 }
 
-/** 本地预校验用的容量口径（按「所有可用上传源的并集」算出来，见 ChatPanel 的 providers） */
-export interface UploadLimits {
-  /** 任一可用源接受的 MIME 精确集合 */
-  mime: readonly string[]
-  /** 其中最大的单文件上限 */
-  maxBytes: number
-}
-
 /**
- * 类型（精确 MIME 白名单，svg 刻意排除）与大小校验。**缺省按契约口径**（图片 + PDF / 10MB），
- * 传了 `limits` 就按它判 —— 插件注册的上传源可以声明自己的 accept，比契约宽或窄都行。
+ * 类型（精确白名单，svg 刻意排除）与大小校验，统一按契约口径（图片 + 文档 / 10MB）。
  *
  * 拒绝项带可直接 toast 的人话原因，`file.name` 拼在前面。
  */
 export function splitUploadable(
-  files: FileList | File[],
-  limits?: UploadLimits
+  files: FileList | File[]
 ): {
   ok: File[]
   rejected: Array<{ name: string; reason: string }>
 } {
-  const allowed = new Set(limits?.mime ?? [...UPLOAD_ALLOWED_MIME])
-  const maxBytes = limits?.maxBytes ?? UPLOAD_MAX_BYTES
   const ok: File[] = []
   const rejected: Array<{ name: string; reason: string }> = []
   for (const file of Array.from(files)) {
-    // 知道目标上传源时**只按它**判（插件可以比契约宽，也可以更窄）；不知道就按契约口径
-    const typeOk = limits ? allowed.has(file.type) : isUploadAllowedMime(file.type)
-    if (!typeOk) {
+    if (!normalizeUploadMediaType(file.name, file.type)) {
       rejected.push({
         name: file.name,
-        reason: limits ? '选定的上传源不支持这种文件类型' : '仅支持图片和 PDF 文件'
+        reason: '仅支持图片及 PDF、DOCX、TXT、Markdown、CSV、JSON 文档'
       })
-    } else if (file.size > maxBytes) {
+    } else if (file.size > UPLOAD_MAX_BYTES) {
       rejected.push({
         name: file.name,
-        reason: `文件大小不能超过 ${Math.round(maxBytes / 1024 / 1024)}MB`
+        reason: `文件大小不能超过 ${Math.round(UPLOAD_MAX_BYTES / 1024 / 1024)}MB`
       })
     } else {
       ok.push(file)
@@ -105,11 +86,10 @@ export function splitUploadable(
 export function sendableAttachments(attachments: ChatAttachment[]): UploadFileRef[] {
   return attachments
     .filter((a) => a.uploaded && a.url)
-    .map(({ name, mediaType, url, provider }) => ({
+    .map(({ name, mediaType, url }) => ({
       name,
       mediaType,
-      url,
-      ...(provider ? { provider } : {})
+      url
     }))
 }
 
@@ -127,7 +107,7 @@ export function fileRefsOfParts(parts: AgentMessagePart[]): UploadFileRef[] {
     // 只剩 base64，没有可重发的 `/api/uploads/...` 地址。带上它去「编辑重发」会被
     // 服务端当非法附件拒掉，所以这里直接排除。
     p.type === 'file' && !p.url.startsWith('data:')
-      ? [{ name: p.name, mediaType: p.mediaType, url: p.url, ...(p.provider ? { provider: p.provider } : {}) }]
+      ? [{ name: p.name, mediaType: p.mediaType, url: p.url }]
       : []
   )
 }

@@ -77,14 +77,17 @@ function makeStore() {
   Object.assign(state, slice)
   Object.assign(state, boot, { activeConversationId: FOCUS })
 
-  // 开跑整轮太重（要 api / 目标 / SSE）：这里只关心「发到哪条会话、发了什么」
+  // 开跑整轮太重（要 api / 目标 / SSE）：模拟确认开跑，再检查「发到哪条会话、发了什么」。
   const runRound = vi.fn(
     async (
       _text: string,
       _files?: unknown,
-      _onStarted?: unknown,
+      onStarted?: () => void,
       _scope?: string | null
-    ) => true
+    ) => {
+      onStarted?.()
+      return true
+    }
   )
   state.runRound = runRound
 

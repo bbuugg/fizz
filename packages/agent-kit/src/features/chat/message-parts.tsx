@@ -44,6 +44,7 @@ import {
   isUnansweredFollowup
 } from '@fizz/agent-kit/shared/lib/ask-followup'
 import { formatMessageTime, formatMessageTimeExact } from '@fizz/agent-kit/shared/lib/message-time'
+import { writeClipboard } from '@fizz/agent-kit/shared/lib/clipboard'
 import { ContextCompactionCard } from '@fizz/agent-kit/features/chat/ContextCompactionCard'
 import type { ContextCompactionState } from '@fizz/agent-kit/shared/lib/stores/slices/conversation'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
@@ -127,6 +128,8 @@ export interface MessageFollowupBridge {
  * 整轮结束后正文还会大部分被收进折叠条。合并只修显示，不动落盘数据。
  */
 export interface MessagePartsProps {
+  onStopTool?: (toolCallId: string) => void
+  onStopTurn?: () => void
   message: AgentChatMessage
   index: number
   /** 消息总条数：`index` 跟它比才知道「是不是最后一条」 */
@@ -187,6 +190,8 @@ function MaxStepsNotice({ steps, onContinue }: { steps?: number; onContinue?: ()
 }
 
 function MessagePartsInner({
+  onStopTool,
+  onStopTurn,
   message,
   index,
   total,
@@ -305,6 +310,8 @@ function MessagePartsInner({
       resumable && part.type === 'tool-call' ? normalizeFollowup(part.input).title : ''
     return (
       <PartView
+        onStopTool={onStopTool}
+        onStopTurn={onStopTurn}
         key={`${message.id}-${partIndex}`}
         part={part}
         onReload={partIndex === reloadErrorIndex ? onReload : undefined}
@@ -594,7 +601,7 @@ function MessagePartsInner({
         acpKind={acpKind}
         toolName={toolName}
         // 只停这一段里正在跑的那一步（判据在 `groupHead`），整轮继续
-        onStop={stopToolCallId ? () => void stopCommand(stopToolCallId) : undefined}
+        onStop={stopToolCallId ? () => onStopTool ? onStopTool(stopToolCallId) : void stopCommand(stopToolCallId) : undefined}
       >
         {current.map(({ part: stepPart, partIndex: stepIndex }) => (
           <Fragment key={stepIndex}>
@@ -673,6 +680,8 @@ export const MessageParts = memo(
   MessagePartsInner,
   (prev, next) =>
     prev.message === next.message &&
+    prev.onStopTool === next.onStopTool &&
+    prev.onStopTurn === next.onStopTurn &&
     prev.onReload === next.onReload &&
     prev.reloading === next.reloading &&
     prev.index === next.index &&
@@ -762,7 +771,7 @@ export function MessageActionRow({
   const copy = (): void => {
     const text = textOf(message)
     if (!text) return
-    void navigator.clipboard.writeText(text).then(() => {
+    void writeClipboard(text).then(() => {
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1200)
     })

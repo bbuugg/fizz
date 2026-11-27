@@ -27,6 +27,7 @@ import {
 } from "@fizz/agent-kit/shared/lib/tool-actions";
 import { httpStatusOf } from "@fizz/agent-client/api";
 import { saveLastTarget } from "@fizz/agent-kit/shared/lib/last-target";
+import { markDraftConversation } from "@fizz/agent-kit/shared/lib/draft-tab-handoff";
 import { errorMessage, nextLocalId } from "@fizz/agent-kit/shared/lib/stores/shared";
 import { loadQueue, loadQueuePaused, saveQueue } from "../storage";
 import { subscribing, reconciling, sleep, sleepReconnect } from "../reconnect";
@@ -42,14 +43,38 @@ function mergeHistory(
   preserveLocal = false,
 ): AgentChatMessage[] {
   const localById = new Map(local.map((m) => [m.id, m]));
-  const known = new Set(history.map((m) => m.id));
+  // 服务重启后运行中快照可能只含本轮提问。先按真实 id 锚定它在本地的位置，
+  // 保住快照缺失的旧历史；不能仅因首条同为 user 就把旧提问当成已覆盖。
+  const start = history[0] ? local.findIndex((m) => m.id === history[0].id) : -1;
+  const ordered = start > 0 ? [...local.slice(0, start), ...history] : history;
+  const known = new Set(ordered.map((m) => m.id));
+  /**
+   * 「历史覆盖了本地哪一段」不只按 id 认，还要按**位置 + 角色**认。
+   *
+   * 只按 id 求差有个致命缺口：ACP 的 `session/load` 回放会给消息现编 id
+   * （`u-replay-N` / `a-replay-N`），而本地那份仍是原来的 id —— 两边认不出来，本地那
+   * 整段历史就被当成「历史里没有的新消息」接在末尾，正好落在这一轮用户消息后面。
+   * 界面上就是「刚发出的消息下面又跟了一整套旧对话」，要等这一轮结束走整份替换才复位
+   * （用户报的「发出的消息跑到上一条 AI 回复上方」）。服务端 `carryOverIds` 已经在按轮
+   * 换回原 id，这里是同一件事的第二道闸：漏了一条路也不至于把历史挂错位置。
+   *
+   * 判据是「本地不短于历史，且前 history.length 条与历史**同角色**」——同角色序列
+   * （u/a 交替）对得上才认为本地那一段就是同一批历史，把被覆盖的前缀丢掉。对不上就
+   * 退回按 id 求差：宁可多挂一条，也不吃掉用户刚发的那条。
+   */
+  const covered =
+    ordered.length > 0 &&
+    local.length >= ordered.length &&
+    ordered.every((m, index) => local[index]?.role === m.role)
+      ? ordered.length
+      : 0;
   return [
-    ...history.map((m) =>
+    ...ordered.map((m) =>
       preserveLocal || (assistantId && isSteerAssistant(m, assistantId))
         ? localById.get(m.id) ?? m
         : m,
     ),
-    ...local.filter((m) => !known.has(m.id)),
+    ...local.filter((m, index) => index >= covered && !known.has(m.id)),
   ];
 }
 
@@ -742,6 +767,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
           probeError = err;
         }
         if (!current()) return false;
+        writeSlice(conversationId, (s) => ({ ...s, recoveryPhase: "syncing" }));
         const fetched = await loadMessages(conversationId, {
           loadError: true,
           keepLoading: true,
@@ -770,8 +796,12 @@ export function createConversationRunLoop(ctx: ConvCore) {
 
         if (conversation?.backend === "acp" && conversation.configId) {
           const cwd = get().workspaces.find((w) => w.id === conversation.workspaceId)?.path;
+          if (!run && conversation.acpSessionId && !cwd) {
+            throw new Error("工作区目录不可用，无法恢复会话");
+          }
           if (run || (conversation.acpSessionId && cwd)) {
             try {
+              writeSlice(conversationId, (s) => ({ ...s, recoveryPhase: run ? "syncing" : "restoring" }));
               const transcript = await api.getAcpTranscript(
                 conversation.configId, conversationId, conversation.acpSessionId ?? "", cwd ?? "",
               );
@@ -817,6 +847,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
         if (current()) writeSlice(conversationId, (s) => ({
           ...s,
           loading: false,
+          recoveryPhase: null,
           scrollResetSeq: opts?.resetScroll === false ? s.scrollResetSeq : s.scrollResetSeq + 1,
         }));
         if (recoveries.get(conversationId) === pending) recoveries.delete(conversationId);
@@ -824,7 +855,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
     });
     recoveries.set(conversationId, pending);
     writeSlice(conversationId, (s) => ({
-      ...s, loading: true, error: null,
+      ...s, loading: true, recoveryPhase: "checking", error: null,
       ...(fresh
         ? {
             queuedMessages: loadQueue(conversationId),
@@ -943,6 +974,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
     const conversationId = resolveConvId(scope);
     if (!conversationId) return;
     if (get().runningConversations[conversationId]) return;
+    if (readSlice(conversationId).preparingSend) return;
     // 用户手动暂停：自动链到此为止（队列原样留着）。`force` 是用户点「启动 / 立即发送」
     // 的那一下，属于显式动作，不该被自己的暂停拦住。
     if (!opts?.force && readSlice(conversationId).queuePaused) return;
@@ -951,8 +983,14 @@ export function createConversationRunLoop(ctx: ConvCore) {
     if (!next) return;
     // 有下一条要发：失败暂停的标记就地解除（继续执行 = 用户拍板过了）
     writeSlice(conversationId, (s) => ({ ...s, queuePausedReason: null }));
-    patchQueue(conversationId, queue.slice(1));
-    void get().runRound(next.text, next.files, undefined, conversationId);
+    // 等确认开跑才摘队首：ACP 准备失败仍未发送，不能把这条需求吃掉。
+    void get().runRound(next.text, next.files, () => {
+      patchQueue(conversationId, readSlice(conversationId).queuedMessages.filter((m) => m.id !== next.id));
+    }, conversationId).then((started) => {
+      if (!started && get().slices[conversationId]?.queuedMessages.some((m) => m.id === next.id)) {
+        writeSlice(conversationId, (s) => ({ ...s, queuePausedReason: "failed" }));
+      }
+    });
   };
 
   /**
@@ -1023,6 +1061,8 @@ export function createConversationRunLoop(ctx: ConvCore) {
      * 视图层按标签传入（见 `agentAppFrom`），否则非焦点标签发的消息会插到焦点会话里。
      */
     scope?: string | null,
+    /** 新对话页发起建会话的标签身份；不得在建会话异步期间重新查询当前草稿。 */
+    draftTabKey?: string,
   ): Promise<boolean> => {
     const api = get().getApi();
     if (!api) return false;
@@ -1089,6 +1129,43 @@ export function createConversationRunLoop(ctx: ConvCore) {
         throw err;
       }
       if (!conversationId) return false;
+      /**
+       * 这条会话是**从「新对话」页发出来的**：给标签层留一枚记号，让发出消息的那颗草稿
+       * 标签指向它（而不是另开一颗）。建会话是异步的（ACP 要起进程），用户可能已经切去
+       * 看别的标签 —— 标签层不能靠「草稿此刻是不是焦点」来判（见 `draft-tab-handoff.ts`）。
+       */
+       markDraftConversation(conversationId, draftTabKey ?? null);
+    }
+
+    const conversation = get().conversations.find((c) => c.id === conversationId);
+    if (conversation?.backend === "acp" && conversation.acpSessionId) {
+      const id = conversationId;
+      const slice = readSlice(id);
+      if (slice.preparingSend || slice.streaming || get().runningConversations[id]) return false;
+      // 先占发送位，再跨异步边界；重复点击不能排出第二次恢复或第二个 prompt。
+      writeSlice(id, (s) => ({ ...s, preparingSend: true, error: null }));
+      const current = (): boolean => get().getApi() === api && !!get().slices[id]?.preparingSend;
+      try {
+        const recovery = recoveries.get(id);
+        if (recovery && !(await recovery)) return false;
+        if (!current() || readSlice(id).streaming || get().runningConversations[id]) return false;
+        const { sessions } = await api.listAcpProcesses();
+        if (!current()) return false;
+        // 检测往返期间也可能有人点了重载；旧的进程快照不能越过后来开始的恢复。
+        const concurrentRecovery = recoveries.get(id);
+        if (concurrentRecovery && !(await concurrentRecovery)) return false;
+        if (!current()) return false;
+        const ready = sessions.some((entry) => entry.agentId === conversation.configId &&
+          entry.conversationId === id && entry.alive && entry.sessionId === conversation.acpSessionId);
+        if (!ready && !(await loadConversation(id, { resetScroll: false }))) return false;
+        // 恢复可能接上另一端正在跑的轮次；保留草稿，让用户决定之后如何发送。
+        if (!current() || readSlice(id).streaming || get().runningConversations[id]) return false;
+      } catch (err) {
+        if (current()) writeSlice(id, (s) => ({ ...s, error: errorMessage(err) }));
+        return false;
+      } finally {
+        if (current()) writeSlice(id, (s) => ({ ...s, preparingSend: false }));
+      }
     }
 
     const userMessage: AgentChatMessage = {

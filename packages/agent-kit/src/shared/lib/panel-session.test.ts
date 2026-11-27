@@ -4,13 +4,15 @@
  * 这条测试在防「刷新后停在某个工作区，点终端打不开；切到别的工作区再切回来才行」：
  * 首帧里 `activeWorkspaceId` 已经从 localStorage 恢复，但 `workspaces` 列表还没拉回来，
  * 现场于是被建成 `cwd: null` 并缓存；列表到达后必须能用同一个解析函数把路径补上。
+ *
+ * 两个函数的第一个参数都是**标签指向的会话 id**（草稿标签传 `null`）—— 不是标签 key。
  */
 import { describe, expect, it } from 'vitest'
 
 import {
-  mergeDraftPanel,
   resolvePanelWorkspace,
   resolveTerminalCwd,
+  retargetPanelWorkspace,
   type PanelSession
 } from './panel-session'
 
@@ -19,6 +21,28 @@ const workspaces = [
   { id: 'w-b', path: 'D:/b' }
 ]
 const conversations = [{ id: 'c-a', workspaceId: 'w-a' }]
+
+/** `retargetPanelWorkspace`：换工作区只改归属，终端一个不落（PTY 不重开） */
+describe('retargetPanelWorkspace', () => {
+  it('换工作区后终端原样留着，只改 workspaceId / cwd', () => {
+    const base = panel({
+      terminals: [{ id: 'term-1', shellId: null, cwd: 'D:/a' }],
+      tabOrder: ['terminal:term-1'],
+      sideTab: 'terminal:term-1'
+    })
+    const next = retargetPanelWorkspace(base, 'w-b', 'D:/b')
+    expect(next.workspaceId).toBe('w-b')
+    expect(next.cwd).toBe('D:/b')
+    // 终端自己的 cwd 不变（已经在旧目录里跑起来了，不能跟着换）
+    expect(next.terminals).toEqual([{ id: 'term-1', shellId: null, cwd: 'D:/a' }])
+    expect(next.sideTab).toBe('terminal:term-1')
+  })
+
+  it('归属没变时原样返回（不造无谓的新对象 / 不多渲染一轮）', () => {
+    const base = panel({ workspaceId: 'w-a', cwd: 'D:/a' })
+    expect(retargetPanelWorkspace(base, 'w-a', 'D:/a')).toBe(base)
+  })
+})
 
 describe('resolvePanelWorkspace', () => {
   it('会话自己的工作区优先于现场已有 / 当前选中', () => {
@@ -29,21 +53,21 @@ describe('resolvePanelWorkspace', () => {
   })
 
   it('没有对应会话（草稿标签）时用现场已有的工作区', () => {
-    expect(resolvePanelWorkspace('draft:w-b', 'w-b', conversations, workspaces, 'w-a')).toEqual({
+    expect(resolvePanelWorkspace(null,'w-b', conversations, workspaces, 'w-a')).toEqual({
       workspaceId: 'w-b',
       cwd: 'D:/b'
     })
   })
 
   it('现场还没有工作区时回落到当前选中', () => {
-    expect(resolvePanelWorkspace('draft:w-a', '', conversations, workspaces, 'w-a')).toEqual({
+    expect(resolvePanelWorkspace(null,'', conversations, workspaces, 'w-a')).toEqual({
       workspaceId: 'w-a',
       cwd: 'D:/a'
     })
   })
 
   it('工作区列表还没到达时 cwd 为 null（等列表到了再补算）', () => {
-    expect(resolvePanelWorkspace('draft:w-a', 'w-a', conversations, [], 'w-a')).toEqual({
+    expect(resolvePanelWorkspace(null,'w-a', conversations, [], 'w-a')).toEqual({
       workspaceId: 'w-a',
       cwd: null
     })
@@ -55,7 +79,7 @@ describe('resolvePanelWorkspace', () => {
    * 下一个仍在清单里的候选，否则补算永远得不到路径。
    */
   it('现场里的工作区已被删除时退到当前选中（拿得到目录）', () => {
-    expect(resolvePanelWorkspace('draft:w-a', 'w-deleted', conversations, workspaces, 'w-a')).toEqual({
+    expect(resolvePanelWorkspace(null,'w-deleted', conversations, workspaces, 'w-a')).toEqual({
       workspaceId: 'w-a',
       cwd: 'D:/a'
     })
@@ -70,7 +94,7 @@ describe('resolvePanelWorkspace', () => {
   })
 
   it('候选全都不在清单里时保留最高优先级的 id，cwd 为空', () => {
-    expect(resolvePanelWorkspace('draft:w-x', 'w-x', conversations, workspaces, 'w-y')).toEqual({
+    expect(resolvePanelWorkspace(null,'w-x', conversations, workspaces, 'w-y')).toEqual({
       workspaceId: 'w-x',
       cwd: null
     })
@@ -86,7 +110,7 @@ describe('resolvePanelWorkspace', () => {
  */
 describe('resolveTerminalCwd', () => {
   it('现场 cwd 为空、列表已到：用最新数据解析出目录（刷新后点终端的主力场景）', () => {
-    expect(resolveTerminalCwd('draft:w-a', 'w-a', null, conversations, workspaces, 'w-a')).toEqual({
+    expect(resolveTerminalCwd(null,'w-a', null, conversations, workspaces, 'w-a')).toEqual({
       workspaceId: 'w-a',
       cwd: 'D:/a'
     })
@@ -100,25 +124,18 @@ describe('resolveTerminalCwd', () => {
   })
 
   it('解析不到新路径时退回现场里已有的 cwd（保留现场归属）', () => {
-    expect(resolveTerminalCwd('draft:w-a', 'w-a', 'D:/mine', conversations, [], 'w-a')).toEqual({
+    expect(resolveTerminalCwd(null,'w-a', 'D:/mine', conversations, [], 'w-a')).toEqual({
       workspaceId: 'w-a',
       cwd: 'D:/mine'
     })
   })
 
   it('现场和列表都没有可用目录时返回 null（调用方必须当失败提示）', () => {
-    expect(resolveTerminalCwd('draft:w-x', 'w-x', null, conversations, workspaces, 'w-y')).toBeNull()
+    expect(resolveTerminalCwd(null,'w-x', null, conversations, workspaces, 'w-y')).toBeNull()
   })
 })
 
-/**
- * `mergeDraftPanel` 的回归用例。
- *
- * 在防「刷新后点终端，终端闪一下就没了 / 点快捷命令一直等到 5 秒超时」的另一半：
- * 草稿标签被就地替换成会话标签时，目标会话可能已经被后台 patch（git 状态）建出一个
- * 空壳现场；旧实现看到目标已有现场就整份放弃迁移，草稿里刚开出来的终端（PTY）随后
- * 被回收 effect 连现场一起清掉。
- */
+/** 一份空白现场，按需覆盖几个字段 */
 function panel(overrides: Partial<PanelSession>): PanelSession {
   return {
     id: 'panel-x',
@@ -137,49 +154,3 @@ function panel(overrides: Partial<PanelSession>): PanelSession {
     ...overrides
   }
 }
-
-describe('mergeDraftPanel', () => {
-  it('目标是没有终端的空壳：草稿里的终端与正看的标签要保住', () => {
-    const draft = panel({
-      terminals: [{ id: 'term-1', shellId: null, cwd: 'D:/a' }],
-      tabOrder: ['terminal:term-1'],
-      sideTab: 'terminal:term-1',
-      lastSideTab: 'terminal:term-1'
-    })
-    const shell = panel({ gitChanges: { count: 2, truncated: false }, gitBranch: 'main' })
-    const merged = mergeDraftPanel(shell, draft)
-    expect(merged.terminals.map((t) => t.id)).toEqual(['term-1'])
-    expect(merged.sideTab).toBe('terminal:term-1')
-    expect(merged.tabOrder).toEqual(['terminal:term-1'])
-    // 目标的 git 状态不能丢
-    expect(merged.gitChanges).toEqual({ count: 2, truncated: false })
-    expect(merged.gitBranch).toBe('main')
-  })
-
-  it('两边都有终端：按 id 去重拼接，挂出标记取并集', () => {
-    const existing = panel({
-      terminals: [{ id: 'term-1', shellId: null, cwd: 'D:/a' }],
-      filesMounted: true
-    })
-    const draft = panel({
-      terminals: [
-        { id: 'term-1', shellId: null, cwd: 'D:/a' },
-        { id: 'term-2', shellId: null, cwd: 'D:/a' }
-      ],
-      gitMounted: true
-    })
-    const merged = mergeDraftPanel(existing, draft)
-    expect(merged.terminals.map((t) => t.id)).toEqual(['term-1', 'term-2'])
-    expect(merged.filesMounted).toBe(true)
-    expect(merged.gitMounted).toBe(true)
-  })
-
-  it('目标没有目录时用草稿的目录（草稿里的终端说明那条目录能用）', () => {
-    const merged = mergeDraftPanel(
-      panel({ workspaceId: 'w-x', cwd: null }),
-      panel({ workspaceId: 'w-a', cwd: 'D:/a' })
-    )
-    expect(merged.workspaceId).toBe('w-a')
-    expect(merged.cwd).toBe('D:/a')
-  })
-})

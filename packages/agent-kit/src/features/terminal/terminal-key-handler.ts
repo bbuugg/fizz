@@ -11,6 +11,7 @@
 import type { Terminal } from '@xterm/xterm'
 import type { TerminalProcess } from '@fizz/agent-client/web-host'
 import type { InputLine } from '@fizz/agent-kit/shared/lib/terminal-prediction'
+import { writeClipboard } from '@fizz/agent-kit/shared/lib/clipboard'
 import type { ZmodemController } from './zmodem-controller'
 
 export interface TerminalKeyHandlerOptions {
@@ -85,7 +86,7 @@ export function attachTerminalKeyHandler(options: TerminalKeyHandlerOptions): vo
       // 但远端可能还在猛发字节 —— 此时 Ctrl+C 必须仍是「中止」（见 `interrupt()` 的注释）。
       if (zmodemRef.current?.interrupt()) return false
       if (term.hasSelection()) {
-        void navigator.clipboard.writeText(term.getSelection())
+        void writeClipboard(term.getSelection()).catch(() => {})
       } else {
         // SIGINT：shell 当场清行。本地跟踪缓冲也得跟着清，否则缓冲里还留着
         // 中断前敲了一半的命令，下一条命令的预测 / 历史记录都会串上前缀

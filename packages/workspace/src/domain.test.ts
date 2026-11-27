@@ -134,6 +134,88 @@ describe('远端工作区登记', () => {
 })
 
 /**
+ * 主机 / 终端的「复制」。
+ *
+ * ## 防的是什么
+ *
+ * 复制最容易写成「客户端把条目读出来再 `saveSshHost` 一遍」—— 客户端手里只有
+ * `hasPassword` 这类脱敏标记，那一遍会把密码 / 私钥 / passphrase 当成「没传」
+ * （`sealOrKeep` 的语义）落成空：复制出来的主机看得见、连不上，而且没有任何报错。
+ * 所以克隆必须在领域层拷**密文**。这里钉住：凭据能解回原文、跳板 / 分组跟着走、
+ * 名字去重、原条目不受影响。
+ */
+describe('复制主机条目', () => {
+  it('SSH 主机：凭据 / 跳板 / 分组一起克隆，名字加「副本」后缀', () => {
+    const groups = domain.saveHostGroup({ name: '内网' })
+    const groupId = groups.find((g) => g.name === '内网')!.id
+    const jump = domain.saveSshHost({ name: '跳板', host: 'jump.example.com', username: 'root' })
+    const source = domain.saveSshHost({
+      name: '生产',
+      host: 'prod.example.com',
+      port: 2222,
+      username: 'root',
+      password: 'secret-pw',
+      jumpHostId: jump.id,
+      groupId
+    })
+
+    domain.duplicateSshHost(source.id)
+
+    const copy = domain.listSshHosts().find((h) => h.id !== source.id && h.name === '生产 副本')
+    expect(copy).toBeTruthy()
+    expect(copy).toMatchObject({ groupId, hasPassword: true })
+    expect(domain.resolveSshHost(copy!.id)).toMatchObject({
+      host: 'prod.example.com',
+      port: 2222,
+      username: 'root',
+      password: 'secret-pw',
+      jumpHostId: jump.id
+    })
+    // 原条目一个字都没动
+    expect(domain.resolveSshHost(source.id).password).toBe('secret-pw')
+  })
+
+  it('连续复制：名字依次加序号，不撞名', () => {
+    const source = domain.saveSshHost({ name: '生产', host: 'example.com', username: 'root' })
+
+    domain.duplicateSshHost(source.id)
+    domain.duplicateSshHost(source.id)
+
+    const names = domain.listSshHosts().map((h) => h.name)
+    expect(names).toContain('生产 副本')
+    expect(names).toContain('生产 副本 2')
+  })
+
+  it('本机终端也能复制（无凭据，字段原样带走）', () => {
+    const source = domain.saveSshHost({
+      kind: 'local',
+      name: '本机 zsh',
+      shellId: 'zsh',
+      shellName: 'zsh',
+      args: ['-l'],
+      cwd: '/tmp',
+      autoCommand: 'll'
+    })
+
+    domain.duplicateSshHost(source.id)
+
+    const copy = domain.listSshHosts().find((h) => h.id !== source.id)
+    expect(copy).toMatchObject({
+      kind: 'local',
+      name: '本机 zsh 副本',
+      shellId: 'zsh',
+      args: ['-l'],
+      cwd: '/tmp',
+      autoCommand: 'll'
+    })
+  })
+
+  it('条目不存在时报错', () => {
+    expect(() => domain.duplicateSshHost('missing')).toThrow('主机条目不存在')
+  })
+})
+
+/**
  * 路径去重口径：防的是「同一个目录被登记成两行」。
  *
  * 拖拽进侧栏时系统给的是**真实大小写**，而历史登记可能来自手输；Windows / macOS 的
@@ -400,6 +482,20 @@ describe('ACP 运行态同步 · 不动 updatedAt', () => {
     const next = domain.setAcpSessionState(id, { acpModes: modes('plan') })
 
     expect(next).toBe(before)
+  })
+
+  // 防回归：完整配置移除档位必须真正清掉旧值，且不能把会话顶到侧栏最前。
+  it('null 清除旧思考档，undefined 保留；重复清除不落盘', async () => {
+    const id = await acpConversation()
+    const thought = { configId: 'effort', current: 'high', options: [{ value: 'high', name: 'High' }] }
+    domain.setAcpSessionState(id, { acpThoughtLevel: thought, acpModes: modes('plan') })
+    const before = domain.getConversation(id)!
+    expect(domain.setAcpSessionState(id, { acpThoughtLevel: undefined })).toBe(before)
+    const next = domain.setAcpSessionState(id, { acpThoughtLevel: null })
+    expect(next.acpThoughtLevel).toBeUndefined()
+    expect(next.acpModes).toEqual(modes('plan'))
+    expect(next.updatedAt).toBe(before.updatedAt)
+    expect(domain.setAcpSessionState(id, { acpThoughtLevel: null })).toBe(next)
   })
 })
 

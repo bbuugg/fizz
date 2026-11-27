@@ -28,7 +28,7 @@ import type {
 } from '@fizz/contracts/agent-api'
 import type { AcpProbeResult } from '@fizz/acp'
 import type { McpServerConfig, McpServerInput } from '@fizz/mcp'
-import type { SkillListResult } from '@fizz/skills'
+import type { SkillDocResult, SkillListResult } from '@fizz/skills'
 import type {
   SubagentDefinition,
   SubagentId,
@@ -73,7 +73,7 @@ import type {
   ContainerProjectUpdateInput,
   SystemMonitorSettings
 } from '@fizz/contracts'
-import { getLanguage, setLanguage } from '@fizz/i18n'
+import { getLanguage, setLanguage, t } from '@fizz/i18n'
 import { persistLanguage } from '@fizz/agent-kit/shared/lib/language'
 
 import type {
@@ -231,10 +231,8 @@ export interface ServerListsSlice {
   /** 归档 / 取消归档（不删数据；侧栏据此把会话收进 / 放出「已归档」区） */
   archiveConversation: (id: string, archived: boolean) => Promise<void>
   /**
-   * 重启 acp 会话：杀掉 agent 进程、**保留 sessionId**，并立刻用 `session/load` 接回上下文。
-   * 不新建 agent 侧会话、不动本地历史，服务端在重启请求里就完成重连 ——
-   * 这个动作**不改任何本地状态**，成功返回 true（失败原因进 error）。
-   * 用于让 agent 侧的变更生效（新装的 pi 权限扩展、改过的项目信任设置…）。
+   * @deprecated 已合并到 reloadAcpSession；保留旧调用签名，同样重连并同步本地历史。
+   * 空闲时恢复原会话，运行中只同步快照；失败原因留在该会话的 error。
    */
   restartAcpSession: (agentId: string, conversationId: string) => Promise<boolean>
 
@@ -266,6 +264,11 @@ export interface ServerListsSlice {
   deleteMcpServer: (id: string) => Promise<boolean>
   saveSshHost: (input: HostInput) => Promise<boolean>
   deleteSshHost: (id: string) => Promise<boolean>
+  /**
+   * 复制一条主机条目（SSH 主机 / 本机终端）：服务端按原条目克隆一份（含凭据密文），
+   * 名字自动加「副本」后缀。走 `withRefresh` —— 复制是低频动作，不必省那一次刷新。
+   */
+  duplicateSshHost: (id: string) => Promise<boolean>
   /**
    * 隧道动作。**不刷全量列表**（与 `saveSshHost` 那批不同）：服务端每个动作都回一份
    * 「配置 + 运行态」快照，直接写回 store 即可 —— 起停隧道很频繁，为它跑一遍
@@ -485,6 +488,12 @@ export interface ServerListsSlice {
   probeMcpServerTools: (id: string) => Promise<McpServerToolsResult>
   probeUpstreamModels: (input: UpstreamModelsInput) => Promise<string[]>
   reloadSkills: () => Promise<void>
+  /**
+   * 读某个技能的 SKILL.md 原文（技能页点开一行的 Markdown 预览）。
+   *
+   * 不刷列表：读内容不影响任何清单，`withRefresh` 会把整个设置弹窗重挂一遍。
+   */
+  readSkill: (id: string) => Promise<SkillDocResult>
   listAcpAgentSessions: (
     agentId: string,
     cwd?: string
@@ -875,25 +884,8 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
       }
     },
 
-    /**
-     * 重启 acp 会话：服务端杀进程后**立刻重连**；本地什么都不用改 ——
-     * `acpSessionId` 与服务端会话配置都没变，消息也没变，重连结果由服务端返回。
-     */
-    restartAcpSession: async (agentId, conversationId) => {
-      const api = get().getApi()
-      if (!api) return false
-      try {
-        const res = await api.restartAcpAgentSession(agentId, conversationId)
-        if (!res.ok) {
-          get().setError(res.error ?? '重启会话失败')
-          return false
-        }
-        return true
-      } catch (err) {
-        get().setError(errorMessage(err))
-        return false
-      }
-    },
+    /** @deprecated 兼容旧调用方，统一走恢复锁、进程重连与历史同步。 */
+    restartAcpSession: (_agentId, conversationId) => get().reloadAcpSession(conversationId),
 
     // ---------- 配置类动作 ----------
     saveAcpAgent: (input) => withRefresh(() => requireApi().saveAcpAgent(input)),
@@ -990,6 +982,7 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
     deleteMcpServer: (id) => withRefresh(() => requireApi().deleteMcpServer(id)),
     saveSshHost: (input) => withRefresh(() => requireApi().saveSshHost(input)),
     deleteSshHost: (id) => withRefresh(() => requireApi().deleteSshHost(id)),
+    duplicateSshHost: (id) => withRefresh(() => requireApi().duplicateSshHost(id)),
     // ---------- 主机分组（主机 / 终端共用的多级归类树） ----------
     //
     // **不刷全量列表**（与上面那批 `withRefresh` 不同）：这几个接口回的就是受影响的那
@@ -1387,6 +1380,7 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
         get().setError(errorMessage(err))
       }
     },
+    readSkill: (id) => requireApi().readSkill(id),
     listAcpAgentSessions: (agentId, cwd) => {
       const api = get().getApi()
       if (!api) return Promise.resolve({ supported: false, sessions: [] } as Awaited<ReturnType<AgentApi['listAcpAgentSessions']>>)
@@ -1398,48 +1392,66 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
       return api.listAcpAgentModes(agentId, conversationId).catch(() => ({ supported: false, modes: [], currentModeId: null } as Awaited<ReturnType<AgentApi['listAcpAgentModes']>>))
     },
     setAcpAgentMode: async (agentId, conversationId, modeId) => {
-      const api = get().getApi()
+      const state = get()
+      const api = state.getApi()
       if (!api) return { ok: false, error: '未连接服务端' }
-      // 乐观更新：先把会话里记的当前档切过去（界面立刻反映），失败回滚。
-      // 服务端会持久化并标脏，WS 推来的权威快照随后覆盖这里。
-      const prev = get().conversations.find((c) => c.id === conversationId)?.acpModes
-      if (prev) {
-        set((s) => ({
-          conversations: s.conversations.map((c) =>
-            c.id === conversationId ? { ...c, acpModes: { ...prev, current: modeId } } : c
-          )
-        }))
+      const conversation = state.conversations.find((c) => c.id === conversationId)
+      const prev = conversation?.acpModes
+      if (conversation?.backend !== 'acp' || conversation.configId !== agentId ||
+          !prev?.available.some((mode) => mode.id === modeId)) {
+        return { ok: false, error: t('当前模型不支持这个模式') }
       }
+      if (state.slices[conversationId]?.acpConfigLoading || state.slices[conversationId]?.acpConfigError) {
+        return { ok: false, error: t('模型配置尚未就绪，请稍后切换模式') }
+      }
+      if (prev.current === modeId) return { ok: true }
+      const optimistic = { ...prev, current: modeId }
+      set((s) => ({ conversations: s.conversations.map((c) =>
+        c.id === conversationId ? { ...c, acpModes: optimistic } : c
+      ) }))
       const res = await api
         .setAcpAgentMode(agentId, conversationId, modeId)
         .catch((err) => ({ ok: false, error: errorMessage(err) }))
-      if (!res.ok && prev) {
+      if (!res.ok) {
         set((s) => ({
           conversations: s.conversations.map((c) =>
-            c.id === conversationId ? { ...c, acpModes: prev } : c
+            c.id === conversationId && c.backend === 'acp' && c.configId === agentId &&
+            c.modelId === conversation.modelId && c.acpModes === optimistic
+              ? { ...c, acpModes: prev } : c
           )
         }))
       }
       return res
     },
     setAcpThoughtLevel: async (agentId, conversationId, value) => {
-      const api = get().getApi()
+      const state = get()
+      const api = state.getApi()
       if (!api) return { ok: false, error: '未连接服务端' }
-      const prev = get().conversations.find((c) => c.id === conversationId)?.acpThoughtLevel
-      if (prev) {
-        set((s) => ({
-          conversations: s.conversations.map((c) =>
-            c.id === conversationId ? { ...c, acpThoughtLevel: { ...prev, current: value } } : c
-          )
-        }))
+      const conversation = state.conversations.find((c) => c.id === conversationId)
+      const prev = conversation?.acpThoughtLevel
+      if (conversation?.backend !== 'acp' || conversation.configId !== agentId ||
+          !prev?.options.some((option) => option.value === value)) {
+        return { ok: false, error: t('当前模型不支持这个思考档') }
       }
+      const slice = state.slices[conversationId]
+      if (slice?.streaming || slice?.acpConfigLoading) return { ok: false, error: t('会话正忙，请稍后切换思考档') }
+      if (prev.current === value) return { ok: true }
+      const optimistic = { ...prev, current: value }
+      set((s) => ({
+        conversations: s.conversations.map((c) =>
+          c.id === conversationId ? { ...c, acpThoughtLevel: optimistic } : c
+        )
+      }))
       const res = await api
         .setAcpAgentThoughtLevel(agentId, conversationId, value)
         .catch((err) => ({ ok: false, error: errorMessage(err) }))
-      if (!res.ok && prev) {
+      if (!res.ok) {
         set((s) => ({
           conversations: s.conversations.map((c) =>
-            c.id === conversationId ? { ...c, acpThoughtLevel: prev } : c
+            // 只撤回本次写入；迟到的失败不能复活新模型已移除的档位或覆盖配置通知。
+            c.id === conversationId && c.backend === 'acp' && c.configId === agentId &&
+            c.modelId === conversation.modelId && c.acpThoughtLevel === optimistic
+              ? { ...c, acpThoughtLevel: prev } : c
           )
         }))
       }

@@ -59,6 +59,7 @@ import { ROW_ACTION_CLASS } from '@fizz/agent-kit/shared/components/RowAction'
 import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { writeClipboard } from '@fizz/agent-kit/shared/lib/clipboard'
 
 /** 待删除的分支：本地一个名字；远端要拆成远端名 + 分支名（分支名允许带 `/`） */
 export type BranchDeleteTarget =
@@ -320,7 +321,7 @@ export function BranchPicker({
    * 静默失败的话用户以为已经复制到了。
    */
   const copyBranch = (name: string): void => {
-    navigator.clipboard.writeText(name).then(
+    writeClipboard(name).then(
       () => toast.success(tr('已复制分支名')),
       (err: unknown) =>
         toast.error(

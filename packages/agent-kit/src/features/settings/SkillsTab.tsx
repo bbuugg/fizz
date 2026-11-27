@@ -11,13 +11,21 @@
  *
  * 列表上方的搜索框**纯前端过滤**（名字 / 描述 / 来源 / 路径），不打服务端 —— 技能清单
  * 一次就全在手里，装了十几个以后靠它找比上下翻快。
+ *
+ * **点一行 → 弹窗预览 SKILL.md**：列表里只有 name / description（扫出来的投影），
+ * 正文按需去服务端取（`app.readSkill`，只认扫出来的 id，见 `/api/skills/content`），
+ * 拿回来交给 `MessageResponse`（与对话正文同一套 Streamdown 渲染）做 Markdown 预览。
  */
 import { useState } from 'react'
-import { Check, Folder, FolderPlus, RotateCw, Search, X } from 'lucide-react'
+import { Check, Eye, Folder, FolderPlus, RotateCw, Search, X } from 'lucide-react'
 import { Badge } from '@fizz/ui/badge'
 import { Button } from '@fizz/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@fizz/ui/dialog'
 import { Input } from '@fizz/ui/input'
+import type { SkillInfo } from '@fizz/skills'
+import { MessageResponse } from '@fizz/agent-kit/shared/ai-elements/message'
 import { useDirectoryPicker } from '@fizz/agent-kit/shared/hooks/use-directory-picker'
+import { errorMessage } from '@fizz/agent-kit/shared/lib/stores/shared'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
@@ -31,6 +39,16 @@ export function SkillsTab({ app }: { app: AgentApp }) {
   const [refreshing, setRefreshing] = useState(false)
   /** 技能列表的搜索词（纯前端过滤，不打服务端） */
   const [keyword, setKeyword] = useState('')
+  /**
+   * SKILL.md 预览弹窗：点那一行才去拉正文（列表里没有正文，只有描述）。
+   * `content === null` 就是「还在读」，`error` 单独存 —— 读失败时弹窗不关，
+   * 让人看到原因（多半是技能刚被删掉，点「刷新」即可）。
+   */
+  const [preview, setPreview] = useState<{
+    skill: SkillInfo
+    content: string | null
+    error: string | null
+  } | null>(null)
 
   /**
    * 选一个额外发现目录。桌面端弹系统目录框、web 用内置的服务端目录浏览器
@@ -44,6 +62,24 @@ export function SkillsTab({ app }: { app: AgentApp }) {
   const refresh = (): void => {
     setRefreshing(true)
     void app.reloadSkills().finally(() => setRefreshing(false))
+  }
+
+  /**
+   * 打开一行 → 去服务端拉那段 SKILL.md 原文。
+   * 回包时用 id 对一下：连着点两行、前一个请求后到，别把内容写进另一行的弹窗。
+   */
+  const openPreview = (skill: SkillInfo): void => {
+    setPreview({ skill, content: null, error: null })
+    void app.readSkill(skill.id).then(
+      (doc) =>
+        setPreview((cur) =>
+          cur && cur.skill.id === skill.id ? { ...cur, content: doc.content } : cur
+        ),
+      (err) =>
+        setPreview((cur) =>
+          cur && cur.skill.id === skill.id ? { ...cur, error: errorMessage(err) } : cur
+        )
+    )
   }
 
   const extraDirs = app.skills?.settings.extraDirs ?? []
@@ -176,7 +212,7 @@ export function SkillsTab({ app }: { app: AgentApp }) {
         return (
           <div
             key={skill.id}
-            className="flex items-start gap-2 rounded-md border border-border/60 px-3 py-2"
+            className="group flex items-start gap-2 rounded-md border border-border/60 px-3 py-2"
           >
             <button
               type="button"
@@ -192,7 +228,14 @@ export function SkillsTab({ app }: { app: AgentApp }) {
             >
               <Check className="size-3" />
             </button>
-            <div className="min-w-0 flex-1">
+            {/* 整块内容是一个按钮：点开弹窗看 SKILL.md（勾选框是另一个按钮，互不干扰） */}
+            <button
+              type="button"
+              aria-label={tr('查看技能 {name} 的内容', { name: skill.name })}
+              title={tr('查看 SKILL.md 内容')}
+              onClick={() => openPreview(skill)}
+              className="min-w-0 flex-1 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
               <div className="flex items-center gap-1.5">
                 <span className="truncate text-sm">{skill.name}</span>
                 <Badge variant="outline" className="h-5 px-1.5 text-[0.625rem]">
@@ -205,7 +248,9 @@ export function SkillsTab({ app }: { app: AgentApp }) {
               <div className="truncate text-[0.625rem] text-muted-foreground" title={skill.file}>
                 {skill.file}
               </div>
-            </div>
+            </button>
+            {/* 悬停提示「这行能点」：没有图标时整行看着像静态文本 */}
+            <Eye className="mt-1 size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
           </div>
         )
       })}
@@ -219,6 +264,32 @@ export function SkillsTab({ app }: { app: AgentApp }) {
           {tr('没有匹配「{keyword}」的技能。', { keyword: keyword.trim() })}
         </p>
       )}
+
+      {/* SKILL.md 预览：正文按需去服务端拉，渲染走与对话正文同一套 Streamdown */}
+      <Dialog
+        open={preview !== null}
+        onOpenChange={(open) => {
+          if (!open) setPreview(null)
+        }}
+      >
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="truncate pr-8">{preview?.skill.name}</DialogTitle>
+            <DialogDescription className="truncate font-mono text-[0.6875rem]">
+              {preview?.skill.file}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[60vh] overflow-y-auto rounded-md border border-border/60 px-3 py-2">
+            {preview?.error ? (
+              <p className="py-6 text-center text-xs text-muted-foreground">{preview.error}</p>
+            ) : preview?.content == null ? (
+              <p className="py-6 text-center text-xs text-muted-foreground">{tr('读取中…')}</p>
+            ) : (
+              <MessageResponse>{preview.content}</MessageResponse>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* 桌面端是系统目录框（这里为 null），web 才是内置的服务端目录浏览器 */}
       {dirPicker}

@@ -37,18 +37,10 @@ export type {
 } from './services/ui'
 export { WorkspaceService } from './services/workspace'
 export type { WorkspaceInfo } from './services/workspace'
-export { UploadsService, matchesUploadPrefix, normalizeUploadPrefix } from './services/uploads'
 export { RpcService } from './services/rpc'
 export type { RpcCallContext, RpcHandler } from './services/rpc'
 export { ModelsService } from './services/models'
 export type { PluginModelConfig, PluginModelRegistration } from './services/models'
-export type {
-  RegisterUploadProviderOptions,
-  UploadProviderAccept,
-  UploadProviderRegistration,
-  UploadProviderSpec,
-  UploadPutInput
-} from './services/uploads'
 export { HOOKS, HooksService, hookValue } from './hooks'
 export type {
   ConversationConfirmListener,

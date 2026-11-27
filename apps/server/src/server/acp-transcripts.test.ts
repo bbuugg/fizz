@@ -4,6 +4,8 @@
  * 这段逻辑只在**顺序对得上**时才成立（回放的 id 与本地 id 无关），所以这里重点锁
  * 三件事：条数一致才搬、只搬助手消息、目标已有值不覆盖。
  * `carryOverErrors` 防止 session/load 不回放工作台运行错误，导致错误正文与恢复按钮自动消失。
+ * `carryOverIds` 防止回放现编的 id 让前端的按 id 合并认不出历史（用户报的「发出的消息
+ * 跑到上一条 AI 回复上方」）。
  */
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentChatMessage } from '@fizz/contracts/types'
@@ -11,7 +13,8 @@ import type { ChatRunSummary } from '@fizz/contracts/agent-api'
 
 vi.mock('./state', () => ({ acpTranscripts: new Map() }))
 
-const { carryOverDurations, carryOverErrors, setAcpTranscript, acpTranscriptView } = await import('./acp-transcripts')
+const { carryOverDurations, carryOverErrors, carryOverIds, setAcpTranscript, acpTranscriptView } =
+  await import('./acp-transcripts')
 
 function msg(
   id: string,
@@ -26,6 +29,83 @@ function msg(
     ...(durationMs != null ? { durationMs } : {})
   }
 }
+
+describe('carryOverIds', () => {
+  /** 正文与 id 解耦：这条逻辑按**正文**对齐轮次，不能拿 id 当正文用 */
+  const turn = (
+    userId: string,
+    userText: string,
+    assistantId?: string,
+    assistantText?: string
+  ): AgentChatMessage[] => [
+    { id: userId, role: 'user', parts: [{ type: 'text', text: userText }], createdAt: 1 },
+    ...(assistantId
+      ? [{
+          id: assistantId,
+          role: 'assistant' as const,
+          parts: [{ type: 'text' as const, text: assistantText ?? assistantId }],
+          createdAt: 1
+        }]
+      : [])
+  ]
+
+  it('按轮把回放现编的 id 换回快照里的 id（正文与顺序一个都不动）', () => {
+    const from = [...turn('u-1', '第一问', 'a-1', '第一答'), ...turn('u-2', '第二问', 'a-2', '第二答')]
+    const to = [
+      ...turn('u-replay-1', '第一问', 'a-replay-2', '第一答'),
+      ...turn('u-replay-3', '第二问', 'a-replay-4', '第二答')
+    ]
+    const partsBefore = to.map((m) => m.parts)
+
+    carryOverIds(from, to)
+
+    expect(to.map((m) => m.id)).toEqual(['u-1', 'a-1', 'u-2', 'a-2'])
+    expect(to.map((m) => m.parts)).toEqual(partsBefore)
+  })
+
+  it('某轮用户正文对不上就停在那里，后面的保持回放 id（不把 id 挪到别的轮）', () => {
+    const from = [...turn('u-1', '旧问题', 'a-1'), ...turn('u-2', '下一题', 'a-2')]
+    const to = [
+      ...turn('u-replay-1', '旧问题', 'a-replay-2'),
+      ...turn('u-replay-3', '另一个问题', 'a-replay-4')
+    ]
+
+    carryOverIds(from, to)
+
+    expect(to.map((m) => m.id)).toEqual(['u-1', 'a-1', 'u-replay-3', 'a-replay-4'])
+  })
+
+  it('该轮助手消息条数对不上时只换用户 id，助手保持回放 id，下一轮照旧', () => {
+    const from = [...turn('u-1', '第一问', 'a-1'), ...turn('u-2', '第二问', 'a-2')]
+    const to = [
+      ...turn('u-replay-1', '第一问', 'a-replay-2'),
+      // 回放把同一轮拆成了两条助手消息（或干脆多出半截）
+      { id: 'a-replay-2b', role: 'assistant' as const, parts: [{ type: 'text' as const, text: '补一段' }], createdAt: 1 },
+      ...turn('u-replay-4', '第二问', 'a-replay-5')
+    ]
+
+    carryOverIds(from, to)
+
+    expect(to.map((m) => m.id)).toEqual(['u-1', 'a-replay-2', 'a-replay-2b', 'u-2', 'a-2'])
+  })
+
+  it('回放比快照少一轮（失败轮没被 agent 存下）时，前面对得上的照换', () => {
+    const from = [...turn('u-1', '第一问', 'a-1'), ...turn('u-2', '第二问')]
+    const to = turn('u-replay-1', '第一问', 'a-replay-2')
+
+    carryOverIds(from, to)
+
+    expect(to.map((m) => m.id)).toEqual(['u-1', 'a-1'])
+  })
+
+  it('首次 load（快照里还没有任何消息）什么都不改', () => {
+    const to = turn('u-replay-1', '第一问', 'a-replay-2')
+
+    carryOverIds([], to)
+
+    expect(to.map((m) => m.id)).toEqual(['u-replay-1', 'a-replay-2'])
+  })
+})
 
 describe('carryOverDurations', () => {
   it('条数一致时按顺序把耗时搬到助手消息上（用户消息不参与）', () => {

@@ -43,7 +43,7 @@ import {
   type StartTurnResult
 } from '../chat-turn'
 import { describeError } from '../lib/http'
-import { resolveUploadModelUrl } from '../upload/index'
+import { inlineAttachments } from './attachments'
 import { ensureContainerAgentReady } from './lifecycle'
 import { containerSkillList, type ContainerSkill } from './skills'
 import { resolvePermissionMode } from '../permission-mode'
@@ -335,26 +335,6 @@ async function pumpContainerRun(ctx: ContainerPumpContext): Promise<RunAgentResu
   throw new Error('容器内 Agent 的连接中断了（容器可能已停止或换了镜像），这一轮没有跑完')
 }
 
-// ---------- 组装这一轮发给容器的请求体 ----------
-
-/**
- * 附件 URL 绝对化 —— 与本地一轮同一件事（`chat-turn` 把它交给 `runAgent` 的
- * `resolveFileUrl`），但这里必须**在发请求前就做完**：模型调用发生在容器里，
- * 容器拿到的 URL 得能直接取到（容器里没有 `resolveFileUrl` 这一层）。
- *
- * ⚠️ 已知边界：`FIZZ_PUBLIC_BASE_URL` 没配时拼出来的是宿主的 `origin`（一般是
- * `127.0.0.1:<port>`），而容器里的 `127.0.0.1` 指向容器自己 —— 那种配置下带图对话
- * 的图片取不到（不是静默丢图：模型会拿到一个取不到的地址）。配了公网地址就没问题。
- */
-function absolutizeAttachments(history: AgentChatMessage[], origin: string): AgentChatMessage[] {
-  return history.map((message) => ({
-    ...message,
-    parts: message.parts.map((part) =>
-      part.type === 'file' && part.url ? { ...part, url: resolveUploadModelUrl(part.url, origin) } : part
-    )
-  }))
-}
-
 // ---------- 一轮的入口 ----------
 
 /**
@@ -366,10 +346,7 @@ function absolutizeAttachments(history: AgentChatMessage[], origin: string): Age
  * 分派点在 `startTurn` 的**用户消息落盘之前**，所以这里自己落（同一份
  * `beginTurnUserMessage`）—— 两边都落一遍就会重复追加一条用户消息。
  */
-export async function startContainerTurn(
-  input: ChatRequest,
-  opts?: { origin?: string }
-): Promise<StartTurnResult> {
+export async function startContainerTurn(input: ChatRequest): Promise<StartTurnResult> {
   const conversation = domain.getConversation(input.conversationId)
   if (!conversation) return { ok: false, status: 404, message: '会话不存在' }
 
@@ -690,10 +667,7 @@ export async function startContainerTurn(
           runId: requestId,
           conversationId: conversation.id,
           model: modelConfig,
-          history: absolutizeAttachments(
-            historyForTurn(conversation, userMessage),
-            opts?.origin ?? ''
-          ),
+          history: await inlineAttachments(historyForTurn(conversation, userMessage)),
           evidenceHistory: conversation.messages,
           systemPrompt,
           skills,

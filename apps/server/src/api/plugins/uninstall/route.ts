@@ -15,7 +15,7 @@
  * ## 卸载要清三样残留
  *
  * 1. 模块缓存（文件没了，缓存条目留着会让「同名文件重新装回来」用到旧对象）；
- * 2. 上传源的长驻 context（否则它提供的上传源还挂在「传到哪儿」下拉里）；
+ * 2. 插件模型与会话钩子缓存；
  * 3. **启用 / 停用名单与设置值** —— 插件 id 是 manifest.id，重新装同一个 id 会挂到
  *    同一条记录上：不清停用名单 = 装回来还是停用的；不清设置值 = 新插件一上来就读到
  *    上一次填的 token。
@@ -27,7 +27,6 @@ import { rm } from 'node:fs/promises'
 import { invalidatePluginModule } from '@fizz/plugin/loader'
 import { discoverServerPlugins } from '@/lib/server/plugin-roots'
 import { syncPluginRootDeps } from '@/lib/server/plugin-deps'
-import { invalidateUploadProviders } from '@/lib/server/upload/registry'
 import { invalidatePluginModels, refreshPluginModels } from '@/lib/server/plugin-models'
 import { invalidateConversationHooks } from '@/lib/server/conversation-hooks'
 import { domain } from '@/lib/server/state'
@@ -84,8 +83,6 @@ export async function POST(request: Request): Promise<Response> {
   // ---- 清残留（三样，见文件头）----
   invalidatePluginModule()
   // 两种 key 都清：`workspaceId` 那份（带项目的上传）与 '' 那份（不带项目的上传）
-  await invalidateUploadProviders(workspace?.id)
-  await invalidateUploadProviders()
   await invalidateConversationHooks(workspace?.id)
   invalidatePluginModels()
   domain.deletePluginValues(pluginId)

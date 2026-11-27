@@ -1,0 +1,8 @@
+{
+  "name": "@fizz/capacitor-local-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Fizz 手机上的 PRoot / Linux / Node 本机运行环境",
+  "files": ["android/"],
+  "capacitor": { "android": { "src": "android" } }
+}

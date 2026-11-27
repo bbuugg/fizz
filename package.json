@@ -1,6 +1,6 @@
 {
   "name": "fizz",
-  "version": "0.0.35",
+  "version": "0.0.36",
   "description": "Fizz",
   "private": true,
   "type": "module",
@@ -35,6 +35,7 @@
     "dist:mac": "npm run build:web && npm run build:mobile:hosted && npm run build:desktop && electron-builder --project apps/desktop --mac --publish never",
     "dist:win": "npm run build:web && npm run build:mobile:hosted && npm run build:desktop && electron-builder --project apps/desktop --win --publish never",
     "build:mobile": "npm run copy:monaco && npm run build --workspace @fizz/mobile && npm run sync --workspace @fizz/mobile",
+    "build:mobile:runtime": "node apps/mobile/scripts/build-runtime.mjs",
     "build:mobile:hosted": "npm run copy:monaco && npm run build:hosted --workspace @fizz/mobile",
     "dev:extension": "npm run copy:monaco && npm run dev --workspace @fizz/extension",
     "build:extension": "npm run copy:monaco && npm run build --workspace @fizz/extension",

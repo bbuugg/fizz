@@ -1587,7 +1587,7 @@ export class AgentDomain {
    * 覆盖写入 acp 会话的**运行态快照**（Session Modes / 思考档）。
    *
    * 只对 `backend === 'acp'` 的会话生效；非 acp 静默返回原会话。两个字段都是**部分覆盖**：
-   * 只更新传进来的那一个（`undefined` = 不动）。
+    * 只更新传进来的那一个（`undefined` = 不动，`null` = 清除失效配置）。
    *
    * ⚠️ `acpModes.current` / `acpThoughtLevel.current` 记的是**用户意图**，不是 agent 的
    * 运行时状态 —— 刷新 agent 广告的清单时必须按「保留用户意图」合并
@@ -1595,7 +1595,7 @@ export class AgentDomain {
    */
   setAcpSessionState(
     id: string,
-    patch: { acpModes?: AcpModesState; acpThoughtLevel?: AcpThoughtLevelState }
+    patch: { acpModes?: AcpModesState | null; acpThoughtLevel?: AcpThoughtLevelState | null }
   ): AgentConversation {
     const existing = this.getConversation(id)
     if (!existing) throw new Error('会话不存在')
@@ -1613,15 +1613,15 @@ export class AgentDomain {
      */
     const modesSame =
       patch.acpModes === undefined ||
-      JSON.stringify(patch.acpModes) === JSON.stringify(existing.acpModes)
+      JSON.stringify(patch.acpModes ?? undefined) === JSON.stringify(existing.acpModes)
     const thoughtSame =
       patch.acpThoughtLevel === undefined ||
-      JSON.stringify(patch.acpThoughtLevel) === JSON.stringify(existing.acpThoughtLevel)
+      JSON.stringify(patch.acpThoughtLevel ?? undefined) === JSON.stringify(existing.acpThoughtLevel)
     if (modesSame && thoughtSame) return existing
     const next: AgentConversation = {
       ...existing,
-      ...(patch.acpModes !== undefined ? { acpModes: patch.acpModes } : {}),
-      ...(patch.acpThoughtLevel !== undefined ? { acpThoughtLevel: patch.acpThoughtLevel } : {})
+      ...(patch.acpModes !== undefined ? { acpModes: patch.acpModes ?? undefined } : {}),
+      ...(patch.acpThoughtLevel !== undefined ? { acpThoughtLevel: patch.acpThoughtLevel ?? undefined } : {})
     }
     return this.commitConversation(next)
   }
@@ -1782,10 +1782,8 @@ export class AgentDomain {
       ? this.store.snapshot().acpAgents.find((a) => a.id === input.id)
       : undefined
     const models = input.models ?? existing?.models
-    // 风格（opencode / pi / generic）：不传沿用旧值，免得「只改命令」把它清掉
+    // 旧适配身份仅为兼容内部资源安装，不再控制 UI；编辑时不清掉它。
     const type = input.type ?? existing?.type
-    // 「完全放行」的答复策略：同上，不传沿用旧值
-    const allowStrategy = input.allowStrategy ?? existing?.allowStrategy
     // 预设身份（图标等）：不传沿用旧值 —— 之后改命令 / 参数不改变它
     const preset = input.preset ?? existing?.preset
     // ACP 协议版本：不传沿用旧值；老数据没有这个字段，运行时按 v1 处理
@@ -1814,7 +1812,6 @@ export class AgentDomain {
       args,
       ...(type ? { type } : {}),
       ...(preset ? { preset } : {}),
-      ...(allowStrategy ? { allowStrategy } : {}),
       ...(protocolVersion ? { protocolVersion } : {}),
       ...(models ? { models } : {}),
       ...(health ? { health } : {})
@@ -2081,6 +2078,37 @@ export class AgentDomain {
       d.sshHosts = prev ? d.sshHosts.map((h) => (h.id === next.id ? next : h)) : [...d.sshHosts, next]
     })
     return { ...next }
+  }
+
+  /**
+   * 复制一条主机条目（SSH 主机或本机终端）：新增一条同配置的条目，返回最新清单。
+   *
+   * ⚠️ **克隆必须在领域层做**：客户端拿到的只有 `hasPassword` 这类脱敏标记，让它
+   * 「读出来再保存一遍」等于把密码 / 私钥 / passphrase 全部清空。这里直接拷**密文**
+   * （不解密、不出网）。跳板 `jumpHostId` 也一起带走 —— 它只是个 id 引用。
+   *
+   * 名字加「副本」后缀并去重（`X 副本` / `X 副本 2`…）；分组跟着原条目走；
+   * 新条目插在原条目**后面**，同一分组里紧挨着，复制完一眼能看到它。
+   */
+  duplicateSshHost(id: string): HostConfig[] {
+    const now = Date.now()
+    const data = this.store.snapshot()
+    const source = data.sshHosts.find((h) => h.id === id)
+    if (!source) throw new Error('主机条目不存在或已被删除')
+
+    const base = `${source.name} 副本`
+    const used = new Set(data.sshHosts.map((h) => h.name))
+    let name = base
+    for (let n = 2; used.has(name); n += 1) name = `${base} ${n}`
+
+    const copy: StoredHost = { ...source, id: newId(), name, createdAt: now, updatedAt: now }
+    this.store.mutate((d) => {
+      const at = d.sshHosts.findIndex((h) => h.id === id)
+      const next = [...d.sshHosts]
+      next.splice(at + 1, 0, copy)
+      d.sshHosts = next
+    })
+    return this.listSshHosts()
   }
 
   /**
@@ -2967,7 +2995,7 @@ export class AgentDomain {
 
   /**
    * 插件设置项的**指纹**（含密钥密文、不含明文）—— 给「配置变没变，要不要重建缓存」用：
-   * 上传源目录按它 + 插件文件 mtime 决定是否重新 mount（否则在设置页填完 token 也得等
+   * 插件模型缓存按它 + 插件文件 mtime 决定是否重新 mount（否则在设置页填完 token 也得等
    * 重启才生效）。
    */
   pluginValuesFingerprint(pluginId: string): string {

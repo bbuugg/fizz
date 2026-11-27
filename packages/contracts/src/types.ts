@@ -1253,14 +1253,6 @@ export interface UploadFileRef {
   name: string
   mediaType: string
   url: string
-  /**
-   * 哪个上传源产出的这条引用：`local`（缺省）= 内置存储，其余 = 插件注册的上传源
-   * （见 `POST /api/uploads` 的 `provider` 与 `UploadProviderView`）。
-   *
-   * 只作**展示与回显**用 —— 服务端的归属校验认的是「已签发 URL 记录」而不是这个字段
-   * （客户端能改它，不能当依据）。
-   */
-  provider?: string
 }
 
 /**
@@ -1313,7 +1305,7 @@ export interface AcpModeOption {
 /**
  * ACP 会话的「模式」快照（落会话配置，见 `AgentConversation.acpModes`）。
  *
- * - `opencode` 用它表达**模式 / 权限档**（会话里摆在权限 pill 的位置，可切换）；
+ * - 选项语义由 Agent 定义，界面统一叫「模式」，不与客户端权限答复混用；
  * - 数据有两个来源，由 `configId` 区分（见下）；
  * - `current` 记的是**用户意图**（用户选的档）而非 agent 的运行时状态 —— 每轮发送前按它下发。
  */
@@ -1357,7 +1349,7 @@ export interface AcpThoughtLevelState {
  * ACP 会话的**权限答复策略**（会话级设置，与内置 agent 的三档 `AiPermissionMode` 分开）。
  *
  * - `confirm`（缺省）：agent 每次发 `session/request_permission` 都转给用户挑（确认卡）；
- * - `allow`：**应用层直接替用户答复「允许」**，不再弹卡 —— 等于把 agent 侧的 `ask` 变成放行。
+ * - `allow`：仅自动答复 `allow_once`，没有此选项仍弹确认卡；不自动让 Agent 记住授权。
  *
  * ⚠️ 只在 agent 真的发问时生效：agent 自己的策略若是 `deny`，它根本不发这个请求，
  * 应用层无从放宽。
@@ -1827,7 +1819,7 @@ export interface AgentConversation {
    */
   acpSessionId?: string
   /**
-   * ACP 会话的 Session Modes 快照（`opencode` 的权限档；见 `AcpModesState`）。
+   * ACP 会话的模式快照（configOptions 或旧 Session Modes；见 `AcpModesState`）。
    * 在 `session/new`（新建会话）与 `session/load`（打开会话）时写入，用户切换时更新 `current`。
    * 非 acp 会话 / agent 没广告档位时缺省不写。
    */
@@ -1947,11 +1939,6 @@ export type AgentMessagePart =
       mediaType: string
       /** 原始文件名（仅展示用；存储名是服务端生成的 uuid） */
       name: string
-      /**
-       * 这条附件由哪个上传源产出（`local` = 内置存储，其余 = 插件注册的上传源）。
-       * 缺省 = 老数据（加这个字段之前上传的），一律按内置存储处理。
-       */
-      provider?: string
     }
   | { type: 'reasoning'; text: string }
   | {

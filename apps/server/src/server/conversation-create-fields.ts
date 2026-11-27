@@ -51,6 +51,8 @@ export interface ConversationCreateBody {
   modelId?: string
   reasoningEffort?: AiReasoningEffort
   acpSessionId?: string
+  /** ACP 分叉 / 导入时继承原会话的权限答复策略。 */
+  acpPermissionMode?: ConversationInput['acpPermissionMode']
   /** 「开始新对话」页勾的 MCP server；缺省 = 全不选 */
   mcpServerIds?: string[]
   /** 「开始新对话」页开的浏览器（开关 + 来源）；缺省 = 全局默认（关） */
@@ -80,6 +82,9 @@ export function conversationCreateFields(
     ...(body.modelId ? { modelId: body.modelId } : {}),
     ...(body.reasoningEffort ? { reasoningEffort: body.reasoningEffort } : {}),
     ...(body.acpSessionId ? { acpSessionId: body.acpSessionId } : {}),
+    ...(body.acpPermissionMode === 'allow' || body.acpPermissionMode === 'confirm'
+      ? { acpPermissionMode: body.acpPermissionMode }
+      : {}),
     ...(Array.isArray(body.mcpServerIds) ? { mcpServerIds: body.mcpServerIds } : {}),
     ...(body.browserSettings ? { browserSettings: body.browserSettings } : {}),
     ...(Array.isArray(body.messages) ? { messages: body.messages } : {})

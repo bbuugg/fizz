@@ -60,7 +60,7 @@
  * ## 安全：webhook key 绝不进代码，也绝不回传浏览器
  *
  * 那个 `key=` 等价于群机器人的密码。设置项标 `secret: true`，由宿主走 SecretBox 加密
- * 落盘、明文不回传浏览器（与 `api-upload` 的 apiKey 同一条路）。
+ * 落盘、明文不回传浏览器。
  *
  * ⚠️ **只认设置页（系统配置），不读环境变量**：早先还支持 `WECOM_WEBHOOK_URL` 兜底，
  * 已经移除 —— 同一个凭据有两个真源时，排查「为什么发不出去」永远得先问「你到底配在哪」。
@@ -138,7 +138,7 @@ function readSettings(config?: WecomConfig): WecomSettings {
   // 默认 @ 谁：逗号分隔的用户 id 或 `@all`；留空 = 不 @
   const mentions = pick(config?.defaultMentions)
   return {
-    // 开关：缺省 = 开（只有显式存成 false 才关），与 oss / api-upload 同一口径
+    // 开关：缺省 = 开（只有显式存成 false 才关），与 oss 同一口径
     enabled: config?.enabled !== false,
     webhookUrl: pick(config?.webhookUrl),
     defaultMentions: mentions

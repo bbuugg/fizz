@@ -50,3 +50,11 @@ describe('Context.emitSafe', () => {
     expect(() => ctx.emitSafe('conversation:started', {})).not.toThrow()
   })
 })
+
+describe('Context 能力边界', () => {
+  it('不再提供附件上传服务入口', () => {
+    const ctx = createAppContext()
+    expect('uploads' in ctx).toBe(false)
+    expect(ctx.get('uploads')).toBeUndefined()
+  })
+})

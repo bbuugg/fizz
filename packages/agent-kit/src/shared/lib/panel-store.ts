@@ -10,12 +10,24 @@
  * 并让所有中间层都重渲染；而它又**只属于主区域**、与数据层无关。所以照搬
  * `lib/sidebar-collapsed.ts` 的做法：模块级变量 + 订阅，最小且够用。
  *
+ * ## 标签 key 是身份，不是地址
+ *
+ * 每颗标签有一个**终生不变**的 key（`panel-tabs.ts` 文件头的铁律）。对话标签指向哪条会话
+ * 记在下面的**指向表**里：草稿标签发出第一条消息，只是它的指向从「没有」变成那条会话，
+ * key、位置、焦点、以及所有按 key 索引的东西（落位缓存 / 刷新代号 / 关闭守卫 / 面板现场）
+ * 一概不动 —— **没有任何「交接」步骤**。
+ *
+ * 「一条会话最多一颗标签」「草稿最多一颗」两条不变量也由指向表保证：开会话前先查表，
+ * 查到就只激活。所以别再写 `openTab(会话 id)`：会话 id 不是标签 key，那样会开出一颗
+ * 没有指向的标签。对话标签一律走 `openChatTab` / `openDraftTab` / `alignConversationTab`。
+ *
  * ## 为什么只有一份状态
  *
  * 参考实现（dogi）同时维护 `panelTabs[]` + `groups{}` + `layout` 三份数据，任何一次
  * 拖拽都要在三处各改一遍，于是逼出 `alignToTabs` / `verify` / `registerCloseHost` 一堆
  * 记账。这里只有一份 `PanelState`（`layout` + `groups` + `activeGroupId`），
  * 标签集合 = 各 `groups` 里 `tabIds` 的并集，**没有第二份「打开的标签列表」**。
+ * 指向表不是第二份列表：它的键恒等于那个并集的子集，标签一关条目就没了。
  *
  * ## 只持久化偏好
  *
@@ -41,10 +53,11 @@ import {
 } from '@fizz/agent-kit/shared/lib/panel-groups'
 import { updateSizes, type PaneNode, type SplitDirectionInput } from '@fizz/agent-kit/shared/lib/pane-layout'
 import { askTabCloseGuards } from '@fizz/agent-kit/shared/lib/tab-close'
+import { chatTabKey } from './panel-tabs'
 
 const listeners = new Set<() => void>()
 
-/** 空布局起步：第一个会话被打开时由 `openTab` 铺出初始单组树 */
+/** 空布局起步：第一个标签被打开时由 `openTab` 铺出初始单组树 */
 let state: PanelState = initialState([])
 
 /**
@@ -55,7 +68,7 @@ let state: PanelState = initialState([])
  * 露出了桌面那条标签条，里面也恒只有一颗 —— 替换语义与宽度无关。多出来的标签就是
  * **看不见也关不掉**的后台实例：每个会话标签都挂着消息列表与流式订阅，终端标签还挂着
  * PTY，在 390px 的屏上只会把内存 / 连接堆到崩溃。所以手机壳在启动时（`main.tsx`）把
- * 它打开，`openTab` / `ensureTab` / `syncTabs` 在那之后都按「替换」语义工作。
+ * 它打开，`openTab` / `ensureTab` 在那之后都按「替换」语义工作。
  *
  * 为什么是模块级开关而不是参数：这份 store **每个 app 各打包一份**，所以它表达的是
  * 「这个端的形态」而不是共享行为；web / desktop 永远不调它，行为逐行不变。
@@ -71,12 +84,48 @@ function emit(): void {
   for (const listener of listeners) listener()
 }
 
-/** 应用一次纯函数变更（无变化时保持原引用，避免无谓重渲染） */
-function update(fn: (s: PanelState) => PanelState): void {
-  const next = fn(state)
-  if (next === state) return
-  state = next
-  emit()
+// ---------------------------------------------------------------------------
+// 对话标签的指向表
+// ---------------------------------------------------------------------------
+
+/**
+ * 对话标签 key → 它现在是哪条会话。`null` = 还是「新对话」草稿（没发过消息）。
+ * 工具标签不在这张表里。
+ *
+ * 这张表是「草稿 → 会话」唯一的落点：改一个条目就完事。早先的做法是把标签 key 从 `__new__`
+ * 改写成会话 id，于是按 key 索引的每张表都得跟着搬家，漏了落位缓存就是用户报的
+ * 「发个消息，右侧面板整个重建」。
+ */
+const chatTargets = new Map<string, string | null>()
+
+let chatSeq = 0
+
+/**
+ * 「开着哪些标签」这一集合的版本号。
+ *
+ * 给 `AppProvider` 的面板现场回收用：它要知道「哪颗标签关了」，但**不能**订阅整棵状态
+ * —— 拖分隔条每帧都 emit，会把应用树每帧重渲染一遍。这里只在标签集合真的变了
+ * （开 / 关 / 替换）时才 +1，快照是个数字，其余的 emit 对订阅方不可见。
+ */
+let tabsVersion = 0
+let openKeys: string[] = []
+
+function sameKeys(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((k, i) => k === b[i])
+}
+
+/** 当前开着的全部标签 key（稳定引用：集合没变就是同一个数组） */
+export function openTabKeys(): readonly string[] {
+  return openKeys
+}
+
+/** 订阅「标签集合变了」（只在开 / 关标签那一下触发重渲染） */
+export function useOpenTabsVersion(): number {
+  return useSyncExternalStore(
+    subscribe,
+    () => tabsVersion,
+    () => 0
+  )
 }
 
 function subscribe(listener: () => void): () => void {
@@ -96,22 +145,31 @@ export function usePanelState(): PanelState {
 }
 
 /**
- * 某个标签现在**是不是开着**。
+ * 这条会话的标签 key（没开着 = `null`）。订阅版：标签开 / 关那一下才重渲染。
  *
- * 快照是**布尔**，所以只有「开 → 关 / 关 → 开」那一下才触发重渲染 —— 拖分隔条
- * （`resizeSplit` 每帧 emit）不会把订阅者带进来。这一点很重要：订阅方是
- * `AppProvider`（整个应用树的根），订阅整棵状态会变成「每帧重渲染全应用」。
- *
- * 目前唯一的订阅方是「面板现场回收」（`use-app-context.tsx`）：草稿（`draft:*`）面板的
- * 存活期必须跟**「新对话」标签**一致，而不是跟「当前会话」一致 —— 后者会让草稿面板
- * 一离开焦点就被回收，终端现场（PTY）跟着一起没。
+ * ⚠️ 面向 `AppProvider`（应用树的根）的订阅都只能是**原始值快照**（字符串 / 数字 /
+ * 布尔）：拖分隔条时 `resizeSplit` 每帧都 emit，快照不是稳定原始值就会变成
+ * 「每帧重渲染全应用」。
  */
-export function useIsTabOpen(key: string): boolean {
+export function useTabOfConversation(conversationId: string | null): string | null {
   return useSyncExternalStore(
     subscribe,
-    () => allTabKeys(state).includes(key),
-    () => false
+    () => tabOfConversation(conversationId),
+    () => null
   )
+}
+
+/** 「新对话」草稿标签的 key（没开着 = `null`），订阅版，口径同 `useTabOfConversation` */
+export function useDraftTabKey(): string | null {
+  return useSyncExternalStore(subscribe, draftTabKey, () => null)
+}
+
+/**
+ * 一颗对话标签指向的会话（订阅版，返回值口径同 `conversationOfTab`）：草稿变成会话的
+ * 那一刻，读了它的组件自动重渲染，不必依赖上层恰好也重渲染。
+ */
+export function useTabConversation(key: string): string | null | undefined {
+  return useSyncExternalStore(subscribe, () => conversationOfTab(key), () => undefined)
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +213,44 @@ export function activeTabKey(s: PanelState = state): string | null {
   return s.groups[s.activeGroupId]?.activeTabId ?? null
 }
 
+/** 一颗对话标签指向的会话：`null` = 还是草稿；`undefined` = 不是对话标签 */
+export function conversationOfTab(key: string): string | null | undefined {
+  return chatTargets.get(key)
+}
+
+/** 某条会话开着的那颗标签（没开着 = `null`）。一条会话最多一颗，由这里保证 */
+export function tabOfConversation(conversationId: string | null): string | null {
+  if (!conversationId) return null
+  for (const [key, target] of chatTargets) {
+    if (target === conversationId) return key
+  }
+  return null
+}
+
+/** 开着的那颗「新对话」草稿标签（没开着 = `null`）。草稿最多一颗，由这里保证 */
+export function draftTabKey(): string | null {
+  for (const [key, target] of chatTargets) {
+    if (target === null) return key
+  }
+  return null
+}
+
+/** 这个标签是不是「新对话」草稿（是草稿 = 是对话标签，且还没指向任何会话） */
+export function isDraftTab(key: string): boolean {
+  return chatTargets.get(key) === null
+}
+
+/**
+ * 指向**已不存在 / 已归档**会话的对话标签（`PanelView` 据此把它们裸关）。
+ * 草稿与工具标签不在此列。
+ */
+export function staleConversationTabs(alive: ReadonlySet<string>): string[] {
+  return allTabKeys().filter((key) => {
+    const target = chatTargets.get(key)
+    return typeof target === 'string' && !alive.has(target)
+  })
+}
+
 /**
  * 在**当前焦点组**里切到相邻标签（`delta=1` 向右，`-1` 向左），到头回绕。
  *
@@ -175,22 +271,48 @@ export function cycleTab(delta: 1 | -1): void {
 }
 
 // ---------------------------------------------------------------------------
-// 变更
+// 提交
 // ---------------------------------------------------------------------------
 
-/**
- * 把状态对齐到给定的标签集合（新增的进焦点组、消失的摘掉）。
- *
- * 这是**唯一**的「批量对表」入口：外部（视图切换 / 侧栏）说「现在该开这几个标签」，
- * 由它一次性算好，而不是各自零散地增删。
- *
- * ⚠️ 单标签模式下只认**最后一个** key（= 替换）：这是 `openTab` / `ensureTab` 之外
- * 唯一能一次画进多颗标签的入口，漏了它，任何「批量对表」都会绕开单标签语义、把
- * 看不见的标签重新塞回面板。
- */
-export function syncTabs(keys: string[]): void {
-  update((s) => alignToTabs(s, singleTab ? keys.slice(-1) : keys))
+/** 提交一次已经算好的状态（无变化时什么也不做），并顺手回收已关闭标签的指向 */
+function apply(next: PanelState): void {
+  if (next === state) return
+  state = next
+  const keys = allTabKeys(state)
+  if (!sameKeys(openKeys, keys)) {
+    openKeys = keys
+    tabsVersion += 1
+  }
+  pruneChatTargets()
+  emit()
 }
+
+/** 应用一次纯函数变更（无变化时保持原引用，避免无谓重渲染） */
+function update(fn: (s: PanelState) => PanelState): void {
+  apply(fn(state))
+}
+
+/**
+ * 指向变了（草稿变成会话）：布局 / 分组一个字段都没动，但**读 `usePanelState` 的渲染方
+ * 必须重渲染** —— 标签名、标签内容（`ConversationTab` 的 `conversationId`）、容器门都从
+ * 指向表取值。所以换一个状态引用再通知：对订阅方来说就是「面板变了」，与别的变更同一条路。
+ */
+function touchState(): void {
+  state = { ...state }
+  emit()
+}
+
+function pruneChatTargets(): void {
+  if (chatTargets.size === 0) return
+  const open = new Set(allTabKeys(state))
+  for (const key of [...chatTargets.keys()]) {
+    if (!open.has(key)) chatTargets.delete(key)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 变更：开标签
+// ---------------------------------------------------------------------------
 
 /**
  * 单标签模式下「打开它」= 「只剩它」。
@@ -203,7 +325,9 @@ function singleTabOnly(s: PanelState, key: string): PanelState {
 }
 
 /**
- * 打开（或切到）某个标签：已在某组里 → 只切过去；不在 → 追加进焦点组。
+ * 打开（或切到）某个**工具**标签：已在某组里 → 只切过去；不在 → 追加进焦点组。
+ *
+ * ⚠️ 对话标签别走这里（要查指向表去重），走 `openChatTab` / `openDraftTab`。
  *
  * 「打开」不改变标签归属 —— 已在别的组里的标签不会被搬走（用户在那边分屏看的布局
  * 不该被一次点击打乱）。**例外是单标签模式**（手机壳，见 `setSingleTabMode`）：
@@ -223,67 +347,10 @@ export function openTab(key: string): void {
 }
 
 /**
- * 用一个新 key **就地替换**某个标签（同组、同位置，激活状态跟着走）。
- *
- * ## 为什么需要它（它修的 bug）
- *
- * 「新对话」草稿标签（`__new__`）里发出第一条消息会建出真实会话，那张草稿应当**变成**
- * 会话标签。原来只有「面板上**只有**这一张草稿」时才走就地替换（`syncTabs([key])`），
- * 一旦用户还开着别的会话 / 终端标签（极常见的状态：从某条会话里点「新建对话」），
- * 就会落到 `openTab(key)` —— 于是**草稿留着 + 又冒出一张会话标签**，用户看到
- * 「发个消息怎么又开了一个对话标签」。
- *
- * ## 为什么不直接用 `syncTabs`
- *
- * `syncTabs(keys)` 是「对齐到这批 key」：传 `[newKey]` 会把面板上**其它标签全摘掉**
- * （用户开着的终端、别的会话一起没）。这里只动 `oldKey` 这一颗，其余原样保留。
- *
- * 单标签模式（手机壳）下退化成「只剩新 key」：那里本来就不允许多标签，语义不变。
- */
-export function replaceTab(oldKey: string, newKey: string): void {
-  if (oldKey === newKey) return
-  update((s) => {
-    if (singleTab) return singleTabOnly(s, newKey)
-    const gid = groupOfTab(s, oldKey)
-    // 旧标签已经不在（被别的路径先摘掉了）：当作普通打开，别把新会话弄丢
-    if (!gid) {
-      const all = allTabKeys(s)
-      const next = all.includes(newKey) ? all : [...all, newKey]
-      return activateTabPure(alignToTabs(s, next), newKey)
-    }
-    const g = s.groups[gid]!
-    const at = g.tabIds.indexOf(oldKey)
-    if (at < 0) return s
-    // 新 key 已经在别处开着（极少见：同一会话被别的入口先开了标签）：摘掉旧的再切过去，
-    // 不能就地替换 —— 否则同一个 key 会出现在两张标签上
-    if (groupOfTab(s, newKey)) {
-      return activateTabPure(closeTabPure(s, oldKey), newKey)
-    }
-    const tabIds = [...g.tabIds]
-    tabIds[at] = newKey
-    const next: PanelState = {
-      ...s,
-      groups: {
-        ...s.groups,
-        [gid]: {
-          ...g,
-          tabIds,
-          activeTabId: g.activeTabId === oldKey ? newKey : g.activeTabId
-        }
-      },
-      // 替换发生在哪一组，焦点就跟到哪一组（用户刚在草稿里发的消息，焦点本就该在那）
-      activeGroupId: gid
-    }
-    return activateTabPure(next, newKey)
-  })
-}
-
-/**
  * 把标签补进来但**不改变焦点**（已经在里面就是空操作）。
  *
- * 与 `openTab` 的差别只有一处：要不要切过去。`PanelView` 首次挂载时用它对齐「当前会话」
- * ——面板里已经有活动标签（例如刚从「主机」侧栏开出来的主机标签）时不该被当前会话顶掉；
- * 面板还是空的（首次启动 / web 刷新）才由 `openTab` 抢焦点。
+ * 与 `openTab` 的差别只有一处：要不要切过去。面板里已经有活动标签（例如刚从「主机」
+ * 侧栏开出来的主机标签）时不该被当前会话顶掉。
  *
  * ⚠️ 单标签模式下它退化成 `openTab`（只剩这一个并切过去）：面板里只允许有一个标签，
  * 若此时已被别的标签占住，保留两个就回到了「看不见也关不掉的隐藏标签」那个坑。
@@ -295,6 +362,107 @@ export function ensureTab(key: string): void {
     return all.includes(key) ? s : alignToTabs(s, [...all, key])
   })
 }
+
+/** 新建一颗对话标签（指向表先写好，再进面板：首帧渲染时它已经知道自己是谁） */
+function addChatTab(target: string | null, focus: boolean): string {
+  const key = chatTabKey(++chatSeq)
+  chatTargets.set(key, target)
+  if (focus) openTab(key)
+  else ensureTab(key)
+  return key
+}
+
+/**
+ * 打开（或切到）某条会话的标签。这条会话已经有标签 → 只切过去；没有 → 新开一颗。
+ *
+ * 这里**不**管草稿：从侧栏 / 通知 / 深链打开一条会话，草稿标签原样留着。草稿「变成」
+ * 会话只有一条路 —— 在草稿里发第一条消息，并由发起请求的标签身份认领。
+ */
+export function openChatTab(conversationId: string): string {
+  const existing = tabOfConversation(conversationId)
+  if (existing) {
+    openTab(existing)
+    return existing
+  }
+  return addChatTab(conversationId, true)
+}
+
+/**
+ * 打开「新对话」草稿标签（显式新建 / 零标签兜底）。已经有一颗草稿 → 只切过去。
+ *
+ * 草稿是全局单例：两颗草稿看起来一模一样，却各有一份面板现场，用户分不清哪颗开着终端。
+ */
+export function openDraftTab(): string {
+  const existing = draftTabKey()
+  if (existing) {
+    openTab(existing)
+    return existing
+  }
+  return addChatTab(null, true)
+}
+
+/**
+ * 把草稿标签**指向**一条会话：这颗草稿从此就是这条会话的标签。
+ *
+ * 只改指向表里的一个值 —— key、位置、焦点、落位缓存、刷新代号、关闭守卫、面板现场
+ * 全都不动，所以 `ConversationTab` 不重挂，右侧面板里的终端 PTY 活着。
+ *
+ * 三种结果：`bound` = 指过去了；`already-open` = 这条会话已经有标签，草稿不动；
+ * `no-draft` = 没有草稿可指。
+ */
+export function bindDraftTab(
+  conversationId: string,
+  expectedDraftKey?: string
+): 'bound' | 'already-open' | 'no-draft' {
+  if (tabOfConversation(conversationId)) return 'already-open'
+  const draft = expectedDraftKey ?? draftTabKey()
+  if (!draft || conversationOfTab(draft) !== null) return 'no-draft'
+  chatTargets.set(draft, conversationId)
+  touchState()
+  return 'bound'
+}
+
+/**
+ * 「当前会话变成了 `conversationId`」之后，标签该怎么对齐（`PanelView` 的同步 effect 用，
+ * web / desktop / 手机壳同一条）。
+ *
+ * - 会话已经有标签 → 什么都不做；
+ * - `draftTabKey`（会话是**从这颗草稿标签**发消息建出来的）→ 只有这颗仍开着的草稿
+ *   可认领（`bindDraftTab`）。建会话是异步的（ACP 要起进程），用户可能关闭原草稿并打开
+ *   新草稿；不能把新草稿误绑定给旧请求；
+ * - 草稿正被看着（启动恢复：先补的草稿，恢复到位后当前会话才到）→ 也由草稿接下，
+ *   否则会并排多出一张「新对话」；
+ * - 其余 → 正常开一颗（`focus: false` = 只补进来、不抢焦点，首次挂载时用）。
+ *
+ * ⚠️ 「草稿正被看着」这一条**不能**放宽成「面板上有草稿」：删掉当前会话时 store 会把
+ * 当前会话切到邻居，那一刻要是把**后台**那张草稿指过去，草稿里的终端现场就凭空变成
+ * 邻居会话的了。
+ */
+export function alignConversationTab(
+  conversationId: string,
+  opts: { draftHandoff?: { tabKey: string | null } | null; focus?: boolean }
+): void {
+  if (tabOfConversation(conversationId)) return
+  if (opts.draftHandoff) {
+    const sourceTab = opts.draftHandoff.tabKey
+    if (sourceTab && bindDraftTab(conversationId, sourceTab) === 'bound') return
+    // 创建源标签已关闭 / 不再是草稿：不要把新草稿认领给旧请求。
+    // 若当前没有可见标签则显示新会话，否则后台补入而不抢用户焦点。
+    addChatTab(conversationId, activeTabKey() === null)
+    return
+  }
+  const draft = draftTabKey()
+  if (draft && activeTabKey() === draft) {
+    bindDraftTab(conversationId)
+    return
+  }
+  // `focus: false` = 只补进来、不抢焦点（首次挂载时用）
+  addChatTab(conversationId, opts.focus !== false)
+}
+
+// ---------------------------------------------------------------------------
+// 变更：关标签
+// ---------------------------------------------------------------------------
 
 /**
  * 关掉某个标签。
@@ -361,7 +529,7 @@ function existingTabKeys(keys: readonly string[]): string[] {
  * 「用户自己点了关闭」时用 —— 它会先**逐个问标签登记的守卫**（`askTabCloseGuards`），
  * 守卫可以直接放行、也可以弹确认 / 先做异步收尾（停会话）再答复，只关掉放行的那些。
  *
- * 程序性关闭（`syncTabs` 对表、`alignToTabs` 摘标签、ApiPage/WsPage 保存草稿后的
+ * 程序性关闭（会话被删后的 `closeTabs`、ApiPage/WsPage 保存草稿后的
  * `closeTab(apiTabKey(NEW_*))`）继续走裸关闭，**不弹任何窗**（见 `tab-close.ts` 纪律 1）。
  *
  * 返回「是否真的关掉了至少一个标签」——调用方据此决定要不要同步「当前会话」
@@ -372,7 +540,7 @@ export async function requestCloseTabs(keys: string[]): Promise<boolean> {
   if (existing.length === 0) return false
   const approved = await askTabCloseGuards(existing)
   if (approved.length === 0) return false
-  // await 期间面板可能已变（标签被拖走 / 被外部对表摘掉），关之前再过滤一次
+  // await 期间面板可能已变（标签被拖走 / 被外部摘掉），关之前再过滤一次
   const stillOpen = existingTabKeys(approved)
   if (stillOpen.length === 0) return false
   if (stillOpen.length === 1) closeTab(stillOpen[0])
@@ -434,7 +602,11 @@ export function resizeSplit(splitId: string, sizes: number[]): void {
   })
 }
 
-/** 重置成「一个组、标签按给定顺序」的初始布局（调试 / 全部收起后用） */
+/**
+ * 重置成「一个组、标签按给定顺序」的初始布局（调试 / 全部收起后用）。
+ * 对话标签的指向一并清空 —— 重置之后没有哪颗标签知道自己指向谁。
+ */
 export function resetLayout(keys: string[] = []): void {
+  chatTargets.clear()
   update(() => initialState(keys))
 }

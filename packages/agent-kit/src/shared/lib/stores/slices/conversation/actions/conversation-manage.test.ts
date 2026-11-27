@@ -18,6 +18,7 @@
  *    不能顺手把用户的选择抹掉）；
  * 3. 切到**本地**工作区 → ACP 目标原样保留（本地跑 ACP 是正常用法）。
  * 4. 新建 ACP 会话时，草稿选中的 MCP 要提交给服务端，并保留在会话清单中。
+ * 5. 创建请求等待期间切到其他标签，迟到的创建结果不能抢走焦点及工作区。
  */
 import { describe, expect, it, vi } from 'vitest'
 import { createConversationSlice } from '../index'
@@ -37,6 +38,7 @@ const BUILTIN_TARGET = { backend: 'builtin', configId: 'cfg-a', modelId: 'model-
 function makeStore(draftTarget: Record<string, unknown>) {
   const api = {
     setConversationTarget: vi.fn(async () => ({ ok: true })),
+    listWorkspaces: vi.fn(async () => [LOCAL_WS, REMOTE_WS]),
     createConversation: vi.fn(async () => ({
       id: 'conv-acp', workspaceId: LOCAL_WS.id, backend: 'acp', configId: 'agent-a'
     }))
@@ -64,6 +66,8 @@ function makeStore(draftTarget: Record<string, unknown>) {
     },
     slices: {},
     getApi: () => api,
+    setAcpAgentMode: vi.fn(async () => ({ ok: true })),
+    setAcpThoughtLevel: vi.fn(async () => ({ ok: true })),
     setBusy: () => undefined,
     setError: () => undefined
   }
@@ -92,10 +96,14 @@ function makeStore(draftTarget: Record<string, unknown>) {
   const draftOf = (): Record<string, unknown> => state.draftSettings as Record<string, unknown>
 
   const newConversation = slice.newConversation as (
-    workspaceId: string, title: string | undefined, target: typeof ACP_TARGET
+    workspaceId: string | undefined, title: string | undefined, target: typeof ACP_TARGET
   ) => Promise<string | null>
 
-  return { state, api, selectWorkspace, draftOf, newConversation }
+  return {
+    state, api, selectWorkspace, draftOf, newConversation,
+    setAcpAgentMode: boot.setAcpAgentMode,
+    setAcpThoughtLevel: boot.setAcpThoughtLevel
+  }
 }
 
 describe('selectWorkspace：远端工作区清掉草稿上的 ACP 目标', () => {
@@ -140,5 +148,94 @@ describe('newConversation：ACP 的 MCP 选择', () => {
     expect(state.conversations).toEqual([
       expect.objectContaining({ id: 'conv-acp', mcpServerIds: ['mcp-files'] })
     ])
+  })
+})
+
+describe('newConversation：异步创建与标签焦点隔离', () => {
+  it('焦点未变化时正常激活新会话与工作区', async () => {
+    const { state, newConversation } = makeStore(ACP_TARGET)
+
+    expect(await newConversation(LOCAL_WS.id, undefined, ACP_TARGET)).toBe('conv-acp')
+    expect(state.activeConversationId).toBe('conv-acp')
+    expect(state.activeWorkspaceId).toBe(LOCAL_WS.id)
+  })
+
+  it('等待创建期间切到其他会话，响应不能把焦点和工作区切回新会话', async () => {
+    const { state, api, newConversation } = makeStore(ACP_TARGET)
+    let resolveCreated!: (created: Awaited<ReturnType<typeof api.createConversation>>) => void
+    api.createConversation.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveCreated = resolve
+    }))
+    state.activeWorkspaceId = LOCAL_WS.id
+
+    const creating = newConversation(LOCAL_WS.id, undefined, ACP_TARGET)
+    // 用户在服务端创建会话的往返期间主动切到了远端工作区的另一个会话。
+    state.activeConversationId = 'conv-other'
+    state.activeWorkspaceId = REMOTE_WS.id
+    resolveCreated({
+      id: 'conv-acp', workspaceId: LOCAL_WS.id, backend: 'acp', configId: 'agent-a'
+    })
+
+    expect(await creating).toBe('conv-acp')
+    expect(state.conversations).toEqual([
+      expect.objectContaining({ id: 'conv-acp', workspaceId: LOCAL_WS.id })
+    ])
+    expect(state.activeConversationId).toBe('conv-other')
+    expect(state.activeWorkspaceId).toBe(REMOTE_WS.id)
+  })
+
+  it('等待期间只切换工作区，也不能被创建响应切回', async () => {
+    const { state, api, newConversation } = makeStore(ACP_TARGET)
+    let resolveCreated!: (created: Awaited<ReturnType<typeof api.createConversation>>) => void
+    api.createConversation.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveCreated = resolve
+    }))
+    state.activeWorkspaceId = LOCAL_WS.id
+
+    const creating = newConversation(LOCAL_WS.id, undefined, ACP_TARGET)
+    state.activeWorkspaceId = REMOTE_WS.id
+    resolveCreated({ id: 'conv-acp', workspaceId: LOCAL_WS.id, backend: 'acp', configId: 'agent-a' })
+
+    expect(await creating).toBe('conv-acp')
+    expect(state.activeConversationId).toBeNull()
+    expect(state.activeWorkspaceId).toBe(REMOTE_WS.id)
+  })
+
+  it('等待临时工作区清单刷新时切走，刷新结束后也不能抢焦点', async () => {
+    const { state, api, newConversation } = makeStore(ACP_TARGET)
+    let resolveWorkspaces!: (workspaces: Awaited<ReturnType<typeof api.listWorkspaces>>) => void
+    api.listWorkspaces.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveWorkspaces = resolve
+    }))
+
+    // undefined 对应发送时未选工作区，服务端创建临时工作区后还需刷新清单。
+    const creating = newConversation(undefined, undefined, ACP_TARGET)
+    await vi.waitFor(() => expect(api.listWorkspaces).toHaveBeenCalledOnce())
+    state.activeConversationId = 'conv-other'
+    state.activeWorkspaceId = REMOTE_WS.id
+    resolveWorkspaces([LOCAL_WS, REMOTE_WS])
+
+    expect(await creating).toBe('conv-acp')
+    expect(state.activeConversationId).toBe('conv-other')
+    expect(state.activeWorkspaceId).toBe(REMOTE_WS.id)
+  })
+
+  it('只下发发起创建时的 ACP 档位，保留等待期间新选的草稿档位', async () => {
+    const { state, api, newConversation, setAcpAgentMode, setAcpThoughtLevel } = makeStore(ACP_TARGET)
+    let resolveCreated!: (created: Awaited<ReturnType<typeof api.createConversation>>) => void
+    api.createConversation.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveCreated = resolve
+    }))
+    state.draftAcp = { agentId: 'agent-a', mode: 'plan', thought: 'deep' }
+
+    const creating = newConversation(LOCAL_WS.id, undefined, ACP_TARGET)
+    const nextDraft = { agentId: 'agent-a', mode: 'code', thought: 'fast' }
+    state.draftAcp = nextDraft
+    resolveCreated({ id: 'conv-acp', workspaceId: LOCAL_WS.id, backend: 'acp', configId: 'agent-a' })
+
+    expect(await creating).toBe('conv-acp')
+    expect(setAcpAgentMode).toHaveBeenCalledWith('agent-a', 'conv-acp', 'plan')
+    expect(setAcpThoughtLevel).toHaveBeenCalledWith('agent-a', 'conv-acp', 'deep')
+    expect(state.draftAcp).toBe(nextDraft)
   })
 })

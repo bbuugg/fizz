@@ -207,6 +207,7 @@ class V2Connection implements AcpConnection {
   constructor(
     private readonly ctx: acpV2.ClientContext,
     private readonly release: () => void,
+    private readonly onConfigOptions?: AcpConnectInput['handlers']['onConfigOptions'],
   ) {}
 
   async initialize(): Promise<AcpInitResult> {
@@ -316,6 +317,9 @@ class V2Connection implements AcpConnection {
 
   /** onNotification 分发：idle state_update 折成 stop，其余按 v1 形状入队 */
   routeUpdate(params: any): void {
+    if (params?.update?.sessionUpdate === 'config_option_update' && Array.isArray(params.update.configOptions)) {
+      this.onConfigOptions?.(params.sessionId, params.update.configOptions)
+    }
     const source = this.manual.get(params?.sessionId)
     if (!source) return
     const update = params.update as any
@@ -410,7 +414,7 @@ export const v2Factory: AcpConnectionFactory = {
         .connectWith(
           acpV2.ndJsonStream(input.toAgent, input.fromAgent),
           async (ctx: any) => {
-            connection = new V2Connection(ctx, () => release?.())
+            connection = new V2Connection(ctx, () => release?.(), input.handlers.onConfigOptions)
             resolve(connection)
             await closed
           },

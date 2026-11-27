@@ -6,6 +6,13 @@
  * 「领域组件」依赖「应用装配层」，拆包时方向是反的（见 docs/architecture/frontend-split.md）。
  *
  * 这里**只有纯函数**，不 import react、不碰任何 store。
+ *
+ * ## 现场按**标签 key** 存
+ *
+ * `PanelSession` 的 key 是主区域那颗标签的 key（`panel-store` 的标签身份），不是会话 id：
+ * 现场属于标签，标签活着现场就在。草稿标签发出第一条消息只是换了个指向，key 不变，
+ * 所以终端 / 文件现场原地不动。会话 id 相关的事（归属哪个工作区、面板宽度、输入草稿的
+ * 存档键）另走 `conversationId`，见各函数的参数说明。
  */
 
 /**
@@ -62,7 +69,7 @@ export interface TerminalTab {
 
 /** 一个会话各自的「面板现场」（若干终端 + 工作区文件 + 源代码管理）。 */
 export type PanelSession = {
-  /** 面板实例 id（稳定；渲染 key 用它，迁移 / 改 map key 时不重挂组件） */
+  /** 面板实例 id（稳定；渲染 key 用它。现场的 map key = 标签 key，终生不变） */
   id: string
   /** 该会话所属工作区 */
   workspaceId: string
@@ -161,32 +168,36 @@ export function aliveTabs(panel: PanelSession): PanelTabKey[] {
   ])
 }
 
-/** 「草稿态」（还没建会话）的面板 key 前缀：离开即回收，避免常驻面板泄漏 */
-const DRAFT_PREFIX = 'draft:'
+/**
+ * 「新对话」草稿标签的**持久化作用域**（面板宽度这类按会话记、要跨刷新留住的偏好）。
+ *
+ * 这类偏好按**会话**存（刷新后标签 key 是新的，按标签存就全丢了），草稿没有会话，
+ * 就统一记在这个常量下。它是地址、不是身份，和已删除的「草稿面板 key」不是一回事：
+ * 现场本身按标签 key 存（见文件头）。
+ */
+export const DRAFT_PANEL_SCOPE = 'draft'
 
 /**
- * 「新对话」占位标签（`NEW_TAB_KEY`）的面板现场 key：`draft:<工作区>`。
+ * 把现场的**归属**换到另一个工作区（「新对话」页换了目标工作区时用）。
  *
- * ⚠️ 它**只由工作区决定**，绝不能跟着 `activeConversationId` 走 —— 「面板现场挂在哪个
- * key 下」必须由**这个标签是谁**决定。`ConversationTab` 以前写的是
- * `conversationId ?? sessionKey`，而 `sessionKey` 是「当前会话」：于是「新对话」标签的
- * key 会跟着当前会话跑，切一下标签，它的面板就串到别的会话上（现场被抢走、面板看起来
- * 「自己收起了」）。现在标签那边直接用这个函数算，两边同一个来源。
- *
- * 工作区**在标签切换时不会变**（`openConversation` 不动 `activeWorkspaceId`），所以
- * 同一个工作区里来回切标签，这个 key 是稳定的。
+ * 只改 `workspaceId` / `cwd`，**不动现场内容**：每条终端自己记着建标签时定下的
+ * `TerminalTab.cwd`，已经在跑的那条不该因为换了个项目就被重开；文件 / git 面板读的是
+ * 归属，换完自然跟着走。终端各自的进程表 / 就绪桥也按终端 id 索引，不受影响。
  */
-export function draftPanelKey(workspaceId: string | null | undefined): string {
-  return `${DRAFT_PREFIX}${workspaceId ?? ''}`
-}
-
-/** 这个面板 key 是不是「草稿态」 */
-export function isDraftPanelKey(key: string): boolean {
-  return key.startsWith(DRAFT_PREFIX)
+export function retargetPanelWorkspace(
+  panel: PanelSession,
+  workspaceId: string,
+  cwd: string | null
+): PanelSession {
+  if (panel.workspaceId === workspaceId && panel.cwd === cwd) return panel
+  return { ...panel, workspaceId, cwd }
 }
 
 /**
  * 面板现场该挂到哪个工作区、拿哪条目录：**会话自己的** > 现场已有的 > 当前选中的。
+ *
+ * `conversationId` 是这颗标签**指向**的会话（`panel-store` 的 `conversationOfTab`），
+ * 草稿标签传 `null` —— 现场按标签 key 存，但归属得按会话算。
  *
  * ⚠️ 为什么必须有这层「事后可重算」的解析：`activeWorkspaceId` 是同步从 localStorage
  * 恢复的，而 `workspaces` 列表是异步拉回来的 —— 首帧里建出来的现场只能拿到
@@ -200,7 +211,7 @@ export function isDraftPanelKey(key: string): boolean {
  * 清单还没到（一个都不在）时保留最高优先级的 id，`cwd` 留给下一次补算。
  */
 export function resolvePanelWorkspace(
-  key: string,
+  conversationId: string | null,
   panelWorkspaceId: string | null | undefined,
   conversations: readonly { id: string; workspaceId: string | null }[],
   workspaces: readonly { id: string; path: string | null }[],
@@ -208,7 +219,7 @@ export function resolvePanelWorkspace(
 ): { workspaceId: string; cwd: string | null } {
   // 候选按优先级排队；空串（历史数据）当作没有
   const candidates = [
-    conversations.find((c) => c.id === key)?.workspaceId,
+    conversations.find((c) => c.id === conversationId)?.workspaceId,
     panelWorkspaceId,
     activeWorkspaceId
   ].filter((id): id is string => !!id)
@@ -217,42 +228,6 @@ export function resolvePanelWorkspace(
   return {
     workspaceId,
     cwd: workspaces.find((w) => w.id === workspaceId)?.path ?? null
-  }
-}
-
-/**
- * 把「新对话」草稿的面板现场并进目标会话的现场（目标已存在时**不能整份覆盖**）。
- *
- * 什么时候目标会有现场：刷新 / 切会话时，后台动作（典型是 `gitStatus` 回来后的
- * `patchActivePanel`）可能先给目标会话建出一个**空壳**。旧实现遇到这种就直接放弃迁移
- * （`if (sessions[conversationId]) return`），于是草稿里刚开出来的终端留在没人认领的
- * 草稿 key 上，随后被回收 effect 连 PTY 一起清掉 —— 用户看到的就是「终端闪一下、
- * 或者点了没反应」（刷新后点终端的主力现象）。
- *
- * 这里把草稿那份**合并**进来：终端按 id 去重拼接、挂出标记取并集、正看着的标签优先
- * 用草稿的（用户刚在草稿里点开终端，要接着看它）。目录 / 归属只在目标还没有时补。
- */
-export function mergeDraftPanel(existing: PanelSession, draft: PanelSession): PanelSession {
-  const terminals = [...existing.terminals]
-  for (const t of draft.terminals) {
-    if (!terminals.some((x) => x.id === t.id)) terminals.push(t)
-  }
-  const tabOrder = [...existing.tabOrder]
-  for (const k of draft.tabOrder) {
-    if (!tabOrder.includes(k)) tabOrder.push(k)
-  }
-  return {
-    ...existing,
-    ...(existing.cwd ? {} : { workspaceId: draft.workspaceId, cwd: draft.cwd }),
-    terminals,
-    tabOrder,
-    // 正看着的标签：草稿里开着终端 / 文件面板就接着看它，否则保持目标的
-    sideTab: draft.sideTab ?? existing.sideTab,
-    lastSideTab: draft.lastSideTab ?? existing.lastSideTab,
-    filesMounted: existing.filesMounted || draft.filesMounted,
-    gitMounted: existing.gitMounted || draft.gitMounted,
-    browserMounted: existing.browserMounted || draft.browserMounted,
-    previewMounted: existing.previewMounted || draft.previewMounted
   }
 }
 
@@ -268,11 +243,13 @@ export function mergeDraftPanel(existing: PanelSession, draft: PanelSession): Pa
  * - 先用 `resolvePanelWorkspace` 的优先级重新解析（会话自己的工作区 > 现场 > 当前选中）；
  * - 解析不到新路径时退回现场里已有的 `panelCwd`（工作区列表暂时没到也别把点击吞掉）。
  *
+ * `conversationId` = 这颗标签指向的会话（草稿传 `null`），口径同 `resolvePanelWorkspace`。
+ *
  * 返回 `null` = **确实没有可用的目录**（虚拟工作区 / 工作区与目录都没了）。调用方必须
  * 把 `null` 当「失败」并给出提示，绝不能静默返回 —— 那会退化成那个 5 秒超时。
  */
 export function resolveTerminalCwd(
-  key: string,
+  conversationId: string | null,
   panelWorkspaceId: string | null | undefined,
   panelCwd: string | null | undefined,
   conversations: readonly { id: string; workspaceId: string | null }[],
@@ -280,7 +257,7 @@ export function resolveTerminalCwd(
   activeWorkspaceId: string | null | undefined
 ): { workspaceId: string; cwd: string } | null {
   const resolved = resolvePanelWorkspace(
-    key,
+    conversationId,
     panelWorkspaceId,
     conversations,
     workspaces,

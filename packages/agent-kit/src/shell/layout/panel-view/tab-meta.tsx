@@ -58,7 +58,6 @@ import {
   isSysmonTabKey,
   isTriggersTabKey,
   isTunnelTabKey,
-  NEW_TAB_KEY,
   sftpHostIdOfTabKey,
 } from '@fizz/agent-kit/shared/lib/panel-tabs'
 import {
@@ -67,7 +66,7 @@ import {
   subscribeToolTabs,
 } from '@fizz/agent-kit/shared/lib/tool-tabs'
 import type { SshHostConfig } from '@fizz/contracts/types'
-import { getPanelState } from '@fizz/agent-kit/shared/lib/panel-store'
+import { conversationOfTab, getPanelState } from '@fizz/agent-kit/shared/lib/panel-store'
 import type { TabMeta } from './types'
 
 /** 标签条高度（与 `SidePanel` 的标签条一致，两处看起来才是同一套控件） */
@@ -84,7 +83,9 @@ export function tabIndexIn(groupId: string, tabKey: string): number {
  * 标签的展示信息。
  *
  * 按 key 的类型分别取源：
- * - 对话标签 → 会话列表里的标题（会话被重命名 / 首条消息自动定标题都跟着走）；
+ * - 对话标签 → 标签 store 里它指向的会话（草稿 = 「新对话」），名字取会话列表里的标题
+ *   （会话被重命名 / 首条消息自动定标题都跟着走）。指向变了 store 会换一次状态引用，
+ *   所以这里重新读得到新名字；
  * - 主机标签 → **优先**读主机清单（改名能实时反映），清单里没有了（主机被删）就退回
  *   打开时记在登记表里的快照 —— 标签不会突然变成一串 uuid；
  * - 本机终端 → 登记表里的快照（`终端 N` / 目录）。
@@ -116,7 +117,9 @@ export function useTabMeta(): (key: string) => TabMeta {
   )
   const baseMeta = useCallback(
     (key: string): TabMeta => {
-      if (key === NEW_TAB_KEY) {
+      // 对话标签：指向哪条会话问 store（`null` = 还是「新对话」草稿），key 里解析不出来
+      const conversationId = conversationOfTab(key)
+      if (conversationId === null) {
         return {
           label: t('新对话'),
           title: t('新对话（初始页）'),
@@ -296,7 +299,11 @@ export function useTabMeta(): (key: string) => TabMeta {
           )
         }
       }
-      const conversation = app.conversations.find((c) => c.id === key)
+      if (conversationId === undefined) {
+        // 既不是工具标签、也不是对话标签：不该出现，给个中性名字别让标签条空着
+        return { label: t('标签'), title: key, icon: <MessageSquare className="size-3.5 shrink-0" /> }
+      }
+      const conversation = app.conversations.find((c) => c.id === conversationId)
       // ACP 会话的标签用绑定 agent 的品牌图标（与侧栏会话行一致；认不出 → Bot）
       const acpAgent =
         conversation?.backend === 'acp'
@@ -305,7 +312,7 @@ export function useTabMeta(): (key: string) => TabMeta {
       return {
         // 默认标题（`新会话`）按当前语言显示，用户起过的名字原样
         label: conversationTitle(conversation?.title) || t('对话'),
-        title: conversationTitle(conversation?.title) || key,
+        title: conversationTitle(conversation?.title) || conversationId,
         icon: acpAgent ? (
           <AcpAgentIcon presetId={acpAgent.preset} command={acpAgent.command} className="size-3.5" />
         ) : (
@@ -344,10 +351,10 @@ export function useTabMeta(): (key: string) => TabMeta {
       let status = meta.status
 
       /*
-       * 会话运行态。`getActivity` 对非会话 key 恒返回冻结的空态（表里只会有会话 id），
-       * 所以不必先判断这是不是对话标签。
+       * 会话运行态。运行态表按**会话 id** 记，所以要拿标签指向的会话去查；
+       * 草稿（null）与非对话标签恒返回冻结的空态。
        */
-      const activity = getActivity(key)
+      const activity = getActivity(conversationOfTab(key) ?? undefined)
       if (activity.waiting) {
         // 区分两种「等你」：权限申请用盾牌、AI 提问用问号气泡（与侧栏同一套符号）
         const Icon = activity.waiting.kind === 'confirm' ? ShieldQuestion : MessageCircleQuestion

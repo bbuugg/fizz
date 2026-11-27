@@ -36,16 +36,16 @@ describe('composerToolbarState', () => {
     })
   })
 
-  it.each(['builtin', 'acp'])('没装浏览器、没配 MCP 时不占工具条高度（%s）', (backend) => {
-    const app = {
+  it.each(['builtin', 'acp'] as const)('没装浏览器、没配 MCP 时不占工具条高度（%s）', (backend) => {
+    const app: Partial<AgentApp> = {
       activeConversationId: null,
       conversations: [],
       chatTarget: { backend },
       browserInstalled: false,
       mcpServers: []
-    } as AgentApp
+    }
 
-    expect(composerToolbarState(app)).toEqual({
+    expect(composerToolbarState(app as AgentApp)).toEqual({
       browser: false,
       browserPlaceholder: false,
       mcp: false

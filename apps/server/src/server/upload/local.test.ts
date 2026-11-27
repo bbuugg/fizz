@@ -11,8 +11,9 @@ vi.mock('node:fs/promises', () => ({
 vi.mock('@fizz/workspace', () => ({ resolveDataDir: () => '/test-data' }))
 
 import { join } from 'node:path'
-import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { LocalUploadAdapter } from './local'
+import { UPLOAD_EXT_BY_MIME } from '@fizz/contracts/agent-api'
 
 describe('LocalUploadAdapter.put cancellation', () => {
   beforeEach(() => vi.clearAllMocks())
@@ -52,6 +53,16 @@ describe('LocalUploadAdapter.put cancellation', () => {
     await expect(upload).rejects.toMatchObject({ name: 'AbortError' })
     expect(rename).not.toHaveBeenCalled()
     expect(rm).toHaveBeenCalledWith(expect.stringMatching(/\.tmp$/), { force: true })
+  })
+})
+
+/** 上传支持格式必须都能按相同 MIME 读回，文档提取不能因为存储层丢类型而退回二进制。 */
+describe('LocalUploadAdapter.get MIME', () => {
+  it.each(Object.entries(UPLOAD_EXT_BY_MIME))('%s 的存储扩展名 %s 保留类型', async (mime, ext) => {
+    vi.mocked(readFile).mockResolvedValueOnce(Buffer.from('original bytes'))
+    const got = await new LocalUploadAdapter().get(`/api/uploads/00000000-0000-4000-8000-000000000000.${ext}`)
+    expect(got?.mediaType).toBe(mime)
+    expect(got?.bytes).toEqual(Buffer.from('original bytes'))
   })
 })
 

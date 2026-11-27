@@ -130,7 +130,7 @@ export type StoredHost = StoredSshHost | StoredLocalHost
  * `version < N` 的迁移 —— 老数据文件里存着的是**旧默认值**，不迁的话新默认值对已有安装
  * 根本不生效（`normalizeXxx` 只会补「缺字段」，不会改「已写着的值」）。
  */
-const DATA_VERSION = 3
+const DATA_VERSION = 4
 
 /** 落盘的数据形状（和桌面端的 electron-store 不同：这里是**服务端自己的**一份） */
 export interface CoreData {
@@ -602,6 +602,14 @@ export class JsonStore {
     } catch {
       // 首次运行 / 文件损坏：从空数据开始（写盘后即为新文件，旧文件被覆盖）
       this.data = emptyData()
+    }
+    if (fileVersion < 4) {
+      // v3 → v4：自动放行固定为 allow_once，移除旧的按 agent 记住策略；保留预设与旧类型。
+      this.data.acpAgents = this.data.acpAgents.map((agent) => {
+        const next = { ...agent } as AcpAgentConfig & { allowStrategy?: unknown }
+        delete next.allowStrategy
+        return next
+      })
     }
     // 扫盘装配会话索引，并把老数据文件里还在的会话迁移到会话目录
     await this.loadConversationsFromDisk(legacyConversations)

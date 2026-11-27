@@ -16,6 +16,7 @@
  * 只需要其中一两个字段的组件仍可改用 selector（如 `useAgentStore(s => s.activeWorkspaceId)`）。
  */
 import { useEffect, useRef } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { toast } from "sonner";
 import { setUnauthorizedHandler } from "@fizz/agent-client/api";
 import {
@@ -38,6 +39,7 @@ import {
 import type {
   QueuedMessage,
   ChatTarget,
+  ConvSlice,
 } from "@fizz/agent-kit/shared/lib/stores/slices/conversation";
 import type {
   AcpPermissionMode,
@@ -105,6 +107,11 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
    * 那份共享状态可读 —— 有它的时候，分屏两个标签就会互相污染。
    */
   const scoped = s.scopedSettingsOf(conversationId);
+  // 工作区也是视图现场：分屏下不能把焦点会话的目录 / 本地远端归属投影给其他标签。
+  // 清单尚未载入时宁可没有工作区，也不能回落到别人的工作区。
+  const workspaceId = conversationId
+    ? (s.conversations.find((c) => c.id === conversationId)?.workspaceId ?? '')
+    : s.activeWorkspaceId;
 
   return {
     // 状态
@@ -172,6 +179,8 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
      * 这排 pill 的数据只能来自探测（见 `probeDraftAcp`）。`null` = 没选 ACP。
      */
     draftAcp: s.draftAcp,
+    acpConfigLoading: !!activeSlice?.acpConfigLoading,
+    acpConfigError: activeSlice?.acpConfigError ?? null,
     /** 这个视图的会话允许使用的 MCP server id 清单（持久化在会话上；空 = 全不选） */
     mcpServerIds: scoped.mcpServerIds,
     /** 改选这个视图的会话可用的 MCP（全量覆盖） */
@@ -205,8 +214,8 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     /** 保存界面语言（同时切本机 i18n 单例） */
     saveLanguage: s.saveLanguage,
     activeWorkspace:
-      s.workspaces.find((w) => w.id === s.activeWorkspaceId) ?? null,
-    activeWorkspaceId: s.activeWorkspaceId,
+      s.workspaces.find((w) => w.id === workspaceId) ?? null,
+    activeWorkspaceId: workspaceId,
     /** 这个视图所属的会话（见 agentAppFrom 的说明：标签视图里就是标签自己那条） */
     activeConversationId: conversationId,
     // ---- 活跃会话那份现场（字段名与旧的全局单份一致，渲染层无感） ----
@@ -256,6 +265,8 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     reconnectNotice: activeSlice?.reconnectNotice ?? null,
     /** 当前打开的会话是否正在流式（后台会话在跑不影响这里；侧栏转圈看 runningConversations） */
     streaming: activeSlice?.streaming ?? false,
+    /** 本标签的 ACP 发送准备阶段：检测 / 恢复完成前发送钮转圈，草稿仍保留。 */
+    preparingSend: activeSlice?.preparingSend ?? false,
     /**
      * 本轮**实时估算**的输出速度（tok/s），流式期间每来一帧内容增量更新一次；
      * null = 没在跑的轮 / 还没出过字。轮末以消息上的 `usage.tps`（服务端真值）为准。
@@ -364,7 +375,8 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
       text: string,
       files?: UploadFileRef[],
       onStarted?: () => void,
-    ) => s.send(text, files, onStarted, conversationId),
+      draftTabKey?: string,
+    ) => s.send(text, files, onStarted, conversationId, draftTabKey),
     /** 运行中插话（steer）：下一个工具步骤边界注入当前轮；空闲时回落普通发送 */
     steer: (
       text: string,
@@ -401,15 +413,17 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     renameConversation: s.renameConversation,
     /** 归档 / 取消归档会话（不删数据；侧栏据此收进 / 放出「已归档」区） */
     archiveConversation: s.archiveConversation,
-    /** 重启 acp 会话：杀 agent 进程、保留 sessionId（下一条消息 session/load 接回原上下文） */
+    /** @deprecated 重启已合并至重新加载，兼容调用同样同步历史并共用恢复锁。 */
     restartAcpSession: s.restartAcpSession,
-    /** 重新加载 acp 会话：当场再走一次 session/load，用 agent 侧回放整体重建消息列表 */
+    /** 统一 ACP 恢复：空闲时重连并同步历史，运行中只合并快照和接回直播。 */
     reloadAcpSession: s.reloadAcpSession,
     /**
      * 重新加载**这一条**会话（等价于「刷新页面 → 点开它」）：内置 拉权威历史、
      * acp 走 session/load 回放。错误块那颗「重新加载」按钮与标签右键的「刷新」都走它。
      */
     reloadConversation: s.reloadConversation,
+    /** ACP 整会话分叉：返回新会话 id，调用方通过外壳打开对应标签 */
+    forkAcpConversation: s.forkAcpConversation,
     /** ACP 会话 → 内置 Agent 会话：拉 agent 侧转录、洗成内置格式、新建一条会话并切过去 */
     convertAcpConversation: s.convertAcpConversation,
     /** 清空会话（保留会话本身） */
@@ -539,6 +553,8 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     deleteMcpServer: s.deleteMcpServer,
     saveSshHost: s.saveSshHost,
     deleteSshHost: s.deleteSshHost,
+    /** 复制一条主机条目（服务端克隆：凭据密文一起带走，客户端看不到明文） */
+    duplicateSshHost: s.duplicateSshHost,
     saveHostGroup: s.saveHostGroup,
     deleteHostGroup: s.deleteHostGroup,
     arrangeHosts: s.arrangeHosts,
@@ -694,6 +710,11 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
      */
     reloadSkills: s.reloadSkills,
     /**
+     * 读某个技能的 SKILL.md 原文：技能列表点一行 → 弹窗里做 Markdown 预览。
+     * 只读一次内容、不刷新清单，理由见 slice 的同名方法。
+     */
+    readSkill: s.readSkill,
+    /**
      * 这台机器上有哪些 shell（终端面板「选择终端」下拉用）。
      *
      * ⚠️ 未连接（api 为 null）时返回**被拒绝的 Promise**，不能同步抛 ——
@@ -768,6 +789,17 @@ function announceSessionExpired(): void {
  */
 export function useRunningConversations(): Record<string, true> {
   return useAgentStore((s) => s.runningConversations);
+}
+
+/** 侧栏只订阅恢复阶段，消息增量不会让整个会话清单跟着重渲染。 */
+export function useRecoveringConversations(): Record<string, NonNullable<ConvSlice["recoveryPhase"]>> {
+  return useAgentStore(useShallow((s) => {
+    const recovering: Record<string, NonNullable<ConvSlice["recoveryPhase"]>> = {};
+    for (const [id, slice] of Object.entries(s.slices)) {
+      if (slice.recoveryPhase) recovering[id] = slice.recoveryPhase;
+    }
+    return recovering;
+  }));
 }
 
 /**

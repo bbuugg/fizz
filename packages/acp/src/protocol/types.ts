@@ -171,6 +171,8 @@ export interface AcpSessionInfo {
 /** 连接期间 agent 回调 client 的处理器 */
 export interface AcpConnectionHandlers {
   onPermission: (req: AcpPermissionRequest) => Promise<AcpPermissionReply>
+  /** 包括空闲期在内的完整配置更新；空数组表示明确移除所有配置项。 */
+  onConfigOptions?: (sessionId: string, options: unknown[]) => void
   /** 结构化追问；缺省 = 一律 decline（不挂住 agent） */
   onElicitation?: (req: AcpElicitationRequest) => Promise<AcpElicitationReply>
   /** url 模式的 elicitation 在浏览器里完成后 agent 会回一条通知 */

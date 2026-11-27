@@ -20,7 +20,7 @@ describe('todowrite', () => {
   it('原样返回整份列表，支持取消及空列表，不改写命令', async () => {
     const tool = buildTodoWriteTool()
     const todos = [{ content: ' npm run check -- --flag  ', priority: 'high', status: 'cancelled' }]
-    expect(await tool.execute!({ todos }, { toolCallId: 't', messages: [] })).toEqual(todos)
-    expect(await tool.execute!({ todos: [] }, { toolCallId: 't', messages: [] })).toEqual([])
+    expect(await tool.execute!({ todos }, { toolCallId: 't', messages: [], context: {} })).toEqual(todos)
+    expect(await tool.execute!({ todos: [] }, { toolCallId: 't', messages: [], context: {} })).toEqual([])
   })
 })

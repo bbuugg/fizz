@@ -176,17 +176,3 @@ export interface PluginDescriptor<S extends string = string> extends PluginCandi
 export interface PluginSettings {
   disabled: string[]
 }
-
-/**
- * 设置页展示用的**上传源摘要**：`UploadProviderRegistration` 里可以外传的那部分
- * （`put` / `resolveModelUrl` 这类函数留在宿主，不进 HTTP 响应）。
- *
- * 放在这个纯类型文件里而不是 `loader.ts`：前端要从包根入口 import type 它，
- * 而根入口刻意不导出 loader（那会把 jiti / fs 拖进浏览器产物）。
- */
-export interface PluginUploadSourceInfo {
-  id: string
-  title: string
-  acceptMime: string[]
-  maxBytes?: number
-}

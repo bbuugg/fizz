@@ -37,7 +37,7 @@ import type {
 import { Button } from '@fizz/ui/button'
 import { SpinnerButton } from '@fizz/ui/spinner-button'
 import { useStateSnapshot } from '@fizz/agent-kit/shared/lib/state-ws'
-import { isConversationTabKey, NEW_TAB_KEY } from '@fizz/agent-kit/shared/lib/panel-tabs'
+import { useTabConversation } from '@fizz/agent-kit/shared/lib/panel-store'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 
@@ -519,28 +519,21 @@ export function ContainerProjectGate({
 }
 
 /**
- * 标签 → 它所属的工作区 id（纯查询，不看容器判定）。
+ * 标签 → 它所属的工作区 id：**只有真实会话标签才可能属于某个容器项目**，其余一律
+ * `null`（= 不过门）：
  *
- * **只有真实会话标签才可能属于某个容器项目**，其余一律 `null`（= 不过门）：
- *
- * - **对话标签**：会话自己的 `workspaceId`。只有它天然绑定一个项目 —— 也就只有它该被
- *   那个项目的容器状态拦住。
- * - **「新对话」草稿标签**（`__new__`）：**恒 `null`**。草稿还没有会话、也还没有归属项目，
- *   用户正是在这一页上挑项目。拿「当前工作区」判它，会让站在容器项目里的人**永远看不到**
- *   「开始新对话」页：草稿标签被顶成容器卡片，而关掉它 `PanelView` 又会立刻补一张
- *   —— 表现为「一张关不掉的容器卡片」（用户报过）。「关掉所有标签 → 新对话标签 → 开始新
- *   对话」是**与工作区无关**的固定落点，不能由项目状态改写。
+ * - **对话标签**：它指向的会话自己的 `workspaceId`。只有它天然绑定一个项目 —— 也就只有
+ *   它该被那个项目的容器状态拦住。
+ * - **「新对话」草稿标签**（还没指向任何会话）：**恒 `null`**。草稿还没有会话、也还没有
+ *   归属项目，用户正是在这一页上挑项目。拿「当前工作区」判它，会让站在容器项目里的人
+ *   **永远看不到**「开始新对话」页：草稿标签被顶成容器卡片，而关掉它 `PanelView` 又会
+ *   立刻补一张 —— 表现为「一张关不掉的容器卡片」（用户报过）。「关掉所有标签 → 新对话
+ *   标签 → 开始新对话」是**与工作区无关**的固定落点，不能由项目状态改写。
  * - **工具标签**（主机终端 / 本机终端 / SFTP / 接口 / 脚本 / 笔记 / 插件 / 日志 / 隧道）：
  *   一律 `null`。它们是**独立功能**（「主机与终端」里那条本机终端就是**宿主 shell**），
  *   只是把内容摆进主区域当标签用，与任何会话 / 项目都没有关系 —— 不能因为当前项目是
  *   容器型就被 `docker exec` 进容器，也不能被容器门顶掉。
- */
-function tabWorkspaceId(app: AgentApp, tabKey: string): string | null {
-  if (!isConversationTabKey(tabKey) || tabKey === NEW_TAB_KEY) return null
-  return app.conversations.find((c) => c.id === tabKey)?.workspaceId ?? null
-}
-
-/**
+ *
  * **标签内容**的容器门：容器型项目的容器没在跑时，把启动态卡片渲染在**这一格标签里**。
  *
  * ⚠️ 别把它改回「套在 `PanelView` 外面」（`app-routes` 那种写法）：主区域是多标签的，
@@ -548,8 +541,8 @@ function tabWorkspaceId(app: AgentApp, tabKey: string): string | null {
  * 用户看不到、也切不了别的标签，只剩一张占满整个主区域的卡片（用户报过）。
  *
  * 现在的位置在内容层里、每个标签各包一层：标签条、拖拽 / 分屏 / 关闭全部照常可用，
- * 只有属于那个容器项目的标签内容换成卡片。判定按**标签自己所属的工作区**走
- * （`tabWorkspaceId`），所以别的工作区的对话标签、SSH 终端、接口页都不会被牵连。
+ * 只有属于那个容器项目的标签内容换成卡片。判定按**标签自己所属的工作区**走，
+ * 所以别的工作区的对话标签、SSH 终端、接口页都不会被牵连。
  */
 export function ContainerTabGate({
   tabKey,
@@ -560,8 +553,13 @@ export function ContainerTabGate({
   children: ReactNode
 }) {
   const { app } = useAppContext()
+  // 订阅「这颗标签指向哪条会话」：草稿页发出第一条消息后它就归属某个项目了，门要跟着变
+  const conversationId = useTabConversation(tabKey)
+  const workspaceId = conversationId
+    ? (app.conversations.find((c) => c.id === conversationId)?.workspaceId ?? null)
+    : null
   return (
-    <ContainerProjectGate app={app} workspaceId={tabWorkspaceId(app, tabKey)}>
+    <ContainerProjectGate app={app} workspaceId={workspaceId}>
       {children}
     </ContainerProjectGate>
   )

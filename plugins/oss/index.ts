@@ -1,26 +1,15 @@
 /**
- * 内置插件：把附件 / 文件传到**自己的对象存储**（S3 兼容协议）。
+ * 内置插件：把工作区文件传到**自己的对象存储**（S3 兼容协议）。
  *
  * 覆盖阿里云 OSS、腾讯云 COS、Cloudflare R2、MinIO、AWS S3 以及任何 S3 兼容服务 ——
  * 它们都认同一套鉴权：**AWS Signature Version 4**（`AWS4-HMAC-SHA256`）。所以这里不引入
  * 任何 SDK，用 `node:crypto` 手写签名（见下面 `signV4` 的说明），插件保持单文件、零依赖。
  *
- * ## 它同时提供两样东西（各自可开关）
+ * 提供 `upload_to_oss` 工具，让模型上传工作区文件并拿到分享直链。
+ * 可在 设置 →「插件」里通过 `enableTools` 开关控制。
  *
- * 1. **附件上传提供商**（`ctx.uploads.register`）—— 输入框回形针 →「传到哪儿」→ 选它，
- *    附件就落进你的桶，交给输入框的是一条**公网直链**（模型侧能取到，与 storage.to 那种
- *    分享页不同）。要出现在下拉里必须先配齐下面的设置项。
- * 2. **工具**（`ctx.tools.register`）—— `upload_to_oss`：让模型把工作区里的某个文件传上去
- *    并拿到直链（例如「把这个报告传上去给我个链接」）。
- *
- * 两个开关在 设置 →「插件」里：`enableUploadProvider` / `enableTools`。
- *
- * ## ⚠️ 为什么是「两半分别注册」而不是一个 `inject`
- *
- * 工具挂在**每轮对话的 turn context**（有 tools / workspace，没有 uploads），上传源挂在
- * **长驻的 upload context**（有 uploads / ui / tools，没有 workspace）。所以本插件顶层
- * `inject` 为空（**任何 context 都 apply**：设置项声明才能在设置页出现），两半各自用
- * `ctx.inject([...])` 声明依赖 —— 依赖齐了就注册，没齐就静默等（不报错、不空跑）。
+ * 顶层 `inject` 留空，使设置页能收集声明；设置项与工具分别用 `ctx.inject([...])`
+ * 声明 `ui` 与 `tools / workspace` 依赖。
  *
  * ⚠️ 别把 `workspace` 写进顶层 `inject`：设置页收集声明用的是临时 inspect context，
  * 那里没有工作区，写进去会把**整个插件**推迟挂载，连设置表单都看不到。
@@ -33,10 +22,10 @@
  * - `region`：`cn-hangzhou`（R2 填 `auto`，MinIO 常见 `us-east-1`）；
  * - `bucket` / `accessKeyId` / `secretAccessKey`：RAM 用户的 AK/SK（**别用主账号 AK**）；
  * - `publicBaseUrl`：桶的公网访问基址，如 `https://my-bucket.oss-cn-hangzhou.aliyuncs.com`
- *   或你自己的 CDN 域名。**它必须指向这个桶且可匿名读** —— 模型侧就是去取它；
+ *   或你自己的 CDN 域名。**它必须指向这个桶且可匿名读**，供用户访问分享链接；
  * - `keyPrefix`：对象键前缀（默认 `fizz/`）；
  * - `verifyPublicRead`：上传后立刻回读一次公网地址，读不到就当场报错（默认开）。
- *   没有它的话，「桶不是公共读」会表现成「附件发出去、模型读不到」，比报错难查得多。
+ *   没有它的话，可能生成用户打不开的分享链接。
  *
  * 配置**只从设置页来**（系统配置），不读环境变量：一个凭据有两个真源，排查「为什么传不
  * 上去」时永远得先问「你到底配在哪」。容器 / 无界面部署用的是同一个设置页。
@@ -60,8 +49,6 @@ import { extname } from 'node:path'
 import { z } from 'zod'
 import { tool } from 'ai'
 
-/** 附件上传与内置存储同一个口径：10MB —— 模型附件本来就是图片 / PDF */
-const UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 /** 工具路径放宽一些（分享个压缩包 / 大图很常见），但仍是「读进内存再 PUT」，不放开到 GB 级 */
 const TOOL_MAX_BYTES = 32 * 1024 * 1024
 const PUT_TIMEOUT_MS = 120_000
@@ -277,7 +264,6 @@ interface OssConfig {
   publicBaseUrl?: string
   keyPrefix?: string
   verifyPublicRead?: boolean
-  enableUploadProvider?: boolean
   enableTools?: boolean
 }
 
@@ -290,7 +276,6 @@ interface OssSettings {
   publicBaseUrl: string
   keyPrefix: string
   verifyPublicRead: boolean
-  enableUploadProvider: boolean
   enableTools: boolean
 }
 
@@ -314,7 +299,6 @@ function readSettings(config?: OssConfig): OssSettings {
     keyPrefix: pick(config?.keyPrefix) || 'fizz/',
     // 开关：缺省 = 开（只有显式存成 false 才关）
     verifyPublicRead: config?.verifyPublicRead !== false,
-    enableUploadProvider: config?.enableUploadProvider !== false,
     enableTools: config?.enableTools !== false
   }
 }
@@ -329,39 +313,6 @@ function missingKeys(s: OssSettings): string[] {
   if (!s.secretAccessKey) out.push('secretAccessKey')
   if (!s.publicBaseUrl) out.push('publicBaseUrl')
   return out
-}
-
-/** `publicBaseUrl` 必须是一条能当 URL 前缀的 https 地址（否则上传源注册会当场抛错） */
-function validPublicBase(url: string): boolean {
-  if (!/^https:\/\/[^/?#\s]+/i.test(url)) return false
-  try {
-    const parsed = new URL(url)
-    return !parsed.search && !parsed.hash
-  } catch {
-    return false
-  }
-}
-
-/**
- * 设置页里那行「当前状态」：为什么它（还没）出现在上传源下拉里。
- *
- * 为什么需要：配置不全时本插件**不注册**上传源（注册要求 `urlPrefixes`，空值会当场抛错，
- * 见下面 `ctx.inject(['uploads'])` 里那段），那是一次**静默缺席** —— 用户只看到「回形针菜单里
- * 没有它」，而且只要没有第二个源，连选择器本身都不显示（前端既有设计）。把「缺什么」写在他
- * 填设置的地方，就不必去猜「选项哪去了」。
- *
- * 措辞刻意写成**一句平铺**（前端把 description 渲染成一段文字，换行会被折叠）。
- */
-function providerStatus(s: OssSettings): string {
-  if (!s.enableUploadProvider) return '当前状态：已关闭，不会出现在上传源下拉里（下面那个工具不受影响）。'
-  const missing = missingKeys(s)
-  if (missing.length > 0) {
-    return `当前状态：还缺 ${missing.join('、')}，补齐后才会出现在回形针菜单的「传到哪儿」里。`
-  }
-  if (!validPublicBase(s.publicBaseUrl)) {
-    return `当前状态：publicBaseUrl「${s.publicBaseUrl}」不是合法的 https 前缀（要写成 https://主机[/路径]），所以还没生效。`
-  }
-  return '当前状态：已生效，回形针菜单的「传到哪儿」里可以选它。'
 }
 
 // ---------- 对象键与请求地址 ----------
@@ -511,7 +462,6 @@ interface PluginCtx {
   logger: { warn: (...args: unknown[]) => void }
   inject(deps: string[], cb: (ctx: PluginCtx) => void | (() => void)): unknown
   ui: { icon(uri: string): unknown; setting(item: unknown): unknown }
-  uploads: { register(spec: unknown): unknown }
   tools: { register(name: string, tool: unknown, opts?: unknown): unknown }
   workspace: { path: string; label: string; resolve(p: string): string }
 }
@@ -520,7 +470,7 @@ export default {
   name: 'oss',
   /**
    * 顶层不声明依赖 = **任何 context 都 apply**（设置项声明必须在设置页那次 inspect 里跑），
-   * 两半能力各自用 `ctx.inject([...])` 声明依赖。见文件头的说明。
+   * 设置项与工具各自用 `ctx.inject([...])` 声明依赖。见文件头的说明。
    */
   inject: [],
 
@@ -528,16 +478,9 @@ export default {
     const settings = readSettings(config)
     const missing = missingKeys(settings)
 
-    // ---- 设置项与图标：只要宿主提供 ui（设置页 inspect / 长驻 upload context 都有）----
+    // ---- 设置项与图标：只要宿主提供 ui ----
     ctx.inject(['ui'], (c) => {
       c.ui.icon(ICON)
-      c.ui.setting({
-        id: 'enableUploadProvider',
-        title: '作为附件上传提供商',
-        type: 'boolean',
-        default: true,
-        description: `开启后，输入框的「传到哪儿」里会出现这个桶；关掉则只保留下面的工具。${providerStatus(settings)}`
-      })
       c.ui.setting({
         id: 'enableTools',
         title: '提供 upload_to_oss 工具',
@@ -585,7 +528,7 @@ export default {
         type: 'string',
         placeholder: 'https://my-bucket.oss-cn-hangzhou.aliyuncs.com',
         description:
-          '桶的公网可读地址（或你自己的 CDN 域名）。模型侧取附件取的就是它 —— 填错 / 桶不是公共读，附件就取不到'
+          '桶的公网可读地址（或你自己的 CDN 域名），用于生成可公开访问的文件分享链接'
       })
       c.ui.setting({
         id: 'keyPrefix',
@@ -601,45 +544,11 @@ export default {
         type: 'boolean',
         default: true,
         description:
-          '上传完立刻 GET 一次公网地址，取不到就当场报错（宁可在上传时失败，也不要留下模型取不到的附件）'
+          '上传完立刻 GET 一次公网地址，取不到就当场报错，避免生成不可访问的分享链接'
       })
     })
 
-    // ---- 附件上传提供商：只挂长驻 upload context ----
-    if (settings.enableUploadProvider) {
-      ctx.inject(['uploads'], (c) => {
-        // 没配齐就不注册：`urlPrefixes` 为空会当场抛错，那会把整个插件的挂载带崩
-        if (missing.length > 0) {
-          return
-        }
-        if (!validPublicBase(settings.publicBaseUrl)) {
-          return
-        }
-        c.uploads.register({
-          id: 'oss',
-          title: '对象存储（OSS）',
-          // 自己声明「我只产出这个域名下的地址」：服务端据此 fail-closed 校验 put 的返回值
-          urlPrefixes: [settings.publicBaseUrl],
-          // 不声明 accept = 用契约白名单（图片 + PDF，10MB），与内置存储同一个口径
-          async put(input: { name: string; mediaType: string; bytes: Uint8Array }) {
-            if (input.bytes.length > UPLOAD_MAX_BYTES) {
-              throw new Error(
-                `文件太大：${(input.bytes.length / 1024 / 1024).toFixed(1)}MB，上限 ${UPLOAD_MAX_BYTES / 1024 / 1024}MB`
-              )
-            }
-            return {
-              url: await putObject(settings, {
-                key: objectKey(settings, input.name),
-                bytes: input.bytes,
-                mediaType: input.mediaType
-              })
-            }
-          }
-        })
-      })
-    }
-
-    // ---- 工具：挂有 tools + workspace 的回合（上传 context 里也会跑一遍，那边没人用注册表）----
+    // ---- 工具：挂有 tools + workspace 的回合 ----
     if (settings.enableTools) {
       ctx.inject(['tools', 'workspace'], (c) => {
         if (missing.length > 0) {

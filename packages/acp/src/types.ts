@@ -6,27 +6,10 @@
 import type { AcpProtocolVersion } from './protocol/types'
 
 /**
- * 外部 agent 的「风格」（设置 → 外部 Agent 里手选）：决定会话输入区里模式 UI 的
- * 语义与摆放位置（见 ChatPanel 的 AcpModePill / AcpThoughtLevelSelect）。
- *
- * - `opencode`：Session Modes 表达**权限档** → 摆在权限 pill 的位置；
- * - `pi`：configOptions 的 `thought_level` 表达**思考档** → 摆在模型选择器之后；
- * - `generic`（缺省）：**不显示任何模式 UI**（哪怕 agent 广告了 modes）。
+ * 旧配置中的适配身份，仅供兼容（例如 pi 确认扩展）。新配置用 preset 标识身份；
+ * 模式与思考档 UI 完全由会话实际提供的 ACP 能力决定，不读取此字段。
  */
 export type AcpAgentType = 'opencode' | 'pi' | 'generic'
-
-/**
- * 会话档为「完全放行」时，怎么答复 agent 的权限请求（`session/request_permission`）。
- *
- * - `once`（缺省）：**只允许这一次**（回 `allow_once`）—— 下次仍会问，把会话切回「确认」
- *   也还有得问。**默认必须是它**：回 `allow_always` 会被 agent 自己永久记住，
- *   之后切回「确认」也要不回询问了（实测踩过）。
- * - `always`：回 `allow_always`，由 agent 永久记住，此后同类不再问（用户明确想要才行）。
- *
- * 之所以**按 agent 配**：不同 agent 对 allow_always 的「记住」粒度 / 生效时机不一样，
- * 一律回 always 迟早会踩到「再也要不回询问」。
- */
-export type AcpAllowStrategy = 'once' | 'always'
 
 /** ACP 后端的外部 agent 启动配置（stdio 通信） */
 export interface AcpAgentConfig {
@@ -36,7 +19,7 @@ export interface AcpAgentConfig {
   /** 可执行文件（绝对路径或 PATH 可解析名；Windows 下 npm 脚本需 .cmd 后缀） */
   command: string
   args: string[]
-  /** 风格（见 `AcpAgentType`）；缺省 = `generic`（不显示模式 UI） */
+  /** @deprecated 旧适配身份，仅兼容内部资源安装，不控制 UI；新配置使用 preset。 */
   type?: AcpAgentType
   /**
    * 说话用的 ACP 协议版本：`v1`（stable，缺省）或 `v2`（draft）。
@@ -52,8 +35,6 @@ export interface AcpAgentConfig {
    * 同一个 agent，图标不会跟着命令变。自定义 agent 没有这一项（图标回落 Bot）。
    */
   preset?: string
-  /** 「完全放行」的答复策略（见 `AcpAllowStrategy`）；缺省 = `once`（只允许一次） */
-  allowStrategy?: AcpAllowStrategy
   /**
    * agent 广告的模型清单（会话模型下拉的候选）。
    *

@@ -72,20 +72,11 @@ import { formatCommandArgs, parseCommandArgs } from '@fizz/agent-kit/shared/lib/
 import { formatDuration } from '@fizz/agent-kit/shared/lib/duration'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import type {
-  AcpAgentType,
-  AcpAllowStrategy,
   AcpAuthMethod,
   AcpProtocolVersion
 } from '@fizz/acp'
 import type { AcpAgentView, AcpProcessInfo, DetectedAcpAgent } from '@fizz/contracts/agent-api'
 import { acpAgentKey } from '@fizz/contracts/agent-api'
-
-/** agent 类型在界面上的短标签（列表行展示用） */
-const ACP_TYPE_LABELS: Record<AcpAgentType, string> = {
-  generic: '通用',
-  opencode: 'opencode',
-  pi: 'pi'
-}
 
 /** 上次检测时间的展示（坏时间戳不显示，别让配置里的一颗脏值把整行搞崩） */
 function formatCheckedAt(ts: number): string {
@@ -98,10 +89,6 @@ export function AcpTab({ app }: { app: AgentApp }) {
   const [acpName, setAcpName] = useState('')
   const [acpCommand, setAcpCommand] = useState('')
   const [acpArgs, setAcpArgs] = useState('')
-  /** 表单里的「类型」：决定会话里模式 UI 的语义与位置（opencode → 权限档；pi → 思考档） */
-  const [acpType, setAcpType] = useState<AcpAgentType>('generic')
-  /** 表单里的「完全放行答复」：`once` = 只允许一次（下次仍问）；`always` = 让 agent 永久记住 */
-  const [acpAllow, setAcpAllow] = useState<AcpAllowStrategy>('once')
   /** 表单里的协议版本：`v1` = stable（缺省）；`v2` = draft（会话恢复走 resume） */
   const [acpProtocol, setAcpProtocol] = useState<AcpProtocolVersion>('v1')
   /**
@@ -229,8 +216,6 @@ export function AcpTab({ app }: { app: AgentApp }) {
     setAcpName(agent?.name ?? '')
     setAcpCommand(agent?.command ?? '')
     setAcpArgs(formatCommandArgs(agent?.args ?? []))
-    setAcpType(agent?.type ?? 'generic')
-    setAcpAllow(agent?.allowStrategy ?? 'once')
     setAcpProtocol(agent?.protocolVersion ?? 'v1')
     // 老数据没有 `preset`：按命令补一次，之后这条配置的身份就固定了
     setAcpPresetId(agent ? agent.preset ?? findAcpPreset(agent.command)?.id ?? null : null)
@@ -249,7 +234,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
   }
 
   /**
-   * 从预设打开新增表单：只把默认命令 / 参数 / 类型**填进表单**，不直接落库 ——
+   * 从预设打开新增表单：只把默认命令 / 参数**填进表单**，不直接落库 ——
    * 用户往往要先改参数（比如 Gemini 的 `--skip-trust`、Codex 的 profile），
    * 保存前必须能看见并编辑。
    */
@@ -258,8 +243,6 @@ export function AcpTab({ app }: { app: AgentApp }) {
     setAcpName(preset.name)
     setAcpCommand(preset.command)
     setAcpArgs(formatCommandArgs(preset.args))
-    setAcpType(preset.type ?? 'generic')
-    setAcpAllow('once')
     setAcpProtocol('v1')
     // 身份随预设一起定下来：之后在表单里改命令 / 参数，它仍然是这个 agent
     setAcpPresetId(preset.id)
@@ -279,9 +262,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
       name: acpName.trim() || acpCommand.trim(),
       command: acpCommand.trim(),
       args: draftArgs,
-      type: acpType,
       ...(acpPresetId ? { preset: acpPresetId } : {}),
-      allowStrategy: acpAllow,
       protocolVersion: acpProtocol
     })
     // 成功才关弹窗；失败（服务端也会拦重复）保留草稿，别让人重敲一遍。
@@ -436,11 +417,6 @@ export function AcpTab({ app }: { app: AgentApp }) {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
                   <span className="truncate text-sm">{agent.name}</span>
-                  {agent.type && agent.type !== 'generic' && (
-                    <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[0.625rem] text-muted-foreground">
-                      {tr(ACP_TYPE_LABELS[agent.type])}
-                    </span>
-                  )}
                 </div>
                 <div className="truncate font-mono text-xs text-muted-foreground">
                   {agent.command} {agent.args.join(' ')}
@@ -770,35 +746,6 @@ export function AcpTab({ app }: { app: AgentApp }) {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1">
-              <div className="text-xs text-muted-foreground">
-                {tr('类型（决定会话里的模式 UI：opencode → 权限档，pi → 思考档，通用 → 不显示）')}
-              </div>
-              <Select value={acpType} onValueChange={(v) => setAcpType(v as AcpAgentType)}>
-                <SelectTrigger variant="muted" className="h-9 w-full min-w-0 overflow-hidden text-sm">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="generic">{tr('通用（不显示模式 UI）')}</SelectItem>
-                  <SelectItem value="opencode">{tr('opencode（Session Modes 当权限档）')}</SelectItem>
-                  <SelectItem value="pi">{tr('pi（thought_level 当思考档）')}</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <div className="text-xs text-muted-foreground">
-                {tr('「完全放行」时的答复：缺省「仅允许一次」（下次仍会询问）；选「永久记住」后由 agent 自己记着不再问，届时切回「确认」也要不回询问')}
-              </div>
-              <Select value={acpAllow} onValueChange={(v) => setAcpAllow(v as AcpAllowStrategy)}>
-                <SelectTrigger variant="muted" className="h-9 w-full min-w-0 overflow-hidden text-sm">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="once">{tr('仅允许一次（推荐，下次仍会询问）')}</SelectItem>
-                  <SelectItem value="always">{tr('允许并永久记住（agent 侧不再询问）')}</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
             <DialogFooter className="pt-1">
               <Button data-dialog-dismiss="" type="button" size="sm" variant="ghost" onClick={closeAcpForm}>
                 {tr('取消')}
@@ -1024,4 +971,3 @@ export function AcpTab({ app }: { app: AgentApp }) {
     </div>
   )
 }
-

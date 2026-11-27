@@ -47,6 +47,7 @@ build/icon.ico
 # 仓库根不存在这些名字，对本仓库自己的构建无影响。
 web-dist
 mobile-dist
+apps/mobile/runtime/out
 app.asar
 app.asar.unpacked
 *.asar

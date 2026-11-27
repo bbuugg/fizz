@@ -17,7 +17,7 @@ export function createRunActions(
     ctx;
 
   return {
-    send: async (text, files, onStarted, scope) => {
+    send: async (text, files, onStarted, scope, draftTabKey) => {
       const trimmed = text.trim();
       if (!trimmed && !(files && files.length > 0)) return false;
       /**
@@ -38,7 +38,7 @@ export function createRunActions(
        * 再加一层 —— 转圈卡住比不转更糟（按钮一直不可点 = 输入框废了），宁可多熄一次。
        */
       try {
-        return await runRound(trimmed, files, onStarted, scope);
+        return await runRound(trimmed, files, onStarted, scope, draftTabKey);
       } finally {
         if (get().creatingConversation) set({ creatingConversation: false });
       }

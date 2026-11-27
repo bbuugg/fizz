@@ -6,23 +6,17 @@
  * 原始文件名**不参与存储路径**（只进消息历史的 file part 当展示名），扩展名由白名单
  * MIME 反推 —— 契约白名单（isUploadAllowedMime）是第一道闸，这里是第二道。
  *
- * `get()` 是「内联投递」的读回口：没有公网地址时（桌面端 / 局域网），provider 拉不到
- * `/api/uploads/...`，server 会把字节读出来塞进请求体（见 `attachments.ts`）。
+ * `get()` 是模型附件的读回口：server 统一读取字节，供图片 / PDF 内联或文档文字提取。
  */
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { resolveDataDir } from '@fizz/workspace'
+import { UPLOAD_EXT_BY_MIME } from '@fizz/contracts/agent-api'
 import type { UploadAdapter } from './types'
 
 /** MIME → 存储扩展名（键集合与 contracts 的 UPLOAD_ALLOWED_MIME 一致，svg 刻意不在内） */
-const EXT_BY_MIME: Record<string, string> = {
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/webp': 'webp',
-  'image/gif': 'gif',
-  'application/pdf': 'pdf'
-}
+const EXT_BY_MIME = UPLOAD_EXT_BY_MIME
 
 export function uploadsDir(): string {
   return join(resolveDataDir(), 'uploads')
@@ -65,15 +59,10 @@ export class LocalUploadAdapter implements UploadAdapter {
     return /^\/api\/uploads\/[0-9a-f-]{36}\.[a-z0-9]+$/.test(url)
   }
 
-  /** 取消恰好落在提交之后：把这条已经 rename 完成的文件删掉（由注册表在丢弃结果时调用） */
+  /** 取消恰好落在提交之后：把这条已经 rename 完成的文件删掉。 */
   async remove(url: string): Promise<void> {
     if (!this.owns(url)) return
     await rm(join(uploadsDir(), url.slice('/api/uploads/'.length)), { force: true })
-  }
-
-  resolveModelUrl(url: string, origin: string): string {
-    const base = process.env.FIZZ_PUBLIC_BASE_URL?.trim().replace(/\/+$/, '') || origin.replace(/\/+$/, '')
-    return `${base}${url}`
   }
 
   async get(url: string): Promise<{ mediaType: string; bytes: Uint8Array } | null> {

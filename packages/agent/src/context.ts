@@ -436,6 +436,7 @@ export function contextMessagesDigest(messages: ModelMessage[]): string {
     content: typeof message.content === 'string'
       ? [{ type: 'text', text: message.content }]
       : message.content.map((part) => {
+          if (!('providerOptions' in part)) return part
           const { providerOptions: _providerOptions, ...content } = part
           return content
         })

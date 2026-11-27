@@ -40,6 +40,7 @@ import {
 import { Spinner } from '@fizz/ui/spinner'
 import { scalePx } from '@fizz/agent-kit/shared/lib/ui-scale'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { writeClipboard } from '@fizz/agent-kit/shared/lib/clipboard'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import {
   buildMonacoTheme,
@@ -423,7 +424,7 @@ const MonacoEditor = ({
   }
 
   const handleCopy = (): void => {
-    void navigator.clipboard.writeText(value || '')
+    void writeClipboard(value || '')
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }

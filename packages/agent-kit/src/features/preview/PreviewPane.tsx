@@ -74,6 +74,7 @@ import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { getAgentHostOrNull } from '@fizz/agent-client/host'
 import { openExternal } from '@fizz/agent-client/web-host'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
+import { writeClipboard } from '@fizz/agent-kit/shared/lib/clipboard'
 
 /** 预览走哪个地址：`内网` = 宿主映射端口，「公网」= `<slug>.<域名>` */
 type Via = 'local' | 'public'
@@ -476,7 +477,7 @@ export function PreviewPane({ workspaceId }: { workspaceId: string }): ReactElem
 
   const copy = (): void => {
     if (!activeUrl) return
-    void navigator.clipboard.writeText(activeUrl).then(
+    void writeClipboard(activeUrl).then(
       () => toast.success(t('已复制')),
       () => toast.error(t('复制失败，请手动选中地址'))
     )

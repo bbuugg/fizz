@@ -18,6 +18,7 @@ import { App } from '@/app/App'
 import { useAndroidAppResume, useAndroidBackButton } from '@/app/android-back'
 import { useBootSplash } from '@/app/boot-splash'
 import { scheduleSilentAppUpdateCheck } from '@/update/mobile-update'
+import { RuntimeGate } from '@/runtime/RuntimeGate'
 
 /**
  * 状态栏图标（时间 / 电量 / 信号）用深色还是浅色。
@@ -67,5 +68,5 @@ export function ClientRoot() {
   useEffect(() => {
     scheduleSilentAppUpdateCheck()
   }, [])
-  return <App />
+  return <RuntimeGate><App /></RuntimeGate>
 }

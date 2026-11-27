@@ -4,8 +4,8 @@
  * 内置插件根（随产品分发，`<仓库根>/plugins`）**在哪儿**由 `builtin-dirs.ts` 探测
  * （三种运行形态 + 标记文件判据，见那份文件头）。
  *
- * 这里存在的理由：三个调用点（每轮对话、插件路由、上传源目录）都要「根目录 + 按来源分开的
- * 启停偏好」这一份组装规则。各写一遍的话，早晚出现「对话侧扫了内置插件、上传侧没扫」
+ * 这里存在的理由：每轮对话、插件路由与模型收集都要「根目录 + 按来源分开的
+ * 启停偏好」这一份组装规则。各写一遍的话，早晚出现「对话侧扫了内置插件、模型侧没扫」
  * 这种只在某处少一个参数的 bug。
  */
 import { homedir } from 'node:os'
@@ -58,7 +58,7 @@ export function pluginRuntimeConfig(pluginId: string, ymlConfig?: unknown): unkn
 /**
  * 把描述符的 `config` 换成运行时配置（供 `loadPlugins` / `inspectPluginUi` 直接用）。
  *
- * 三个挂载点（每轮对话、上传源目录、设置页 inspect）都要这一道 —— 各写一遍的话，早晚
+ * 每轮对话、模型收集与设置页 inspect 都要这一道 —— 各写一遍的话，早晚
  * 出现「设置页里填的值，某条路径上没生效」，而那种漏法完全不报错。
  */
 export function withRuntimeConfig(descriptors: PluginDescriptor[]): PluginDescriptor[] {
@@ -129,7 +129,7 @@ export function surfaceKeyOf(
  * - 源码：目录内每个文件的相对路径 + `mtimeMs` + `size`（与 `@fizz/plugin/loader` 的模块缓存同一判据）；
  * - 配置：`domain.pluginValuesFingerprint`（含密钥**密文**，不含明文）。
  *
- * ⚠️ 配置必须进来：上传源目录是**长驻 context**，只在插件文件变化时重建的话，用户在设置页
+ * ⚠️ 配置必须进来：模型配置使用**内存快照**，只在插件文件变化时刷新的话，用户在设置页
  * 填完 token 也得重启才生效 —— 那种「填了没用」的 bug 极难自查。指纹里用密文而不是明文，
  * 是为了不把明文密钥拼进一个可能被日志/调试打出来的字符串。
  */
@@ -158,8 +158,8 @@ export function serverPluginRoots(opts: { workspacePath?: string }): Array<
 /**
  * 发现插件：根目录 + **按来源分开的启停偏好**（内置 / 用户级认全局那份，项目级认项目那份）。
  *
- * 三个调用点（每轮对话、插件路由、上传源目录）都用它 —— 组装规则只有一份，才不会出现
- * 「对话侧扫了内置插件、上传侧没扫」这种只在某一处少一个参数的 bug。
+ * 每轮对话、插件路由与模型收集都用它 —— 组装规则只有一份，才不会出现
+ * 「对话侧扫了内置插件、模型侧没扫」这种只在某一处少一个参数的 bug。
  */
 export async function discoverServerPlugins(opts: {
   workspaceId?: string

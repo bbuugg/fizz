@@ -69,7 +69,7 @@ function DialogContent({
    *
    * ⚠️ 高度由 CSS 定死的弹窗（`h-[32rem]` 那种）不受影响：量出来和原来一样，直接落定。
    */
-  useHeightTransition(contentRef)
+  const attachContent = useHeightTransition(contentRef)
   // 液态玻璃外壳（实色底 / 淡描边 / 景深投影 + 跟随指针的边缘光圈）与指针追踪
   const glass = useGlassPanel(props)
 
@@ -77,7 +77,7 @@ function DialogContent({
     <DialogPortal>
       <DialogOverlay />
       <DialogPrimitive.Content
-        ref={contentRef}
+        ref={attachContent}
         data-slot="dialog-content"
         className={cn(
           // 液态玻璃面板：**纯实色面板底**（`bg-popover`）+ 淡描边 + 景深投影都来自

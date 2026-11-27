@@ -15,8 +15,8 @@
  * - 插件的安装 / 卸载 / 启停 / 设置保存（`invalidatePluginModels()` 清指纹，下一次读即重建）；
  * - `GET /api/models`（设置页打开时顺带刷新）。
  *
- * 指纹 = 插件目录源码（递归路径 + mtime + size + 启用态）+ 设置页里存的值（含密钥密文），与
- * 上传源目录同一套（`pluginFingerprint`）—— 改插件源码 / 填完 token 下一次对话就生效。
+ * 指纹 = 插件目录源码（递归路径 + mtime + size + 启用态）+ 设置页里存的值（含密钥密文），
+ * 统一由 `pluginFingerprint` 计算 —— 改插件源码 / 填完 token 下一次对话就生效。
  *
  * ## 作用域：只收集**全局**插件（内置 + 用户级）
  *
@@ -30,7 +30,6 @@ import {
   PromptService,
   ToolsService,
   UiService,
-  UploadsService,
   createAppContext
 } from '@fizz/plugin'
 import { loadPlugins } from '@fizz/plugin/loader'
@@ -94,7 +93,6 @@ export async function refreshPluginModels(): Promise<void> {
     ctx.set('prompt', new PromptService(ctx))
     ctx.set('hooks', new HooksService(ctx))
     ctx.set('ui', new UiService(ctx))
-    ctx.set('uploads', new UploadsService(ctx))
     const models = new ModelsService(ctx)
     ctx.set('models', models)
 

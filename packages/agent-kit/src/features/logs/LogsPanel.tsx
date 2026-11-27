@@ -36,6 +36,7 @@ import {
 import { ConfirmDeleteDialog } from '@fizz/agent-kit/shared/components/ConfirmDeleteDialog'
 import { getAgentHostOrNull } from '@fizz/agent-client/host'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { writeClipboard } from '@fizz/agent-kit/shared/lib/clipboard'
 import {
   acquireLogs,
   clearLogs,
@@ -209,8 +210,10 @@ export function LogsPanel() {
                     return
                   }
                   // web 端没有本机文件系统：复制路径，用户自己上服务器看
-                  void navigator.clipboard?.writeText(state.directory)
-                  toast.success('日志目录路径已复制')
+                  void writeClipboard(state.directory).then(
+                    () => toast.success('日志目录路径已复制'),
+                    () => toast.error('复制失败，请手动选中')
+                  )
                 }}
               >
                 <FolderOpen className="size-4" />

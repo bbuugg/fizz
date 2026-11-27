@@ -25,10 +25,10 @@
  */
 import { useCallback } from 'react'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
-import { isConversationTabKey, NEW_TAB_KEY } from '@fizz/agent-kit/shared/lib/panel-tabs'
 import {
   activateTab,
   activeTabKey,
+  conversationOfTab,
   getPanelState,
   requestCloseGroup,
   requestCloseTabs,
@@ -54,14 +54,16 @@ export function useGroupActions(): GroupActions {
 
   const syncConversation = useCallback(
     (key: string): void => {
-      if (!isConversationTabKey(key)) return
-      if (key === NEW_TAB_KEY) {
+      // 标签 key 不是会话 id：指向谁问 store（`undefined` = 工具标签，不参与）
+      const conversationId = conversationOfTab(key)
+      if (conversationId === undefined) return
+      if (conversationId === null) {
         if (app.activeConversationId === null) return
-        app.openConversation(null)
+        app.openConversation(null, { keepScroll: true })
         return
       }
-      if (key === app.activeConversationId) return
-      openConversation(key)
+      if (conversationId === app.activeConversationId) return
+      openConversation(conversationId)
     },
     [app, openConversation]
   )
@@ -116,8 +118,9 @@ export function useGroupActions(): GroupActions {
   /** 重命名对话标签 = 重命名那个会话（工具标签的名字不给改，见 `PanelTabItem`） */
   const renameTab = useCallback(
     (key: string, title: string): void => {
-      if (!isConversationTabKey(key) || key === NEW_TAB_KEY) return
-      void app.renameConversation(key, title)
+      const conversationId = conversationOfTab(key)
+      if (!conversationId) return
+      void app.renameConversation(conversationId, title)
     },
     [app]
   )

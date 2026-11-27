@@ -89,7 +89,12 @@ export function PanelContentLayer({ state }: { state: PanelState }): ReactNode {
     panelBodiesVersion,
     panelBodiesVersion
   )
-  /** `标签 key → 落位`（不是按组存：换组时那条缓存正是要跨过去的，见上面第 2 条） */
+  /**
+   * `标签 key → 落位`（不是按组存：换组时那条缓存正是要跨过去的，见上面第 2 条）。
+   *
+   * 标签 key 是终生不变的身份，所以这里**不需要**任何「迁移」：一颗标签从草稿变成会话、
+   * 从这个组拖到那个组，key 都是同一个，缓存命中一直是它。
+   */
   const [slots, setSlots] = useState<Record<string, TabSlot>>({})
 
   /** `measure` 要保持引用稳定（它是下面 effect 的依赖），又要读到最新的分组状态 —— 走 ref */
@@ -172,9 +177,13 @@ export function PanelContentLayer({ state }: { state: PanelState }): ReactNode {
           <div
             key={`${tabKey}#${tabReloadGen(tabKey)}`}
             /*
-             * ⚠️ 这里是标签内容的宿主。key = 标签 key（**加刷新代号**），层级恒定 ——
-             * 标签换组只改下面这组坐标，React 对账看到的是同一个节点，实例复用、不重挂；
-             * 只有用户点了那颗「刷新」才换 key，强制这一个标签的内容卸载重挂（见 `tab-reload.ts`）。
+             * ⚠️ 这里是标签内容的宿主。层级恒定 —— 标签换组只改下面这组坐标，React 对账
+             * 看到的是同一个节点，实例复用、不重挂；只有用户点了那颗「刷新」才通过末尾的
+             * 刷新代号强制卸载重挂（见 `tab-reload.ts`）。
+             *
+             * key 直接用**标签 key**：它是终生不变的身份（`panel-tabs.ts` 的铁律），草稿
+             * 标签发出第一条消息只是换了个指向，key 不变 ⇒ `ConversationTab` 不重挂，
+             * 右侧面板里的终端 PTY、文件树展开状态（都只在组件内存里）原样留着。
              */
             style={{ left: slot.left, top: slot.top, width: slot.width, height: slot.height }}
             className={cn(

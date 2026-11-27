@@ -25,7 +25,6 @@ import { HooksService } from './hooks'
 import { PromptService } from './services/prompt'
 import { ToolsService } from './services/tools'
 import { UiService, type PluginUiDeclaration } from './services/ui'
-import { UploadsService } from './services/uploads'
 import { ModelsService } from './services/models'
 import type {
   Plugin,
@@ -37,7 +36,6 @@ import type {
   PluginRoot,
   PluginSettings,
   PluginStaticSurface,
-  PluginUploadSourceInfo,
   StandardPluginSource
 } from './types'
 
@@ -371,7 +369,7 @@ export async function pluginSourceSignature(dir: string): Promise<string> {
  * 内置（`builtinDir`，随产品分发）> 工作区 `.fizz/plugins` > 用户级 `~/.fizz/plugins`。
  *
  * 顺序确实有意义，不只是展示：`discoverPlugins` 按它**依次**产出描述符，宿主也按这个顺序
- * 挂载插件 —— 同名注册（比如两个插件抢同一个上传源 id）时**先挂的赢**，内置在最前
+ * 挂载插件 —— 同名注册（比如两个插件抢同一个模型 id）时**先挂的赢**，内置在最前
  * 就意味着「随产品分发的那份不会被后来者悄悄顶掉」（想关就在设置里关掉它）。
  *
  * `home` 由调用方提供（服务端可能跑在别的用户下），不在这里读 homedir；
@@ -662,10 +660,10 @@ export async function loadPlugins(
 }
 
 /**
- * 收集插件声明的东西（`ctx.ui` 的 setting / panel + `ctx.uploads` 注册的上传源），按插件 id 归集。
+ * 收集插件声明的设置项、面板与界面，按插件 id 归集。
  *
  * 为什么需要「跑一遍 apply」：这些声明表都是**命令式**的（插件在 apply 里逐个
- * `ctx.ui.setting(...)` / `ctx.uploads.register(...)`），不像 plugins.yml 那样在盘上可读
+ * `ctx.ui.setting(...)`），不像 plugins.yml 那样在盘上可读
  * —— 想知道一个插件声明了什么，只能把它挂到一个临时 context 上跑一遍。**这可能有副作用**
  * （插件 apply 里能读写文件 / 起进程），属于「本地受信插件」的可接受代价：插件本来每轮对话
  * 都会被 apply 一次。
@@ -673,12 +671,9 @@ export async function loadPlugins(
  * 实现要点：
  * - **每个插件一个独立临时 context**：声明表因此天然按插件隔离，读到的就是它自己声明的
  *   那几项（共用一份的话得做 diff，且 id 相同的声明会互相覆盖）；
- * - **内建服务预先 `set` 齐**（tools / prompt / hooks / ui / uploads）：`inject` 声明了其中
+ * - **内建服务预先 `set` 齐**（tools / prompt / hooks / ui / models）：`inject` 声明了其中
  *   任何一个的插件才会立即挂载 —— 否则会被推迟，声明就收不到。声明了**自定义服务名**的
  *   插件仍会被推迟（我们无从提供），这类插件的声明收集不到，是已知取舍；
- * - `uploads` 尤其重要：上传源注册**只挂在长驻 context 上**（上传时没有回合），所以插件
- *   在这里 apply 一遍，设置页才看得到「它提供了哪些可选的上传源」，形状写错
- *   （比如 `urlPrefixes` 不是合法 https）也会当场变成 errors 里的一条红字；
  * - 读完后 `fork.dispose()` + `ctx.dispose()` 立即回收（含 `inject` 的挂起项），
  *   不留内存尾巴；
  * - **单个插件失败只记进 errors**，不影响其它插件（与 `loadPlugins` 同款）。
@@ -686,12 +681,9 @@ export async function loadPlugins(
 export async function inspectPluginUi(descriptors: PluginDescriptor[]): Promise<{
   /** 插件 id → 它声明的 UI（两者都为空时不出现这个键） */
   ui: Record<string, PluginUiDeclaration>
-  /** 插件 id → 它注册的上传源（没注册时不出现这个键）；只有纯数据，函数不外传 */
-  uploads: Record<string, PluginUploadSourceInfo[]>
   errors: string[]
 }> {
   const ui: Record<string, PluginUiDeclaration> = {}
-  const uploads: Record<string, PluginUploadSourceInfo[]> = {}
   const errors: string[] = []
   for (const item of descriptors) {
     const ctx = createAppContext(`inspect:${item.id}`)
@@ -700,10 +692,8 @@ export async function inspectPluginUi(descriptors: PluginDescriptor[]): Promise<
     ctx.set('hooks', new HooksService(ctx))
     const service = new UiService(ctx)
     ctx.set('ui', service)
-    const uploadsService = new UploadsService(ctx)
-    ctx.set('uploads', uploadsService)
     // 只声明不读取：给了它，顶层 `inject: ['models']` 的插件才不会被推迟挂载，
-    // 它的设置项 / 界面声明才收得到（与 tools / uploads 同一取舍）。
+    // 它的设置项 / 界面声明才收得到（与 tools 同一取舍）。
     ctx.set('models', new ModelsService(ctx))
     try {
       const plugin = await loadPluginModule(item.file)
@@ -715,13 +705,6 @@ export async function inspectPluginUi(descriptors: PluginDescriptor[]): Promise<
       if (settings.length || panels.length || surfaces.length || icon) {
         ui[item.id] = { settings, panels, surfaces, ...(icon ? { icon } : {}) }
       }
-      const sources = uploadsService.list().map((reg) => ({
-        id: reg.id,
-        title: reg.title,
-        acceptMime: [...reg.accept.mime],
-        maxBytes: reg.accept.maxBytes
-      }))
-      if (sources.length) uploads[item.id] = sources
       await fork.dispose()
     } catch (err) {
       errors.push(`${item.name}（${item.file}）：${err instanceof Error ? err.message : String(err)}`)
@@ -729,5 +712,5 @@ export async function inspectPluginUi(descriptors: PluginDescriptor[]): Promise<
       await ctx.dispose()
     }
   }
-  return { ui, uploads, errors }
+  return { ui, errors }
 }

@@ -66,6 +66,7 @@ import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { useStateValue } from '@fizz/agent-kit/shared/lib/state-ws'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
+import { writeClipboard } from '@fizz/agent-kit/shared/lib/clipboard'
 
 /** 还没收到快照时的兜底：`available: false`（不误报成「docker 正常」） */
 const EMPTY_PROJECTS: ContainerProjectsSnapshot = { available: false, projects: [] }
@@ -115,7 +116,7 @@ function ImageRow({
    */
   const copyError = (): void => {
     if (!info.error) return
-    void navigator.clipboard.writeText(info.error).then(
+    void writeClipboard(info.error).then(
       () => toast.success(tr('已复制报错')),
       () => toast.error(tr('复制失败，请手动选择文本'))
     )
@@ -341,7 +342,7 @@ function PublicAccessSection({ app }: { app: AgentApp }) {
   }
 
   const copy = (text: string): void => {
-    navigator.clipboard.writeText(text).then(
+    writeClipboard(text).then(
       () => toast.success(tr('已复制')),
       () => toast.error(tr('复制失败，请手动选择文本'))
     )
