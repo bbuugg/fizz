@@ -96,6 +96,7 @@ jobs:
             apps/desktop/release/*.dmg
             apps/desktop/release/*.zip
             apps/desktop/release/*.AppImage
+            apps/desktop/release/*.deb
             apps/desktop/release/latest*.yml
             apps/desktop/release/*.blockmap
           if-no-files-found: ignore
@@ -117,6 +118,7 @@ jobs:
             apps/desktop/release/*.dmg
             apps/desktop/release/*.zip
             apps/desktop/release/*.AppImage
+            apps/desktop/release/*.deb
             apps/desktop/release/latest*.yml
             apps/desktop/release/*.blockmap
           draft: false
