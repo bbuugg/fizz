@@ -635,12 +635,18 @@ export function ModelPicker({
     row.tip ? (
       <Tooltip
         allowTouch
-        open={tipKey === row.key}
+        /*
+         * **只在触屏长按那张「按住看完整 id」时受控**（`tipKey` 命中），其余时候传 `undefined`
+         * 让它回到非受控 —— 鼠标悬停完全交给 `Tooltip` 自己管。
+         *
+         * 之前是全程 `open={tipKey === row.key}`：受控后每次划过一行都要走一遍
+         * setState → 上一行 `open=false` 进退场动画、新一行再开，快速扫动时就会看到
+         * 一片气泡叠着。设置里「拉取模型」那个弹窗的行提示是非受控的，所以一直没问题。
+         */
+        open={tipKey === row.key ? true : undefined}
         onOpenChange={(next) => {
-          if (next) {
-            setTipKey(row.key)
-            return
-          }
+          // 打开一律交给非受控路径（鼠标悬停 / 长按定时器各自负责），这里只处理「关闭」
+          if (next) return
           if (Date.now() < tipHoldUntil.current) return
           setTipKey(null)
         }}

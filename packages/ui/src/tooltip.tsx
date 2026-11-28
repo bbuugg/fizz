@@ -66,6 +66,28 @@ function TooltipProvider({
 }
 
 /**
+ * 触发器 → Root 的「按焦点开合」通道。
+ *
+ * ⚠️ Base UI 的 Tooltip **不按焦点打开**（只有 hover 与受控 `open`），Radix 会。
+ * 纯图标按钮对键盘用户来说，没有提示就等于没有可读名称，所以这里把 Radix 的行为补回来。
+ *
+ * 关键在**只认 `:focus-visible`**：菜单 / 选择器 / 弹窗关闭时会把焦点还给自己的触发器，
+ * 那是程序化回焦，不该再弹一条提示（表现就是「菜单关掉了、提示又冒出来」）。
+ * Radix 时代靠 Trigger `onFocus` 里 `preventDefault()` 拦；Base UI 压根不看那次
+ * preventDefault（它根本不按焦点开），所以改成「自己判断 `:focus-visible` 再 setOpen」。
+ */
+const TooltipFocusContext = React.createContext<(open: boolean) => void>(() => {})
+
+/**
+ * 同一时刻只允许一个气泡。
+ *
+ * 列表里「每一行一个 Tooltip」时（模型选择、主机清单…），快速划过会依次打开各自的气泡，
+ * 前一个的退场动画（100ms）还没跑完新的就来了 —— 观感就是「一片气泡同时挂着」。
+ * 这里用一个模块级登记：谁打开就把上一个关掉。
+ */
+let activeTooltipClose: (() => void) | null = null
+
+/**
  * 气泡只做视觉提示，**不参与指针命中**：
  *
  * - `disableHoverablePopup`：默认打开。关掉「grace area」——指针离开触发器后
@@ -81,6 +103,8 @@ function Tooltip({
   disableHoverableContent = true,
   delayDuration,
   allowTouch = false,
+  open: openProp,
+  onOpenChange,
   children,
   ...props
 }: TooltipPrimitive.Root.Props & {
@@ -90,16 +114,43 @@ function Tooltip({
   delayDuration?: number
   allowTouch?: boolean
 }) {
+  /** 自己掌开合：键盘 `:focus-visible` 聚焦要开，程序化回焦不开（见上面的 TooltipFocusContext） */
+  const [uncontrolledOpen, setUncontrolledOpen] = React.useState(false)
+  const open = openProp ?? uncontrolledOpen
+
+  /** 互斥的开关：打开自己之前先把上一个关掉（列表里逐行 tooltip 不会叠成一片） */
+  const closeSelf = React.useCallback(() => setUncontrolledOpen(false), [])
+  const setOpenExclusive = React.useCallback(
+    (next: boolean) => {
+      if (next) {
+        if (activeTooltipClose && activeTooltipClose !== closeSelf) activeTooltipClose()
+        activeTooltipClose = closeSelf
+      } else if (activeTooltipClose === closeSelf) {
+        activeTooltipClose = null
+      }
+      setUncontrolledOpen(next)
+    },
+    [closeSelf]
+  )
+
   return (
     <AllowTouchTooltipContext.Provider value={allowTouch}>
       <TooltipDelayContext.Provider value={delayDuration}>
-        <TooltipPrimitive.Root
-          data-slot="tooltip"
-          disableHoverablePopup={disableHoverableContent}
-          {...props}
-        >
-          {children}
-        </TooltipPrimitive.Root>
+        <TooltipFocusContext.Provider value={setOpenExclusive}>
+          <TooltipPrimitive.Root
+            data-slot="tooltip"
+            disableHoverablePopup={disableHoverableContent}
+            {...props}
+            open={open}
+            onOpenChange={(next, eventDetails) => {
+              // 受控时（调用方传了 open）不要去改内部 state，交给调用方
+              if (openProp === undefined) setOpenExclusive(next)
+              onOpenChange?.(next, eventDetails)
+            }}
+          >
+            {children}
+          </TooltipPrimitive.Root>
+        </TooltipFocusContext.Provider>
       </TooltipDelayContext.Provider>
     </AllowTouchTooltipContext.Provider>
   )
@@ -110,9 +161,11 @@ function TooltipTrigger({
   children,
   delay,
   onFocus,
+  onBlur,
   ...props
 }: TooltipPrimitive.Trigger.Props & { asChild?: boolean }) {
   const delayFromRoot = React.useContext(TooltipDelayContext)
+  const setOpenFromFocus = React.useContext(TooltipFocusContext)
   const touch = useTouchUi() && !React.useContext(AllowTouchTooltipContext)
   if (touch) {
     // `asChild` 是绝大多数用法：直接把子元素还回去，不套任何事件处理器。
@@ -135,15 +188,17 @@ function TooltipTrigger({
        * 菜单 / 选择器 / 弹窗关闭时会把焦点还给自己的触发器 —— 指针关闭那一下是
        * **程序化回焦**，不该再弹一条提示，否则表现就是「菜单关掉了、提示又冒出来」。
        *
-       * ⚠️ 这是 Radix 时代靠 `preventDefault()` 拦住打开逻辑的做法；Base UI 的
-       * Trigger 不一定尊重这次 preventDefault，运行时可能仍会闪一条 —— 见迁移报告里
-       * tooltip 的「Behavior changes」。
+       * Base UI 自己不按焦点开合，所以这里显式 setOpen；判断依据是浏览器给的
+       * `:focus-visible`（程序化 focus() 不会命中它），而不是拦 preventDefault。
        */
       onFocus={(event) => {
         onFocus?.(event)
-        if (!event.defaultPrevented && !event.currentTarget.matches(":focus-visible")) {
-          event.preventDefault()
-        }
+        if (event.defaultPrevented) return
+        if (event.currentTarget.matches(":focus-visible")) setOpenFromFocus(true)
+      }}
+      onBlur={(event) => {
+        onBlur?.(event)
+        setOpenFromFocus(false)
       }}
       {...props}
     />
