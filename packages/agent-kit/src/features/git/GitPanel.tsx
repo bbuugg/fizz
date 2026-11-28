@@ -109,7 +109,7 @@ import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
 import { gitChangeOpenPath } from '@fizz/agent-kit/features/git/open-file-policy'
 import { ChangeRow } from '@fizz/agent-kit/features/git/ChangeRow'
-import { GitHistory } from '@fizz/agent-kit/features/git/GitHistory'
+import { GitHistory, type CommitDiffOpenTarget } from '@fizz/agent-kit/features/git/GitHistory'
 import {
   dirRollbackWarning,
   rollbackDeleteCount,
@@ -205,6 +205,7 @@ export function GitPanel({
   tabKey,
   onChanges,
   onOpenDiff,
+  onOpenCommitDiff,
   onDiffsRefresh
 }: {
   app: AgentApp
@@ -232,6 +233,8 @@ export function GitPanel({
   onChanges?: (info: { count: number; truncated: boolean; branch: string | null } | null) => void
   /** 在 FilesPanel 共享预览区中，将选中的仓库 diff 作为独立标签打开。 */
   onOpenDiff?: (path: string, staged: boolean, deleted: boolean) => void
+  /** 历史提交里点一个文件 → 在右侧文件面板打开这次提交的 diff（只读，不随工作区刷新）。 */
+  onOpenCommitDiff?: (target: CommitDiffOpenTarget) => void
   /** Git 状态刷新后，同步刷新已经打开的 diff 标签。 */
   onDiffsRefresh?: (changes?: readonly GitChange[]) => void
 }) {
@@ -1468,8 +1471,8 @@ export function GitPanel({
               </>
             )}
 
-            {/* 历史：点某次提交就地展开看它改了什么；「检出」切到那次提交（分离头指针），
-                用分支下拉切回去。展开态的异步与缓存都在 GitHistory 里 */}
+            {/* 历史：点某次提交就地展开文件清单（树状 / 平铺随头部偏好），点文件在右侧打开 diff；
+                「检出」切到那次提交（分离头指针），用分支下拉切回去。展开态的异步与缓存都在 GitHistory 里 */}
             <GitHistory
               app={app}
               workspaceId={workspaceId}
@@ -1479,6 +1482,8 @@ export function GitPanel({
               loadingMore={historyLoadingMore}
               onLoadMore={() => void loadMoreHistory()}
               onCheckout={(hash) => void run(() => app.gitAction(workspaceId, { action: 'checkout', ref: hash }))}
+              treeView={treeView}
+              onOpenCommitDiff={onOpenCommitDiff}
             />
 
             {/* 贮藏：与「历史提交」同一套折叠；每一行可弹出（pop）/ 应用（apply）/ 删除（drop） */}

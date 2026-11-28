@@ -34,6 +34,18 @@ export interface DiffTab {
   diffText: string | null
   loading: boolean
   error: string | null
+  /**
+   * 历史提交里的文件 diff（只读快照）。
+   *
+   * 有它就是「一次提交里的改动」：内容**不随工作区刷新**（`git diff` 与轮询都不该碰它），
+   * 标签上显示短哈希；没有则是原来按暂存态跟随工作区的 diff。
+   */
+  commit?: {
+    hash: string
+    short: string
+    /** 重命名 / 复制时的完整 label（`old → new`），其余就是 path */
+    label: string
+  }
 }
 
 export interface ClipboardEntry {

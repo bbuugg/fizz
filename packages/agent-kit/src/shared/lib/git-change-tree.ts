@@ -5,13 +5,22 @@
  * 给了（`changes`），再按目录去问就是白跑 IO，还会在刷新时一屏 spinner。
  *
  * 独立成文件是为了能在不启 React 的前提下直接跑它验证（渲染在 `GitChangeTree.tsx`）。
+ *
+ * 泛型化：工作区的改动（`GitChange`）与「一次历史提交里的文件」（`GitCommitFileStat`）
+ * 路径语义相同，共用这一份建树 / 折叠逻辑。后者没有暂存 / 回滚操作，但目录行与文件行的
+ * 层级、排序、缩进完全一样 —— 不要再抄一份。
  */
 import type { CSSProperties } from 'react'
 import type { GitChange } from '@fizz/git'
 import { treeIndent } from './tree-indent'
 
+/** 建树只要求一个仓库根相对路径（`/` 分隔），其余字段原样挂在节点上 */
+export interface TreePathItem {
+  path: string
+}
+
 /** 目录行：一棵子树，折叠状态下连同里面的文件一起收起 */
-export interface ChangeTreeDir {
+export interface ChangeTreeDir<T extends TreePathItem = GitChange> {
   kind: 'dir'
   name: string
   /** 目录路径（不含文件名，如 `packages/git/src`）；折叠状态按它索引 */
@@ -20,20 +29,22 @@ export interface ChangeTreeDir {
    * 这棵子树里所有改动的文件（扁平，忽略层级）。
    * 目录行上的「暂存 / 回滚」要作用到整棵子树，故建树时顺手摊平，免得调用方再按前缀过滤一遍。
    */
-  changes: GitChange[]
+  changes: T[]
   depth: number
-  children: ChangeTreeNode[]
+  children: ChangeTreeNode<T>[]
 }
 
 /** 文件行：一个改动文件（重命名 / 复制的旧名由 `change.origPath` 带） */
-export interface ChangeTreeFile {
+export interface ChangeTreeFile<T extends TreePathItem = GitChange> {
   kind: 'file'
   name: string
-  change: GitChange
+  change: T
   depth: number
 }
 
-export type ChangeTreeNode = ChangeTreeDir | ChangeTreeFile
+export type ChangeTreeNode<T extends TreePathItem = GitChange> =
+  | ChangeTreeDir<T>
+  | ChangeTreeFile<T>
 
 /**
  * 某一层的左内边距。目录行与文件行共用它（`GitChangeTree.tsx` 与 `ChangeRow.tsx`），
@@ -55,14 +66,14 @@ export function changeTreeIndent(depth: number): CSSProperties {
 const collator = new Intl.Collator('zh-Hans-CN', { numeric: true, sensitivity: 'base' })
 
 /** 建树过程中的可变目录 */
-interface MutableDir {
+interface MutableDir<T> {
   name: string
   path: string
-  dirs: Map<string, MutableDir>
-  files: GitChange[]
+  dirs: Map<string, MutableDir<T>>
+  files: T[]
 }
 
-function newDir(name: string, path: string): MutableDir {
+function newDir<T>(name: string, path: string): MutableDir<T> {
   return { name, path, dirs: new Map(), files: [] }
 }
 
@@ -72,8 +83,8 @@ function newDir(name: string, path: string): MutableDir {
  * 只有文件路径会进树（git 不给空目录），所以不会出现「点开什么都没有」的目录节点；
  * 同名目录自动合并，不同分组各自调用（暂存 / 未暂存是两棵独立的树）。
  */
-export function buildChangeTree(changes: GitChange[]): ChangeTreeNode[] {
-  const root = newDir('', '')
+export function buildChangeTree<T extends TreePathItem>(changes: T[]): ChangeTreeNode<T>[] {
+  const root = newDir<T>('', '')
   for (const change of changes) {
     const parts = change.path.split('/').filter(Boolean)
     // 理论上非空（path 至少一段）；真拿到空路径就跳过，别造出一个匿名根节点
@@ -84,7 +95,7 @@ export function buildChangeTree(changes: GitChange[]): ChangeTreeNode[] {
       dirPath = dirPath ? `${dirPath}/${seg}` : seg
       let next = cur.dirs.get(seg)
       if (!next) {
-        next = newDir(seg, dirPath)
+        next = newDir<T>(seg, dirPath)
         cur.dirs.set(seg, next)
       }
       cur = next
@@ -100,9 +111,9 @@ export function buildChangeTree(changes: GitChange[]): ChangeTreeNode[] {
  * 「全部折叠 / 全部展开」要一次性覆盖整棵树 —— 树是渲染期现拼的，调用方手上只有扁平的
  * `changes`，所以这里顺手把目录路径也列出来。
  */
-export function allChangeTreeDirPaths(changes: GitChange[]): string[] {
+export function allChangeTreeDirPaths<T extends TreePathItem>(changes: T[]): string[] {
   const out: string[] = []
-  const walk = (nodes: ChangeTreeNode[]): void => {
+  const walk = (nodes: ChangeTreeNode<T>[]): void => {
     for (const node of nodes) {
       if (node.kind !== 'dir') continue
       out.push(node.path)
@@ -113,8 +124,8 @@ export function allChangeTreeDirPaths(changes: GitChange[]): string[] {
   return out
 }
 
-function toNodes(dir: MutableDir, depth: number): ChangeTreeNode[] {
-  const dirs: ChangeTreeNode[] = [...dir.dirs.values()].map((d) => {
+function toNodes<T extends TreePathItem>(dir: MutableDir<T>, depth: number): ChangeTreeNode<T>[] {
+  const dirs: ChangeTreeNode<T>[] = [...dir.dirs.values()].map((d) => {
     const children = toNodes(d, depth + 1)
     return {
       kind: 'dir',
@@ -125,7 +136,7 @@ function toNodes(dir: MutableDir, depth: number): ChangeTreeNode[] {
       changes: collectChanges(children)
     }
   })
-  const files: ChangeTreeNode[] = dir.files.map((change) => ({
+  const files: ChangeTreeNode<T>[] = dir.files.map((change) => ({
     kind: 'file',
     name: change.path.split('/').pop() ?? change.path,
     change,
@@ -138,8 +149,8 @@ function toNodes(dir: MutableDir, depth: number): ChangeTreeNode[] {
 }
 
 /** 把子树里的文件摊平（目录行上的操作要作用到整棵子树） */
-function collectChanges(nodes: ChangeTreeNode[]): GitChange[] {
-  const out: GitChange[] = []
+function collectChanges<T extends TreePathItem>(nodes: ChangeTreeNode<T>[]): T[] {
+  const out: T[] = []
   for (const node of nodes) {
     if (node.kind === 'file') out.push(node.change)
     else out.push(...node.changes)

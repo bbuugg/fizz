@@ -49,7 +49,16 @@ export function FilesPanelFileBody({
         ) : (
           <div className="h-full overflow-auto">
             <FileDiffView
-              path={diffTab.staged ? t('{path}（已暂存）', { path: diffTab.path }) : diffTab.path}
+              path={
+                diffTab.commit
+                  ? t('{path}（提交 {short}）', {
+                      path: diffTab.commit.label,
+                      short: diffTab.commit.short
+                    })
+                  : diffTab.staged
+                    ? t('{path}（已暂存）', { path: diffTab.path })
+                    : diffTab.path
+              }
               hunks={diffTab.hunks ?? []}
               deleted={diffTab.deleted}
               wrap

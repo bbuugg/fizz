@@ -5,6 +5,9 @@
  *
  * 文件行与目录行的操作按钮都交给调用方渲染 —— 两组变更的按钮 / 状态码 / diff 都不同，
  * 塞在这里反而要往回调里塞一堆 props（见 `GitPanel` 的用法）。
+ *
+ * 泛型：工作区改动（`GitChange`）与历史提交的文件（`GitCommitFileStat`）共用同一套渲染，
+ * 历史提交只是不给目录行操作 / 文件行按提交样式画。
  */
 import { Fragment, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, Folder } from 'lucide-react'
@@ -13,16 +16,17 @@ import {
   buildChangeTree,
   changeTreeIndent,
   type ChangeTreeDir,
-  type ChangeTreeNode
+  type ChangeTreeNode,
+  type TreePathItem
 } from '@fizz/agent-kit/shared/lib/git-change-tree'
 
 /** 一棵渲染好的树（扁平输出，行序即屏幕上从上到下） */
-function renderNodes(
-  nodes: ChangeTreeNode[],
+function renderNodes<T extends TreePathItem>(
+  nodes: ChangeTreeNode<T>[],
   collapsed: ReadonlySet<string>,
   onToggleDir: (path: string) => void,
-  renderFile: (change: GitChange, depth: number) => ReactNode,
-  renderDirActions?: (dir: ChangeTreeDir) => ReactNode
+  renderFile: (item: T, depth: number) => ReactNode,
+  renderDirActions?: (dir: ChangeTreeDir<T>) => ReactNode
 ): ReactNode[] {
   return nodes.map((node) => {
     if (node.kind === 'file') {
@@ -73,25 +77,25 @@ function renderNodes(
 /**
  * 渲染一整组变更（树状）。两个分组各自传自己的 `changes` / `collapsed`，互不干扰。
  */
-export function ChangeTreeList({
+export function ChangeTreeList<T extends TreePathItem = GitChange>({
   changes,
   collapsed,
   onToggleDir,
   renderFile,
   renderDirActions
 }: {
-  changes: GitChange[]
+  changes: T[]
   /** 折叠中的目录路径（调用方持有，这样刷新状态后展开态还在） */
   collapsed: ReadonlySet<string>
   onToggleDir: (path: string) => void
   /** 文件行：由调用方渲染（`depth` 是层级，用来缩进） */
-  renderFile: (change: GitChange, depth: number) => ReactNode
+  renderFile: (item: T, depth: number) => ReactNode
   /**
    * 目录行右侧的操作按钮：由调用方渲染（暂存 / 回滚整棵子树 —— 按钮长得跟文件行一样，
    * 但语义与状态都在 `GitPanel` 里，塞进来这里只会多一层 props 传递）。
    * 不给就只渲染成原来的折叠加计数。
    */
-  renderDirActions?: (dir: ChangeTreeDir) => ReactNode
+  renderDirActions?: (dir: ChangeTreeDir<T>) => ReactNode
 }) {
   return (
     <>{renderNodes(buildChangeTree(changes), collapsed, onToggleDir, renderFile, renderDirActions)}</>

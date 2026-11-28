@@ -5,13 +5,14 @@
  * 而 GitPanel 已经有 30+ 个 state。再往里加三个，主组件的渲染函数就更没法读了。
  *
  * 数据流：`GitCommit[]`（log 接口，只要 subject 那一行）→ 用户点开某次 →
- * `app.gitCommit(id, hash)` 取文件清单 + unified 文本 → 就地展开。
+ * `app.gitCommit(id, hash)` 取文件清单 + unified 文本 → 文件清单按目录树展开（跟随面板
+ * 的树状 / 平铺偏好），点文件在**右侧文件面板**打开这次提交的 diff（只读快照）。
  * 取回来的结果**按 hash 缓存**：反复展开同一次提交不再打网络。
  */
 import { useEffect, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, Copy, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
-import type { GitCommit, GitCommitDiffResult } from '@fizz/git'
+import type { GitCommit, GitCommitDiffResult, GitCommitFileStat } from '@fizz/git'
 import { t } from '@fizz/i18n'
 import { Button } from '@fizz/ui/button'
 import {
@@ -22,11 +23,25 @@ import {
   ContextMenuTrigger
 } from '@fizz/ui/context-menu'
 import { FileDiffView } from '@fizz/agent-kit/features/git/FileDiffView'
+import { ChangeTreeList } from '@fizz/agent-kit/features/git/GitChangeTree'
 import { splitDiffByFile } from '@fizz/agent-kit/shared/lib/git-commit-diff'
+import { changeTreeIndent } from '@fizz/agent-kit/shared/lib/git-change-tree'
+import type { DiffHunk } from '@fizz/agent-kit/shared/lib/diff'
 import { statusTone } from '@fizz/agent-kit/features/git/ChangeRow'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { writeClipboard } from '@fizz/agent-kit/shared/lib/clipboard'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
+
+/** 历史提交里点一个文件、在右侧面板打开 diff 时交给调用方的东西 */
+export interface CommitDiffOpenTarget {
+  hash: string
+  short: string
+  path: string
+  /** 重命名 / 复制时带旧名的完整 label（`old → new`），其余就是 path */
+  label: string
+  /** 从这次提交的 unified diff 里切出来的该文件片段（空 = 二进制 / 纯 mode 变更） */
+  hunks: DiffHunk[]
+}
 
 /** 复制提交哈希后的提示文案（导出来单测，不让文案散在 JSX 里） */
 export function copyHashToastLabel(kind: 'full' | 'short'): string {
@@ -65,20 +80,41 @@ function copyCommitMessage(subject: string): void {
   )
 }
 
+/** 重命名 / 复制：树状视图下只显示文件名（目录名已在父目录行里） */
+function commitFileLabel(file: GitCommitFileStat, treeView: boolean): string {
+  if (!treeView) return file.oldPath ? `${file.oldPath} → ${file.path}` : file.path
+  const base = (p: string): string => p.split('/').pop() ?? p
+  return file.oldPath ? `${base(file.oldPath)} → ${base(file.path)}` : base(file.path)
+}
+
 /**
- * 一次提交的展开体：文件清单 + 点开某个文件才渲染它的 diff。
+ * 一次提交的展开体：文件清单（树状 / 平铺，与「更改」组同一套）+ 点文件看 diff。
  *
- * 不把整份 diff 一次铺出来：一次提交动几十个文件时，DOM 会直接被撑到几十万行。清单
- * 始终全量显示，diff 按需展开，且**一次只展开一个**（与下面「更改」组同一套交互）。
+ * 点击文件默认**在右侧面板打开 diff**（`onOpenDiff` 由 `FilesPanel` 接上）——
+ * 历史提交里的文件大多是历史版本 / 已删除，在文件树里根本打不开，diff 标签才是唯一去处。
+ *
+ * 没给回调时（理论上只剩调试用）退回原来的就地展开，且一次只展开一个。
  *
  * diff 按文件切分的逻辑在 `lib/git-commit-diff.ts`（零依赖，可单测直跑）：
  * ⚠️ 不能整段喂 `parseUnifiedDiff` —— 它只认 `@@`，多文件的 hunk 会被扁平成
  * 一个数组，行与行的文件归属全丢，而 commit 的 diff 几乎总是多文件的。
  */
-function CommitDetail({ detail }: { detail: GitCommitDiffResult }) {
+function CommitDetail({
+  detail,
+  treeView,
+  onOpenDiff
+}: {
+  detail: GitCommitDiffResult
+  /** 树状还是平铺：跟随面板头部那颗「按目录树显示」的偏好 */
+  treeView: boolean
+  /** 点文件 → 在右侧面板打开这次提交里该文件的 diff */
+  onOpenDiff?: (target: CommitDiffOpenTarget) => void
+}) {
   const t = useT()
-  /** 这次提交里正在看哪个文件的 diff */
+  /** 没有右侧面板时用：这次提交里正在就地看哪个文件的 diff */
   const [openPath, setOpenPath] = useState<string | null>(null)
+  /** 折叠中的目录（树状视图；按目录路径索引） */
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   // 空提交 / 纯 merge：git 不给 diff。组内没有东西就什么都不画（不要再补一句「没有文件改动」）
   if (detail.files.length === 0) return null
   /*
@@ -88,53 +124,92 @@ function CommitDetail({ detail }: { detail: GitCommitDiffResult }) {
    * `FileDiffView` 会自己说「没有可展示的文本差异」，不用这里另造一套文案。
    */
   const hunksByPath = new Map(splitDiffByFile(detail.diff).map((seg) => [seg.path, seg.hunks]))
-  return (
-    <div className="space-y-1 py-1">
-      {/* 文件清单：状态字母 + 路径 + 增删行数。点一行就展开它的 diff */}
-      <div>
-        {detail.files.map((f) => {
-          const expanded = openPath === f.path
-          const label = f.oldPath ? `${f.oldPath} → ${f.path}` : f.path
-          return (
-            <div key={label}>
-              <button
-                type="button"
-                aria-expanded={expanded}
-                aria-label={
-                  expanded
-                    ? t('收起 {path} 的改动', { path: label })
-                    : t('查看 {path} 在这次提交里的改动', { path: label })
-                }
-                onClick={() => setOpenPath(expanded ? null : f.path)}
-                className="flex w-full items-center gap-1.5 py-1 pl-10 pr-2 text-left text-sm hover:bg-foreground/10"
-              >
-                <span className={statusTone(f.status) + ' w-3 shrink-0 text-center font-mono font-semibold'} title={f.status}>
-                  {f.status}
-                </span>
-                <span className="min-w-0 flex-1 truncate font-mono" title={label}>
-                  {label}
-                </span>
-                <span className="shrink-0 tabular-nums text-muted-foreground">
-                  {f.binary ? (
-                    <span className="text-muted-foreground">{t('二进制')}</span>
-                  ) : (
-                    <>
-                      <span className="text-emerald-500">+{f.insertions}</span>{' '}
-                      <span className="text-red-500">−{f.deletions}</span>
-                    </>
-                  )}
-                </span>
-              </button>
-              {expanded && (
-                // pl-14 ≈ 文件行 pl-10 + 状态字母 w-3 + gap-1.5：diff 正文与文件名左对齐
-                <div className="pl-14">
-                  <FileDiffView path={label} hunks={hunksByPath.get(f.path) ?? []} hideHeader wrap />
-                </div>
+
+  const renderFile = (file: GitCommitFileStat, depth: number): ReactNode => {
+    const expanded = !onOpenDiff && openPath === file.path
+    const fullLabel = file.oldPath ? `${file.oldPath} → ${file.path}` : file.path
+    const label = commitFileLabel(file, treeView)
+    const hunks = hunksByPath.get(file.path) ?? []
+    return (
+      <div key={file.path}>
+        <div className="relative flex h-7 items-center gap-1.5 pr-2 text-sm text-foreground hover:bg-foreground/10">
+          <button
+            type="button"
+            aria-expanded={onOpenDiff ? undefined : expanded}
+            aria-label={
+              onOpenDiff
+                ? t('在右侧查看 {path} 在这次提交里的改动', { path: fullLabel })
+                : expanded
+                  ? t('收起 {path} 的改动', { path: fullLabel })
+                  : t('查看 {path} 在这次提交里的改动', { path: fullLabel })
+            }
+            onClick={() => {
+              if (onOpenDiff) {
+                onOpenDiff({
+                  hash: detail.hash,
+                  short: detail.short,
+                  path: file.path,
+                  label: fullLabel,
+                  hunks
+                })
+                return
+              }
+              setOpenPath(expanded ? null : file.path)
+            }}
+            title={fullLabel}
+            style={changeTreeIndent(treeView ? depth : 0)}
+            className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+          >
+            <span
+              className={statusTone(file.status) + ' w-4 shrink-0 text-center font-mono text-xs font-semibold'}
+              title={file.status}
+            >
+              {file.status}
+            </span>
+            <span className="min-w-0 flex-1 truncate font-mono" title={fullLabel}>
+              {label}
+            </span>
+            <span className="shrink-0 tabular-nums text-muted-foreground">
+              {file.binary ? (
+                <span className="text-muted-foreground">{t('二进制')}</span>
+              ) : (
+                <>
+                  <span className="text-emerald-500">+{file.insertions}</span>{' '}
+                  <span className="text-red-500">−{file.deletions}</span>
+                </>
               )}
-            </div>
-          )
-        })}
+            </span>
+          </button>
+        </div>
+        {expanded && (
+          // pl-14 ≈ 文件行缩进 + 状态字母 w-4 + gap-1.5：diff 正文与文件名左对齐
+          <div className="pl-14">
+            <FileDiffView path={fullLabel} hunks={hunks} hideHeader wrap />
+          </div>
+        )}
       </div>
+    )
+  }
+
+  if (!treeView) {
+    // 与树状同样的 pl-5 基准：两种视图切换时文件行的左边距不该跳一下（也等于原来的 pl-10）
+    return (
+      <div className="py-1 pl-5">{detail.files.map((file) => renderFile(file, 0))}</div>
+    )
+  }
+  const collapsedSet = new Set(
+    Object.entries(collapsed)
+      .filter(([, value]) => value)
+      .map(([path]) => path)
+  )
+  return (
+    <div className="py-1 pl-5">
+      <ChangeTreeList
+        changes={detail.files}
+        collapsed={collapsedSet}
+        onToggleDir={(path) => setCollapsed((prev) => ({ ...prev, [path]: !prev[path] }))}
+        renderFile={renderFile}
+      />
     </div>
   )
 }
@@ -148,7 +223,9 @@ export function GitHistory({
   hasMore,
   loadingMore,
   onLoadMore,
-  onCheckout
+  onCheckout,
+  treeView,
+  onOpenCommitDiff
 }: {
   app: AgentApp
   workspaceId: string
@@ -161,6 +238,10 @@ export function GitHistory({
   loadingMore: boolean
   onLoadMore: () => void
   onCheckout: (hash: string) => void
+  /** 文件清单树状还是平铺（跟随面板头部那颗「按目录树显示」的偏好） */
+  treeView: boolean
+  /** 点提交里的文件 → 在右侧文件面板打开它的 diff */
+  onOpenCommitDiff?: (target: CommitDiffOpenTarget) => void
 }) {
   const t = useT()
   const [open, setOpen] = useState(false)
@@ -311,7 +392,11 @@ export function GitHistory({
                         {t('读取失败：{error}', { error })}
                       </div>
                     ) : detail ? (
-                      <CommitDetail detail={detail} />
+                      <CommitDetail
+                        detail={detail}
+                        treeView={treeView}
+                        onOpenDiff={onOpenCommitDiff}
+                      />
                     ) : null)}
                 </div>
               )

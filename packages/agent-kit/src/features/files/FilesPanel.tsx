@@ -62,6 +62,7 @@ import {
   FolderSearch,
   GitBranch,
   Hash,
+  History,
   ListX,
   Loader2,
   PanelLeftClose,
@@ -115,6 +116,7 @@ import { FilesPanelOverlays } from '@fizz/agent-kit/features/files/FilesPanelOve
 import type { Clipboard, DiffTab, MenuAction, NameDialogText, OpenTab } from '@fizz/agent-kit/features/files/files-panel-types'
 import { diffRefreshIsNoop, showsDiffPlaceholder } from '@fizz/agent-kit/features/files/git-diff-tab'
 import { GitPanel } from '@fizz/agent-kit/features/git/GitPanel'
+import type { CommitDiffOpenTarget } from '@fizz/agent-kit/features/git/GitHistory'
 import { parseUnifiedDiff } from '@fizz/agent-kit/shared/lib/diff'
 import {
   consumeOpenFileRequest,
@@ -542,6 +544,9 @@ export function FilesPanel({
   const rightFileTabKey = (path: string): string => JSON.stringify(['file', path])
   const gitDiffTabKey = (path: string, staged: boolean): string =>
     JSON.stringify(['git-diff', staged ? 'staged' : 'worktree', path])
+  /** 历史提交里的文件 diff：同一个文件在不同提交里是**不同**标签（diff 内容不同） */
+  const commitDiffTabKey = (hash: string, path: string): string =>
+    JSON.stringify(['commit-diff', hash, path])
   const activateFile = (path: string | null): void => {
     setActiveDiffKey(null)
     setActiveId(path)
@@ -917,12 +922,46 @@ export function FilesPanel({
 
   const refreshOpenGitDiffs = (changes?: readonly GitChange[]): void => {
     for (const tab of diffTabsRef.current) {
+      // 历史提交的 diff 是只读快照：工作区怎么变都不该重拉（重拉会拿当前工作区的 diff 顶掉它）
+      if (tab.commit) continue
       const change = changes?.find((item) => item.path === tab.path)
       const deleted = changes === undefined
         ? tab.deleted
         : !!change && (tab.staged ? change.index === 'D' : change.worktree === 'D')
       void loadGitDiff({ ...tab, deleted })
     }
+  }
+
+  /**
+   * 打开历史提交里某个文件的 diff。
+   *
+   * 内容由 `GitHistory` 从已取回的提交 diff 里切好一起送进来（`hunks`），这里**不再请求**：
+   * 提交是既成事实，内容永远不变，也不需要跟着工作区轮询刷新。同一个提交的同一个文件
+   * 反复点只切回原标签，不重建。
+   */
+  const openCommitDiff = (target: CommitDiffOpenTarget): void => {
+    const key = commitDiffTabKey(target.hash, target.path)
+    if (diffTabs.some((tab) => tab.key === key)) {
+      activateDiff(key)
+      setPane('file')
+      return
+    }
+    const tab: DiffTab = {
+      key,
+      path: target.path,
+      staged: false,
+      // 历史里的删除项在 diff 里仍有删除片段（`-` 行），不能走「文件已删除」那条空态
+      deleted: false,
+      hunks: target.hunks,
+      diffText: null,
+      loading: false,
+      error: null,
+      commit: { hash: target.hash, short: target.short, label: target.label }
+    }
+    setDiffTabs((current) => (current.some((item) => item.key === key) ? current : [...current, tab]))
+    setTabOrder((current) => (current.includes(key) ? current : [...current, key]))
+    activateDiff(key)
+    setPane('file')
   }
 
   const changeMode = (next: 'files' | 'git'): void => {
@@ -2219,16 +2258,18 @@ export function FilesPanel({
   )
 
   /** Git diff 的刷新动作也挂在对应标签上，和文件标签的磁盘刷新保持一致。 */
-  const reloadDiffAction = (tab: DiffTab): ReactNode => (
-    <RowActionButton
-      title={t('刷新 diff')}
-      aria-label={t('刷新 diff')}
-      disabled={tab.loading}
-      onClick={() => void loadGitDiff(tab)}
-    >
-      <RefreshCw className={cn('size-3.5', tab.loading && 'animate-spin')} />
-    </RowActionButton>
-  )
+  const reloadDiffAction = (tab: DiffTab): ReactNode =>
+    // 历史提交的 diff 是快照，没有「重拉」这回事：给了按钮也只会把内容换掉或原地空转
+    tab.commit ? null : (
+      <RowActionButton
+        title={t('刷新 diff')}
+        aria-label={t('刷新 diff')}
+        disabled={tab.loading}
+        onClick={() => void loadGitDiff(tab)}
+      >
+        <RefreshCw className={cn('size-3.5', tab.loading && 'animate-spin')} />
+      </RowActionButton>
+    )
   /**
    * 「预览 / 编辑源码」切换钮：挂在**标签条右侧动作区的最右端**（`保存` 之后）。
    *
@@ -2634,6 +2675,7 @@ export function FilesPanel({
               tabKey={panelKey}
               onChanges={onGitChanges}
               onOpenDiff={openGitDiff}
+              onOpenCommitDiff={openCommitDiff}
               onDiffsRefresh={refreshOpenGitDiffs}
             />
           </div>
@@ -2696,7 +2738,13 @@ export function FilesPanel({
                 if (entry.type === 'diff') {
                   const diffTab = entry.tab
                   const name = diffTab.path.split('/').pop() ?? diffTab.path
-                  const scope = diffTab.staged ? t('已暂存') : t('未暂存')
+                  // 历史提交的 diff 是快照：标签上说清是哪次提交，而不是暂存态
+                  const scope = diffTab.commit
+                    ? t('提交 {short}', { short: diffTab.commit.short })
+                    : diffTab.staged
+                      ? t('已暂存')
+                      : t('未暂存')
+                  const fullPath = diffTab.commit?.label ?? diffTab.path
                   return (
                     <ContextMenu key={diffTab.key}>
                       <ContextMenuTrigger asChild>
@@ -2707,9 +2755,15 @@ export function FilesPanel({
                           }}
                           active={activeDiffKey === diffTab.key}
                           label={`${name} · ${scope}`}
-                          title={`${diffTab.path} · ${scope}`}
+                          title={`${fullPath} · ${scope}`}
                           actions={reloadDiffAction(diffTab)}
-                          icon={<GitBranch className="size-3.5" />}
+                          icon={
+                            diffTab.commit ? (
+                              <History className="size-3.5" />
+                            ) : (
+                              <GitBranch className="size-3.5" />
+                            )
+                          }
                           onActivate={() => {
                             activateDiff(diffTab.key)
                             setPane('file')
