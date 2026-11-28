@@ -41,7 +41,6 @@ import { getPtySession, openPtySession } from './pty'
 import { createWsBatcher } from './ws-batch'
 import { backendManager } from './manager'
 import { openExternalUrl } from './external-link'
-import { registerLocalFileIpc } from './local-files'
 
 /** 进程内直连用的假 origin：Hono 只拿它做路由匹配，不发网络请求 */
 const ORIGIN = 'http://fizz.local'
@@ -248,10 +247,6 @@ async function pump(
 export function registerAgentTransportIpc(): void {
   if (registered) return
   registered = true
-
-  // 「用本应用打开的本机 Markdown 文件」那三条（含路径闸）单独一个模块：
-  // 闸的取舍值得一整段注释，塞这里会把传输桥的文件头淹掉。
-  registerLocalFileIpc()
 
   ipcMain.handle(AGENT_IPC.http, async (event, input: AgentTransportRequest): Promise<AgentHttpResponse> => {
     const controller = new AbortController()

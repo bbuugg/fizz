@@ -27,7 +27,7 @@ export function createConversationOpenActions(
        * 本地现场还没建」→ true）就恒显示骨架屏，而且永远等不到头：没有任何请求在飞。
        *
        * 必中场景：
-       * - 「多智能体协作」建完即打开、不先发消息（用户报「打开后消息列表始终 loading」）；
+        * - 新建会话后立即打开、不先发消息；
        * - 刷新后由 `PanelView` 把当前会话对齐到焦点标签 —— 那时 `activeConversationId`
        *   已从 localStorage 还原成同一条，而 `slices` 是空的。
        *

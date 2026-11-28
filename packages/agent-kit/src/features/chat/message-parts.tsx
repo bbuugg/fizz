@@ -30,6 +30,7 @@ import {
   workDurationLabel
 } from '@fizz/agent-kit/shared/lib/turn-step'
 import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
+import { useMessageDisplayPrefs } from '@fizz/agent-kit/shared/lib/message-display-prefs'
 import {
   coalescePartFragments,
   isAwaitingApproval,
@@ -155,6 +156,8 @@ export interface MessagePartsProps {
   /** 会话宿主提供的恢复入口，仅最后一条助手消息的最后一个错误使用。 */
   onReload?: () => void
   reloading?: boolean
+  /** 消息 id 在流式结束后会替换；用稳定的消息作用域记住过程组 / 卡片的开合状态。 */
+  foldStatePrefix?: string
 }
 
 /**
@@ -201,7 +204,8 @@ function MessagePartsInner({
   compaction,
   onContinue,
   onReload,
-  reloading
+  reloading,
+  foldStatePrefix
 }: MessagePartsProps) {
   // 订阅语言：折叠条摘要（思考 ×N / 工具调用 ×N）在渲染期用 `t()` 算，切语言要跟着变
   const tr = useT()
@@ -212,6 +216,7 @@ function MessagePartsInner({
    * 同一个开关、同一个语义，否则组抬头有意图、点开卡片却是纯工具名。
    */
   const showToolIntent = useAgentStore((s) => s.toolIntent)
+  const displayPrefs = useMessageDisplayPrefs()
   /**
    * 「只停这一条」的通道（组抬头那颗停止钮用）：store 上的稳定引用，放进依赖不引发重渲。
    *
@@ -320,6 +325,8 @@ function MessagePartsInner({
         // 流式 = 整轮在跑 + 这条是最后一条消息 + 这个 part 是消息的最后一个。
         // 只有 reasoning 消费它（「思考中」的判断依据）。
         streaming={isStreamingLast && partIndex === parts.length - 1}
+        turnDone={turnDone}
+        foldStateKey={foldStatePrefix ? `${foldStatePrefix}:part:${partIndex}` : undefined}
         // 停止钮的判据：**整条消息在跑**（不要求是最后一个 part）—— 见 PartViewProps.turnLive。
         turnLive={isStreamingLast}
         followupPending={!!followupReq}
@@ -513,7 +520,7 @@ function MessagePartsInner({
     const acpKind = tail.part.type === 'tool-call' ? tail.part.acpKind : undefined
     /*
      * 「这一组现在能不能停」的唯一判据，与工具卡头部那颗钮同源（`isStoppableToolRunning`：
-     * bash / web_fetch / 派活工具 `agent-*`，且已拿到完整入参、还没出结果）。
+      * shell / web_fetch / 派活工具 `agent-*`，且已拿到完整入参、还没出结果）。
      *
      * 三条同时成立才给：
      * - `isStreamingLast`：历史里因中止 / 断线残留的未结算 part 也停在 `input-available`，
@@ -593,6 +600,9 @@ function MessagePartsInner({
     nodes.push(
       <TurnStepGroup
         key={`${message.id}-steps-${current[0].partIndex}`}
+        foldStateKey={foldStatePrefix ? `${foldStatePrefix}:group:${current[0].partIndex}` : undefined}
+        defaultOpen={displayPrefs.group.defaultOpen}
+        turnDone={turnDone}
         label={label}
         preview={preview}
         active={active}
@@ -687,6 +697,7 @@ export const MessageParts = memo(
     prev.index === next.index &&
     prev.total === next.total &&
     prev.streaming === next.streaming &&
+    prev.foldStatePrefix === next.foldStatePrefix &&
     prev.compaction === next.compaction &&
     prev.pendingConfirms === next.pendingConfirms &&
     prev.followup?.requests === next.followup?.requests &&

@@ -55,6 +55,14 @@ function pickId(current: string, ids: string[], preferred?: string): string {
   return ids[0] ?? ''
 }
 
+/**
+ * 主机下拉里那一行的标题（`items` 与选项共用同一份，避免两处拼串漂移）。
+ * Base UI 不给 `items` 时触发器里显示的是原始主机 id。
+ */
+function hostOptionLabel(h: HostConfig): string {
+  return h.kind === 'local' ? `${h.name}（本地终端）` : `${h.name}（${hostSummary(h)}）`
+}
+
 export function RunScriptDialog({
   app,
   open,
@@ -146,7 +154,7 @@ export function RunScriptDialog({
         <DialogHeader>
           <DialogTitle>运行脚本</DialogTitle>
           <DialogDescription>
-            选一台主机，脚本会逐行写进它的终端（执行过程在终端里可见）。
+            逐行写进所选主机的终端。
           </DialogDescription>
         </DialogHeader>
 
@@ -161,7 +169,11 @@ export function RunScriptDialog({
             ) : app.scripts.length === 0 ? (
               <p className="text-xs text-muted-foreground">还没有脚本，请先在主机侧栏新建。</p>
             ) : (
-              <Select value={selectedScript} onValueChange={setSelectedScript}>
+              <Select
+                value={selectedScript}
+                items={Object.fromEntries(app.scripts.map((s) => [s.id, s.name]))}
+                onValueChange={setSelectedScript}
+              >
                 <SelectTrigger variant="muted" className="w-full">
                   <SelectValue placeholder="选择脚本" />
                 </SelectTrigger>
@@ -184,14 +196,18 @@ export function RunScriptDialog({
                 还没有主机或终端，请先在主机侧栏用「+」添加。
               </div>
             ) : (
-              <Select value={selectedHost} onValueChange={setSelectedHost}>
+              <Select
+                value={selectedHost}
+                items={Object.fromEntries(app.sshHosts.map((h) => [h.id, hostOptionLabel(h)]))}
+                onValueChange={setSelectedHost}
+              >
                 <SelectTrigger variant="muted" className="w-full">
                   <SelectValue placeholder="选择主机" />
                 </SelectTrigger>
                 <SelectContent>
                   {app.sshHosts.map((h) => (
                     <SelectItem key={h.id} value={h.id}>
-                      {h.kind === 'local' ? `${h.name}（本地终端）` : `${h.name}（${hostSummary(h)}）`}
+                      {hostOptionLabel(h)}
                     </SelectItem>
                   ))}
                 </SelectContent>

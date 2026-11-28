@@ -1,7 +1,7 @@
 import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
-import { Slot } from "radix-ui"
+import { usePolymorphic } from "./polymorphic"
 
 const markerVariants = cva(
   "group/marker relative flex min-h-4 w-full items-center gap-2 text-left text-sm text-muted-foreground [&_svg:not([class*='size-'])]:size-4 [a]:underline [a]:underline-offset-3 [a]:hover:text-foreground",
@@ -21,21 +21,18 @@ function Marker({
   className,
   variant = "default",
   asChild = false,
+  children,
   ...props
 }: React.ComponentProps<"div"> &
   VariantProps<typeof markerVariants> & {
     asChild?: boolean
   }) {
-  const Comp = asChild ? Slot.Root : "div"
-
-  return (
-    <Comp
-      data-slot="marker"
-      data-variant={variant}
-      className={cn(markerVariants({ variant, className }))}
-      {...props}
-    />
-  )
+  return usePolymorphic("div", asChild, children, {
+    "data-slot": "marker",
+    "data-variant": variant,
+    className: cn(markerVariants({ variant, className })),
+    ...props,
+  })
 }
 
 function MarkerIcon({ className, ...props }: React.ComponentProps<"span">) {

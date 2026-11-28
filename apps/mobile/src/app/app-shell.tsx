@@ -50,10 +50,6 @@ import {
   openLocalTerminalTab,
 } from "@fizz/agent-kit/shared/lib/tool-tabs";
 import {
-  useDirtyTabCountSync,
-  useExternalFileOpen,
-} from "@/app/layout/use-external-file-open";
-import {
   activeTabKey,
   cycleTab,
   openDraftTab,
@@ -233,22 +229,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 
   /**
-   * 多智能体协作：**点一下直接建会话**，不再弹窗选模型 / 配班子。
-   *
-   * 默认班子见 `defaultCollabSettings()`；主模型沿用上次发送用的内置模型，没有就留空
-   * 让用户在建好的会话里选（与空白页同一条规矩）。建好后打开它 —— 与原来
-   * 「新建会话」弹窗的落点一致。
-   */
-  const startCollabConversation = useCallback(
-    (workspaceId: string): void => {
-      void app.newCollabConversation(workspaceId).then((id) => {
-        if (id) openConversation(id, workspaceId);
-      });
-    },
-    [app, openConversation],
-  );
-
-  /**
    * 落到「创建新任务」页（**不建会话**）：切到目标项目 + 清空当前会话 + 开占位标签 + 切视图。
    * 会话等第一句发送时才由 `runRound` 里的 `newConversation` 创建。
    */
@@ -399,16 +379,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    * 以前是会话面板里一条贴顶的红条，切到别的视图就没了。
    */
   useErrorToast(app.error, app.clearError);
-
-  /**
-   * 「用本应用打开本机 Markdown」这条链路的两端。
-   *
-   * 挂在外壳（不是某个功能区）：一头是**系统事件**（双击 `.md` 关联 / 菜单的 `Ctrl+O`），
-   * 发生在哪个活动栏分区上都该生效；另一头是**脏标签计数**，要报到主进程去做退出拦截，
-   * 是应用级的。两个在 web 上都是空操作（宿主不实现那几个方法），所以不需要平台判断。
-   */
-  useExternalFileOpen();
-  useDirtyTabCountSync();
 
   /** 打开设置：本工程恒为**独立整页**（`SettingsPage`，见它的文件头），没有弹窗形态。 */
   const openSettings = (): void => {
@@ -692,12 +662,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   workspaceId: string,
                 ) => {
                   // 会话不再弹窗：普通会话落到该项目的「创建新任务」页（类型在模型
-                  // 下拉里选，第一句发送时才建会话）；多智能体协作直接建（默认班子）；
-                  // worktree 走各自的弹窗。
+                  // 下拉里选，第一句发送时才建会话）；worktree 走各自的弹窗。
                   if (kind === "conversation")
                     startDraftConversation(workspaceId);
-                  else if (kind === "collab")
-                    startCollabConversation(workspaceId);
                   else openNewDialog(kind, workspaceId);
                 }}
                 onImportInWorkspace={setImportWorkspaceId}

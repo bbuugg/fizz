@@ -38,6 +38,8 @@ import {
 } from '@fizz/agent-kit/shared/ai-elements/reasoning'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@fizz/agent-kit/shared/ai-elements/tool'
 import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
+import { resolveInitialFoldOpen, useMessageDisplayPrefs } from '@fizz/agent-kit/shared/lib/message-display-prefs'
+import { useMessageFoldOpen } from '@fizz/agent-kit/features/chat/message-fold-state'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { t } from '@fizz/i18n'
 import { FileDiffView, DiffStat, type DiffHunk } from '@fizz/agent-kit/features/git/FileDiffView'
@@ -50,6 +52,7 @@ import {
   isStoppableToolName,
   isStoppableToolRunning,
   isErrorText,
+  isDuplicateToolErrorText,
   partialJsonString,
   toolCardHead,
   type ToolCallPart,
@@ -62,10 +65,6 @@ import {
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { todoItemsOf, todoProgress } from '@fizz/agent-kit/shared/lib/todo-list'
 import { diffLines } from '@fizz/agent-kit/shared/lib/diff'
-import {
-  isTerminalTool,
-  terminalOutputForDisplay
-} from '@fizz/agent-kit/shared/lib/terminal/display'
 import { collapsedBody, shouldRefreshSnapshot } from '@fizz/agent-kit/shared/lib/collapse-swap'
 import { loadMediaObjectUrl, resolveServerMediaUrl } from '@fizz/agent-kit/shared/lib/media-url'
 import type { AgentMessagePart, SubagentDelegation, TodoItem } from '@fizz/contracts/types'
@@ -88,8 +87,36 @@ import type { AskFollowupAnswer } from '@fizz/contracts/types'
  * **折叠 + 仍在思考时**，触发行上会跟着一行实时预览（思考正文的最后一行）：不然思考条只剩
  * 「正在思考…」四个字，长时间思考时完全看不出它在写什么。
  */
-function ReasoningView({ text, streaming }: { text: string; streaming: boolean }) {
-  const [open, setOpen] = useState(false)
+function ReasoningView({
+  text,
+  streaming,
+  turnDone,
+  foldStateKey
+}: {
+  text: string
+  streaming: boolean
+  turnDone: boolean
+  foldStateKey?: string
+}) {
+  const displayPrefs = useMessageDisplayPrefs()
+  const autoCollapse = displayPrefs.reasoning.autoCollapse
+  const initialOpen = resolveInitialFoldOpen(
+    displayPrefs.reasoning.defaultOpen,
+    autoCollapse === 'reasoning-end' ? 'item-end' : autoCollapse,
+    { itemDone: !streaming, turnDone }
+  )
+  const [open, setOpen] = useMessageFoldOpen(foldStateKey, initialOpen)
+  const previousStatus = useRef({ streaming, turnDone })
+  useEffect(() => {
+    const previous = previousStatus.current
+    if (
+      (autoCollapse === 'reasoning-end' && previous.streaming && !streaming) ||
+      (autoCollapse === 'turn-end' && !previous.turnDone && turnDone)
+    ) {
+      setOpen(false)
+    }
+    previousStatus.current = { streaming, turnDone }
+  }, [autoCollapse, streaming, turnDone, setOpen])
   // 消息区的滚动上下文（可能不在 Conversation 里，拿不到就退化成空操作）
   const conversation = useConversationOptional()
 
@@ -149,6 +176,9 @@ function ToolCallCard({
   status,
   onStop,
   live = true,
+  turnDone = false,
+  itemDone,
+  foldStateKey,
   children
 }: {
   title: string
@@ -173,11 +203,36 @@ function ToolCallCard({
    * 一直转圈等于在说「它还在跑」，而那一轮早就结束了。
    */
   live?: boolean
+  /** 整轮是否已经结束。 */
+  turnDone?: boolean
+  /** 工具步骤是否已经完成；子任务以 delegation 状态覆盖普通 tool-result 判据。 */
+  itemDone?: boolean
+  /** 跨流式消息 id 替换保留的开合状态键。 */
+  foldStateKey?: string
   children: ReactNode
 }) {
   // 消息区的滚动上下文（可能不在 Conversation 里，拿不到就退化成空操作）
   const conversation = useConversationOptional()
-  const [open, setOpen] = useState(false)
+  const displayPrefs = useMessageDisplayPrefs()
+  const autoCollapse = displayPrefs.tool.autoCollapse
+  const isDone = itemDone ?? (state === 'output-available' || state === 'output-error')
+  const initialOpen = resolveInitialFoldOpen(
+    displayPrefs.tool.defaultOpen,
+    autoCollapse === 'tool-end' ? 'item-end' : autoCollapse,
+    { itemDone: isDone, turnDone }
+  )
+  const [open, setOpen] = useMessageFoldOpen(foldStateKey, initialOpen)
+  const previousStatus = useRef({ itemDone: isDone, turnDone })
+  useEffect(() => {
+    const previous = previousStatus.current
+    if (
+      (autoCollapse === 'tool-end' && !previous.itemDone && isDone) ||
+      (autoCollapse === 'turn-end' && !previous.turnDone && turnDone)
+    ) {
+      setOpen(false)
+    }
+    previousStatus.current = { itemDone: isDone, turnDone }
+  }, [autoCollapse, isDone, turnDone, setOpen])
 
   /**
    * 「先折叠、再换内容」：收起动画（ToolContent 的 animate-out，150ms）期间继续渲染
@@ -271,7 +326,7 @@ function buildFileDiff(part: AgentMessagePart): {
  * 这张卡操作的是**哪个工作区文件**：内置 `read` / `write` / `edit` 的 `file_path`。
  *
  * 只认这三个工具：它们的明细位就是「对哪个文件干的」，点开那个文件是扫对话流时最自然的
- * 下一步。`glob` / `grep` 的明细是**模式**（不是一个文件），`bash` 是命令 —— 都不该有
+ * 下一步。`glob` / `grep` 的明细是**模式**（不是一个文件），`shell` 是命令 —— 都不该有
  * 这颗入口。ACP 的外部 agent 也不认：它的入参字段名各家不同（`file_path` / `filePath` /
  * 只有 `title`），猜错就会把「打开 A」做成「打开 B」。
  *
@@ -398,7 +453,7 @@ function StreamingInputBlock({ text, label, mono = true }: {
 }
 
 /**
- * bash 运行中的**实时输出区**（stdout / stderr 合并纯文本）。
+ * shell 运行中的**实时输出区**（stdout / stderr 合并纯文本）。
  *
  * - stderr 行首的 `[stderr] ` 前缀已在 parts 层加好（见 `appendStreamChunk`）——
  *   这里只负责展示，不再解析一次；
@@ -555,7 +610,11 @@ function renderAcpDirect(part: AgentMessagePart): DirectResult | null {
     } else if (item?.type === 'content' && item.content?.type === 'text' && item.content.text) {
       // 工具回的文本一律按原样展示（等宽 pre），与其它工具输出同一口径：
       // 不猜它是不是 markdown，免得把读回来的原文 / 终端输出重排。
-      nodes.push(<AcpTextBlock key={`text-${i}`} text={item.content.text} />)
+      const output = (part as { output?: unknown }).output
+      // 失败时最终 rawOutput 也会进入统一错误块；如果过程 content 是同一正文，只保留错误块那份。
+      if (part.isError !== true || !isDuplicateToolErrorText(item.content.text, output)) {
+        nodes.push(<AcpTextBlock key={`text-${i}`} text={item.content.text} />)
+      }
     } else if (
       item?.type === 'content' &&
       item.content?.type === 'image' &&
@@ -626,40 +685,10 @@ function renderBuiltinDirect(
   const str = (value: unknown): string | undefined =>
     typeof value === 'string' && value.trim() ? value : undefined
 
-  /**
-   * 终端工具（`run_in_terminal` / `read_terminal_output` / `send_keys` /
-   * `list_terminal_sessions`，客户端在用户眼前那条终端里执行）。
-   *
-   * 结果是一段**终端原始文本**，不是结构化对象 —— 走下面的通用分支会掉进「Parameters /
-   * Result 两坨 JSON」的兜底卡：终端输出被 `JSON.stringify` 当 JSON 高亮，数字全被拆成
-   * 独立 span（用户看到的「满屏乱跳的数字」，`x86_64` 还会被切成 `x` + `86` + `_` + `64`）。
-   *
-   * 所以按 `bash` 的样子直显：`$ 命令` 铺在内容区第一行，后面接结果文本。
-   * 两处与 bash 不同：
-   * - **命令什么都没输出时不铺内容区**：工具会回一句「（等待期内没有捕获到新输出…）」，
-   *   那是给模型的（免得它以为调用失败），摆给用户看就是一句废话；
-   * - `send_keys` 只显示按了什么键：它的结果是一句固定回执（「已向 local:1 发送按键」），
-   *   对用户没有信息量。
-   */
-  if (isTerminalTool(part.toolName)) {
-    const command = str(input.command)
-    const keys = str(input.keys)
-    const body =
-      part.isError === true || !hasOutput || part.toolName === 'send_keys'
-        ? null
-        : terminalOutputForDisplay(toolOutputText(output) ?? '')
-    // 命令在触发行右侧已截断显示，内容区第一行再铺一份完整的（这条链路没有 diff 视图）
-    const echoed = command ? (body ? `$ ${command}\n${body}` : `$ ${command}`) : body
-    return {
-      ...(command ? { detail: `$ ${command}` } : keys ? { detail: t('按键 {keys}', { keys }) } : {}),
-      content: echoed ? <AcpTextBlock text={echoed} singleLine /> : null
-    }
-  }
-
   let subject: string | undefined
   const name = part.toolName
   switch (name) {
-    case 'bash':
+    case 'shell':
       subject = str(input.command)
       break
     case 'read':
@@ -693,7 +722,7 @@ function renderBuiltinDirect(
   }
   if (!subject) return null
 
-  const isExec = name === 'bash'
+  const isExec = name === 'shell'
   const detail = isExec ? `$ ${subject}` : subject
   /**
    * 工具失败时**不再铺结果正文**：外层直显分支已经会渲染那条 `⚠️` 错误；
@@ -713,7 +742,7 @@ function renderBuiltinDirect(
       detail
     }
   }
-  // bash 的结果文本只有 stdout / stderr / 退出码标记（与 dsh 的 renderResult 一致），
+  // shell 的结果文本只有 stdout / stderr / 退出码标记（与 dsh 的 renderResult 一致），
   // 不带命令行 —— 所以这里必须补一行 `$ 命令`，否则用户看不出这条输出来自哪条命令。
   const echo = isExec ? `$ ${subject}` : ''
   if (outputText) {
@@ -783,6 +812,10 @@ export interface PartViewProps {
   reloading?: boolean
   reloadDisabled?: boolean
   streaming?: boolean
+  /** 所属助手消息的整轮是否结束。 */
+  turnDone?: boolean
+  /** 稳定的 part 开合键，供流式消息落盘替换时复用手动选择。 */
+  foldStateKey?: string
   /**
    * 整轮是不是正处在**这一条消息**的流式里（= 这条是最后一条消息且在跑）。
    *
@@ -820,6 +853,8 @@ function PartViewInner({
   reloading,
   reloadDisabled,
   streaming,
+  turnDone = false,
+  foldStateKey,
   turnLive,
   followupPending,
   followupResumable,
@@ -892,7 +927,14 @@ function PartViewInner({
   }
 
   if (part.type === 'reasoning') {
-    return <ReasoningView text={part.text} streaming={!!streaming} />
+    return (
+      <ReasoningView
+        text={part.text}
+        streaming={!!streaming}
+        turnDone={turnDone}
+        foldStateKey={foldStateKey}
+      />
+    )
   }
 
   // 单独出现的 tool-result（正常流里会被回填到 tool-call 上，这里兜底渲染）。
@@ -905,6 +947,9 @@ function PartViewInner({
         title={toolLabel(part.toolName)}
         type={`tool-${part.toolName}` as ToolUIPart['type']}
         state={part.isError ? 'output-error' : 'output-available'}
+        turnDone={turnDone}
+        itemDone
+        foldStateKey={foldStateKey}
       >
         {/* 错误时只给「人话」文本：output 是对象（ACP 的 rawOutput）时，
             再渲染一份 JSON 代码块会在卡片上把同一件事说两遍 */}
@@ -951,7 +996,7 @@ function PartViewInner({
   const { state, hasOutput, output, isError, streamingInput } = toolState(part)
 
   // 工具卡头部的停止钮**只给真有「单条取消」通道的工具**（`isStoppableToolName`：
-  // bash / web_fetch / 派活工具 `agent-*`）：其它工具没有这条通道，
+  // shell / web_fetch / 派活工具 `agent-*`）：其它工具没有这条通道，
   // 在它们上面挂停止钮要么是空操作、要么等于偷偷中止整轮，语义不诚实 —— 所以干脆不显示，
   // 要停整轮用输入框那颗停止钮。
   //
@@ -996,6 +1041,9 @@ function PartViewInner({
         type={`tool-${part.toolName}` as ToolUIPart['type']}
         state="approval-requested"
         live={turnLive}
+        turnDone={turnDone}
+        itemDone={hasOutput}
+        foldStateKey={foldStateKey}
         {...cardHead(part, toolDetailOf(part))}
         onStop={onStop}
       >
@@ -1026,6 +1074,9 @@ function PartViewInner({
         type={`tool-${part.toolName}` as ToolUIPart['type']}
         state={state}
         live={turnLive}
+        turnDone={turnDone}
+        itemDone={hasOutput}
+        foldStateKey={foldStateKey}
         {...cardHead(
           part,
           items.length ? `${done}/${items.length} · ${t('任务')}` : undefined
@@ -1078,6 +1129,9 @@ function PartViewInner({
         type={`tool-${part.toolName}` as ToolUIPart['type']}
         state={state}
         live={turnLive}
+        turnDone={turnDone}
+        itemDone={!delegationRunning}
+        foldStateKey={foldStateKey}
         {...cardHead(part, delegationPromptOf(part.input))}
         // 运行态挂在**头部**（工具名右边），内容区只放子任务产出与过程入口
         status={
@@ -1116,7 +1170,7 @@ function PartViewInner({
     )
   }
 
-  // bash **运行中**（还没有 tool-result）：铺实时输出区 + 单条命令停止。
+  // shell **运行中**（还没有 tool-result）：铺实时输出区 + 单条命令停止。
   // 结果到达后 hasOutput 变 true，本分支让位给下面的直显分支（结果文本），
   // liveOutput 也已被 parts 层清口（见 applyEvent 的 tool-result case）。
   //
@@ -1136,6 +1190,9 @@ function PartViewInner({
         type={`tool-${part.toolName}` as ToolUIPart['type']}
         state={state}
         live={turnLive}
+        turnDone={turnDone}
+        itemDone={hasOutput}
+        foldStateKey={foldStateKey}
         {...cardHead(part, `$ ${cmd}`)}
         // 默认收起（与其余卡一致），要看实时输出点开 —— 头部有运行态图标与停止钮，
         // 折叠状态下也能判断「还在跑」、也能停。
@@ -1158,6 +1215,9 @@ function PartViewInner({
         type={`tool-${part.toolName}` as ToolUIPart['type']}
         state={state}
         live={turnLive}
+        turnDone={turnDone}
+        itemDone={hasOutput}
+        foldStateKey={foldStateKey}
         {...cardHead(part, preview?.detail)}
         // 默认收起：入参在长的时候头部明细已经跟着截断刷新了，要细看半截 JSON 自己点开
         onStop={onStop}
@@ -1190,6 +1250,9 @@ function PartViewInner({
         type={`tool-${part.toolName}` as ToolUIPart['type']}
         state={state}
         live={turnLive}
+        turnDone={turnDone}
+        itemDone={hasOutput}
+        foldStateKey={foldStateKey}
         {...head}
         // 文件类工具（read / write / edit）：头部那截路径点一下就在右侧文件面板里打开它
         detailAction={detailActionFor(fileTargetOf(part), head.detail)}
@@ -1226,6 +1289,9 @@ function PartViewInner({
       type={`tool-${part.toolName}` as ToolUIPart['type']}
       state={state}
       live={turnLive}
+      turnDone={turnDone}
+      itemDone={hasOutput}
+      foldStateKey={foldStateKey}
       {...cardHead(part)}
       onStop={onStop}
     >
@@ -1322,6 +1388,8 @@ export const PartView = memo(
     prev.reloading === next.reloading &&
     prev.reloadDisabled === next.reloadDisabled &&
     prev.streaming === next.streaming &&
+    prev.turnDone === next.turnDone &&
+    prev.foldStateKey === next.foldStateKey &&
     prev.turnLive === next.turnLive &&
     prev.followupPending === next.followupPending &&
     prev.followupResumable === next.followupResumable &&

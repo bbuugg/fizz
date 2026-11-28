@@ -30,7 +30,7 @@ import type { PanelSession, PanelTabKey, SideTabKey } from '@fizz/agent-kit/shar
 
 /**
  * 「新建弹窗」的目标种类 —— 直接复用侧栏的 `NewInWorkspaceKind`：
- * 两边本来描述的就是同一批入口（会话 / 协作 / 工作区），
+ * 两边本来描述的就是同一批入口（会话 / 工作区），
  * 之前各写一份字面量联合，新增一项就要改三处、漏一处就是类型报错或弹错窗。
  */
 export type NewDialogKind = NewInWorkspaceKind

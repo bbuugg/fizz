@@ -14,7 +14,7 @@ export interface HistoryEvidence {
 export function summarizeToolEvidence(toolName: string, text: string, budget = 2000): string {
   if (text.length <= budget) return text
   if (budget < 200) return text.slice(0, budget)
-  const diagnosticTool = /^(bash|terminal|exec|run|test|web_fetch)/i.test(toolName)
+  const diagnosticTool = /^(shell|terminal|exec|run|test|web_fetch)/i.test(toolName)
   const diagnosticBudget = diagnosticTool ? Math.floor(budget * 0.35) : 0
   let diagnostics = ''
   if (diagnosticBudget) {

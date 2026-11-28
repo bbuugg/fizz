@@ -338,6 +338,16 @@ export function AssistantPanel({
     else setAssistantPanelOpen(false)
   }
 
+  /** 可选为执行目标的主机（本机终端不能当远端目标） */
+  const targetHosts = sshHosts.filter((h) => h.kind !== 'local')
+  /**
+   * 主机下拉的可见标题（`items` 与选项共用同一份，避免两处字面量漂移）。
+   * Base UI 不给 `items` 时触发器里显示的是原始主机 id。
+   */
+  const targetHostItems: Record<string, string> = Object.fromEntries(
+    targetHosts.map((host) => [host.id, host.name])
+  )
+
   return (
     <div className={className}>
       {/* 顶栏：会话切换器（标题 + 历史会话）+ 新建 + 删除当前会话。
@@ -354,7 +364,7 @@ export function AssistantPanel({
               type="button"
               aria-label="切换助手会话"
               title={`${embedded ? '终端助手' : '项目助手'} · ${activeTitle}`}
-              className="flex min-w-0 max-w-56 items-center gap-1 rounded-md px-1.5 py-1 text-left text-sm text-foreground transition-colors hover:bg-accent/60 data-[state=open]:bg-accent/60"
+              className="flex min-w-0 max-w-56 items-center gap-1 rounded-md px-1.5 py-1 text-left text-sm text-foreground transition-colors hover:bg-accent/60 data-popup-open:bg-accent/60"
             >
               <span className="truncate">{activeTitle}</span>
               <ChevronDown className="size-3 shrink-0 opacity-60" />
@@ -438,15 +448,20 @@ export function AssistantPanel({
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{tr('选择 SSH 执行目标')}</DialogTitle>
-            <DialogDescription>{tr('目标随助手会话保存，切换终端标签不会更改；每条命令独立执行。')}</DialogDescription>
+            <DialogDescription>{tr('目标随助手保存，每条命令独立执行。')}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
               <Label>{tr('SSH 主机')}</Label>
-              <Select value={targetHostId} onValueChange={(id) => { setTargetHostId(id); setTargetCwd('') }} disabled={savingTarget}>
+              <Select
+                value={targetHostId}
+                items={targetHostItems}
+                onValueChange={(id) => { setTargetHostId(id); setTargetCwd('') }}
+                disabled={savingTarget}
+              >
                 <SelectTrigger><SelectValue placeholder={tr('请选择主机')} /></SelectTrigger>
                 <SelectContent>
-                  {sshHosts.filter((h) => h.kind !== 'local').map((host) => (
+                  {targetHosts.map((host) => (
                     <SelectItem key={host.id} value={host.id}>{host.name}</SelectItem>
                   ))}
                 </SelectContent>
@@ -582,7 +597,7 @@ export function AssistantPanel({
           compact: true,
           // 工具权限：与主会话同一颗 pill（`PermissionPill`，图标编码档位、档名进 tooltip）。
           // 助手面板是「一句话就让 agent 动手」的入口，没有这一档就等于默认裸跑 ——
-          // 终端助手的 write / edit / bash 在远端执行，权限闸在服务端。
+          // 终端助手的 write / edit / shell 在远端执行，权限闸在服务端。
           // 只用图标（`CHAT_ICON_PILL`，32px）：面板本来就窄，一颗带文字的 pill 会把
           // 模型 pill 挤掉。
           leading: <PermissionPill value={permissionMode} onChange={handlePermissionChange} />,

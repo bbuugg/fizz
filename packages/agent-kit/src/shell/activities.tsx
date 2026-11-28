@@ -9,17 +9,15 @@
  * 条目本身不用关心自己排在第几个。
  */
 import { useMemo, type ComponentProps, type ComponentType } from 'react'
-import { Bot, Globe, NotebookPen, Puzzle, Server } from 'lucide-react'
+import { Bot, Globe, Puzzle, Server } from 'lucide-react'
 import { AgentSidebar } from '@fizz/agent-kit/features/chat/AgentSidebar'
 import { HostsSidebar } from '@fizz/agent-kit/features/hosts/HostsSidebar'
 import { ApiPanel } from '@fizz/agent-kit/features/api/ApiPanel'
-import { NotesSidebar } from '@fizz/agent-kit/features/notes/NotesSidebar'
 import { PluginsSidebar } from '@fizz/agent-kit/features/plugins/PluginsSidebar'
 import {
   AGENT_ACTIVITY_ID,
   API_CLIENT_ACTIVITY_ID,
   HOSTS_ACTIVITY_ID,
-  NOTES_ACTIVITY_ID,
   PLUGINS_ACTIVITY_ID
 } from '@fizz/agent-kit/shared/lib/activity-ids'
 import { useActiveActivityId, useActivityOrder } from '@fizz/agent-kit/shared/lib/activity-state'
@@ -65,12 +63,6 @@ export const BUILTIN_ACTIVITIES: Activity[] = [
     label: '接口请求',
     icon: Globe,
     sidebar: ApiPanel
-  },
-  {
-    id: NOTES_ACTIVITY_ID,
-    label: '笔记',
-    icon: NotebookPen,
-    sidebar: NotesSidebar
   },
   {
     // 所有插件共用这一颗：侧栏是插件列表，点插件在 PanelView 里开标签页。

@@ -69,17 +69,33 @@ export function attachTerminalInteractions(options: TerminalInteractionsOptions)
   }
   container.addEventListener('wheel', onWheel, { capture: true, passive: false })
 
+  // 旧 WebView 的 contextmenu 可能仍是 MouseEvent、不带 pointerType；从按下事件记住来源。
+  // 用户改用真实鼠标时，下一次 pointerdown 会自然切回 mouse，不按设备型号一刀切。
+  let lastPointerType = ''
+  const onPointerDown = (event: PointerEvent): void => {
+    lastPointerType = event.pointerType
+  }
+  container.addEventListener('pointerdown', onPointerDown, { capture: true })
+
   /**
    * 右键粘贴（设置 → 终端 → 右键粘贴，默认开）：点右键把剪贴板文本写进当前命令行
    * （Windows Terminal / PuTTY 同款）。偏好每次现读，拨开关立即生效，不用重建终端。
    *
-   * 两条边界：
+   * 三条边界：
+   * - **触摸 / 手写笔长按不接管**：长按也会触发 contextmenu，不能把它当鼠标右键。
+   *   放行给 xterm 聚焦 textarea、显示系统菜单，避免 WebView 主动读剪贴板失败后连菜单也没了；
    * - **有选区时不接管**：那时用户点右键多半是要「复制 / 在浏览器中搜索」，把菜单放过去更稳妥；
    * - 环境没有 `navigator.clipboard.readText`（老浏览器 / 非安全上下文）时也别把菜单吞掉 ——
    *   吞了就既没菜单、也粘不了，看起来像坏了。
    */
   const onContextMenuForPaste = (e: MouseEvent): void => {
     if (!getTerminalPasteOnRightClick()) return
+    const event = e as MouseEvent & {
+      pointerType?: string
+      sourceCapabilities?: { firesTouchEvents?: boolean } | null
+    }
+    const pointerType = event.pointerType || lastPointerType
+    if (pointerType === 'touch' || pointerType === 'pen' || event.sourceCapabilities?.firesTouchEvents) return
     if (term.hasSelection()) return
     const clipboard = navigator.clipboard
     if (!clipboard?.readText) return
@@ -158,6 +174,7 @@ export function attachTerminalInteractions(options: TerminalInteractionsOptions)
   return () => {
     // 移除时必须与注册时的 capture 一致，否则摘不掉（监听会跟着容器泄漏到重建后的终端）
     container.removeEventListener('wheel', onWheel, { capture: true })
+    container.removeEventListener('pointerdown', onPointerDown, { capture: true })
     container.removeEventListener('contextmenu', onContextMenuForPaste, { capture: true })
     container.removeEventListener('pointerup', onPointerUpForCopy, { capture: true })
     selectionSub.dispose()

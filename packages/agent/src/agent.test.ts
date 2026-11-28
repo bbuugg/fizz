@@ -465,7 +465,7 @@ describe('TurnUsage.tps · 端到端', () => {
 /**
  * 「什么算模型在吐 token」的唯一判据（`isOutputDelta`）。
  *
- * 分母只认它放行的帧：工具自己产出的内容（bash 的实时 stdout）、子任务的事件、
+ * 分母只认它放行的帧：工具自己产出的内容（shell 的实时 stdout）、子任务的事件、
  * 上游的空占位帧都不许进 —— 否则分母又会被「不是模型生成的东西」污染回去。
  */
 describe('isOutputDelta · 只认模型自己生成的增量', () => {
@@ -479,7 +479,7 @@ describe('isOutputDelta · 只认模型自己生成的增量', () => {
     ['工具入参开始帧', { type: 'tool-call-delta', toolCallId: 't1', inputTextDelta: '' }, false],
     // 有的上游不发入参增量，完整 tool-call 是它吐过字的唯一证据
     ['完整工具调用', { type: 'tool-call', toolCallId: 't1', toolName: 'echo', input: {} }, true],
-    // bash 实时 stdout：工具在产出，不是模型的生成速度
+    // shell 实时 stdout：工具在产出，不是模型的生成速度
     [
       '工具输出增量',
       { type: 'tool-output-delta', toolCallId: 't1', stream: 'stdout', delta: 'ok' },

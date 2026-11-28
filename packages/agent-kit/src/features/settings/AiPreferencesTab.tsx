@@ -102,6 +102,13 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
       label: `${config.name} · ${model.id}`
     }))
   )
+  /**
+   * 模型下拉的可见标题（`items` 与选项共用同一份，避免两处字面量漂移）。
+   * Base UI 不给 `items` 时触发器里显示的是原始 value（`配置id::模型id`）。
+   */
+  const subagentModelItems: Record<string, string> = Object.fromEntries(
+    subagentModelChoices.map((choice) => [choice.value, choice.label])
+  )
   const savedSubagentModel =
     app.subagentSettings?.modelConfigId && app.subagentSettings.modelId
       ? `${app.subagentSettings.modelConfigId}::${app.subagentSettings.modelId}`
@@ -220,7 +227,7 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
           {tr('工具权限')}
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          {tr('控制 Agent 能修改或执行哪些操作；查看与搜索始终允许。下一轮对话生效。')}
+          {tr('查看与搜索始终允许；下一轮生效')}
         </p>
         <Segmented
           ariaLabel={tr('工具权限')}
@@ -237,7 +244,7 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
           {tr('命令沙箱')}
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          {tr('开启后 bash 命令只能写工作区与临时目录，越界写入由系统沙箱拦截（只约束文件写入，不拦网络）。Linux 需要 bubblewrap、macOS 需要 sandbox-exec、Windows 使用随包的受限令牌后端（x64）；远端 SSH 工作区还要求远端主机装有 bwrap。缺后端的机器上命令会直接失败，请保持关闭。下一轮对话生效。')}
+          {tr('只约束文件写入，不拦网络；缺后端时命令直接失败，请保持关闭')}
         </p>
         <Segmented<CommandSandboxMode>
           ariaLabel={tr('命令沙箱')}
@@ -256,7 +263,7 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
           {tr('工具调用并发')}
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          {tr('同一批工具调用最多并行几个；多出的排队。1 = 串行，默认')}{' '}
+          {tr('多出的排队；1 = 串行，默认')}{' '}
           {DEFAULT_TOOL_CALL_CONCURRENCY}{tr('，上限 10。')}
         </p>
         <div className="flex items-center gap-2">
@@ -281,9 +288,9 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
           {tr('工具调用最大步数')}
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          {tr('一轮对话里最多连续调用工具多少次（1 步 = 一次模型请求 + 一轮工具执行）。达到上限后即使还有没跑完的工具调用也会停下这一轮。默认')}{' '}
+          {tr('达到上限即停下这一轮；调大后成本随步数累加。默认')}{' '}
           {DEFAULT_MAX_STEPS}{tr('，上限')} {MAX_MAX_STEPS}
-          {tr('；调大能跑更长的任务，代价是每步都要重发全量上下文，成本随步数累加。')}
+          {tr('。')}
         </p>
         <div className="flex items-center gap-2">
           <NumberField
@@ -309,10 +316,7 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
           {tr('工具意图')}
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          {tr(
-            '让模型为每次工具调用写一句「这一步要干什么」，显示成工具卡的标题（「修复类型错误」而不是「编辑文件」）。' +
-              '关掉后工具卡立刻回到工具名，模型也不再被要求填这句（下一轮生效）。'
-          )}
+          {tr('关掉后工具卡只显示工具名，下一轮生效')}
         </p>
         <div className="flex items-center gap-2">
           <Switch
@@ -332,8 +336,8 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
           {tr('子任务（subagent）')}
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          {tr('把只读、产出长的任务交给子 Agent，减少主对话上下文占用。子任务')}<b>{tr('不能修改文件或执行命令')}</b>{tr('。')}
-          {tr('每项可以单独设步数上限（搜索 / 读文件各算一步），留空用默认值。')}
+          {tr('把只读、产出长的任务交给子 Agent，省主对话上下文。子任务')}<b>{tr('不能修改文件或执行命令')}</b>{tr('。')}
+          {tr('每项可单独设步数上限，留空用默认。')}
         </p>
         <div className="space-y-2">
           {BUILTIN_SUBAGENT_IDS.map((id) => {
@@ -408,6 +412,7 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
                     {/* 每个子智能体自己的模型；不选就落兜底 → 父会话，手机（<640px）可换行 */}
                     <Select
                       value={modelValueOf(id)}
+                      items={{ inherit: tr('沿用兜底模型'), ...subagentModelItems }}
                       onValueChange={(value) => void saveSubagentModelFor(id, meta.name, value)}
                     >
                       <SelectTrigger
@@ -443,7 +448,7 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
             <div className="min-w-0">
               <div className="text-xs font-medium">{tr('自定义子智能体')}</div>
               <div className="text-[0.6875rem] leading-4 text-muted-foreground">
-                {tr('自己起名字、写用途、挑工具。建完同样要勾上才会派活。')}
+                {tr('建完要勾上才会派活')}
               </div>
             </div>
             <Button
@@ -547,7 +552,11 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
           <div className="text-xs font-medium">{tr('子任务兜底模型')}</div>
           {/* 固定宽度、不铺满：这是个下拉选项，不是正文；全宽在宽屏设置页里
               会拉成一条几百像素的空框，和下面那行说明的层次也对不上 */}
-          <Select value={subagentModelValue} onValueChange={(value) => void saveSubagentModel(value)}>
+          <Select
+            value={subagentModelValue}
+            items={{ inherit: tr('沿用父会话模型'), ...subagentModelItems }}
+            onValueChange={(value) => void saveSubagentModel(value)}
+          >
             <SelectTrigger variant="muted" className="h-9 w-64 max-w-full text-sm">
               <SelectValue />
             </SelectTrigger>
@@ -561,13 +570,11 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
             </SelectContent>
           </Select>
           <p className="text-xs leading-4 text-muted-foreground">
-            {tr('子任务通常只读文件并汇总，选快 / 便宜的模型即可；模型不可用时自动退回父会话模型。')}
+            {tr('模型不可用时自动退回父会话模型')}
             {savedSubagentModelUnavailable ? tr(' 原模型已不可用。') : ''}
           </p>
           <p className="text-xs leading-4 text-muted-foreground">
-            {tr(
-              '每个子智能体可以在自己那一行单独指定模型；没指定就用这里的兜底模型，兜底也没配则沿用父会话模型。'
-            )}
+            {tr('没指定就用这里的兜底模型')}
           </p>
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
@@ -629,7 +636,7 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
           {tr('命令审批超时')}
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          {tr('等待审批的最长时间，超时按拒绝处理。0 = 一直等待。')}
+          {tr('超时按拒绝处理；0 = 一直等待')}
         </p>
         <div className="flex items-center gap-2">
           <NumberField
@@ -653,7 +660,7 @@ export function AiPreferencesTab({ app }: { app: AgentApp }) {
           {tr('模型请求重试')}
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          {tr('请求失败后的自动重试次数。已跑完工具步骤的轮次会从断点继续，不会重跑已完成的工具。0 = 不限，默认 2。')}
+          {tr('0 = 不限；已跑完的工具步骤不会重跑')}
         </p>
         <div className="flex items-center gap-2">
           <NumberField

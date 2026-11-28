@@ -34,6 +34,17 @@ import { cn } from '@fizz/agent-kit/shared/lib/utils'
 export const ROW_ACTION_CLASS =
   'rounded p-0.5 text-muted-foreground transition-[background-color,color,opacity] hover:bg-foreground/10 [@media(hover:none)]:p-1.5'
 
+/**
+ * 行尾动作按钮的**显形**：平时透明，hover 所在行 / 自身获得焦点时显示，触摸设备常显。
+ *
+ * ⚠️ 触发行必须带 `group/row`（命名 group）—— 用裸 `group-hover:` 会被外层任何 `group`
+ * 误触发（消息气泡上就挂着 group，结果一轮里所有按钮一起亮，见 `lib/hover-reveal-arrow.ts`）。
+ * ⚠️ Tailwind v4 把 `group-hover:` 包进 `@media (hover:hover)`，触摸端必须补常显，
+ * 判的是能力 (`hover:none`) 而不是视口宽度（理由见 `lib/supports-touch.ts`）。
+ */
+export const ROW_ACTION_REVEAL_CLASS =
+  'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100'
+
 /** 行尾动作按钮：`type="button"` 兜底 + 与共用底板拼接 `className` */
 export function RowActionButton({
   className,

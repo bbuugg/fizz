@@ -141,10 +141,4 @@ export const webHost: AgentHost = {
   // 工作区目录只能通过「浏览服务端目录」弹窗（GET /api/fs/dirs）来选。
   // 拖进来的 `File` 也已经被涂掉路径（`webkitRelativePath` 只是相对路径，而且指向
   // **用户那台**机器，跟跑 Agent 的机器不是一回事）—— 所以侧栏没有「拖目录进来」这条路。
-  //
-  // 同样刻意不实现 pickLocalMarkdownFile / readLocalFile / writeLocalFile /
-  // takePendingExternalFiles / onExternalFileOpen —— 「用本应用打开本机 .md 并保存回原处」
-  // 在浏览器里**本质上做不到**：拿不到路径、也写不回去。所以入口直接不出现
-  // （连「选择一个服务端目录」那种降级都没有：那台机器是服务端的，跟用户的 .md 无关）。
-  // setDirtyTabCount 也不必实现：web 关页面本来就没有可拦的语义。
 }

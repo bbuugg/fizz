@@ -140,7 +140,7 @@ function MobileShell({
 export interface SidebarProps {
   /** 落到**空态**对话页（初始页）—— 添加项目成功后的落点 */
   onOpenChatView: () => void
-  /** 项目行上的三种「新建」：会话落到新建任务页，协作直接建，其余走各自弹窗（都在 AppShell） */
+  /** 项目行上的新建入口：会话落到新建任务页，其余走各自弹窗（都在 AppShell） */
   onNewInWorkspace: (kind: NewInWorkspaceKind, workspaceId: string) => void
   /** 项目「更多」菜单里的「导入会话」：打开导入弹窗 */
   onImportInWorkspace: (workspaceId: string) => void

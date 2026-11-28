@@ -126,8 +126,6 @@ export interface ConversationConfirmPayload extends ConversationHookTarget {
     toolName: string
     command: string
     intent?: string
-    agentId?: string
-    agentName?: string
     options?: Array<{ optionId: string; name: string; kind: string }>
   }
 }

@@ -50,7 +50,7 @@
  * 重挂载）。受控写法与 PartView 的 ReasoningView / ToolCallCard 保持一致，
  * 展开 / 收起时同样要 holdScroll() 暂停自动贴底，否则视图会被拽走。
  */
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import { Brain, ChevronDown, ChevronRight, ChevronUp, Minimize2, Square, Wrench } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
@@ -67,6 +67,8 @@ import {
 import { REVEAL_ON_HOVER_ARROW } from '@fizz/agent-kit/shared/lib/hover-reveal-arrow'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
+import { resolveInitialFoldOpen, useMessageDisplayPrefs } from '@fizz/agent-kit/shared/lib/message-display-prefs'
+import { useMessageFoldOpen } from '@fizz/agent-kit/features/chat/message-fold-state'
 
 export function TurnStepGroup({
   label,
@@ -77,6 +79,9 @@ export function TurnStepGroup({
   toolName,
   acpKind,
   onStop,
+  foldStateKey,
+  defaultOpen = false,
+  turnDone = false,
   children
 }: {
   /** 抬头左格（最后做的那件事 / 已工作多久 / 计数摘要），由 `lib/turn-step.ts` 算好传进来 */
@@ -135,7 +140,7 @@ export function TurnStepGroup({
    *
    * 只在「尾 part 是真在执行的、且支持单条停止」的工具上给（判据在 `message-parts.tsx`
    * 的 `groupHead`，与工具卡头部那颗钮同一套 `isStoppableToolRunning`）：
-   * `bash` / `web_fetch` / 派活工具（`agent-*`）。其它工具没有单条取消通道，
+    * `shell` / `web_fetch` / 派活工具（`agent-*`）。其它工具没有单条取消通道，
    * 挂上去要么点了没反应、要么等于偷偷中止整轮。
    *
    * 为什么需要它：过程一旦折进组里，工具卡自己的头部（连同那颗停止钮）就被收起来了。
@@ -147,10 +152,33 @@ export function TurnStepGroup({
    * 的 `onStop`）。所以这一行是「内容触发器 / 停止钮 / 箭头触发器」三段平级结构。
    */
   onStop?: () => void
+  /** 跨流式消息 id 替换保留的开合状态键。 */
+  foldStateKey?: string
+  /** 由消息列表按该组内容和默认策略算出的首次开合值。 */
+  defaultOpen?: boolean
+  /** 整轮是否已经结束（不是某个工具步骤结束）。 */
+  turnDone?: boolean
   children: ReactNode
 }) {
   const tr = useT()
-  const [open, setOpen] = useState(false)
+  const displayPrefs = useMessageDisplayPrefs()
+  const initialOpen = resolveInitialFoldOpen(
+    defaultOpen,
+    displayPrefs.group.autoCollapse,
+    { itemDone: false, turnDone }
+  )
+  const [open, setOpen] = useMessageFoldOpen(foldStateKey, initialOpen)
+  const previousTurnDone = useRef(turnDone)
+  useEffect(() => {
+    if (
+      !previousTurnDone.current &&
+      turnDone &&
+      displayPrefs.group.autoCollapse === 'turn-end'
+    ) {
+      setOpen(false)
+    }
+    previousTurnDone.current = turnDone
+  }, [turnDone, displayPrefs.group.autoCollapse, setOpen])
   // 消息区的滚动上下文（可能不在 Conversation 里，拿不到就退化成空操作）
   const conversation = useConversationOptional()
   // 展开后的内容区限高滚动：与 `ReasoningContent` / `StreamingInputBlock` 同一套贴底
@@ -361,9 +389,9 @@ export function TurnStepGroup({
             </Tooltip>
           ) : null}
           {/* 箭头单独成一个 Trigger：收起时贴在停止钮右侧，展开时直接跟到预览后面
-              （停止钮那时不渲染），仍然是开合热区（Radix 一个 Collapsible 可以挂多个
-              Trigger，点哪个都开合）。它自己带 `data-state`，所以旋转照旧用裸
-              `group-data-[state=open]`（自身就是那个 `.group`）。
+              （停止钮那时不渲染），仍然是开合热区（一个 Collapsible 可以挂多个 Trigger，
+              点哪个都开合）。它自己带 `data-panel-open`，所以旋转照旧用裸
+              `group-data-panel-open`（自身就是那个 `.group`）。
               纯图标按钮没有文字，靠 aria-label 报「展开 / 收起」。 */}
           <CollapsibleTrigger
             aria-label={open ? tr('收起') : tr('展开')}
@@ -375,7 +403,7 @@ export function TurnStepGroup({
                 // 键盘 Tab 到这颗箭头 Trigger 上时箭头必须现身：`REVEAL_ON_HOVER_ARROW` 里的
                 // `group-focus-visible/row` 要求整行 `group/row` 自身被聚焦，而它是 div、
                 // 不可聚焦 —— 这里用 Trigger 自己的 `group` 补一条。
-                'size-4 shrink-0 group-focus-visible:opacity-100 group-data-[state=open]:rotate-90'
+                'size-4 shrink-0 group-focus-visible:opacity-100 group-data-panel-open:rotate-90'
               )}
             />
           </CollapsibleTrigger>

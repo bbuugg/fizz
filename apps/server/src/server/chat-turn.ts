@@ -20,7 +20,7 @@
  */
 import { loadPlugins } from '@fizz/plugin/loader'
 import { assistantSliceId, buildUserParts, resolveMaxSteps, resolveToolCallConcurrency, type ChatRequest, type UploadFileRef } from '@fizz/contracts/agent-api'
-import { checkpointSourceDigest, CollabRuntime, defaultContextWindowFromEnv, rawToolsPlugin, readProjectDoc, runAgent, type AgentConfirmInput, type CollabTurnResult, type MountedPlugin, type RunAgentResult } from '@fizz/agent'
+import { checkpointSourceDigest, defaultContextWindowFromEnv, rawToolsPlugin, readProjectDoc, runAgent, type AgentConfirmInput, type MountedPlugin, type RunAgentResult } from '@fizz/agent'
 import {
   isRemoteWorkspace,
   normalizeReasoningEffort,
@@ -65,7 +65,6 @@ import { agentPrefs } from './prefs'
 import { createFollowupGate, releaseFollowupsFor } from './followup-gate'
 import { startContainerTurn } from './container-projects/turn'
 import { buildCodingAssembly } from './profiles/coding'
-import { buildClientToolset, createClientToolGate } from './client-tool-gate'
 import { errorPart, excerptOf, foldEventIntoParts } from './agent-parts'
 import {
   createRun,
@@ -369,16 +368,13 @@ async function startTurnReserved(input: ChatRequest): Promise<StartTurnResult> {
   }
 
   /**
-   * 外部 Agent（ACP）在本进程起子进程，只能跑本地目录；多智能体协作的子 Agent 也按
-   * 本地工作区装配工具。远端工作区首期两条都不支持 —— 直接说清，别让它们拿远端
+   * 外部 Agent（ACP）在本进程起子进程，只能跑本地目录。远端工作区首期不支持 ACP
+   * —— 直接说清，别让它们拿远端
    * POSIX 路径当本地 cwd 去执行。
    */
   if (remoteWorkspace) {
     if (backend === 'acp') {
       return rejectTurn(400, '远端工作区首期不支持外部 Agent（ACP），请改用内置模型')
-    }
-    if (conversation.kind === 'collab') {
-      return rejectTurn(400, '远端工作区首期不支持多智能体协作会话')
     }
   }
 
@@ -530,13 +526,6 @@ async function startTurnReserved(input: ChatRequest): Promise<StartTurnResult> {
   const requestConfirm = gate.requestConfirm
 
   /**
-   * 客户端工具（请求携带、客户端执行）：与 confirm / followup 同一条反向通道。
-   * 主要用于「AI 操作用户眼前那个终端」—— 服务端没有活会话注册表，够不着。
-   * 权限全在客户端；服务端只推帧、等回填（见 client-tool-gate.ts）。
-   */
-  const clientGate = createClientToolGate({ run })
-
-  /**
    * ACP 的权限请求答复。
    *
    * - 会话档 `confirm`（缺省）：答复体带用户挑中的 optionId，原样回给 agent（弹确认卡）；
@@ -576,10 +565,6 @@ async function startTurnReserved(input: ChatRequest): Promise<StartTurnResult> {
   const assistantParts: AgentChatMessage['parts'] = []
   let midTurnSummary: { text: string; afterToolCallId: string } | undefined
   let turnUsage: TurnUsage | undefined
-  /** 协作会话本轮的结果：多条 Agent 回复 + 跳过 / 失败统计，收尾时按 Agent 归属落盘 */
-  let collabTurnResult: CollabTurnResult | undefined
-  /** 协作会话的收尾摘要（`conversation:finished` 的通知文案用；普通会话走 `excerptOf`） */
-  let collabExcerpt: string | undefined
   /**
    * 这一轮的耗时（finish 帧的 `durationMs`）。收尾时挂到助手消息上，折叠条抬头才报得出
    * 「已工作 N 秒」（见 `AgentChatMessage.durationMs`）。
@@ -643,22 +628,6 @@ async function startTurnReserved(input: ChatRequest): Promise<StartTurnResult> {
      * 走插件通道的好处是后续可以按插件粒度做覆盖 / 卸载 / 冲突体检（见 @fizz/plugin）。
      */
     const plugins: MountedPlugin[] = []
-    /**
-     * 客户端工具（请求携带、客户端执行）排在最前：MCP 与内置工具都能盖过它 ——
-     * 客户端不该顶掉一个受审批保护的内置能力（与 assistant-turn 同一条口径）。
-     */
-    if (input.clientTools?.length) {
-      const clientTools = buildClientToolset(input.clientTools, clientGate, {
-        // 与内置工具同一档、同一个审批通道：客户端工具是模型直接调的，闸不能留在客户端
-        permissionMode,
-        // 运行中活取：切档立刻生效（与内置工具的 getPermissionMode 同源）
-        getPermissionMode: () => run.permissionMode,
-        requestConfirm
-      })
-      plugins.push({
-        plugin: rawToolsPlugin('server:client', clientTools, { origin: 'plugin', source: 'client' })
-      })
-    }
     /**
      * ⚠️ 项目管理工具组（`project-tools`）**刻意不在这里挂**。
      *
@@ -810,10 +779,8 @@ async function startTurnReserved(input: ChatRequest): Promise<StartTurnResult> {
      * `resolveModelConfig` 自带人话错误，这里只接住并记日志，不往用户界面抛。
      */
     const subagentSettings = domain.getSubagentSettings()
-    const isCollab = backend === 'builtin' && conversation.kind === 'collab'
     let subagentModel: AiModelConfig | undefined
     if (
-      !isCollab &&
       backend === 'builtin' &&
       subagentSettings.enabled.length > 0 &&
       subagentSettings.modelConfigId &&
@@ -833,8 +800,7 @@ async function startTurnReserved(input: ChatRequest): Promise<StartTurnResult> {
      * 用户自建的子智能体：定义随设置落盘，这里只做两件事 —— 决定要不要下传、
      * 把它们各自的专用模型解析成完整配置（解析失败退回全局 → 父模型，同上一个模型的降级口径）。
      */
-    const subagentDefinitions =
-      backend === 'builtin' && !isCollab ? (subagentSettings.definitions ?? []) : []
+    const subagentDefinitions = backend === 'builtin' ? (subagentSettings.definitions ?? []) : []
     /** 每个子智能体各自的模型：先并自定义定义里的，再并内置那份（同一个 id 上后者优先） */
     const subagentPerIdModels: Record<string, AiModelConfig> = {}
     for (const def of subagentDefinitions) {
@@ -866,89 +832,8 @@ async function startTurnReserved(input: ChatRequest): Promise<StartTurnResult> {
       .filter((f) => f.mediaType?.startsWith('image/'))
       .map((f) => ({ name: f.name, url: f.url, mediaType: f.mediaType }))
 
-    /**
-     * 多智能体协作：运行时编排器（@ 点名 / 广播判定 / SendMessage 投递）。
-     *
-     * 任务 / 消息状态独立写 `collab.json`（`onState` 内部节流）；回复以带 `agentId/agentName`
-     * 的助手消息落进主对话，取消挂到 run 上供 `POST /api/chat/collab/cancel` 命中。
-     */
-    let collabRuntime: CollabRuntime | undefined
-    if (isCollab) {
-      const initialState = await domain.getCollabState(conversation.id)
-      collabRuntime = new CollabRuntime({
-        conversation,
-        workspace,
-        skills,
-        projectDoc,
-        mainModel: modelConfig!,
-        resolveModel: (configId, modelId) => {
-          if (!configId || !modelId) return null
-          try {
-            return domain.resolveModelConfig(configId, modelId)
-          } catch (err) {
-            console.warn('[collab] 子 Agent 模型不可用，回退主模型：', err)
-            return null
-          }
-        },
-        initialState,
-        getPermissionMode: () => run.permissionMode,
-        requestConfirm,
-        commandStops: run.commandStops,
-        ...(toolIntent !== undefined ? { toolIntent } : {}),
-        signal: run.controller.signal,
-        emit: (event) => emit(run, { type: 'event', requestId, event }),
-        onState: (state) => domain.saveCollabState(conversation.id, state)
-      })
-      run.collabCancel = (taskId) => collabRuntime?.cancelTask(taskId) ?? false
-    }
-
-    /**
-     * 协作会话**不跑主智能体**：用户 @ 谁就由谁处理，没 @ 就全体广播判定；
-     * 每个 Agent 的回复由 `persistCollabTurn` 落成带 `agentId/agentName` 的助手消息。
-     * 这里复用 `runAgent` 的单 Agent 运行能力，但编排在 `CollabRuntime.runTurn`。
-     */
-    if (isCollab && collabRuntime) {
-      try {
-        const result = await collabRuntime.runTurn({
-          history: historyForTurn(conversation, userMessage),
-          text: input.text ?? ''
-        })
-        collabTurnResult = result
-        if (result.usage) turnUsage = result.usage
-        collabExcerpt = result.replies
-          .map((reply) => reply.text)
-          .join('\n')
-          .trim()
-          .slice(0, 120)
-        if (run.controller.signal.aborted) return { finishReason: 'aborted' }
-        if (!result.replies.length && result.errors.length) {
-          return {
-            finishReason: 'error',
-            error: result.errors
-              .map((item) => `${item.agentName}：${item.error}`)
-              .join('；')
-          }
-        }
-        return { finishReason: 'done' }
-      } catch (err) {
-        const message = describeError(err).message
-        console.error('[server] 协作轮执行失败：', err)
-        // 让收尾仍走协作落盘路径：否则 `assistantParts` 是空的，用户只会看到一条空白回复
-        collabTurnResult = {
-          replies: [],
-          skipped: 0,
-          errors: [{ agentId: 'runtime', agentName: '协作运行时', error: message }]
-        }
-        return { finishReason: 'error', error: message }
-      } finally {
-        collabRuntime.close()
-        delete run.collabCancel
-      }
-    }
-
-    try {
-      return await runAgent({
-        scope: { kind: 'workspace', workspace },
+    return runAgent({
+      scope: { kind: 'workspace', workspace },
       // 远端工作区的文件 / 命令走 SSH；不传 = 本地（行为与改造前一致）
       ...(workspaceBackend ? { workspaceBackend } : {}),
       // 自动摘要固化的缓存键：必须是**会话** id，不是 workspace.id（一个工作区下多个会话）
@@ -974,7 +859,7 @@ async function startTurnReserved(input: ChatRequest): Promise<StartTurnResult> {
       skills,
       projectDoc,
       permissionMode,
-      // 命令沙箱：显式开启时 bash 才经平台沙箱执行（默认 off，见 CommandSandboxMode）
+      // 命令沙箱：显式开启时 shell 才经平台沙箱执行（默认 off，见 CommandSandboxMode）
       sandboxMode: prefs.sandboxMode,
       ...(backend === 'builtin' && reasoningEffort ? { reasoningEffort } : {}),
       // 运行中活取权限档：用户在整轮中途切档时闸门立刻按新档裁决（改档端点改的就是 run 上这个字段）
@@ -985,7 +870,7 @@ async function startTurnReserved(input: ChatRequest): Promise<StartTurnResult> {
       // 单条命令停止表（POST /api/chat/command/stop 命中它；run 级，收尾时清空）
       commandStops: run.commandStops,
       /**
-       * 后台命令（`bash` 的 `runInBackground`）：登记成一条**属于本会话**的
+       * 后台命令（`shell` 的 `runInBackground`）：登记成一条**属于本会话**的
        * 后台任务，进程归登记表持有 —— 本轮的 abort 与超时都打不到它，这正是「dev server
        * 活过这一轮」的实现方式。
        *
@@ -1044,14 +929,14 @@ async function startTurnReserved(input: ChatRequest): Promise<StartTurnResult> {
        * 能力由这里显式声明：
        * - `browser`：内置 browser_* 真的挂上了才追加提示词里的浏览器说明
        *   （会话开关关掉、或工具全被外部 MCP 顶掉时都是 false）；
-       * - `subagents`：只在内置后端、非协作会话时声明（用户在设置里打开的 id 为空
-       *   时不会生成派活工具）。ACP 走上面的 `runAcpAgent`，外部 agent 自己管编排。
+       * - `subagents`：只在内置后端声明（用户在设置里打开的 id 为空时不会生成派活工具）。
+       *   ACP 走上面的 `runAcpAgent`，外部 agent 自己管编排。
        */
       assemble: (deps) =>
         buildCodingAssembly(deps, {
           plugins,
           browser: browserToolNames.length > 0,
-          ...(backend === 'builtin' && !isCollab && subagentSettings.enabled.length > 0
+          ...(backend === 'builtin' && subagentSettings.enabled.length > 0
             ? {
                 subagents: {
                   ids: subagentSettings.enabled,
@@ -1107,12 +992,7 @@ async function startTurnReserved(input: ChatRequest): Promise<StartTurnResult> {
           requestId,
           event: { type: 'context-compressed', ...info }
         })
-      })
-    } finally {
-      // 主轮结束（成功 / 失败 / 中止）都收掉子任务并落一次快照
-      collabRuntime?.close()
-      delete run.collabCancel
-    }
+    })
   }
 
   /**
@@ -1178,12 +1058,6 @@ async function startTurnReserved(input: ChatRequest): Promise<StartTurnResult> {
       : runAiSdkTurn()
 
   const persistAssistant = (parts: AgentChatMessage['parts']): void => {
-    // 协作会话没有「主智能体的一条回复」：把它已产出的每个 Agent 回复分别落盘。
-    // 运行时连结果都没来得及给出（抛错）时走下面的普通错误落盘路径。
-    if (collabTurnResult) {
-      persistCollabTurn()
-      return
-    }
     // acp 会话的消息在 agent 侧，本地不落盘；但收尾要补进进程内视图，
     // 这样「刚跑完就刷新」不会因为会话已 idle 而只能等下一次 session/load。
     if (isAcpConversation) {
@@ -1269,47 +1143,6 @@ async function startTurnReserved(input: ChatRequest): Promise<StartTurnResult> {
     }
   }
 
-  /**
-   * 协作轮的落盘：每个 Agent 的回复是一条带 `agentId/agentName` 的助手消息。
-   *
-   * 一条也没有时（全体静默跳过 / 没有 Agent）补一条提示，避免用户只看到自己那条
-   * 消息、以为「什么都没发生」。中止且没有产出时不补提示。
-   */
-  const persistCollabTurn = (): void => {
-    const result = collabTurnResult
-    if (!result) return
-    if (result.replies.length > 0) {
-      const messages: AgentChatMessage[] = result.replies.map((reply, index) => ({
-        id: `collab-a-${Date.now()}-${index}-${reply.agentId}`,
-        role: 'assistant',
-        parts:
-          reply.parts.length > 0
-            ? reply.parts
-            : [{ type: 'text', text: reply.text }],
-        createdAt: reply.createdAt,
-        ...(reply.usage ? { usage: reply.usage } : {}),
-        agentId: reply.agentId,
-        agentName: reply.agentName
-      }))
-      domain.appendMessages(conversation.id, messages, undefined, turnUsage)
-      return
-    }
-    if (run.controller.signal.aborted) return
-    const text = result.errors.length
-      ? `（本轮没有 Agent 完成：${result.errors
-          .map((item) => `${item.agentName}：${item.error}`)
-          .join('；')}）`
-      : '（这条消息没有 Agent 接手）'
-    persistAssistantMessage(
-      conversation.id,
-      [{ type: 'text', text }],
-      undefined,
-      input.assistantMessageId,
-      turnDurationMs,
-      undefined
-    )
-  }
-
   void runner
     .then((result) => {
       persistAssistant(assistantParts)
@@ -1342,7 +1175,6 @@ async function startTurnReserved(input: ChatRequest): Promise<StartTurnResult> {
     })
     .then((finishReason) => {
       gate.releaseAll()
-      clientGate.releaseAll()
       followupGate.releaseAll()
       // 单条命令停止表收场：run 结束后没有「在跑的命令」可停（留着只是延迟释放）
       run.commandStops.clear()
@@ -1374,7 +1206,7 @@ async function startTurnReserved(input: ChatRequest): Promise<StartTurnResult> {
       // 运行态清单与「跑完了」都在 finishRun 之后发：此刻正文已落盘，客户端收到就能直接
       // 去拉权威历史（发早了会拉到半截）
       markDirty(['activeRuns'])
-      const excerpt = collabExcerpt ?? excerptOf(assistantParts)
+      const excerpt = excerptOf(assistantParts)
       emitServerEvent({
         type: 'conversation:finished',
         conversationId: conversation.id,
@@ -1398,7 +1230,6 @@ async function startTurnReserved(input: ChatRequest): Promise<StartTurnResult> {
 
   run.controller.signal.addEventListener('abort', () => {
     gate.releaseAll()
-    clientGate.releaseAll()
     followupGate.releaseAll()
     // 用户点了停止：意图是终止 —— 剩余插话一律丢弃（收尾链的兜底也会因 aborted 跳过）
     run.steerInbox.length = 0

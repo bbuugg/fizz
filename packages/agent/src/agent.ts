@@ -135,7 +135,7 @@ export interface RunAgentOptions {
    */
   getPermissionMode?: () => AiPermissionMode
   /**
-   * 命令沙箱开关（设置 → AI → 偏好，默认 `off`）。开启后 `bash`（前台与后台）经平台
+    * 命令沙箱开关（设置 → AI → 偏好，默认 `off`）。开启后 `shell`（前台与后台）经平台
    * 沙箱执行，只允许写工作区与临时目录；拿不到后端时**命令不执行**（fail closed）。
    * 只作用于本地工作区。
    */
@@ -152,7 +152,7 @@ export interface RunAgentOptions {
    */
   assemble?: (deps: AgentAssemblyDeps) => AgentAssembly | Promise<AgentAssembly>
   /**
-   * confirm 模式下执行破坏性操作（bash）前的请示。
+    * confirm 模式下执行破坏性操作（shell）前的请示。
    *
    * ⚠️ **不传就等于 full**：`buildAgentTools` 里 `needConfirm = 权限是 confirm && 有回调`，
    * 所以调用方必须真的提供一个会等待用户的回调（桌面端走 IPC、服务端走 SSE+POST、
@@ -160,14 +160,14 @@ export interface RunAgentOptions {
    */
   requestConfirm?: (req: AgentConfirmInput) => Promise<boolean>
   /**
-   * 命令停止表（toolCallId → 只停那一条 bash 的 stop）。调用方创建
+    * 命令停止表（toolCallId → 只停那一条 shell 的 stop）。调用方创建
    * （server 挂在 run 上：`run.commandStops`），runAgent 往里面登记 / 注销；
    * `POST /api/chat/command/stop` 与服务端外部的停止按钮命中它。不传 = 没有
    * 单条停止能力（与从前逐字节一致）。
    */
   commandStops?: Map<string, () => void>
   /**
-   * 后台命令登记：`bash` 带 `runInBackground` 时调它，拿到任务 id。
+    * 后台命令登记：`shell` 带 `runInBackground` 时调它，拿到任务 id。
    *
    * 由 server 注入（它持有任务登记表，也知道这条命令属于哪个会话）；不传 = 不提供
    * 后台执行（工具会如实回绝）。进程归登记表持有，本轮的 signal / 超时都打不到它。
@@ -284,11 +284,11 @@ export interface RunAgentOptions {
     keptTurns: number
     summary?: string
   }) => void
-  /** 追加在系统提示词末尾的调用方专属说明（多智能体协作的派活规则等）。 */
+  /** 追加在系统提示词末尾的调用方专属说明。 */
   extraPrompt?: string
   /**
    * 覆盖本轮的最大步数（工具循环上限）。缺省 = `MAX_STEPS`。
-   * 多智能体协作的子 Agent 用它收紧单任务步数。
+   * 子任务调用方可用它收紧单任务步数。
    */
   maxSteps?: number
 }
@@ -446,7 +446,7 @@ function normalizeUsage(usage: unknown): RawUsage | null {
  *
  * 为什么是 1 秒：正常流式下一帧是几十毫秒级（思考 / 工具入参增量同频，见
  * `INPUT_DELTA_FLUSH_MS`），慢模型单 token 也就几百毫秒；而一次工具执行、一条
- * bash 命令、一次审批等待都是秒级起步。1s 既留得住慢模型的真实吐字间隔，
+ * shell 命令、一次审批等待都是秒级起步。1s 既留得住慢模型的真实吐字间隔，
  * 又能把工具空窗整段剔掉。
  */
 const TPS_IDLE_GAP_MS = 1000
@@ -495,9 +495,9 @@ export function markTurnOutputDelta(
  * 这个事件算不算「模型在吐 token」—— 只认模型自己生成的增量。
  *
  * 刻意排除的几类：
- * - `tool-result` / `tool-output-delta`：**工具自己**在产出（bash 的 stdout 能流几十秒），
+ * - `tool-result` / `tool-output-delta`：**工具自己**在产出（shell 的 stdout 能流几十秒），
  *   它不是模型的生成速度，计进去分母就又被工具时长污染；
- * - `file-part` / `subagent-*` / `collab-*`：不是本轮主模型吐的字（子任务的 token
+ * - `file-part` / `subagent-*`：不是本轮主模型吐的字（子任务的 token
  *   单独记在 `TurnUsage.subagents`，不并进父的 outputTokens），分子没有它们，分母也不能有；
  * - 空串增量：上游常先发一帧 `delta: ''` 占位（`tool-call-delta` 的「开始流式生成」
  *   那一帧也只有 id 没有内容），它不是内容，认了会把窗口撑大。
@@ -569,7 +569,7 @@ const INPUT_DELTA_FLUSH_MS = 60
 /**
  * 这一轮「在哪儿干活」的身份。
  *
- * - `workspace`：绑定某个工作区的会话（Agent / 协作 / 任务会话）；
+ * - `workspace`：绑定某个工作区的会话（Agent / 子任务 / 定时任务会话）；
  * - `global`：跨项目的全局会话（项目管理助手 / 终端助手）—— 没有工作区根，
  *   不该为了复用运行时去伪造一个 `path: ''` 的工作区对象。
  */
@@ -642,7 +642,7 @@ export interface AgentAssemblyDeps {
   extraTools?: Record<string, unknown>
   /** 调用方额外挂的插件（浏览器 / MCP 桥接 / 磁盘插件等），按数组顺序挂载 */
   plugins?: MountedPlugin[]
-  /** 追加在系统提示词末尾的调用方专属说明（例如多智能体协作的派活规则） */
+  /** 追加在系统提示词末尾的调用方专属说明 */
   extraPrompt?: string
   /**
    * 子目录规则的按需加载钩子（见 `AgentToolOptions.nestedDocs`）。`runAgent` 用
@@ -671,14 +671,14 @@ export interface AgentAssemblyDeps {
  *
  * 两种写法必须走同一条挂载管线（`mountAssembly`）：
  * - 标准会话：`assembleStandard(deps)`；
- * - 助手 / 协作：自己给 `instructions` + `plugins`（必要时再给 `filterTools`）。
+ * - 自定义装配：自己给 `instructions` + `plugins`（必要时再给 `filterTools`）。
  */
 export interface AgentAssembly {
   /** 系统提示词正文（插件仍可通过 `ctx.prompt` 追加段落） */
   instructions: string
   /** 工具插件：一个插件 = 一项能力，按数组顺序挂进本轮 context */
   plugins?: MountedPlugin[]
-  /** 挂载后对最终工具集做一次过滤（协作 Agent 的工具白名单） */
+  /** 挂载后对最终工具集做一次过滤（调用方的工具白名单） */
   filterTools?: (tools: Record<string, unknown>) => Record<string, unknown>
   /**
    * 能力声明：运行时据此决定**循环层**行为。
@@ -694,7 +694,7 @@ export interface AgentAssembly {
  * 标准装配：内置文件 / 命令工具 → extraTools → 调用方插件 → web_fetch。
  *
  * 只产出 `AgentAssembly`，**不建 Context、不挂载、不套钩子** —— 挂载与审批/钩子壳
- * 统一由 `runAgent` 的 `mountAssembly` 做。这样标准会话与自造 profile（助手 / 协作）
+ * 统一由 `runAgent` 的 `mountAssembly` 做。这样标准会话与自定义 profile
  * 走的是同一条管线，不会出现「一部分工具受插件钩子管辖、另一部分不受」。
  *
  * 上下文估算要用它：系统提示词与工具 schema 每轮都要发出去，却不在 `messages` 里，
@@ -1461,7 +1461,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
               },
               signal: runSignal,
               /**
-               * 单条停止：派活卡上的停止钮与 `bash` 走**同一张表**、
+                * 单条停止：派活卡上的停止钮与 `shell` 走**同一张表**、
                * 同一个 `POST /api/chat/command/stop` —— 停一个子任务不必废掉整轮。
                */
               ...(opts.commandStops ? { commandStops: opts.commandStops } : {}),

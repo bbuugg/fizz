@@ -246,6 +246,18 @@ export function ModelsTab({ app }: { app: AgentApp }) {
   const modelConfig = modelEditing ? app.models.find((m) => m.id === modelEditing.configId) : undefined
   const pickingConfig = pickingId ? app.models.find((m) => m.id === pickingId) : undefined
 
+  /**
+   * 接口风格下拉的可见标题（`items` 与选项共用同一份，避免两处字面量漂移）。
+   * 「跟随配置」那句带当前 kind 的默认风格，所以每次渲染现算。
+   */
+  const apiStyleItems: Record<string, string> = {
+    inherit: tr('跟随配置（{style}）', {
+      style: modelConfig?.kind === 'openai' ? 'Responses' : 'Chat Completions'
+    }),
+    'chat-completions': 'Chat Completions（/v1/chat/completions）',
+    responses: 'Responses（/v1/responses）'
+  }
+
   const resetForm = (): void => {
     setEditingId(null)
     setName('')
@@ -510,7 +522,7 @@ export function ModelsTab({ app }: { app: AgentApp }) {
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground">
-        {tr('窗口为输入 + 输出的总上限；点 ✎ 修改模型设置。用满')}{' '}
+        {tr('窗口是输入 + 输出的总上限；用满')}{' '}
         {Math.round((compactionTriggerTokens(DEFAULT_CONTEXT_WINDOW) / (DEFAULT_CONTEXT_WINDOW)) * 100)}{tr('% 自动摘要旧对话；「默认」=')} {DEFAULT_CONTEXT_WINDOW.toLocaleString()}。
       </p>
 
@@ -702,7 +714,13 @@ export function ModelsTab({ app }: { app: AgentApp }) {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
               />
-              <Select value={kind} onValueChange={(v) => setKind(v as AiProviderKind)}>
+              <Select
+                value={kind}
+                items={Object.fromEntries(
+                  Object.entries(KIND_LABELS).map(([value, label]) => [value, tr(label)])
+                )}
+                onValueChange={(v) => setKind(v as AiProviderKind)}
+              >
                 <SelectTrigger variant="muted" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
@@ -824,7 +842,7 @@ export function ModelsTab({ app }: { app: AgentApp }) {
                   </span>
                 ) : (
                   <span className="text-[0.6875rem] text-muted-foreground">
-                    {tr('输入 + 输出共用的总上限，决定圆环分母与自动压缩阈值。「默认」= 输入框留空、走 {value} 兜底。token 是按个计数的单位，k = 1000（不是 1024）：20k = 20,000 token。OpenAI 协议没有单独的输入上限：输入可用空间 = 窗口 − 最大输出。', { value: DEFAULT_CONTEXT_WINDOW.toLocaleString() })}
+                    {tr('输入 + 输出共用；k = 1000（不是 1024）')}
                   </span>
                 )}
               </div>
@@ -858,7 +876,7 @@ export function ModelsTab({ app }: { app: AgentApp }) {
                   <span className="text-[0.6875rem] text-destructive">{tr('要填正整数（留空 = 不限制）')}</span>
                 ) : (
                   <span className="text-[0.6875rem] text-muted-foreground">
-                    {tr('单次回复的上限。对应 OpenAI 的 max_output_tokens；开启思考的模型里推理 token 也算在这里。自动摘要按窗口的 {percent}% 预留输出，输出上限特别大时建议把窗口一起调小。', { percent: Math.round(((DEFAULT_CONTEXT_WINDOW) - compactionTriggerTokens(DEFAULT_CONTEXT_WINDOW)) / (DEFAULT_CONTEXT_WINDOW) * 100) })}
+                    {tr('含思考 token；过大时建议同步调小窗口')}
                   </span>
                 )}
               </div>
@@ -913,11 +931,7 @@ export function ModelsTab({ app }: { app: AgentApp }) {
                       </li>
                     )}
                   </ul>
-                ) : (
-                  <p className="text-[0.6875rem] leading-4 text-muted-foreground">
-                    {tr('三项都开：工具、图片、思考内容按模型实际能力下发。')}
-                  </p>
-                )}
+                ) : null}
               </div>
 
               {/* 接口风格：只对 openai / openai-compatible 有意义（其它 kind 的 provider 自己定协议） */}
@@ -926,19 +940,20 @@ export function ModelsTab({ app }: { app: AgentApp }) {
                   <span className="text-xs text-muted-foreground">{tr('接口风格（OpenAI 协议）')}</span>
                   <Select
                     value={modelApiStyle}
+                    items={apiStyleItems}
                     onValueChange={(v) => setModelApiStyle(v as 'inherit' | AiApiStyle)}
                   >
                     <SelectTrigger variant="muted">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="inherit">{tr('跟随配置（{style}）', { style: modelConfig.kind === 'openai' ? 'Responses' : 'Chat Completions' })}</SelectItem>
-                      <SelectItem value="chat-completions">Chat Completions（/v1/chat/completions）</SelectItem>
-                      <SelectItem value="responses">Responses（/v1/responses）</SelectItem>
+                      <SelectItem value="inherit">{apiStyleItems.inherit}</SelectItem>
+                      <SelectItem value="chat-completions">{apiStyleItems['chat-completions']}</SelectItem>
+                      <SelectItem value="responses">{apiStyleItems.responses}</SelectItem>
                     </SelectContent>
                   </Select>
                   <span className="text-[0.6875rem] text-muted-foreground">
-                    {tr('网关只实现其中一种时在这里按模型钉死，别让它跟随配置走错接口。')}
+                    {tr('网关只支持一种时按模型钉死')}
                   </span>
                 </div>
               )}
@@ -974,7 +989,7 @@ export function ModelsTab({ app }: { app: AgentApp }) {
       <Dialog open={pickingId !== null} onOpenChange={(open) => !open && closePicker()}>
         <DialogContent
           className="flex h-[min(34rem,85dvh)] flex-col overflow-hidden sm:max-w-2xl"
-          onOpenAutoFocus={(event) => event.preventDefault()}
+          initialFocus={false}
         >
           <DialogHeader className="shrink-0">
             <DialogTitle>{tr('从上游拉取模型')}</DialogTitle>
@@ -1113,7 +1128,7 @@ export function ModelsTab({ app }: { app: AgentApp }) {
               }}
             >
               <div className="text-xs text-muted-foreground">
-                {tr('手动添加：填模型 id（必填）。上游没返回的模型也可以直接加进来。')}
+                {tr('上游没返回的模型也能直接加')}
               </div>
               <div className="flex items-center gap-2">
                 <Input

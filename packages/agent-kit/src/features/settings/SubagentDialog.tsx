@@ -3,7 +3,7 @@
  *
  * 字段与 `SubagentDefinition` 一一对应：名称、用途（派活工具的描述）、指令、工具白名单、
  * 步数上限、专用模型。**工具只能选只读的那几个** —— 子 run 恒为 readonly 且没有审批通道，
- * 给它 `write` / `bash` 只会换来一句「当前是只读模式」。
+ * 给它 `write` / `shell` 只会换来一句「当前是只读模式」。
  */
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@fizz/ui/button'
@@ -259,7 +259,7 @@ export function SubagentDialog({
               })}
             </div>
             <p className="text-[0.6875rem] leading-4 text-muted-foreground">
-              {tr('子智能体不能改文件、不能执行命令，所以这里只给只读工具。')}
+              {tr('子智能体只读，不能改文件或执行命令')}
             </p>
           </div>
 
@@ -277,7 +277,14 @@ export function SubagentDialog({
             </div>
             <div className="space-y-1.5">
               <div className="text-xs font-medium">{tr('模型')}</div>
-              <Select value={draft.model} onValueChange={(value) => patch({ model: value })}>
+              <Select
+                value={draft.model}
+                items={{
+                  inherit: tr('沿用子任务模型'),
+                  ...Object.fromEntries(modelChoices.map((choice) => [choice.value, choice.label]))
+                }}
+                onValueChange={(value) => patch({ model: value })}
+              >
                 <SelectTrigger variant="muted" className="h-9 w-full text-sm">
                   <SelectValue />
                 </SelectTrigger>

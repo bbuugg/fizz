@@ -99,8 +99,6 @@ export const createConversationSlice: StateCreator<
     probeDraftAcp: ctx.probeDraftAcp,
     loadMessages: ctx.loadMessages,
     handleFrame: ctx.handleFrame,
-    saveCollabSettings: ctx.saveCollabSettings,
-    cancelCollabTask: ctx.cancelCollabTask,
     attachRun: ctx.attachRun,
     loadConversation: ctx.loadConversation,
     pump: ctx.pump,

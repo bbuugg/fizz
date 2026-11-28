@@ -250,7 +250,7 @@ export function HistoryTab({ app }: { app: AgentApp }) {
           <div className="px-2 py-6 text-center text-xs text-muted-foreground">{tr('正在加载会话…')}</div>
         ) : archived.length === 0 ? (
           <div className="rounded-md border border-dashed px-3 py-6 text-center text-xs leading-5 text-muted-foreground">
-            {tr('还没有归档会话。会话行行尾那颗归档按钮点一下，它就会收进这里。')}
+            {tr('还没有归档会话。')}
           </div>
         ) : (
           <div className="flex flex-col gap-2">

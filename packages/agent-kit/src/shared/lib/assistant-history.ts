@@ -27,9 +27,8 @@
  */
 import type { AgentChatMessage, AssistantRemoteTarget } from '@fizz/contracts/agent-api'
 
-/** v2：会话池。v1 是「按 panelKey 一格」的旧结构，读到时自动迁移 */
+/** 会话池存档 */
 const STORAGE_KEY = 'fizz.agent.assistant.conversations.v2'
-const LEGACY_KEY = 'fizz.agent.assistant.history.v1'
 /** 每段会话最多留多少条消息（一轮问答 = 2 条） */
 const MAX_MESSAGES = 60
 /** 最多留几段会话 */
@@ -72,61 +71,11 @@ function normalize(entry: unknown): AssistantConversationRecord | null {
   }
 }
 
-/**
- * 读 v1（`Record<panelKey, {sessionId, messages, updatedAt}>`）并转成会话池。
- *
- * 迁移规则：同一个 `sessionId` 出现在多格时留更新时间较新的那份；当前会话优先取
- * `global` 那格（它才是用户真正在用的），没有就取最近的一段。迁移成功后把 v1 删掉 ——
- * 留着只会让下次读又走一遍这段逻辑。
- */
-function migrateLegacy(): AssistantStore {
-  const store = emptyStore()
-  let raw: string | null = null
-  try {
-    raw = localStorage.getItem(LEGACY_KEY)
-  } catch {
-    return store
-  }
-  if (!raw) return store
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return store
-    let globalId: string | null = null
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      const rec = normalize(value)
-      if (!rec || rec.messages.length === 0) continue
-      const prev = store.conversations[rec.sessionId]
-      if (!prev || prev.updatedAt < rec.updatedAt) store.conversations[rec.sessionId] = rec
-      if (key === 'global') globalId = rec.sessionId
-    }
-    const ids = Object.keys(store.conversations)
-    store.activeId =
-      globalId ??
-      ids.sort((a, b) => store.conversations[b].updatedAt - store.conversations[a].updatedAt)[0] ??
-      null
-  } catch {
-    return emptyStore()
-  }
-  /**
-   * ⚠️ 顺序：**先写 v2、再删 v1**，而且只有 v2 真的写进去了才删。反过来的话，写 v2 失败
-   * （配额满 / 隐私模式）时用户的历史就被永久删掉了 —— 旧结构留着不碍事，下次读还会再走
-   * 一遍这段迁移（幂等）。
-   */
-  if (writeStore(store, store.activeId ?? undefined)) {
-    try {
-      localStorage.removeItem(LEGACY_KEY)
-    } catch {
-      // 删不掉就留着，下次读再迁一遍即可
-    }
-  }
-  return store
-}
-
 /** 读出整份存档（坏数据整份丢弃：宁可空，也不要拿半个对象去渲染消息列） */
 export function loadAssistantStore(): AssistantStore {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return migrateLegacy()
+    if (!raw) return emptyStore()
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return emptyStore()
     const shape = parsed as Partial<AssistantStore>

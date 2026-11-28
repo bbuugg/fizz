@@ -32,6 +32,7 @@ import {
   PickerEmpty,
   PickerFooter,
   PickerItem,
+  PickerLabel,
   PickerList,
   PickerPanel,
   PickerSearch
@@ -477,6 +478,7 @@ export function WorkspacePicker({
         align="start"
         sideOffset={6}
         collisionPadding={8}
+        header={<PickerLabel>{t('选择工作区')}</PickerLabel>}
         footer={
           <PickerFooter>
             {/* 「不选」与下面几条添加动作**同属一组**，中间不切分隔线（见文件头注释） */}

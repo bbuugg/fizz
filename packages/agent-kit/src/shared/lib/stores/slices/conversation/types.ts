@@ -1,5 +1,5 @@
 /**
- * 对话 slice 的类型真源：每会话的「对话现场」（`ConvSlice`）、协作现场、草稿 ACP 档位，
+ * 对话 slice 的类型真源：每会话的「对话现场」（`ConvSlice`）、草稿 ACP 档位，
  * 以及整块 `ConversationSlice`（store 上暴露的字段与方法签名）。纯类型，运行时零成本。
  */
 import type {
@@ -17,10 +17,7 @@ import type {
   AcpModesState,
   AcpPermissionMode,
   AcpThoughtLevelState,
-  AgentMessagePart,
   AskFollowupAnswer,
-  CollabSettings,
-  CollabState,
   CommandSandboxMode,
   QueuedMessage,
 } from "@fizz/contracts/types";
@@ -247,23 +244,6 @@ export interface ConvSlice {
   liveTps: LiveTpsState | null;
   /** 最近一次被打开 / 触碰的时刻（淘汰排序用） */
   touchedAt: number;
-  /** 协作运行态（仅 collab 会话；任务 / 消息 / 状态 + 实时增量） */
-  collab: CollabClientState | null;
-}
-
-/** 协作会话在客户端的现场：服务端快照 + 尚未收敛的流式文本 */
-export interface CollabClientState {
-  state: CollabState;
-  /** agentId → 正在流式输出的文本（收到任务结果后清空） */
-  liveText: Record<string, string>;
-  /**
-   * agentId → 运行中的**过程记录**（正文 / 思考 / 工具调用，与 `CollabTask.parts` 同构）。
-   *
-   * 服务端的 `parts` 要等任务收口才写进快照；在那之前右侧对话区就靠这份现场，
-   * 让工具卡边跑边出现（不然只有流式正文，跑完才「啪」地补出全部卡片）。
-   * 任务到终态时清空，交给快照里的 `parts`。
-   */
-  liveParts: Record<string, AgentMessagePart[]>;
 }
 
 /**
@@ -486,16 +466,6 @@ export interface ConversationSlice {
   compressContextNow: (
     scope?: string | null,
   ) => Promise<{ ok: boolean; reason?: string }>;
-  /** 覆盖协作配置（增删改 Agent / 并行与单轮运行上限）；成功后就地更新会话清单里的那份 */
-  saveCollabSettings: (
-    settings: CollabSettings,
-    scope?: string | null,
-  ) => Promise<boolean>;
-  /** 取消**某条协作会话**里某个正在跑的子任务 */
-  cancelCollabTask: (
-    taskId: string,
-    scope?: string | null,
-  ) => Promise<boolean>;
   attachRun: (conversationId: string) => Promise<boolean>;
   /**
    * 重接一条进行中的对话：用户点消息区「连接中断」条上的按钮、或页面从后台回来时调。
@@ -573,20 +543,9 @@ export interface ConversationSlice {
       modelId?: string;
       acpSessionId?: string;
       mcpServerIds?: string[];
-      /** 多智能体协作：创建时一并落配置 */
-      kind?: "collab";
-      collab?: CollabSettings;
     },
     done?: (conversationId: string | null) => void,
   ) => Promise<string | null>;
-  /**
-   * 建一条「多智能体协作」会话（侧栏「多智能体协作」入口）：**不弹窗、不选模型**。
-   *
-   * 默认班子取 `defaultCollabSettings()`；主模型优先沿用上次发送用的内置模型
-   * （`preferredTarget`），没有就留空 —— 用户在建好的会话里选，与空白页同一条规矩
-   * （不替用户挑一个没选过的模型）。建好后由调用方的 `openConversation` 打开标签。
-   */
-  newCollabConversation: (workspaceId?: string) => Promise<string | null>;
   deleteConversation: (
     id: string,
   ) => Promise<{ ok: boolean; nextId: string | null }>;
@@ -772,7 +731,7 @@ export interface ConversationSlice {
    */
   stopConversation: (conversationId: string) => Promise<void>;
   /**
-   * 只停这一条 bash（工具卡头部那颗停止钮，命令在执行时命中它）。
+    * 只停这一条 shell（工具卡头部那颗停止钮，命令在执行时命中它）。
    * 拿当前会话在跑那轮的 requestId + 该命令的 toolCallId 打
    * `POST /api/chat/command/stop`；服务端杀进程树，工具结果收尾成「（已中止）」，
    * Agent 同一回合继续。**不动整轮**（那叫 `stop`）。

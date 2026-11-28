@@ -213,6 +213,7 @@ function PluginSettingRow({
         {label}
         <Select
           value={current || undefined}
+          items={Object.fromEntries((item.options ?? []).map((option) => [option.value, option.label]))}
           disabled={busy}
           onValueChange={(next) => void push({ [item.id]: next })}
         >
@@ -810,6 +811,7 @@ export function PluginsPanel({
             <Input
               type="search"
               name="plugin-search"
+              variant="muted"
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
               placeholder={tr('搜索插件（名字 / 路径）…')}

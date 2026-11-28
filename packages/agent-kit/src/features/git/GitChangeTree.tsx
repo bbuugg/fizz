@@ -32,30 +32,35 @@ function renderNodes(
     return (
       <div key={`d:${node.path}`}>
         {/*
-          目录行与文件行同一套骨架：整行一个 flex，左边是可横向滚动的「折叠 + 名字」，
-          右边是操作按钮。缩进放在滚动内容里而不是整行上 —— 否则层级一深，右侧按钮也会
-          跟着往右跑，不再固定。
+          目录行与文件行同一套骨架：整行一个 flex，左边是可截断的「折叠 + 名字」，右边是操作按钮。
+          缩进放在左侧按钮上而不是整行上 —— 否则层级一深，右侧按钮也会跟着往右跑，不再固定。
+          `relative` 是行尾动作浮层的定位基准（与 `ChangeRow` 同一套，见下面的 `absolute` 容器）。
         */}
-        <div className="flex items-center gap-1.5 rounded py-1 pr-1.5 hover:bg-foreground/5">
-          <div className="min-w-0 flex-1 overflow-x-auto no-scrollbar">
-            <button
-              type="button"
-              aria-expanded={!isCollapsed}
-              onClick={() => onToggleDir(node.path)}
-              title={node.path}
-              style={changeTreeIndent(node.depth)}
-              className="flex w-max min-w-full items-center gap-1.5 pr-2 text-left text-sm"
-            >
-              {isCollapsed ? (
-                <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
-              ) : (
-                <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
-              )}
-              <Folder className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="whitespace-nowrap text-muted-foreground">{node.name}</span>
-            </button>
-          </div>
-          {renderDirActions?.(node)}
+        <div className="group/row relative flex h-7 items-center gap-1.5 pr-2 text-sm text-foreground hover:bg-foreground/10">
+          <button
+            type="button"
+            aria-expanded={!isCollapsed}
+            onClick={() => onToggleDir(node.path)}
+            title={node.path}
+            style={changeTreeIndent(node.depth)}
+            className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+          >
+            {isCollapsed ? (
+              <ChevronRight className="size-3.5 shrink-0" />
+            ) : (
+              <ChevronDown className="size-3.5 shrink-0" />
+            )}
+            <Folder className="size-4 shrink-0 text-primary/80" />
+            {/* 平时目录名吃满整行；hover 整行时才让出浮层那一段（两颗按钮） */}
+            <span className="min-w-0 flex-1 truncate transition-[padding] group-hover/row:pe-18 [@media(hover:none)]:pe-18">
+              {node.name}
+            </span>
+          </button>
+          {renderDirActions && (
+            <div className="pointer-events-none absolute right-0 top-0 flex h-full items-center gap-0.5 pl-4 pr-1.5 opacity-0 transition-opacity group-hover/row:pointer-events-auto group-hover/row:opacity-100 [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100">
+              {renderDirActions(node)}
+            </div>
+          )}
         </div>
         {/* 折叠时连子树一起不渲染：省掉几十个节点的 DOM，也免得里面的 diff 偷偷展开着 */}
         {!isCollapsed &&

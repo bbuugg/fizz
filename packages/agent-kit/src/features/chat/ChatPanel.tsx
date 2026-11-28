@@ -124,35 +124,6 @@ function ChatPanelInner({
   /** 命令式二次确认（重试消息会不可逆地删历史，见 `onRetry`） */
   const confirm = useConfirm();
   const { messages, streaming, activeWorkspace } = app;
-  /**
-   * 协作会话：`@` 候选来自当前会话的 Agent 名单；实时回复来自 `app.collab.liveText`
-   * （流式期间先挂在消息末尾，本轮结束由权威历史替换）。
-   */
-  const activeConversation = app.conversations.find(
-    (item) => item.id === app.activeConversationId,
-  );
-  const collabAgents =
-    activeConversation?.kind === "collab" ? (activeConversation.collab?.agents ?? []) : [];
-  const mentionCandidates = collabAgents.map((agent) => ({
-    id: agent.id,
-    name: agent.name,
-    role: agent.role,
-  }));
-  const collabLiveMessages: AgentChatMessage[] = collabAgents.flatMap((agent) => {
-    const text = app.collab?.liveText[agent.id] ?? "";
-    const parts = app.collab?.liveParts[agent.id] ?? [];
-    if (!text && parts.length === 0) return [];
-    return [
-      {
-        id: `collab-live-${agent.id}`,
-        role: "assistant" as const,
-        parts: parts.length > 0 ? parts : [{ type: "text" as const, text }],
-        createdAt: 0,
-        agentId: agent.id,
-        agentName: agent.name,
-      },
-    ];
-  });
   const { textInput } = usePromptInputController();
   /**
    * 正在编辑重发的消息（null = 没在编辑）。编辑条引的是 `text`（原文），重发起点是 `id`。
@@ -473,8 +444,6 @@ function ChatPanelInner({
         rootRef={panelRootRef}
         list={{
           messages,
-          // 多智能体协作的实时回复：本轮结束前挂在末尾，不挂操作行
-          ...(collabLiveMessages.length ? { liveMessages: collabLiveMessages } : {}),
           // 消息区上拉刷新（`onRefresh` → `reloadConversation`）要知道重拉哪一条 ——
           // 多标签下同时挂着好几条会话，不能读「当前会话」
           ...(app.activeConversationId ? { conversationId: app.activeConversationId } : {}),
@@ -510,37 +479,33 @@ function ChatPanelInner({
           // 正在删消息：消息区压暗 + 不收点击 + 顶部「正在删除…」（删除完成后要整体
           // 回拉历史，中途再点别的消息只会让两边互相盖）
           deleting: app.messagesDeleting,
-          header: (
-            <>
-              {/*
-              切换会话的装载窗口：id 已切过去、历史还没拉回来。这里必须显示装载中 ——
-              否则会一直挂着上一个会话的消息列表，用户在它上面删除 / 编辑拿的是旧 id
-              配新会话，服务端对不上就报错（见 useAgentApp.openConversation 的注释）。
-            */}
-              {app.reconnectNotice && (
-                <div className="sticky top-0 z-10 mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border bg-background/80 px-3 py-1.5 text-xs text-muted-foreground backdrop-blur">
-                  <span className="inline-flex items-center gap-1 font-medium text-foreground">
-                    <Unplug className="size-3.5" />
-                    {t("连接中断")}
-                  </span>
-                  <span>
-                    {t("正在自动重连（第 {attempt} 次）· 服务端这一轮还在跑，接上就接着出", {
-                      attempt: app.reconnectNotice.attempt,
-                    })}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void app.reconnectRun(app.activeConversationId ?? "")
-                    }
-                    className="ml-auto rounded border px-1.5 py-0.5 text-xs text-foreground transition-colors hover:bg-foreground/10"
-                  >
-                    {t("立即重连")}
-                  </button>
-                </div>
-              )}
-            </>
-          ),
+          // 重连提示走消息区浮层，不再用 sticky 条占据消息流；只有提示本身接收点击。
+          overlay: app.reconnectNotice ? (
+            <div
+              role="status"
+              aria-live="polite"
+              className="pointer-events-auto flex max-w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-md border bg-background/95 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
+            >
+              <span className="inline-flex items-center gap-1 font-medium text-foreground">
+                <Unplug className="size-3.5" />
+                {t("连接中断")}
+              </span>
+              <span>
+                {t("正在自动重连（第 {attempt} 次）· 服务端这一轮还在跑，接上就接着出", {
+                  attempt: app.reconnectNotice.attempt,
+                })}
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  void app.reconnectRun(app.activeConversationId ?? "")
+                }
+                className="ml-auto rounded border px-1.5 py-0.5 text-xs text-foreground transition-colors hover:bg-foreground/10"
+              >
+                {t("立即重连")}
+              </button>
+            </div>
+          ) : undefined,
           // 会话历史加载失败：错误态 + 重试（替代原本静默吞掉的空视图）
           error:
             app.messagesError &&
@@ -562,8 +527,8 @@ function ChatPanelInner({
               </div>
               <div className="text-xs text-muted-foreground">
                 {activeWorkspace
-                  ? t("Agent 会在该目录内执行命令、读写文件；工作区外的路径一律拒绝")
-                  : t("工作区就是 Agent 的边界：只有登记过的目录能被读写")}
+                  ? t("命令与读写限定在该目录内")
+                  : t("只有登记过的目录能被读写")}
               </div>
             </div>
           ),
@@ -763,7 +728,6 @@ function ChatPanelInner({
         }}
         composer={{
           ...composer,
-          ...(mentionCandidates.length ? { mentionCandidates } : {}),
           // 语音快捷键只开**本标签**的麦：分屏时两栏的 Composer 都挂着监听（见 Composer 的 voiceScope）
           voiceScope: panelKey
         }}

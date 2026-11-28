@@ -78,7 +78,7 @@ export function GitCloneDialog({
    */
   const { pick, node: dirPicker } = useDirectoryPicker(
     app,
-    tr('这里列的是服务端上的目录。仓库会被克隆到选中的目录里。')
+    tr('仓库会克隆到选中的服务端目录里。')
   )
 
   /** 选父目录，选完回填（取消 → `null`，保持原值） */
@@ -180,7 +180,7 @@ export function GitCloneDialog({
         <DialogHeader>
           <DialogTitle>{tr('从 Git 导入项目')}</DialogTitle>
           <DialogDescription>
-            {tr('在跑 Agent 的服务器上克隆仓库，克隆完成自动登记成项目。')}
+            {tr('在服务端克隆，完成后自动登记成项目。')}
           </DialogDescription>
         </DialogHeader>
 
@@ -246,7 +246,7 @@ export function GitCloneDialog({
             <p className="text-xs leading-5 text-muted-foreground">
               {canceling
                 ? tr('正在取消：停掉 git 并清理已下载的内容…')
-                : tr('正在克隆，大仓库可能要几分钟。可以取消，也可以转到后台让它继续跑。')}
+                : tr('正在克隆，大仓库可能要几分钟，可转到后台继续。')}
             </p>
           )}
         </div>

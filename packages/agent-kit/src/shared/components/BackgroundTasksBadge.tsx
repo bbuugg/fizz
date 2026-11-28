@@ -384,7 +384,7 @@ export function BackgroundTasksBadge({
         编辑器里拽走，用户点开瞄一眼再点回去，光标就没了。Esc 关闭不受影响
         （DismissableLayer 的 Esc 走 document 监听，不依赖内容内是否有焦点）。
       */
-        onOpenAutoFocus={(event) => event.preventDefault()}
+        initialFocus={false}
       >
         <div className="flex items-center gap-2 px-3 py-1.5">
           <span className="min-w-0 flex-1 truncate text-xs font-medium">

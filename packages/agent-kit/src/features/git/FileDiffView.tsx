@@ -44,7 +44,8 @@ export function FileDiffView({
   hunks,
   deleted,
   hideHeader,
-  hideScrollbar = false
+  hideScrollbar = false,
+  wrap = false
 }: {
   path: string
   hunks: DiffHunk[]
@@ -54,6 +55,14 @@ export function FileDiffView({
   hideHeader?: boolean
   /** 消息流里的工具卡用：隐藏横向滚动条（内容仍可横向滚动） */
   hideScrollbar?: boolean
+  /**
+   * 超长行**折行**而不是横向滚动（文件面板 / 提交详情用）。
+   *
+   * 面板本身就窄，长行一多横向滚动条会一直压在底部，而且和「行内不滚动」的列表观感冲突。
+   * 折行后行号与 ± 号固定在左侧，正文在剩余宽度里换行 —— 代码缩进仍由 `whitespace-pre-wrap`
+   * 保留，只是不再需要横向滚。
+   */
+  wrap?: boolean
 }) {
   const t = useT()
   const { adds, dels } = diffStat(hunks)
@@ -84,13 +93,18 @@ export function FileDiffView({
       ) : (
         // 整块 diff 正文进内容白名单（styles.css）：挂在滚动容器上，跨行拖选才连得起来。
         // 行号 / 增删号 / ± 号各自带 `select-none`（utilities 层，压得住这条），不会被一起划中。
-        <div data-selectable className={cn('overflow-x-auto', hideScrollbar && 'no-scrollbar')}>
+        <div
+          data-selectable
+          className={cn(wrap ? 'overflow-x-hidden' : 'overflow-x-auto', hideScrollbar && 'no-scrollbar')}
+        >
           {/*
             min-w-max：让整块内容按**最宽的那一行**撑开（而不是被滚动容器卡在可视宽度）。
             里面的行都是块级盒子，宽度自动铺满这块内容宽 —— 增/删的行底色、片段头
             的灰底才会一直铺到横向滚动的最右侧；否则滚到右边就只剩文字、没有底色。
+
+            折行模式（`wrap`）反过来：宽度交给容器，长行在正文那一格里换行，不再有横向滚动。
           */}
-          <div className="min-w-max">
+          <div className={wrap ? undefined : 'min-w-max'}>
             {hunks.map((h, hi) => {
               // git diff 的每个片段各有起点（@@ -a,b +c,d @@），按它对上行号；
               // 工具卡的片段对比没有起点，就沿用老行为：整段从 1 连续累加
@@ -155,7 +169,8 @@ export function FileDiffView({
                         </span>
                         <span
                           className={cn(
-                            'whitespace-pre px-1',
+                            // 折行模式：正文吃掉行内剩余宽度，长行在格子里换行（行号 / ± 号仍在左侧）
+                            wrap ? 'min-w-0 flex-1 whitespace-pre-wrap break-words px-1' : 'whitespace-pre px-1',
                             l.type === 'del'
                               ? 'text-red-300'
                               : l.type === 'add'

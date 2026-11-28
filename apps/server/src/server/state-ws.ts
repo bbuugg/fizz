@@ -69,7 +69,6 @@ const GLOBAL_KEYS = [
   'apiHistory',
   'scripts',
   'scriptGroups',
-  'notesRoots',
   'workspaces',
   'conversations',
   'skills',
@@ -124,13 +123,6 @@ const GLOBAL_PROVIDERS: Record<GlobalKey, () => Promise<unknown>> = {
   apiHistory: async () => domain.listApiHistory(),
   scripts: async () => domain.listScripts(),
   scriptGroups: async () => domain.listScriptGroups(),
-  /**
-   * 笔记根目录（用户登记进来的任意文件夹）。
-   *
-   * 只是一份**登记清单**：笔记正文在磁盘上，不走快照 —— 所以「在别处改了笔记内容」
-   * 不会推到前端，需要用户在侧栏点刷新、或在编辑器里点重新加载（见 `features/notes`）。
-   */
-  notesRoots: async () => domain.listNotesRoots(),
   workspaces: async () => domain.listWorkspaces(),
   conversations: async () => domain.listConversations(),
   skills: async () => listServerSkills(domain.listWorkspaces()[0]?.path),
@@ -165,7 +157,7 @@ async function buildHealth(): Promise<{
   const skills = await listServerSkills(workspaces[0]?.path)
   return {
     name: 'fizz-server',
-    version: '0.0.36',
+    version: '0.0.37',
     hasModels: models.length > 0,
     workspaceCount: workspaces.length,
     conversationCount: conversations.length,

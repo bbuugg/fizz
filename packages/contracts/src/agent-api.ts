@@ -22,8 +22,6 @@ import type {
   AgentMessagePart,
   AgentStreamEvent,
   AgentWorkspace,
-  CollabSettings,
-  CollabState,
   ContainerProjectConfig,
   SubagentSettings,
   AiApiStyle,
@@ -184,31 +182,6 @@ export const API_ROUTES = {
    */
   fsMkdir: "/api/fs/mkdir",
   /**
-   * 笔记（登记任意目录，管理其中的 Markdown）。
-   *
-   * 请求 / 应答 DTO 见 `./types` 的「笔记」段（`NotesRoot` / `NotesDirResult` /
-   * `NotesWriteInput` 等）—— 这组类型和实体定义放在一处，不在本文件重复一份。
-   *
-   * - `GET /api/notes/roots` —— 列已登记的根目录（应答 `NotesRoot[]`）；
-   * - `POST /api/notes/roots` —— 登记一个目录（body: `NotesRootInput`）；
-   * - `DELETE /api/notes/roots/:id` —— 移除登记（**只摘登记，不动磁盘**）；
-   * - `GET /api/notes/files?rootId=&dir=` —— 列某一层（应答 `NotesDirResult`）；
-   * - `GET /api/notes/file?rootId=&path=` —— 读一篇（应答 `NotesFileResult`）；
-   * - `POST /api/notes/file` —— 写一篇（body: `NotesWriteInput`）；
-   * - `POST /api/notes/file/new` —— 新建空笔记（body: `NotesCreateInput`）；
-   * - `POST /api/notes/file/rename` —— 重命名（body: `NotesRenameInput`）；
-   * - `DELETE /api/notes/file?rootId=&path=` —— 删除。
-   *
-   * ⚠️ 每个文件操作都只在**登记过的根**内部生效（`resolveInside`），且只放行
-   * `.md` / `.markdown`。这**不是**一组通用文件读写接口 —— 别拿它去读工作区之外的东西。
-   */
-  notesRoots: "/api/notes/roots",
-  notesRoot: "/api/notes/roots/:id",
-  notesFiles: "/api/notes/files",
-  notesFile: "/api/notes/file",
-  notesFileNew: "/api/notes/file/new",
-  notesFileRename: "/api/notes/file/rename",
-  /**
    * AI 助手(跨项目的轻量对话,**不进会话树、服务端不落盘**):
    *
    * - POST /api/assistant(body: `AssistantSendInput`)＝ 发一句话,返回 SSE
@@ -334,13 +307,6 @@ export const API_ROUTES = {
    * 队列持久化在服务端：刷新 / 换设备都能续上，排序也跨端一致。
    */
   conversationQueue: "/api/conversations/:id/queue",
-  /**
-   * 多智能体协作：GET 读运行态快照 / PATCH 全量覆盖协作配置
-   * （body: `ConversationCollabInput`，见 `ConversationCollabInput` 注释）。
-   */
-  conversationCollab: "/api/conversations/:id/collab",
-  /** 取消协作会话里某个正在跑的子任务：POST /api/chat/collab/cancel */
-  collabCancel: "/api/chat/collab/cancel",
   /**
    * 会话分叉（「从此签出」）：POST /api/conversations/:id/fork
    *
@@ -746,7 +712,7 @@ export const API_ROUTES = {
    */
   chatConfirm: "/api/chat/confirm",
   /**
-   * 单条命令停止（bash 执行期间）：POST /api/chat/command/stop
+    * 单条命令停止（shell 执行期间）：POST /api/chat/command/stop
    *
    * body `CommandStopInput`（requestId + toolCallId）。与 confirm 同款「另开的
    * 一条 HTTP 请求」：SSE 只有下行，停一条在跑的命令要一条并行上行。命中就杀
@@ -772,15 +738,6 @@ export const API_ROUTES = {
    * 服务端解开 await，把答案作为工具结果回给模型，**同一个回合继续往下跑**。
    */
   chatFollowup: "/api/chat/followup",
-  /**
-   * 客户端工具的执行结果回填（同 confirm / followup 的反向通道约定）。
-   *
-   * 客户端工具（`ChatRequest.clientTools` / `AssistantSendInput.clientTools`）的
-   * **定义随请求携带、执行在客户端**：服务端在流里推 `client-tool-call` 帧 →
-   * 客户端就地执行（如驱动本机终端）→ POST 到这里 → 服务端解开 await，
-   * 把结果作为工具结果回给模型，**同一个回合继续往下跑**。
-   */
-  chatClientToolResult: "/api/chat/client-tool-result",
   /**
    * 上下文压缩的手动触发与预算查询。
    *
@@ -1360,10 +1317,6 @@ export interface ConversationInput {
   id?: string;
   workspaceId: string;
   title?: string;
-  /** 会话形态（缺省 = 普通对话）；`collab` 仅支持内置 Agent 后端 */
-  kind?: "chat" | "collab";
-  /** 协作配置：创建 `kind: 'collab'` 时带上；缺省用 `DEFAULT_COLLAB_SETTINGS` */
-  collab?: CollabSettings;
   backend?: "builtin" | "acp";
   configId?: string;
   /** `builtin` 后端下选中的上游模型（`AiModelConfig.models` 的一项） */
@@ -1910,22 +1863,6 @@ export interface ChatRequest {
    * **两端必须用同一份推导**，否则插话轮次照样会重挂载。
    */
   assistantMessageId?: string;
-  /**
-   * 随本轮请求携带的**客户端工具**（定义在这里，执行在客户端）。
-   *
-   * 用途：让 AI 操作**客户端才够得着**的东西 —— 最典型的是渲染端正在看的终端
-   * （xterm 缓冲 + 它自己那条 WS；服务端没有活会话注册表，够不着）。
-   *
-   * 执行路径与 confirm / followup 同一条反向通道：服务端把调用推成
-   * `client-tool-call` 帧 → 客户端就地执行 → POST /api/chat/client-tool-result
-   * 回填 → 服务端解开 await 继续同一个回合。
-   *
-   * ⚠️ **权限与确认全在客户端**：服务端不做任何闸，直接把调用广播回去；
-   * 客户端按自己的权限设置决定直接执行 / 弹卡 / 拒绝（拒绝文案作为正常工具结果回传）。
-   * ⚠️ 客户端工具与内置 / MCP 工具**同名时内置优先**（服务端跳过并告警），
-   * 避免客户端偷偷顶掉一个受审批保护的内置工具。
-   */
-  clientTools?: ClientToolSpec[];
 }
 
 /**
@@ -1944,29 +1881,6 @@ export function assistantSliceId(
   steerMessageId: string,
 ): string {
   return `${baseId}-s@${steerMessageId}`;
-}
-
-/**
- * 一个客户端工具的**声明**（只有形状，没有实现 —— 实现在发起请求的那个客户端）。
- *
- * `inputSchema` 是 JSON Schema（不是 zod）：它要跨进程传输，服务端只把它转交给模型。
- * 缺省按空对象入参处理（模型仍能调用，只是没有参数）。
- */
-export interface ClientToolSpec {
-  name: string;
-  description: string;
-  /** JSON Schema（`{ type: 'object', properties: {...} }`）；缺省 = 无参数 */
-  inputSchema?: Record<string, unknown>;
-  /**
-   * 这个工具会不会**改动外部状态**（终端里跑命令 / 发按键都算）。
-   *
-   * 声明方是客户端（工具是它自己实现、自己执行的），服务端据此在 `buildClientToolset`
-   * 里套审批闸：`readonly` 直接拒、`confirm` 先问用户、`full` 放行。
-   *
-   * ⚠️ 缺省 = `false`（只读）。只读工具（读终端输出 / 列会话）不该被拦 —— 把「看一眼
-   * 日志」也变成一次审批，用户会很快学会无脑点允许，那才是真的没有闸。
-   */
-  mutating?: boolean;
 }
 
 // ---------- AI 助手 ----------
@@ -2011,25 +1925,18 @@ export interface AssistantSendInput {
    * - `'terminal'`: 绑定 remoteTarget 的 SSH 助手，文件走 SFTP、命令走独立 SSH exec；
    *   不挂项目管理工具，也不操作用户的交互式终端。
    *
-   * 刻意做成**显式字段**而不是「有 clientTools 就当作 terminal」:两组工具的取舍是
-   * 产品语义(面板挂在哪),不该由一个可缺省的数组长度隐式决定。
+   * 显式字段:两组工具的取舍是产品语义(面板挂在哪),不该由可缺省的隐式条件决定。
    */
   scope?: "project" | "terminal";
   /** terminal 作用域必填；每轮开始时固定，不跟随焦点标签变化。 */
   remoteTarget?: AssistantRemoteTarget;
-  /**
-   * 随请求携带的客户端工具(见 `ClientToolSpec`)。
-   *
-   * 旧客户端兼容字段；助手不再装配客户端终端工具。
-   */
-  clientTools?: ClientToolSpec[];
   /**
    * 这一轮助手的**工具权限档**（与主会话 `ChatRequest.permissionMode` 同一套语义）。
    *
    * 缺省 `confirm` —— 助手面板是「一句话就让 agent 动手」的入口，默认裸跑不合适。
    *
    * 落地范围**随 scope 不同**：
-   * - `terminal`：远端 read / glob / grep 只读；write / edit / bash 走 guardWrite；
+    * - `terminal`：远端 read / glob / grep 只读；write / edit / shell 走 guardWrite；
    * - `project`：配置改动走 guardMutation。两者都是 readonly 拒绝、confirm 审批、full 放行。
    */
   permissionMode?: AiPermissionMode;
@@ -2133,7 +2040,6 @@ export type ChatStreamFrameType =
   | "confirm-resolved"
   | "ask-followup"
   | "ask-followup-resolved"
-  | "client-tool-call"
   | "replay-end"
   | "end";
 
@@ -2154,17 +2060,6 @@ export interface ChatStreamFrame {
   followupId?: string;
   /** 发起提问的工具调用 id（渲染端据此把卡片定位到对话流的正确位置） */
   toolCallId?: string;
-  /**
-   * type === 'client-tool-call' 时：这次客户端工具调用的 id（回填时按它对上）。
-   *
-   * 与 confirm / followup 同构：SSE 只有下行，客户端执行完要另开一条 HTTP
-   * 请求（POST /api/chat/client-tool-result）把结果送回来。
-   */
-  clientToolCallId?: string;
-  /** type === 'client-tool-call' 时：要执行的客户端工具名 */
-  clientToolName?: string;
-  /** type === 'client-tool-call' 时：工具入参（原样透传，客户端自己解释） */
-  clientToolInput?: unknown;
   /** type === 'end' 时的结束原因 */
   finishReason?: string;
 }
@@ -2189,31 +2084,9 @@ export interface ConfirmReplyInput {
 }
 
 /**
- * 客户端工具的执行结果回填（POST /api/chat/client-tool-result）。
- *
- * ⚠️ **拒绝也是 `ok: true` + 一段说明文案**（当作正常工具结果回给模型，模型据此
- * 换个做法），不要用 `ok: false` 表达「用户拒绝」—— `ok: false` 是「客户端执行
- * 真的出错了」（通道断了 / 客户端崩了），会变成 tool error。
- */
-export interface ClientToolResultInput {
-  /** 对应 `ChatStreamFrame.clientToolCallId` */
-  callId: string;
-  ok: boolean;
-  /** ok 时：工具结果（字符串最省事；对象会被 JSON 序列化后回给模型） */
-  result?: unknown;
-  /** !ok 时：失败原因（人话） */
-  error?: string;
-}
-
-/** 回填是否命中一条挂起的调用（false = 已超时 / 已取消，幂等空成功） */
-export interface ClientToolResult {
-  resolved: boolean;
-}
-
-/**
  * 单条命令停止（POST /api/chat/command/stop）。
  *
- * `toolCallId` = 这次 bash 的 toolCallId（前端从工具卡 part 上拿）；
+  * `toolCallId` = 这次 shell 的 toolCallId（前端从工具卡 part 上拿）；
  * 它不是 ACP / 整轮的停止，命中就只杀那一条命令的进程树。
  */
 export interface CommandStopInput {
@@ -2384,31 +2257,6 @@ export interface ConversationTargetResult {
  */
 export interface ConversationQueueInput {
   items: QueuedMessage[];
-}
-
-/**
- * 覆盖协作配置：PATCH /api/conversations/:id/collab
- *
- * 全量覆盖（增删改 Agent / 并行与单轮上限都发整份配置）。服务端会 `normalizeCollabSettings`
- * 后落 `config.json`，并把任务 / 消息状态独立留在 `collab.json`。
- */
-export interface ConversationCollabInput {
-  collab: CollabSettings;
-}
-
-/** GET /api/conversations/:id/collab 应答：协作运行态快照 */
-export interface CollabStateResult {
-  collab: CollabState;
-}
-
-/** POST /api/chat/collab/cancel 请求体：取消当前轮里某个子任务 */
-export interface CollabCancelInput {
-  conversationId: string;
-  taskId: string;
-}
-
-export interface CollabCancelResult {
-  ok: boolean;
 }
 
 // ---------- 工作区文件树 / 媒体（桌面 Agent 文件面板在 web 上的对等能力） ----------
@@ -2667,7 +2515,6 @@ export type {
   AgentMessagePart,
   AgentStreamEvent,
   AgentWorkspace,
-  CollabSettings,
   AskFollowupRequest,
   FollowupAnswerItem,
   QueuedMessage,

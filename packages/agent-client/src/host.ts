@@ -185,21 +185,6 @@ export interface StateSocket {
 }
 
 /**
- * 读一个本机文档的结果。
- *
- * 与 `@fizz/agent-host/channels` 的同名类型**结构相同、刻意各写一份**：本包（与
- * `@fizz/agent-kit`）是 web 与 desktop 共用的，绝不能 import `@fizz/agent-host`（那把 Electron 连同
- * `@fizz/server` 拖进浏览器产物）。同一处理见下面的 `RemoteAccessState` / `AppUpdateStatus`。
- *
- * 用可辨识联合而不是「失败时返回 `null`」：界面要区分「读失败」和「内容为空」，
- * 而空文件是合法的一种文档。
- */
-export type LocalFileReadResult = { ok: true; content: string } | { ok: false; error: string }
-
-/** 写回一个本机文档的结果（同上，与 agent-host 的同名类型结构相同） */
-export type LocalFileWriteResult = { ok: true } | { ok: false; error: string }
-
-/**
  * 宿主能力位：把「环境差异」从 `platform` 字符串比较里拎出来。
  *
  * 判断标准是**「这个宿主有没有这个功能」**，不是「它是哪个平台」。加 mobile 端时只要在
@@ -351,39 +336,6 @@ export interface AgentHost {
    * 同步返回：drop 事件处理完 `dataTransfer` 就失效了，等不了异步。拿不到路径回空串。
    */
   getPathForFile?(file: File): string
-  /**
-   * 弹系统文件选择框选一个本机 **Markdown** 文件（返回绝对路径；用户取消返回 null）。
-   *
-   * 与 `pickLocalDirectory` 同一判定：实现了 = 这个宿主有本机文件系统（desktop）。
-   * **web 刻意不实现** —— 浏览器拿不到路径、也写不回去，「保存到源文件位置」在 web 上
-   * 本质上做不到；入口因此直接不出现，而不是摆一个必然失败的按钮。
-   */
-  pickLocalMarkdownFile?(): Promise<string | null>
-  /**
-   * 读 / 写一篇**本机 Markdown 文档**（绝对路径）。
-   *
-   * ⚠️ 这里的路径**只该来自带外信息**（`pickLocalMarkdownFile` 的结果，或系统双击关联
-   * 交来的路径），不是「随便传一个绝对路径就能用」的通用读写口子：主进程持一份**授权集合**，
-   * 没被授权过的路径一律回 `ok: false`（见 `@fizz/agent-host` 的 `local-files`）。
-   * 别把 `readLocalFile` 当成「读任意文件」的能力去用。
-   */
-  readLocalFile?(path: string): Promise<LocalFileReadResult>
-  writeLocalFile?(path: string, content: string): Promise<LocalFileWriteResult>
-  /**
-   * 取走「系统要求用本应用打开」的文件路径（双击 `.md` 关联 / 二实例 / macOS `open-file`）。
-   *
-   * **先存后取**：这些事件可能在渲染端挂上监听**之前**就发完了，只靠订阅会丢。所以启动时
-   * 调一次拉走存量，之后再用 `onExternalFileOpen` 接增量（见 `host.ts` 的实现注释）。
-   */
-  takePendingExternalFiles?(): Promise<string[]>
-  /** 订阅后续的「用本应用打开这个文件」事件；返回退订函数 */
-  onExternalFileOpen?(cb: (path: string) => void): () => void
-  /**
-   * 报告当前「改了还没保存」的标签数量。主进程缓存它，**退出时**据它决定要不要拦。
-   *
-   * 不实现 = 宿主没有退出拦截这回事（web 关页面本来也没什么可拦的语义）。
-   */
-  setDirtyTabCount?(count: number): Promise<void>
 
   // -------------------------------------------------------------------------
   // 传输类能力（都可选；不实现时 `web-host.ts` 回退到浏览器实现）

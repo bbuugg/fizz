@@ -13,7 +13,7 @@
  *
  * - `project`（缺省）：`profiles/project-assistant.ts` —— 项目 / 模型 / MCP / ACP 配置工具
  *   加 `web_fetch`。**一个文件 / 命令类工具都不挂**：助手是跨项目的，没有唯一工作区根，
- *   `read` / `write` / `edit` / `glob` / `grep` / `git_read` / `bash` / `todo` 全部缺席。
+ *   `read` / `write` / `edit` / `glob` / `grep` / `git_read` / `shell` / `todo` 全部缺席。
  *   全局配置工具也只在这一支里（它们改的是网关 / key / 模型清单、MCP server 清单、
  *   ACP agent 清单，不属于任何单个工作区）；
  * - `terminal`：`profiles/terminal-assistant.ts` —— 绑定远端主机的文件工具与独立 SSH exec。
@@ -220,7 +220,7 @@ async function startAssistantTurnReserved(
    * - `terminal`:终端标签内嵌的助手 —— 只有远端文件与命令工具。
    *
    * 为什么互斥而不是「都挂上,用不到的模型自己不用」:工具就是模型的行动能力边界。
-   * 全局面板挂着一堆 run_in_terminal,模型迟早会去试;而那条终端根本不是这个面板
+   * 全局助手挂着一堆远端文件与命令工具,模型迟早会去试;而那条终端根本不是这个面板
    * 的语境(它属于某个终端标签)。反过来,一条绑定终端的会话里出现 create_project,
    * 用户看到的就是「让助手看下日志,它却在建目录」。边界交给装配层,不交给提示词。
    */

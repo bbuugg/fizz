@@ -68,7 +68,7 @@ describe('conversationHookDispatch', () => {
       id: 'confirm-1',
       requestId: 'req-1',
       toolCallId: 'tool-1',
-      toolName: 'bash',
+      toolName: 'shell',
       command: 'rm -rf build',
       intent: '清理构建产物',
       options: [{ optionId: 'allow_once', name: '允许一次', kind: 'allow_once' }]
@@ -81,7 +81,7 @@ describe('conversationHookDispatch', () => {
     expect(dispatch?.payload).toMatchObject({
       confirm: {
         id: 'confirm-1',
-        toolName: 'bash',
+        toolName: 'shell',
         command: 'rm -rf build',
         intent: '清理构建产物',
         options: [{ optionId: 'allow_once', name: '允许一次', kind: 'allow_once' }]

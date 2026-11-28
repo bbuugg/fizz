@@ -34,7 +34,7 @@ describe('turnStepSummary', () => {
       turnStepSummary([
         reasoning(),
         call('read'),
-        call('bash'),
+        call('shell'),
         call(ASK_FOLLOWUP_TOOL)
       ])
     ).toBe('思考 ×1 · 工具调用 ×2 · 提问 ×1')
@@ -49,11 +49,11 @@ describe('turnStepSummary', () => {
 describe('isStepInFlight', () => {
   it('思考 / 还没拿到结果的工具算在跑', () => {
     expect(isStepInFlight(reasoning())).toBe(true)
-    expect(isStepInFlight(call('bash'))).toBe(true)
+    expect(isStepInFlight(call('shell'))).toBe(true)
   })
 
   it('拿到结果、等用户作答、正文都不算在跑', () => {
-    expect(isStepInFlight(call('bash', { output: '退出码 0' }))).toBe(false)
+    expect(isStepInFlight(call('shell', { output: '退出码 0' }))).toBe(false)
     expect(isStepInFlight(call(ASK_FOLLOWUP_TOOL))).toBe(false)
     expect(isStepInFlight({ type: 'text', text: '结论' })).toBe(false)
   })
@@ -68,8 +68,8 @@ describe('turnStepActivity（左格：最后做的那件事）', () => {
   })
 
   it('工具报模型填的 intent（跑没跑完都是同一句话）', () => {
-    const running = call('bash', { input: { command: 'pnpm test', intent: '跑一下单测' } })
-    const done = call('bash', {
+    const running = call('shell', { input: { command: 'pnpm test', intent: '跑一下单测' } })
+    const done = call('shell', {
       input: { command: 'pnpm test', intent: '跑一下单测' },
       output: '退出码 0'
     })
@@ -78,8 +78,8 @@ describe('turnStepActivity（左格：最后做的那件事）', () => {
   })
 
   it('没有 intent 退回工具名（命令类不再是「执行命令中…」）', () => {
-    expect(turnStepActivity([call('bash', { input: { command: 'pnpm test' } })])).toBe(
-      toolCardTitle('bash')
+    expect(turnStepActivity([call('shell', { input: { command: 'pnpm test' } })])).toBe(
+      toolCardTitle('shell')
     )
     expect(turnStepActivity([call('read', { input: { file_path: 'a.ts' }, output: 'ok' })])).toBe(
       toolCardTitle('read')
@@ -103,7 +103,7 @@ describe('turnStepActivity（左格：最后做的那件事）', () => {
       turnStepActivity([
         reasoning(),
         call('read', { output: 'ok' }),
-        call('bash', { input: { command: 'ls', intent: '列一下目录' } })
+        call('shell', { input: { command: 'ls', intent: '列一下目录' } })
       ])
     ).toBe('列一下目录')
   })
@@ -120,7 +120,7 @@ describe('turnStepPreview（右格：这一步的内容）', () => {
   })
 
   it('命令压成一行并带 $ 前缀（与工具卡内容区同一写法）', () => {
-    expect(turnStepPreview([call('bash', { input: { command: 'pnpm test\n  && echo hi' } })])).toEqual({
+    expect(turnStepPreview([call('shell', { input: { command: 'pnpm test\n  && echo hi' } })])).toEqual({
       text: '$ pnpm test && echo hi',
       lineKey: -1
     })
@@ -168,7 +168,7 @@ describe('turnStepPreview（右格：这一步的内容）', () => {
 
   it('入参还在流式生成（inputText 半截 JSON）也要认得', () => {
     expect(
-      turnStepPreview([call('bash', { inputText: '{"command": "pnpm test", "path": ' })])
+      turnStepPreview([call('shell', { inputText: '{"command": "pnpm test", "path": ' })])
     ).toEqual({ text: '$ pnpm test', lineKey: -1 })
   })
 
@@ -180,7 +180,7 @@ describe('turnStepPreview（右格：这一步的内容）', () => {
 
   it('长命令保留完整文本以支持横向滚动查看', () => {
     const command = `node ${'long-file-name'.repeat(30)}.js`
-    expect(turnStepPreview([call('bash', { input: { command } })]))
+    expect(turnStepPreview([call('shell', { input: { command } })]))
       .toEqual({ text: `$ ${command}`, lineKey: -1 })
   })
 })

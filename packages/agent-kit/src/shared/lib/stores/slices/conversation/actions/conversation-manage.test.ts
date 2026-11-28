@@ -160,6 +160,44 @@ describe('newConversation：异步创建与标签焦点隔离', () => {
     expect(state.activeWorkspaceId).toBe(LOCAL_WS.id)
   })
 
+  it('新 ACP 会话的档位准备完成前不切入空消息列表', async () => {
+    const { state, newConversation, setAcpAgentMode } = makeStore(ACP_TARGET)
+    state.draftAcp = { agentId: 'agent-a', mode: 'plan', thought: 'deep' }
+    let resolveMode!: (value: { ok: boolean }) => void
+    setAcpAgentMode.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveMode = resolve
+    }))
+
+    const creating = newConversation(LOCAL_WS.id, undefined, ACP_TARGET)
+    await vi.waitFor(() => expect(setAcpAgentMode).toHaveBeenCalledOnce())
+
+    // 如果此时切入，会先显示空会话；发送准备结束并写入乐观消息后再切入。
+    expect(state.activeConversationId).toBeNull()
+
+    resolveMode({ ok: true })
+    expect(await creating).toBe('conv-acp')
+    expect(state.activeConversationId).toBe('conv-acp')
+  })
+
+  it('档位准备期间用户切走后，迟到的创建结果不抢回焦点', async () => {
+    const { state, newConversation, setAcpAgentMode } = makeStore(ACP_TARGET)
+    state.draftAcp = { agentId: 'agent-a', mode: 'plan', thought: 'deep' }
+    let resolveMode!: (value: { ok: boolean }) => void
+    setAcpAgentMode.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveMode = resolve
+    }))
+
+    const creating = newConversation(LOCAL_WS.id, undefined, ACP_TARGET)
+    await vi.waitFor(() => expect(setAcpAgentMode).toHaveBeenCalledOnce())
+    state.activeConversationId = 'conv-other'
+    state.activeWorkspaceId = REMOTE_WS.id
+
+    resolveMode({ ok: true })
+    expect(await creating).toBe('conv-acp')
+    expect(state.activeConversationId).toBe('conv-other')
+    expect(state.activeWorkspaceId).toBe(REMOTE_WS.id)
+  })
+
   it('等待创建期间切到其他会话，响应不能把焦点和工作区切回新会话', async () => {
     const { state, api, newConversation } = makeStore(ACP_TARGET)
     let resolveCreated!: (created: Awaited<ReturnType<typeof api.createConversation>>) => void

@@ -223,7 +223,7 @@ export function OpenApiImportModal({
         <DialogHeader>
           <DialogTitle>导入 OpenAPI / Swagger</DialogTitle>
           <DialogDescription>
-            支持 OpenAPI 3.x 与 Swagger 2.0；按接口的 tag 建分组，导入后可直接发请求。
+            支持 OpenAPI 3.x / Swagger 2.0。
           </DialogDescription>
         </DialogHeader>
 

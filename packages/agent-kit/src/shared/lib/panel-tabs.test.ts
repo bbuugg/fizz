@@ -20,10 +20,8 @@ import {
   hostTabKey,
   isConversationTabKey,
   isToolTabKey,
-  localFileTabKey,
   localTabKey,
   logsTabKey,
-  noteTabKey,
   pluginTabKey,
   scriptsTabKey,
   sftpTabKey,
@@ -48,9 +46,7 @@ const cases: Array<[name: string, key: string]> = [
   ['应用日志', logsTabKey()],
   ['文件管理', filesTabKey()],
   ['系统监控', sysmonTabKey()],
-  ['定时任务', triggersTabKey()],
-  ['笔记', noteTabKey(1)],
-  ['外部文件', localFileTabKey(1)]
+  ['定时任务', triggersTabKey()]
 ]
 
 describe('标签 key 的分类', () => {
@@ -71,12 +67,5 @@ describe('标签 key 的分类', () => {
       expect(isToolTabKey(id)).toBe(false)
       expect(isConversationTabKey(id)).toBe(false)
     }
-  })
-
-  it('前缀之间不互相误认（抽样：files: 不会吃掉 file:）', () => {
-    // 这两个前缀只差一个 s，一旦比较写成 includes / 去掉冒号就会串
-    expect(isToolTabKey(filesTabKey())).toBe(true)
-    expect(isToolTabKey(localFileTabKey(1))).toBe(true)
-    expect(filesTabKey()).not.toBe(localFileTabKey(1))
   })
 })

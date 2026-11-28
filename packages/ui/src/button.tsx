@@ -1,7 +1,7 @@
 import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
-import { Slot } from "radix-ui"
+import { Button as ButtonPrimitive } from "@base-ui/react/button"
 
 const buttonVariants = cva(
   "inline-flex shrink-0 items-center justify-center gap-2 rounded-md text-sm font-medium whitespace-nowrap transition-all outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
@@ -12,7 +12,11 @@ const buttonVariants = cva(
         destructive:
           "bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60 dark:focus-visible:ring-destructive/40",
         outline:
-          "border bg-background shadow-xs hover:text-accent-foreground/80 dark:border-input dark:bg-input/30 hover:border hover:border-ring",
+          // ⚠️ 与 shadcn 上游不同：上游是「白底 + 一圈细边」（`bg-background border`），
+          // 在浅色主题里就是一片白色描边钮，跟本仓「灰底扁平」的控件语言（Input / Select
+          // 的 `muted` 变体、Segmented 的凹槽）不是一套。
+          // 这里改成同一套灰底：描边留 `border-transparent` 保宽度（聚焦 / 无效态换色不跳 1px）。
+          "border border-transparent bg-muted text-foreground shadow-none hover:bg-muted/80",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-secondary/80",
         ghost:
@@ -37,26 +41,40 @@ const buttonVariants = cva(
   }
 )
 
+/**
+ * 按钮。
+ *
+ * 落到 Base UI 真正的 `Button` 原语（不是手写的 useRender 壳）：`asChild` 由它自己的
+ * `render` 承接，只有渲染成非 `<button>`（比如链接）时才需要 `nativeButton={false}`。
+ */
 function Button({
   className,
   variant = "default",
   size = "default",
   asChild = false,
+  children,
   ...props
 }: React.ComponentProps<"button"> &
   VariantProps<typeof buttonVariants> & {
     asChild?: boolean
   }) {
-  const Comp = asChild ? Slot.Root : "button"
+  const target =
+    asChild && React.isValidElement(children) ? children : undefined
+  const isNativeButton =
+    target === undefined || target.type === "button"
 
   return (
-    <Comp
+    <ButtonPrimitive
       data-slot="button"
       data-variant={variant}
       data-size={size}
       className={cn(buttonVariants({ variant, size, className }))}
+      render={target}
+      nativeButton={isNativeButton}
       {...props}
-    />
+    >
+      {target ? undefined : children}
+    </ButtonPrimitive>
   )
 }
 

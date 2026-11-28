@@ -290,7 +290,7 @@ export function LogsPanel() {
               {state.entries.length === 0 ? '还没有日志' : '没有匹配的日志'}
             </div>
             <div className="text-xs">
-              各功能模块在运行中产生的业务事件都会记录在这里
+              业务事件会记录在这里
             </div>
           </div>
         ) : (

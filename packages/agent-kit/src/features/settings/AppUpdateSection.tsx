@@ -90,8 +90,8 @@ export function AppUpdateSection() {
           </div>
           <p className="text-xs leading-4 text-muted-foreground">
             {notifyEnabled
-              ? tr('有新版本时，状态栏会出现一条指示、应用内也会弹一条提示。')
-              : tr('已关闭：状态栏与应用内都不再提醒，有新版本只在这里显示。')}
+              ? tr('有新版本时会提醒你')
+              : tr('关闭后只在设置里显示')}
           </p>
 
           <div className="flex flex-wrap items-center gap-3">

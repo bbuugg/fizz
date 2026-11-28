@@ -171,7 +171,7 @@ export function ScriptEditDialog({
         <DialogHeader>
           <DialogTitle>{editing ? '编辑脚本' : '新建脚本'}</DialogTitle>
           <DialogDescription>
-            脚本是一段可复用的命令，运行时挑任意一台主机，内容会逐行写进那条终端。
+            运行时选主机，逐行写进该终端。
           </DialogDescription>
         </DialogHeader>
 

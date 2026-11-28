@@ -87,6 +87,12 @@ const CELL_SELECT_TRIGGER =
   'data-[size=sm]:h-7 w-full rounded-none border-0 bg-transparent px-1 text-xs shadow-none dark:bg-transparent dark:hover:bg-transparent'
 
 /**
+ * 「类型」列的选项标题（`items` 与选项共用同一份，避免两处字面量漂移）。
+ * Base UI 不给 `items` 时触发器里显示的是原始 value（`text` / `file`）。
+ */
+const KIND_LABELS: Record<string, string> = { text: '文本', file: '文件' }
+
+/**
  * 「名称」列宽：手机上收窄（`w-[8rem]`，桌面 `w-[12.5rem]`）。
  *
  * 桌面给的 200px 在手机端太奢侈 —— 请求头的头名本身大多不长（`Content-Type`、`Accept`），
@@ -201,8 +207,10 @@ function CellSuggestInput({
       <PopoverContent
         align="start"
         sideOffset={2}
-        onOpenAutoFocus={(e) => e.preventDefault()}
-        onCloseAutoFocus={(e) => e.preventDefault()}
+        // 列表弹出 / 收起都不动焦点：焦点留在正在输入的那个单元格里（等价于 Radix 的
+        // `onOpenAutoFocus` / `onCloseAutoFocus` 里各 preventDefault 一次）。
+        initialFocus={false}
+        finalFocus={false}
         style={{ width: width ? `${width}px` : undefined }}
         className="min-w-40 gap-0 rounded-md p-0.5"
       >
@@ -332,13 +340,17 @@ export function KeyValueTable<T extends KeyValueRow>({
                     {kind ? (
                       /* 高度必须写成 `data-[size=sm]:h-7`：`SelectTrigger` 自带的那条同变体规则
                          特异性更高，光写 `h-7` 会被它压掉（`cn` 只在**同变体同组**时才去重）。 */
-                      <Select value={kind.value} onValueChange={kind.onChange}>
+                      <Select
+                        value={kind.value}
+                        items={KIND_LABELS}
+                        onValueChange={kind.onChange}
+                      >
                         <SelectTrigger size="sm" className={CELL_SELECT_TRIGGER} aria-label="字段类型">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="text">文本</SelectItem>
-                          <SelectItem value="file">文件</SelectItem>
+                          <SelectItem value="text">{KIND_LABELS.text}</SelectItem>
+                          <SelectItem value="file">{KIND_LABELS.file}</SelectItem>
                         </SelectContent>
                       </Select>
                     ) : null}

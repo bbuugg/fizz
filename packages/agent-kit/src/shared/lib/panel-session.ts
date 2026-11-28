@@ -112,23 +112,32 @@ export function isTabMounted(panel: PanelSession, key: PanelTabKey): boolean {
   if (isTerminalTabKey(key)) return panel.terminals.some((t) => terminalTabKey(t.id) === key)
   if (key === 'browser') return panel.browserMounted
   if (key === 'preview') return panel.previewMounted
-  return key === 'files' ? panel.filesMounted : panel.gitMounted
+  // 旧现场的 git 标签映射到同一颗 FilesPanel 标签；Git 视图仍要求 gitMounted。
+  if (key === 'files') return panel.filesMounted || panel.gitMounted
+  if (key === 'git') return panel.gitMounted
+  return false
 }
 
 /** 挂出 files / git / browser / preview（已挂出时原样返回，避免无谓的新对象） */
 export function withMounted(panel: PanelSession, key: SideTabKey): PanelSession {
   if (key === 'browser') return panel.browserMounted ? panel : { ...panel, browserMounted: true }
   if (key === 'preview') return panel.previewMounted ? panel : { ...panel, previewMounted: true }
-  if (key === 'files') return panel.filesMounted ? panel : { ...panel, filesMounted: true }
-  return panel.gitMounted ? panel : { ...panel, gitMounted: true }
+  if (key === 'files') {
+    return panel.filesMounted ? panel : { ...panel, filesMounted: true }
+  }
+  // Git 视图嵌在 FilesPanel 内：挂出 Git 时同时挂出稳定的 files 外壳。
+  return panel.filesMounted && panel.gitMounted
+    ? panel
+    : { ...panel, filesMounted: true, gitMounted: true }
 }
 
 /** 摘掉 files / git / browser / preview（内容随之卸载） */
 export function withoutMounted(panel: PanelSession, key: SideTabKey): PanelSession {
   if (key === 'browser') return panel.browserMounted ? { ...panel, browserMounted: false } : panel
   if (key === 'preview') return panel.previewMounted ? { ...panel, previewMounted: false } : panel
-  if (key === 'files') return panel.filesMounted ? { ...panel, filesMounted: false } : panel
-  return panel.gitMounted ? { ...panel, gitMounted: false } : panel
+  // 统一面板关闭时两个兼容标记一起清理，避免留下另一种模式的孤儿状态。
+  if (!panel.filesMounted && !panel.gitMounted) return panel
+  return { ...panel, filesMounted: false, gitMounted: false }
 }
 
 /** 改「面板正在看哪个标签」，顺带记住刚离开的那个（收起后展开能回到它） */
@@ -144,15 +153,35 @@ export function withSideTab(panel: PanelSession, next: PanelTabKey | null): Pane
  */
 export function focusTab(panel: PanelSession, key: PanelTabKey): PanelSession {
   let next = isTerminalTabKey(key) ? panel : withMounted(panel, key as SideTabKey)
-  if (!next.tabOrder.includes(key)) next = { ...next, tabOrder: [...next.tabOrder, key] }
+  // files / git 是同一颗可见标签。sideTab 仍保留模式（files 或 git），tabOrder 则只记实际标签。
+  const orderKey = key === 'git' ? 'files' : key
+  const tabOrder = normalizePanelTabOrder(next.tabOrder)
+  if (!tabOrder.includes(orderKey)) tabOrder.push(orderKey)
+  if (tabOrder.some((item, index) => item !== next.tabOrder[index]) || tabOrder.length !== next.tabOrder.length) {
+    next = { ...next, tabOrder }
+  }
   return withSideTab(next, key)
+}
+
+/** 把旧版独立 Git 标签归一到稳定的 files 槽位，并保留它原先的位置。 */
+function normalizePanelTabOrder(keys: PanelTabKey[]): PanelTabKey[] {
+  const seen = new Set<string>()
+  const normalized: PanelTabKey[] = []
+  for (const key of keys) {
+    const canonical = key === 'git' ? 'files' : key
+    if (seen.has(canonical)) continue
+    seen.add(canonical)
+    normalized.push(canonical)
+  }
+  return normalized
 }
 
 /** 标签条的顺序：`tabOrder` 里记过的按记录排，没记到的按固定顺序补在后面 */
 export function orderTabs(panel: PanelSession, tabs: PanelTabKey[]): PanelTabKey[] {
+  const order = normalizePanelTabOrder(panel.tabOrder)
   return [...tabs].sort((a, b) => {
-    const ia = panel.tabOrder.indexOf(a)
-    const ib = panel.tabOrder.indexOf(b)
+    const ia = order.indexOf(a === 'git' ? 'files' : a)
+    const ib = order.indexOf(b === 'git' ? 'files' : b)
     return (ia < 0 ? Number.MAX_SAFE_INTEGER : ia) - (ib < 0 ? Number.MAX_SAFE_INTEGER : ib)
   })
 }
@@ -163,8 +192,7 @@ export function aliveTabs(panel: PanelSession): PanelTabKey[] {
     ...panel.terminals.map((t) => terminalTabKey(t.id)),
     ...(panel.browserMounted && panel.workspaceId ? ['browser'] : []),
     ...(panel.previewMounted && panel.workspaceId ? ['preview'] : []),
-    ...(panel.filesMounted && panel.workspaceId ? ['files'] : []),
-    ...(panel.gitMounted && panel.workspaceId ? ['git'] : [])
+    ...((panel.filesMounted || panel.gitMounted) && panel.workspaceId ? ['files'] : [])
   ])
 }
 

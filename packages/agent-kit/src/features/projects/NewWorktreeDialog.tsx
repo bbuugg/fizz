@@ -118,7 +118,7 @@ export function NewWorktreeDialog({
         <DialogHeader>
           <DialogTitle>{tr('新建 worktree')}</DialogTitle>
           <DialogDescription>
-            {tr('在 {name} 下按分支拉一个独立工作树，创建后会自动登记成一个新项目。', {
+            {tr('在 {name} 下新建工作树，自动登记成项目。', {
               name: workspace?.name ?? tr('当前项目')
             })}
           </DialogDescription>
@@ -164,6 +164,10 @@ export function NewWorktreeDialog({
             </Label>
             <Select
               value={baseBranch || HEAD_SENTINEL}
+              items={{
+                [HEAD_SENTINEL]: tr('仓库当前分支（HEAD）'),
+                ...Object.fromEntries(branches.map((branch) => [branch, branch]))
+              }}
               onValueChange={(v) => setBaseBranch(v === HEAD_SENTINEL ? '' : v)}
             >
               <SelectTrigger variant="muted">

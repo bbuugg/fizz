@@ -1,7 +1,7 @@
 import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
-import { Slot } from "radix-ui"
+import { usePolymorphic } from "./polymorphic"
 
 import { Button } from "./button"
 
@@ -162,20 +162,17 @@ function AttachmentTrigger({
   className,
   asChild = false,
   type,
+  children,
   ...props
 }: React.ComponentProps<"button"> & {
   asChild?: boolean
 }) {
-  const Comp = asChild ? Slot.Root : "button"
-
-  return (
-    <Comp
-      data-slot="attachment-trigger"
-      type={asChild ? undefined : (type ?? "button")}
-      className={cn("absolute inset-0 z-10 outline-none", className)}
-      {...props}
-    />
-  )
+  return usePolymorphic("button", asChild, children, {
+    "data-slot": "attachment-trigger",
+    type: asChild ? undefined : (type ?? "button"),
+    className: cn("absolute inset-0 z-10 outline-none", className),
+    ...props,
+  })
 }
 
 function AttachmentGroup({ className, ...props }: React.ComponentProps<"div">) {

@@ -2,7 +2,7 @@
 
 ## 结论：Agent 执行命令时 sandbox 能挡住
 
-**是的，可以挡住。** Agent 通过 bash/pwsh 等工具执行命令时，命令不是裸跑的，而是先被 sandbox 包一层 wrapper 再执行。
+**是的，可以挡住。** Agent 通过 `shell` 工具执行命令时，命令不是裸跑的，而是先被 sandbox 包一层 wrapper 再执行。
 
 ## 执行流程
 

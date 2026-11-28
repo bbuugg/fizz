@@ -4,10 +4,10 @@
  * ## 一条铁律：标签 key 是**身份**，不是**地址**
  *
  * key 只回答「这是哪一颗标签」，在标签的整个生命周期里**不变**。它指向什么（哪条会话、
- * 哪篇笔记、哪个插件面）一律记在各自的登记表里，**绝不编进 key**：
+ * 哪个插件面）一律记在各自的登记表里，**绝不编进 key**：
  * - 对话标签：`chat:<n>`，指向哪条会话记在 `panel-store` 的指向表（草稿发出第一条消息后
  *   指向从「没有」变成那条会话，**key 不动**）；
- * - 笔记 / 外部文件 / 插件 / 本机终端：`note:<n>` 这类不透明 key，归属在 `tool-tabs.ts`。
+ * - 外部文件 / 插件 / 本机终端：不透明 key（`plugin:<n>` / `local:<n>`），归属在 `tool-tabs.ts`。
  *
  * 为什么要这条铁律：早先对话标签的 key **就是**会话 id，「新对话」草稿是常量 `__new__`。
  * 草稿里发出第一条消息，key 就得从 `__new__` 改写成会话 id —— 而按 key 索引的东西太多了
@@ -87,47 +87,6 @@ const SFTP_TAB_PREFIX = 'sftp:'
  * **不编进 key** —— 否则同一台主机开两次会得到两条标签。
  */
 const TUNNEL_TAB_PREFIX = 'tunnel:'
-
-/**
- * 笔记标签：`note:<n>`（n 由 `tool-tabs.ts` 的自增源给）。
- *
- * ⚠️ **别把「根 id + 相对路径」编进 key**：相对路径是 `a/b.md` 这种**分层**结构，还可能是
- * Windows 路径；而且笔记可以被**重命名**，编进 key 后重命名就得同步改标签 key（状态机不认
- * 「改 key」这件事）。与 `plugin:<n>` 同一取舍：key 只当**不透明 id**，真正的归属记在
- * 登记表里（`ToolTab` 的 `noteRootId` / `notePath`）。
- */
-const NOTE_TAB_PREFIX = 'note:'
-
-/** 第 n 条笔记标签的 key（`n` 由 `tool-tabs.ts` 的自增源给） */
-export function noteTabKey(seq: number): string {
-  return `${NOTE_TAB_PREFIX}${seq}`
-}
-
-export function isNoteTabKey(key: string): boolean {
-  return key.startsWith(NOTE_TAB_PREFIX)
-}
-
-/**
- * 外部文件标签：`file:<n>`（n 由 `tool-tabs.ts` 的自增源给）。
- *
- * 「外部文件」= 用本应用打开的**本机绝对路径** Markdown 文档（双击系统里的 `.md` 进来）。
- * 与「笔记」是两条完全独立的数据通路（那条走登记根 + notes API）。
- *
- * ⚠️ **绝对路径绝不能编进 key**：Windows 路径自带 `:` 和 `\`（`C:\notes\a.md`），
- * 按 `:` 分段必然切错；而且同一个文件要能被「按路径去重」地复用已有标签。
- * 与 `plugin:<n>` / `note:<n>` 同一取舍：key 只当**不透明 id**，
- * 真正的归属记在登记表里（`ToolTab.externalPath`）。
- */
-const LOCAL_FILE_TAB_PREFIX = 'file:'
-
-/** 第 n 条外部文件标签的 key */
-export function localFileTabKey(seq: number): string {
-  return `${LOCAL_FILE_TAB_PREFIX}${seq}`
-}
-
-export function isLocalFileTabKey(key: string): boolean {
-  return key.startsWith(LOCAL_FILE_TAB_PREFIX)
-}
 
 /**
  * 文件管理器标签：`files:list`（**全局单例**）。
@@ -343,7 +302,7 @@ export function isSettingsTabKey(key: string): boolean {
 
 /**
  * 是不是工具标签（主机 / 本机终端 / 接口请求 / 脚本管理面板 / 插件界面 / SFTP 文件管理 /
- * 隧道 / 应用日志 / 文件管理 / 系统监控 / 定时任务 / 笔记 / 外部文件 / 设置面板）—— 它们
+ * 隧道 / 应用日志 / 文件管理 / 系统监控 / 定时任务 / 设置面板）—— 它们
  * 不参与「当前会话」的同步。
  *
  * 容器型项目的预览**不在此列**：它是会话 SidePanel 的一条标签（`SideTabKey` 的
@@ -368,8 +327,6 @@ export function isToolTabKey(key: string): boolean {
     isFilesTabKey(key) ||
     isSysmonTabKey(key) ||
     isTriggersTabKey(key) ||
-    isNoteTabKey(key) ||
-    isLocalFileTabKey(key) ||
     isSettingsTabKey(key)
   )
 }

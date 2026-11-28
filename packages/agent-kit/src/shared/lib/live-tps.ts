@@ -15,7 +15,7 @@
  * 会把几十秒空窗算进分母，实时数字直接掉到个位数，与结束后的真值差一个量级。
  *
  * 「哪些事件算模型在吐字」也与服务端的 `isOutputDelta` 逐条对齐：`tool-result` /
- * `tool-output-delta` / `file-part` / `subagent-*` / `collab-*` 都不算（那是工具或子
+ * `tool-output-delta` / `file-part` / `subagent-*` 都不算（那是工具或子
  * agent 在产出，不是本轮主模型的速度），空串增量也不算。
  *
  * ## 分子只算「落在窗口里的那部分」（别再把一次性 burst 当速度）

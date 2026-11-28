@@ -32,7 +32,7 @@ export function ConvertAcpDialog({
       open={open}
       onOpenChange={onOpenChange}
       title="转为内置 Agent 会话"
-      description="把这条 ACP 会话复制成一条内置 Agent 会话：历史到这里为止，之后由内置 Agent 接管；原 ACP 会话保持不动。"
+      description="转为内置 Agent 接管，原 ACP 会话保持不动。"
       confirmLabel="转换"
       busyLabel="转换中…"
       onSubmit={async (target) => {

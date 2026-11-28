@@ -324,7 +324,7 @@ async function fetchByHttp(
  * 落在工作区内 read 才读得回来（数据目录在 resolveInside 边界外，见 output-log.ts）。
  */
 /**
- * 单条抓取的停止钩子（与 `bash` 的 `onCommandStart/End` 同一形状）：
+ * 单条抓取的停止钩子（与 `shell` 的 `onCommandStart/End` 同一形状）：
  * 登记 `toolCallId → 中止这一条的函数`，宿主据此让「停止」只停这一次抓取，整轮继续。
  */
 export interface WebFetchStopHooks {
@@ -440,7 +440,7 @@ export function buildWebFetchTool(
           }
           // 先剥掉 playwright 附带的终端样式（Call log 是灰字），再做超时判定：
           // 判据看的是错误码与 timeout 字样，样式字节对正则没影响，但多余的 ESC 会让
-          // 模型看到 `[2m` 这种残渣（与 bash 同一个问题，见 ansi.ts）
+          // 模型看到 `[2m` 这种残渣（与 shell 同一个问题，见 ansi.ts）
           const msg = pageErrorMessage(err)
           // 用户主动点了「停止」（单条或整轮）：别当成抓取失败，模型据此直接收场、不要重试
           if (signal.aborted) {

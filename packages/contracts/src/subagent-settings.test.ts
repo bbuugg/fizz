@@ -121,10 +121,10 @@ describe('normalizeSubagentSettings · 自定义子智能体', () => {
     name: '文档核对',
     description: '核对文档与代码是否一致',
     instructions: '先读 README',
-    tools: ['read', 'bash', 'grep', 'read']
+    tools: ['read', 'shell', 'grep', 'read']
   }
 
-  it('保留合法定义，工具取交集并去重（越界的 write / bash 被丢掉）', () => {
+  it('保留合法定义，工具取交集并去重（越界的 write / shell 被丢掉）', () => {
     const settings = normalizeSubagentSettings({ definitions: [valid] })
     expect(settings.definitions).toHaveLength(1)
     expect(settings.definitions?.[0]).toMatchObject({

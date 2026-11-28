@@ -35,9 +35,6 @@ export async function POST(request: Request) {
    */
   const input = await parseJsonBody<ConversationCreateBody>(request)
   if (!input) return jsonError(400, '请求体不是合法 JSON')
-  if (input.kind === 'collab' && input.backend === 'acp') {
-    return jsonError(400, '多智能体协作会话只支持内置 Agent，不支持 ACP 后端')
-  }
 
   /**
    * 归属解析：

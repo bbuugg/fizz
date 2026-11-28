@@ -10,7 +10,7 @@
  *
  * 与 `tool-tabs.ts` 同一套机制：内存里的 Map + 自增版本号。表被就地改了而 `panel-store`
  * 没有任何变化（`openTab` 对已存在的 key 不 emit），不靠版本号订阅，标签条会一直停在
- * 旧图标上（与 `retargetNoteTab` 完全同一个坑）。
+ * 旧图标上。
  *
  * ## 与内建状态的分工
  *

@@ -139,7 +139,7 @@ export function useWorkspaceAddActions(
    */
   const { pick, node } = useDirectoryPicker(
     app,
-    t('这里列的是服务端上的目录（Agent 就跑在那台机器上）。选中的目录会登记为项目。')
+    t('选中的目录会登记为项目。')
   )
 
   const addDir = (path: string): void => {

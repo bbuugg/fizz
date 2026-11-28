@@ -126,8 +126,6 @@ export function createConfirmGate(input: {
       toolName: req.toolName,
       command: req.command,
       ...(req.intent ? { intent: req.intent } : {}),
-      ...(req.agentId ? { agentId: req.agentId } : {}),
-      ...(req.agentName ? { agentName: req.agentName } : {}),
       // 沙箱提权：卡片要显示「放宽到哪一档 + 模型给的理由」
       ...(req.sandboxRequestedMode ? { sandboxRequestedMode: req.sandboxRequestedMode } : {}),
       ...(req.sandboxJustification ? { sandboxJustification: req.sandboxJustification } : {}),
@@ -223,7 +221,7 @@ export function createConfirmGate(input: {
     }
     /*
      * 记忆键 = **这行命令本身**(审批卡上显示的原文,trim 后精确匹配)。
-     * 曾经按工具名记:点一次「始终允许」等于放行该工具的一切调用(bash
+     * 曾经按工具名记:点一次「始终允许」等于放行该工具的一切调用(shell
      * 换成 rm -rf 也不再问),而且没有任何入口能查看 / 收回 —— 用户就是被这个烫到的。
      */
     const command = req.command.trim()

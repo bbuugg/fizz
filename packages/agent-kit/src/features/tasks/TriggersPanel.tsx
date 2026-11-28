@@ -724,10 +724,10 @@ export function TriggersPanel() {
 
               <p className="flex items-start gap-1.5 rounded-md border border-dashed px-3 py-2 text-xs leading-5 text-muted-foreground">
                 <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-                {t('跑出来的会话与手动新建的会话完全一样，在侧栏里能看到。')}
+                {t('跑出来的会话与手动新建的一样。')}
                 {selected.workspaceId
-                  ? t('每次触发都落在上面那个工作区里。')
-                  : t('每次触发都会新建一个临时工作区（空目录、不进项目列表）。')}
+                  ? t('每次触发都落在上面那个工作区。')
+                  : t('每次触发新建临时工作区（不进项目列表）。')}
               </p>
             </div>
           )}

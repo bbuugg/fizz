@@ -144,7 +144,6 @@ describe('assistant slice · SSH 目标', () => {
     await slice.sendAssistant('第三句', 'terminal')
     expect(streamAssistant.mock.calls[2][0].remoteTarget).toEqual({ hostId: 'h2', cwd: '/etc' })
     expect(read(id).remoteTarget?.hostId).toBe('h2')
-    expect(streamAssistant.mock.calls[0][0]).not.toHaveProperty('clientTools')
   })
 
   it('没有 SSH 目标时不发送、不追加消息', async () => {

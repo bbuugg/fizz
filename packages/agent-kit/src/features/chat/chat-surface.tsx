@@ -27,7 +27,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
 import {
-  Bot,
   ChevronLeft,
   CircleHelp,
   Loader2,
@@ -61,6 +60,7 @@ import { ContextCompactionCard } from '@fizz/agent-kit/features/chat/ContextComp
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { useConversationActivity } from '@fizz/agent-kit/shared/lib/conversation-activity'
 import { Composer } from '@fizz/agent-kit/features/chat/composer'
+import { MessageFoldStateProvider } from '@fizz/agent-kit/features/chat/message-fold-state'
 import {
   MessageActionRow,
   MessageParts,
@@ -128,8 +128,10 @@ export interface MessageListProps {
    * 只写 `sm:px-6` 的话手机上消息会**左右贴边**（用户报过「左边没有边距」）。
    */
   contentClassName?: string
-  /** 消息流**之前**的内容（如连接中断 sticky 条） */
+  /** 消息流**之前**的内容；临时状态提示请用 `overlay`，避免挤动消息。 */
   header?: ReactNode
+  /** 消息区顶部的悬浮提示；与删除 / 恢复进度纵向排列，不参与消息流布局。 */
+  overlay?: ReactNode
   /**
    * 历史装载失败：给了就整块替换消息流（调用方传自己的「错误 + 重试」组件）。
    * ⚠️ 必须与 `loading` 互斥判断：装载窗口里先上骨架，别闪错误。
@@ -207,11 +209,6 @@ export interface MessageListProps {
    * 不传 = 只显示提示、不给按钮（容器工作台没有「发消息」的语义）。
    */
   onContinueMessage?: (message: AgentChatMessage) => void
-  /**
-   * 多智能体协作的**实时回复**（还没落盘的那些）：渲染在消息流末尾，和正式消息长得一样，
-   * 只是不挂操作行。本轮结束（`streaming` 落回 false）后由权威历史替换掉。
-   */
-  liveMessages?: AgentChatMessage[]
 }
 
 /** `MessageList` 里 `renderActions` 的参数 */
@@ -233,13 +230,13 @@ export function MessageList({
   onStopTool,
   onStopTurn,
   messages,
-  liveMessages,
   conversationId,
   streaming,
   replaying = false,
   resetKey,
   contentClassName = 'mx-auto w-full px-2 py-1 sm:px-6 max-w-3xl',
   header,
+  overlay,
   error,
   loading = false,
   deleting = false,
@@ -266,6 +263,14 @@ export function MessageList({
   const recoveryPhase = useAgentStore((s) => conversationId ? s.slices[conversationId]?.recoveryPhase ?? null : null)
   const recoveryError = useAgentStore((s) => conversationId ? s.slices[conversationId]?.error ?? null : null)
   const reloading = !!recoveryPhase
+  // 删除后的回拉可能同时处于恢复阶段，只显示一条最直接的进度，避免浮层重复。
+  const progressText = deleting
+    ? tr('正在删除消息…')
+    : reloading
+      ? tr(recoveryStatusText(recoveryPhase))
+      : loading
+        ? tr('正在同步聊天记录…')
+        : null
   const reloadPending = useRef(false)
   const refreshConversation = useCallback(
     async (silent = false) => {
@@ -314,38 +319,18 @@ export function MessageList({
     setVisibleCount(INITIAL_VISIBLE_MESSAGES)
   }, [conversationId])
 
-  /**
-   * 协作轮里主对话没有「唯一一条助手消息」：多个 Agent 同时流式输出时先挂在末尾，
-   * 结束（`streaming` 落回 false / 权威历史刷新）后由落盘消息替换。
-   * 同时把那条空的主占位隐藏掉（它不会有内容，露出来会显示「本轮没有返回内容」）。
-   */
-  const live = streaming && liveMessages?.length ? liveMessages : []
-  /**
-   * 协作轮里主对话那条空占位要隐藏（它不会有内容，露出来会显示「本轮没有返回内容」），
-   * 这层处理要在窗口裁剪**之前**做，否则被裁到窗口外的占位会让下标算错。
-   */
-  const baseMessages =
-    live.length > 0
-      ? messages.filter(
-          (message, index) =>
-            !(
-              index === messages.length - 1 &&
-              message.role === 'assistant' &&
-              message.parts.length === 0
-            )
-        )
-      : messages
+  const baseMessages = messages
   /** 还没渲染出来的更早消息条数（0 = 全部已渲染） */
   const hiddenCount = Math.max(0, baseMessages.length - visibleCount)
   const visibleMessages = hiddenCount > 0 ? baseMessages.slice(hiddenCount) : baseMessages
-  const displayMessages = [...visibleMessages, ...live]
+  const displayMessages = visibleMessages
   /** 渲染条数（用于「流式末条」的判断） */
   const total = displayMessages.length
   /**
    * 完整消息条数（含被窗口裁掉的）。`renderActions` / `MessageParts` 的 `index` 与 `total`
    * 必须是**完整列表**口径 —— 删除「本条及其后」的条数靠 `total - index` 算，按窗口算会少删。
    */
-  const fullTotal = baseMessages.length + live.length
+  const fullTotal = baseMessages.length
 
   /**
    * 空态自动补拉：本屏已经绑了会话、又没在装载 / 生成 / 重放 / 删除 / 报错，却一条消息
@@ -451,7 +436,7 @@ export function MessageList({
     // 不是视口宽度 —— 侧栏、右侧分栏都会挤面板，而视口可能还很宽）。
     <div
       ref={panelRef}
-      aria-busy={deleting || undefined}
+      aria-busy={deleting || reloading || loading || undefined}
       className="@container relative flex min-h-0 flex-1 flex-col"
     >
       <Conversation
@@ -490,12 +475,6 @@ export function MessageList({
             deleting && 'pointer-events-none opacity-50 transition-opacity'
           )}
         >
-          {reloading && (
-            <div role="status" aria-live="polite" className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
-              {tr(recoveryStatusText(recoveryPhase))}
-            </div>
-          )}
           {!reloading && recoveryError && total > 0 && (
             <div role="alert" className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
               <span className="min-w-0 break-words">{tr('重新加载会话失败：{error}', { error: recoveryError })}</span>
@@ -545,12 +524,8 @@ export function MessageList({
                     onClick={() => void refreshConversation()}
                     className="inline-flex items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground disabled:cursor-default disabled:opacity-60"
                   >
-                    {reloading ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : (
-                      <RotateCw className="size-3.5" />
-                    )}
-                    {reloading ? tr(recoveryStatusText(recoveryPhase)) : tr('重新加载会话')}
+                    <RotateCw className="size-3.5" />
+                    {tr('重新加载会话')}
                   </button>
                 </div>
               ) : null}
@@ -577,13 +552,19 @@ export function MessageList({
                 const isEditing = !!editingMessageId && message.id === editingMessageId
                 const messageCompaction =
                   compaction && compaction.messageId === message.id ? compaction : null
+                /**
+                 * 助手消息的服务端 id / createdAt 可能在收尾回填时变化；本轮前面的 user id
+                 * 是发送请求时就确定并由服务端复用的，所以用它作为折叠状态的逻辑作用域。
+                 * 窗口从助手消息开始时才退回 createdAt，避免把相邻轮次混在一起。
+                 */
+                const previousMessage = displayMessages[index - 1]
+                const foldStatePrefix =
+                  message.role === 'assistant'
+                    ? `turn:${previousMessage?.role === 'user' ? previousMessage.id : message.createdAt}`
+                    : undefined
                 /** 状态槽的三种落法见 `waitingIndicatorSlot`（压缩中不挂 / 真状态行 / 隐形占位） */
                 const waitingSlot = waitingIndicatorSlot(message.parts, messageCompaction)
-                // 实时回复还没落盘，不挂编辑 / 删除 / 签出这些需要稳定 id 的操作
-                const isLive = message.id.startsWith('collab-live-')
-                const actions = isLive
-                  ? null
-                  : (renderActions?.({ message, index: fullIndex, total: fullTotal }) ?? null)
+                const actions = renderActions?.({ message, index: fullIndex, total: fullTotal }) ?? null
                 /*
                  * 流式末条**不渲染操作行**（连占位也不）—— 用户明确要求「不要占位」。
                  *
@@ -619,6 +600,7 @@ export function MessageList({
                     // 桌面窄分栏会被判成「宽」（95% 叠上通道）、手机反而被多让一次，两头都不对。
                     className={cn(
                       'mb-6 scroll-mt-6',
+                      message.animateOnSend && 'motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 motion-safe:duration-200',
                       outline && '@max-[820px]:max-w-full @min-[820px]:max-w-[95%]'
                     )}
                   >
@@ -632,13 +614,6 @@ export function MessageList({
                         isEditing && 'opacity-60 ring-2 ring-ring/70 ring-offset-2 ring-offset-background'
                       )}
                     >
-                      {/* 协作会话的消息上标注是哪个 Agent 说的（普通会话不带 agentName） */}
-                      {message.role === 'assistant' && message.agentName ? (
-                        <div className="-mt-1 mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <Bot className="size-3.5" />
-                          <span className="font-medium text-foreground">{message.agentName}</span>
-                        </div>
-                      ) : null}
                       {/*
                         零 part 的助手消息有两种，必须分开：
                         - **正在跑**：还没吐第一个 part，显示「正在思考…」（由下面那个状态行槽渲染）；
@@ -657,6 +632,7 @@ export function MessageList({
                           onStopTool={onStopTool}
                           onStopTurn={onStopTurn}
                           message={message}
+                          foldStatePrefix={foldStatePrefix}
                           index={fullIndex}
                           total={fullTotal}
                           streaming={streaming}
@@ -729,18 +705,21 @@ export function MessageList({
         <ConversationScrollButton />
       </Conversation>
 
-      {/* 删除进度：悬浮在消息区顶部中央。**绝对定位**而不是塞进消息流 —— 插进流里会让
-          内容高度跳一下、还可能把用户的阅读位置顶走（正在被删的恰恰是中间那段历史） */}
-      {deleting && (
-        <div className="pointer-events-none absolute inset-x-0 top-2 z-20 flex justify-center px-2">
-          <div
-            role="status"
-            aria-live="polite"
-            className="flex items-center gap-2 rounded-full border border-border/60 bg-background/95 px-3 py-1 text-xs text-muted-foreground shadow-sm"
-          >
-            <Loader2 className="size-3.5 shrink-0 animate-spin" />
-            {tr('正在删除消息…')}
-          </div>
+      {/* 临时进度统一悬浮在消息区顶部，不进滚动内容，也不改变内容高度 / 阅读位置。
+          多种提示纵向排列避免互相覆盖；默认透传点击，仅交互提示自身恢复 pointer-events。 */}
+      {(progressText || overlay) && (
+        <div className="pointer-events-none absolute inset-x-0 top-2 z-20 flex flex-col items-center gap-2 px-2">
+          {progressText && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="flex max-w-full items-center gap-2 rounded-full border border-border/60 bg-background/95 px-3 py-1 text-xs text-muted-foreground shadow-sm"
+            >
+              <Loader2 aria-hidden="true" className="size-3.5 shrink-0 animate-spin" />
+              <span className="min-w-0 break-words">{progressText}</span>
+            </div>
+          )}
+          {overlay}
         </div>
       )}
 
@@ -1005,8 +984,6 @@ export interface ChatComposerProps {
   slashCommands?: import('@fizz/agent-kit/shared/lib/slash-commands').SlashCommand[]
   /** 命令执行上下文（与 slashCommands 一同传） */
   slashContext?: import('@fizz/agent-kit/shared/lib/slash-commands').SlashCommandContext
-  /** `@` 点名的候选 Agent（多智能体协作会话） */
-  mentionCandidates?: Array<{ id: string; name: string; role?: string }>
   variant?: ChatComposerVariant
   /** 紧凑输入框（初始高度一行）—— 窄面板里的助手用，见 Composer 的 compact */
   compact?: boolean
@@ -1048,7 +1025,6 @@ export function ChatComposer({
   onAttachFiles,
   slashCommands,
   slashContext,
-  mentionCandidates,
   variant = 'page',
   compact,
   voiceScope
@@ -1108,7 +1084,6 @@ export function ChatComposer({
             onAttachFiles={onAttachFiles}
             slashCommands={slashCommands}
             slashContext={slashContext}
-            mentionCandidates={mentionCandidates}
             compact={compact}
             voiceScope={voiceScope}
           />
@@ -1250,7 +1225,9 @@ export function ChatSurface({
       */}
       <WorkspaceFileOpenerProvider value={fileOpener ?? null}>
         <SubagentViewProvider value={openSubagent}>
-          <MessageList {...list} />
+          <MessageFoldStateProvider key={conversationId ?? 'no-conversation'}>
+            <MessageList {...list} />
+          </MessageFoldStateProvider>
         </SubagentViewProvider>
       </WorkspaceFileOpenerProvider>
       {between}

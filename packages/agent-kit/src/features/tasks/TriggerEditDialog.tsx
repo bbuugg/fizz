@@ -167,13 +167,13 @@ export function TriggerEditDialog({
           `preventDefault` 后焦点留在触发它的那颗按钮上，Tab 进来照样能填。 */}
       <DialogContent
         className="flex max-h-[85vh] flex-col gap-4 overflow-hidden sm:max-w-2xl"
-        onOpenAutoFocus={(event) => event.preventDefault()}
+        initialFocus={false}
       >
         <DialogHeader className="shrink-0">
           <DialogTitle>{trigger ? t('编辑定时任务') : t('新建定时任务')}</DialogTitle>
           <DialogDescription>
             {t(
-              '配置「什么时候自动起一轮会话」：按 cron 表达式，或指定一个时刻。跑起来的会话在侧栏里可见、可回看。'
+              '按 cron 表达式或指定时刻触发。'
             )}
           </DialogDescription>
         </DialogHeader>
@@ -587,18 +587,12 @@ function TriggerForm({
         ) : null}
         <p className="text-xs leading-5 text-muted-foreground">
           {workspaceId
-            ? t('每次触发都在这个工作区里跑一轮会话。')
-            : t('不绑工作区：每次触发自动新建一个临时工作区（空目录、不进项目列表），从零干一遍。')}
+            ? t('每次触发都跑在这个工作区。')
+            : t('不绑工作区：每次新建临时工作区（不进项目列表）。')}
           {isAcpTarget
-            ? t(
-                '权限 / 模型与新建会话时是同一套选项；思考强度 / 浏览器 / MCP 只对内置模型生效 —— 外部 Agent 自带工具与思考档，不读这几项。'
-              )
-            : t(
-                '权限 / 模型 / 思考强度 / 浏览器 / MCP 与新建会话时是同一套选项；浏览器工具跑在服务端，无人值守也能用。'
-              )}
-          {t(
-            '必须选一个目标（内置模型，或外部 Agent）—— 触发时没人值守，不会替你挑一个。外部 Agent 可以「跟随它自己的默认模型」。'
-          )}
+            ? t('思考强度 / 浏览器 / MCP 只对内置模型生效。')
+            : t('浏览器工具跑在服务端。')}
+          {t('必须选一个目标，不会替你挑。')}
         </p>
       </div>
 
@@ -644,7 +638,7 @@ function TriggerForm({
             ))}
           </div>
           <p className="text-xs text-muted-foreground">
-            {t('分 时 日 月 周（周日为 0），由服务端内置 cron 调度')}
+            {t('分 时 日 月 周（周日为 0）')}
           </p>
         </div>
       )}

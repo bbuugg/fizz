@@ -266,14 +266,14 @@ export function PanelTabItem({
          * 之后**才派发（`FocusScope` 的 unmount autofocus，见 `ui/src/focus-dismiss.ts`），
          * 是唯一能稳稳拿到焦点的那一刻。
          */
-        onCloseAutoFocus={(e) => {
-          e.preventDefault()
+        finalFocus={() => {
           const input = renameInputRef.current
           // 已经拿到了（没有退场动画 / 菜单非模态时 `autoFocus` 就能成）就别再碰它，
           // 免得搅掉用户这一拍里已经敲进去的字。不是重命名态（Esc / 点空白关的菜单）也没事：
           // 输入框没挂出来，ref 是 null。
-          if (!input || document.activeElement === input) return
-          input.focus()
+          if (input && document.activeElement !== input) input.focus()
+          // 返回 false = 不要按默认逻辑把焦点还给触发器（否则标签上会亮一圈 focus-visible 边框）
+          return false
         }}
       >
         {/*

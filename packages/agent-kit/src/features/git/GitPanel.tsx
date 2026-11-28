@@ -98,12 +98,16 @@ import {
   ContextMenuTrigger
 } from '@fizz/ui/context-menu'
 import { Input } from '@fizz/ui/input'
-import { FileDiffView } from '@fizz/agent-kit/features/git/FileDiffView'
 import { ChangeTreeList } from '@fizz/agent-kit/features/git/GitChangeTree'
 import { BranchPicker } from '@fizz/agent-kit/features/chat/BranchPicker'
 import { activeTabKey } from '@fizz/agent-kit/shared/lib/panel-store'
 import { NotARepoState } from '@fizz/agent-kit/features/git/NotARepoState'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
+
+import { requestOpenWorkspaceFile } from '@fizz/agent-kit/features/files/open-file'
+import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
+import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
+import { gitChangeOpenPath } from '@fizz/agent-kit/features/git/open-file-policy'
 import { ChangeRow } from '@fizz/agent-kit/features/git/ChangeRow'
 import { GitHistory } from '@fizz/agent-kit/features/git/GitHistory'
 import {
@@ -118,10 +122,8 @@ import {
   type RollbackTarget
 } from '@fizz/agent-kit/features/git/rollback-policy'
 import { pushBlockedMessage, pushGate } from '@fizz/agent-kit/features/git/push-policy'
-import { parseUnifiedDiff, type DiffHunk } from '@fizz/agent-kit/shared/lib/diff'
 import {
   allChangeTreeDirPaths,
-  changeTreeIndentPx,
   type ChangeTreeDir
 } from '@fizz/agent-kit/shared/lib/git-change-tree'
 import { setGitTreeView, useGitTreeView } from '@fizz/agent-kit/shared/lib/git-view-prefs'
@@ -201,7 +203,9 @@ export function GitPanel({
   workspaceId,
   visible,
   tabKey,
-  onChanges
+  onChanges,
+  onOpenDiff,
+  onDiffsRefresh
 }: {
   app: AgentApp
   /** 这个面板固定服务的工作区（按会话各挂一套，标签切换时不变） */
@@ -226,8 +230,28 @@ export function GitPanel({
   /** 每次刷新完状态回报改动数量（给入口图标的 badge 用）；null = 不是仓库。
    *  同时回报当前分支（切分支 / 检出后，让会话名下的分支显示跟着变）。 */
   onChanges?: (info: { count: number; truncated: boolean; branch: string | null } | null) => void
+  /** 在 FilesPanel 共享预览区中，将选中的仓库 diff 作为独立标签打开。 */
+  onOpenDiff?: (path: string, staged: boolean, deleted: boolean) => void
+  /** Git 状态刷新后，同步刷新已经打开的 diff 标签。 */
+  onDiffsRefresh?: (changes?: readonly GitChange[]) => void
 }) {
   const t = useT()
+  const isMobile = useIsMobile()
+  const { showSideTabOf } = useAppContext()
+
+  /**
+   * 把变更文件送到本标签的文件面板打开。panelKey 必须是本标签的 key ——
+   * 分屏 / 后台标签可能同时挂着多套面板，用全局会话 key 会开错地方（见 ChatPanel 同款逻辑）。
+   */
+  const openWorkspaceFile = useCallback(
+    (rel: string) => {
+      if (!tabKey || !workspaceId || !rel) return
+      showSideTabOf(tabKey, 'files')
+      requestOpenWorkspaceFile(tabKey, workspaceId, rel)
+    },
+    [tabKey, workspaceId, showSideTabOf]
+  )
+
   const [status, setStatus] = useState<GitStatusResult | null>(null)
   const [branches, setBranches] = useState<GitBranchesResult | null>(null)
   const [commits, setCommits] = useState<GitCommit[]>([])
@@ -270,10 +294,6 @@ export function GitPanel({
    * 放在组件 state 里是为了 git 刷新后展开态还在（面板按会话常驻，见文件头注释）。
    */
   const [collapsedDirs, setCollapsedDirs] = useState<Record<string, boolean>>({})
-  /** 展开的文件 diff：`openKey` 是 `${staged ? 's' : 'w'}:${path}`，`diff` 是解析后的 hunks */
-  const [openKey, setOpenKey] = useState<string | null>(null)
-  const [diff, setDiff] = useState<DiffHunk[] | null>(null)
-  const [diffLoading, setDiffLoading] = useState(false)
   /**
    * 「管理远端」弹窗：列出全部远端，可增 / 改地址 / 删。
    * 没有远端时点「推送」「拉取」会直接开到这儿 —— 省得用户去终端敲 remote add。
@@ -302,6 +322,8 @@ export function GitPanel({
   // 「变可见就刷新」的 effect 拖成死循环（与 refreshRef 同一个理由）
   const onChangesRef = useRef(onChanges)
   onChangesRef.current = onChanges
+  const onDiffsRefreshRef = useRef(onDiffsRefresh)
+  onDiffsRefreshRef.current = onDiffsRefresh
 
   /**
    * 拉状态 + 分支 + 历史。
@@ -311,8 +333,10 @@ export function GitPanel({
   const refresh = useCallback(async (pruneRemote = false): Promise<void> => {
     // 只有手动刷新（点头部那颗 / 错误页重试）才让那颗图标转圈；自动刷新是静默的
     if (pruneRemote) setRefreshing(true)
+    let refreshedChanges: readonly GitChange[] | undefined
     try {
       const next = await app.gitStatus(workspaceId)
+      refreshedChanges = next.isRepo ? next.changes : []
       setStatus(next)
       setLoadError(null)
       // 拿到状态就先把改动数 + 当前分支回报上去（后面拉分支 / 历史失败也不影响 badge 与会话名下的分支）
@@ -350,6 +374,7 @@ export function GitPanel({
     } finally {
       setLoading(false)
       if (pruneRemote) setRefreshing(false)
+      onDiffsRefreshRef.current?.(refreshedChanges)
     }
   }, [app, workspaceId])
 
@@ -541,32 +566,8 @@ export function GitPanel({
     }
   }
 
-  /** 最近一次点开的文件 key：用来丢弃「点得太快」时回来的过期 diff */
-  const diffReqRef = useRef<string | null>(null)
-
-  async function toggleFile(path: string, staged: boolean): Promise<void> {
-    const key = `${staged ? 's' : 'w'}:${path}`
-    if (openKey === key) {
-      diffReqRef.current = null
-      setOpenKey(null)
-      setDiff(null)
-      return
-    }
-    diffReqRef.current = key
-    setOpenKey(key)
-    setDiff(null)
-    setDiffLoading(true)
-    try {
-      const res = await app.gitDiff(workspaceId, path, staged)
-      if (diffReqRef.current !== key) return
-      setDiff(parseUnifiedDiff(res.diff))
-    } catch (err) {
-      if (diffReqRef.current !== key) return
-      gitToastError(errText(err))
-      setOpenKey(null)
-    } finally {
-      if (diffReqRef.current === key) setDiffLoading(false)
-    }
+  function toggleFile(path: string, staged: boolean, deleted = false): void {
+    onOpenDiff?.(path, staged, deleted)
   }
 
   /** 暂存 / 取消暂存一批路径（单个文件、或树状视图里一个目录下的所有文件共用同一套） */
@@ -614,10 +615,6 @@ export function GitPanel({
         ? { action: 'rollback-dir', path: target.path, mode }
         : { action: 'rollback', path: target.path, mode })
       if (lastLine(output)) gitToast(lastLine(output))
-      // 展开的 diff 属于「回退前」的内容，收掉免得看着像还没回退
-      diffReqRef.current = null
-      setOpenKey(null)
-      setDiff(null)
       await refreshRef.current()
     } catch (err) {
       gitToastError(errText(err))
@@ -633,10 +630,6 @@ export function GitPanel({
     if (!paths.length) return
     await run(async () => {
       const output = await app.gitAction(workspaceId, { action: 'rollback-all', paths })
-      // 展开的 diff 属于「回滚前」的内容，收掉免得看着像还没回滚
-      diffReqRef.current = null
-      setOpenKey(null)
-      setDiff(null)
       return output
     })
   }
@@ -845,36 +838,6 @@ export function GitPanel({
     await run(() => app.gitAction(workspaceId, { action: 'stash-drop', ref: target.ref }))
   }
 
-  /** 展开行下方的 diff 区（加载中 / 无可展示内容 / 正常渲染） */
-  function diffArea(path: string, staged: boolean, depth = 0): ReactNode {
-    /*
-     * 对齐选中文件的名字（而不是行左边缘）：文件行的名字在「状态字母 + gap」之后，
-     * 而 FileDiffView 自己的文件头还有 px-2。行内边距 + 20（字母 12 + 间距 8）- 8（px-2）= +12。
-     * 树状视图里文件行本身有层级缩进，diff 也必须跟着缩进，否则会一直贴在最左边。
-     */
-    const indent = changeTreeIndentPx(depth) + 12
-    if (diffLoading) {
-      return (
-        <div
-          style={{ paddingLeft: indent }}
-          className="flex items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground"
-        >
-          <Loader2 className="size-3.5 animate-spin" /> {t('读取 diff…')}
-        </div>
-      )
-    }
-    if (!diff) return null
-    return (
-      <div style={{ paddingLeft: indent }}>
-        <FileDiffView
-          path={staged ? t('{path}（已暂存）', { path }) : path}
-          hunks={diff}
-          deleted={false}
-        />
-      </div>
-    )
-  }
-
   /** 目录折叠态：两组的 key 带前缀（`s:` / `w:`），取出来时只留目录路径 */
   function collapsedOf(staged: boolean): ReadonlySet<string> {
     const prefix = staged ? 's:' : 'w:'
@@ -931,30 +894,23 @@ export function GitPanel({
     )
   }
 
-  // 展开的 diff 可能藏在某个目录里：点开文件时把它的祖先目录一并展开，
-  // 不然那个 diff 会跟着目录一起收起来，看着像「点不动」。
-  useEffect(() => {
-    if (!openKey) return
-    const sep = openKey.indexOf(':')
-    const parts = openKey.slice(sep + 1).split('/')
-    if (parts.length < 2) return
-    const prefix = `${openKey.slice(0, sep)}:`
-    const openDirs: Record<string, boolean> = {}
-    let dirPath = ''
-    for (const seg of parts.slice(0, -1)) {
-      dirPath = dirPath ? `${dirPath}/${seg}` : seg
-      openDirs[`${prefix}${dirPath}`] = false
-    }
-    setCollapsedDirs((prev) => {
-      // 状态没变就原样返回（不白渲染一次，也避免把依赖它的记忆值打脏）
-      const changed = Object.keys(openDirs).some((k) => prev[k] === false)
-      return changed ? { ...prev, ...openDirs } : prev
-    })
-  }, [openKey])
-
   /** 树状下只显示文件名（目录名已在父目录行里），完整路径进 title；重命名的旧名由 `ChangeRow` 自己取 */
   function shortLabel(change: GitChange): string {
     return change.path.split('/').pop() ?? change.path
+  }
+
+  /**
+   * 变更文件 → 文件面板可打开的工作区相对路径。
+   *
+   * `change.path` 相对**仓库根**，而文件面板吃**工作区相对**路径（工作区可能是仓库子目录）。
+   * 先拼成绝对路径再削掉工作区前缀，两种布局通吃。删除态 / 虚拟工作区（无 path）/
+   * 落在工作区之外的文件一律不给图标。重命名 / 复制取新路径（`change.path`），不用旧名。
+   */
+  function openTarget(change: GitChange, letter: string): { rel: string; label: string } | null {
+    const workspaceRoot = app.workspaces.find((w) => w.id === workspaceId)?.path ?? ''
+    const rel = gitChangeOpenPath(change, letter, workspaceRoot, status?.root)
+    if (!rel) return null
+    return { rel, label: t('在文件面板中打开 {path}', { path: rel }) }
   }
 
   /**
@@ -1010,47 +966,50 @@ export function GitPanel({
 
   /** 「已暂存的更改」组的一行（树状与平铺共用，`depth` 决定缩进） */
   function stagedRow(change: GitChange, depth: number): ReactNode {
+    const target = openTarget(change, change.index)
     return (
       <ChangeRow
         key={`s:${change.path}`}
         change={change}
         letter={change.index}
-        open={openKey === `s:${change.path}`}
-        onToggle={() => void toggleFile(change.path, true)}
+        open={false}
+        onToggle={() => toggleFile(change.path, true, change.index === 'D')}
         onToggleStage={() => void toggleStage(change.path, true)}
         onRollback={() => openRollback(change, true)}
+        onOpenFile={target ? () => openWorkspaceFile(target.rel) : undefined}
+        openFileLabel={target?.label}
         staged
         stageLabel={t('取消暂存')}
         rollbackLabel={t('放弃这个文件的全部改动（含已暂存的），回到上次提交')}
         busy={rowBusy?.key === `s:${change.path}` ? rowBusy.kind : null}
         depth={treeView ? depth : 0}
         shortLabel={treeView ? shortLabel(change) : undefined}
-      >
-        {diffArea(change.path, true, treeView ? depth : 0)}
-      </ChangeRow>
+      />
     )
   }
 
   /** 「更改」组的一行（未暂存 + 未跟踪） */
   function unstagedRow(change: GitChange, depth: number): ReactNode {
+    const letter = change.index === '?' ? '?' : change.worktree
+    const target = openTarget(change, letter)
     return (
       <ChangeRow
         key={`w:${change.path}`}
         change={change}
-        letter={change.index === '?' ? '?' : change.worktree}
-        open={openKey === `w:${change.path}`}
-        onToggle={() => void toggleFile(change.path, false)}
+        letter={letter}
+        open={false}
+        onToggle={() => toggleFile(change.path, false, letter === 'D')}
         onToggleStage={() => void toggleStage(change.path, false)}
         onRollback={() => openRollback(change, false)}
+        onOpenFile={target ? () => openWorkspaceFile(target.rel) : undefined}
+        openFileLabel={target?.label}
         staged={false}
         stageLabel={t('暂存这个文件')}
         rollbackLabel={change.index === '?' ? t('删除这个未跟踪文件') : t('丢弃这个文件未暂存的改动')}
         busy={rowBusy?.key === `w:${change.path}` ? rowBusy.kind : null}
         depth={treeView ? depth : 0}
         shortLabel={treeView ? shortLabel(change) : undefined}
-      >
-        {diffArea(change.path, false, treeView ? depth : 0)}
-      </ChangeRow>
+      />
     )
   }
 
@@ -1115,7 +1074,7 @@ export function GitPanel({
       <div
         className={
           status?.isRepo
-            ? 'flex shrink-0 items-center gap-1.5 px-3 py-2'
+            ? 'flex shrink-0 items-center gap-1.5 px-2 py-2'
             : 'hidden'
         }
       >
@@ -1286,7 +1245,7 @@ export function GitPanel({
               见文件顶部头部那段的注释 */}
 
           {/* 提交区：一行贴在变更列表上方 —— 输入提交信息，点提交（或 Ctrl / ⌘ + Enter）；只提交已暂存的改动 */}
-          <div className="flex shrink-0 items-center gap-1.5 p-2">
+          <div className="mt-0 flex shrink-0 items-center gap-1.5 px-2 pb-2 pt-0">
             <Input
               variant="muted"
               value={message}
@@ -1299,7 +1258,7 @@ export function GitPanel({
                   void commit()
                 }
               }}
-              placeholder={t('提交信息（Ctrl / ⌘ + Enter 提交）')}
+              placeholder={isMobile ? t('提交信息') : t('提交信息（Ctrl / ⌘ + Enter 提交）')}
               className="h-7! min-w-0 flex-1 text-sm"
             />
             <SpinnerButton
@@ -1316,13 +1275,16 @@ export function GitPanel({
 
           {/* 变更列表 + 历史 */}
           {/* 只留左右 / 底部内边距：顶部不留 —— 否则 sticky 标题滚动时会被这条 padding 顶出一段空隙，看着像浮着 */}
-          <div data-git-scroll className="min-h-0 flex-1 overflow-y-auto px-1 pb-2 space-y-2">
-            {changes.length === 0 ? (
-              <div className="px-3 py-2 text-xs text-muted-foreground">{t('没有未提交的改动')}</div>
-            ) : (
+          <div
+            data-git-scroll
+            // 文件切换由点击行保持位置；异步 diff 增长时也不要让浏览器改锚到下面的历史列表。
+            style={{ overflowAnchor: 'none' }}
+            className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2 space-y-1"
+          >
+            {changes.length > 0 && (
               <>
                 {status.truncated && (
-                  <div className="mx-1.5 mb-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-600">
+                  <div className="mx-2 mb-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-600">
                     {t('改动太多，只列出前 {count} 项（多半是没配', { count: changes.length })}{' '}
                     <code>.gitignore</code>{' '}
                     {t('的依赖 / 产物目录）。为避免漏提交，批量暂存已停用，建议先把这些目录加进')}{' '}
@@ -1332,13 +1294,16 @@ export function GitPanel({
                 {stagedChanges.length > 0 && (
                   <div>
                     {/* 标题行 sticky：滚动时这一组（或下一组）的标题总有一个钉在顶部，随时知道自己在看哪一段 */}
-                    <div className="sticky top-0 z-10 -mx-1 flex items-center gap-1.5 bg-background px-2.5 py-1 text-sm font-medium text-muted-foreground">
+                    <div className="group/header relative sticky top-0 z-10 flex items-center gap-1.5 bg-background pr-1.5 text-sm font-medium text-muted-foreground">
+                      {/* hover 底色铺满整行（含右侧那几颗按钮的位置）：底色只挂在标题按钮上时，
+                          行尾图标那一块 hover 后仍是面板底色 */}
+                      <span aria-hidden className="pointer-events-none absolute inset-0 -z-10 bg-foreground/10 opacity-0 transition-opacity group-hover/header:opacity-100" />
                       {/* 标题即开关：折叠后「全部」按钮仍在 —— 收起只是为了腾地方，不该顺带把批量操作也藏了 */}
                       <button
                         type="button"
                         onClick={() => setStagedOpen((v) => !v)}
                         title={stagedOpen ? t('收起这一组') : t('展开这一组')}
-                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left hover:text-foreground"
+                        className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-2 py-1 text-left text-sm font-medium text-muted-foreground"
                       >
                         {stagedOpen ? (
                           <ChevronDown className="size-3.5 shrink-0" />
@@ -1379,7 +1344,7 @@ export function GitPanel({
                       </IconTip>
                     </div>
                     {stagedOpen && (
-                      <div className="pl-2">
+                      <div>
                         {treeView ? (
                           <ChangeTreeList
                             changes={stagedChanges}
@@ -1399,13 +1364,16 @@ export function GitPanel({
                 {unstagedChanges.length > 0 && (
                   <div>
                     {/* 标题行 sticky：滚动时这一组（或下一组）的标题总有一个钉在顶部，随时知道自己在看哪一段 */}
-                    <div className="sticky top-0 z-10 -mx-1 flex items-center gap-1.5 bg-background px-2.5 py-1 text-sm font-medium text-muted-foreground">
+                    <div className="group/header relative sticky top-0 z-10 flex items-center gap-1.5 bg-background pr-1.5 text-sm font-medium text-muted-foreground">
+                      {/* hover 底色铺满整行（含右侧那几颗按钮的位置）：底色只挂在标题按钮上时，
+                          行尾图标那一块 hover 后仍是面板底色 */}
+                      <span aria-hidden className="pointer-events-none absolute inset-0 -z-10 bg-foreground/10 opacity-0 transition-opacity group-hover/header:opacity-100" />
                       {/* 标题即开关：折叠后「全部」按钮仍在 —— 收起只是为了腾地方，不该顺带把批量操作也藏了 */}
                       <button
                         type="button"
                         onClick={() => setUnstagedOpen((v) => !v)}
                         title={unstagedOpen ? t('收起这一组') : t('展开这一组')}
-                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left hover:text-foreground"
+                        className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-2 py-1 text-left text-sm font-medium text-muted-foreground"
                       >
                         {unstagedOpen ? (
                           <ChevronDown className="size-3.5 shrink-0" />
@@ -1418,30 +1386,6 @@ export function GitPanel({
                         </span>
                       </button>
                       {collapseAllButton(false)}
-                      {/* 贮藏入口放在「更改」组标题上、回滚左侧：它操作的就是这一组的改动 */}
-                      <IconTip label={t('贮藏当前更改（git stash）：工作区清空，改动收进贮藏栈')}>
-                        <Button
-                          variant="ghost"
-                          className="size-5! shrink-0 p-0! text-muted-foreground hover:text-foreground"
-                          aria-label={t('贮藏当前更改')}
-                          disabled={busy}
-                          onClick={() => openStashDialog()}
-                        >
-                          <Archive className="size-3.5" />
-                        </Button>
-                      </IconTip>
-                      {/* 这一组的回滚入口：只回滚列出在这一组里的文件（未暂存 + 未跟踪） */}
-                      <IconTip label={t('回滚「更改」里列出的这些文件（未暂存 + 未跟踪）')}>
-                        <Button
-                          variant="ghost"
-                          className="size-5! shrink-0 p-0! text-muted-foreground hover:text-destructive"
-                          aria-label={t('回滚「更改」里列出的这些文件')}
-                          disabled={busy}
-                          onClick={() => setBulkRollback('unstaged')}
-                        >
-                          <RotateCcw className="size-4" />
-                        </Button>
-                      </IconTip>
                       <IconTip
                         label={
                           status.truncated
@@ -1468,9 +1412,44 @@ export function GitPanel({
                           {busyAction !== 'stage-all' && <Plus className="size-4" />}
                         </SpinnerButton>
                       </IconTip>
+                      {/* 贮藏 / 回滚都只作用于这一组的改动，收进「更多」；「全部暂存」是高频主操作，仍留在外面 */}
+                      <DropdownMenu>
+                        <IconTip label={t('更多操作')}>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              className="size-5! shrink-0 p-0! text-muted-foreground"
+                              aria-label={t('更多操作')}
+                              disabled={busy}
+                            >
+                              <MoreHorizontal className="size-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                        </IconTip>
+                        <DropdownMenuContent align="end" className="min-w-44">
+                          <DropdownMenuItem
+                            title={t('贮藏当前更改（git stash）：工作区清空，改动收进贮藏栈')}
+                            disabled={busy}
+                            onSelect={() => openStashDialog()}
+                          >
+                            <Archive className="size-3.5" />
+                            {t('贮藏当前更改')}
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            className="text-destructive"
+                            title={t('回滚「更改」里列出的这些文件（未暂存 + 未跟踪）')}
+                            disabled={busy}
+                            onSelect={() => setBulkRollback('unstaged')}
+                          >
+                            <RotateCcw className="size-3.5" />
+                            {t('回滚全部')}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
                     {unstagedOpen && (
-                      <div className="pl-2">
+                      <div>
                         {treeView ? (
                           <ChangeTreeList
                             changes={unstagedChanges}
@@ -1504,12 +1483,14 @@ export function GitPanel({
 
             {/* 贮藏：与「历史提交」同一套折叠；每一行可弹出（pop）/ 应用（apply）/ 删除（drop） */}
             <div>
-              {/* 标题行 sticky：滚动时整行钉顶，免得只剩标题 */}
-              <div className="sticky top-0 z-10 -mx-1 flex items-center gap-1 bg-background px-1">
+              {/* 标题行 sticky：滚动时整行钉顶，免得只剩标题。
+                  不再用 `-mx-1 + px-1` 把底色铺满：整列已经没有左右 padding，负外边距只会
+                  让标题比内容宽 8px —— 滚动容器上就会出现一条横向滚动条 */}
+              <div className="sticky top-0 z-10 flex items-center gap-1 bg-background">
                 <button
                   type="button"
                   onClick={() => setStashesOpen((v) => !v)}
-                  className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-1 text-sm font-medium text-muted-foreground hover:bg-foreground/5"
+                  className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-2 py-1 text-sm font-medium text-muted-foreground hover:bg-foreground/10"
                 >
                   {stashesOpen ? (
                     <ChevronDown className="size-3.5 shrink-0" />
@@ -1519,15 +1500,16 @@ export function GitPanel({
                   {t('贮藏')}
                 </button>
               </div>
+              {/* 不给整列 `pl-*`：hover 底色要贴到面板左缘，内边距留给行内第一颗元素 */}
               {stashesOpen && (
-                <div className="pl-2">
-                  {stashes.length ? (
+                <div>
+                  {stashes.length > 0 && (
                     stashes.map((s) => (
                       <ContextMenu key={s.ref}>
                         <ContextMenuTrigger asChild>
-                          <div className="flex items-center gap-1.5 rounded px-2 py-1 text-xs hover:bg-foreground/5">
-                            <span className="shrink-0 font-mono text-muted-foreground">{s.ref}</span>
-                            <span className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap no-scrollbar" title={s.message}>
+                          <div className="flex items-center gap-1.5 py-1 pr-2 text-sm hover:bg-foreground/10">
+                            <span className="shrink-0 pl-5 font-mono text-muted-foreground">{s.ref}</span>
+                            <span className="min-w-0 flex-1 truncate" title={s.message}>
                               {s.message}
                             </span>
                           </div>
@@ -1557,10 +1539,7 @@ export function GitPanel({
                           </ContextMenuItem>
                         </ContextMenuContent>
                       </ContextMenu>
-                    ))
-                  ) : (
-                    <div className="px-2 py-1 text-xs text-muted-foreground">{t('还没有贮藏')}</div>
-                  )}
+                    )))}
                 </div>
               )}
             </div>
@@ -1574,7 +1553,7 @@ export function GitPanel({
           <DialogHeader>
             <DialogTitle>{t('贮藏当前更改')}</DialogTitle>
             <DialogDescription>
-              {t('工作区（和暂存区）里的改动会被收进贮藏栈，工作区回到干净状态；之后可以在变更列表下方的「贮藏」里再弹出来。')}
+              {t('改动收进贮藏栈，工作区回到干净状态。')}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -1598,7 +1577,7 @@ export function GitPanel({
                 onCheckedChange={(checked) => setStashUntracked(checked === true)}
               />
               <span>
-                {t('连未跟踪文件一起收（')}<code>git stash -u</code>{t('）—— 不勾的话新文件会留在工作区')}
+                {t('连未跟踪文件一起收（')}<code>git stash -u</code>{t('）；不勾则留在工作区')}
               </span>
             </label>
           </div>
@@ -1716,7 +1695,7 @@ export function GitPanel({
             <DialogDescription>
               {remoteDraft.editing
                 ? t('修改远端「{name}」的地址。', { name: remoteDraft.name })
-                : t('添加一个远端（https 与 git@host:path 两种写法都支持），配好就能推送了。')}
+                : t('支持 https 与 git@host:path 写法。')}
             </DialogDescription>
           </DialogHeader>
 

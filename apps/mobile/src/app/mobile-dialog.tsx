@@ -119,7 +119,13 @@ function DialogTrigger(props: React.ComponentProps<typeof DrawerTrigger>) {
 
 function DialogPortal(props: React.ComponentProps<typeof DrawerPortal>) {
   const modal = useIsSheetForm()
-  return modal ? <Desktop.DialogPortal {...props} /> : <DrawerPortal {...props} />
+  // 两个库的 `container` 类型不同（vaul 收 Element/DocumentFragment，Base UI 收
+  // HTMLElement/ShadowRoot/ref），这里只做转交，直接按目标组件的类型断言。
+  return modal ? (
+    <Desktop.DialogPortal {...(props as React.ComponentProps<typeof Desktop.DialogPortal>)} />
+  ) : (
+    <DrawerPortal {...props} />
+  )
 }
 
 function DialogClose(props: React.ComponentProps<typeof DrawerClose>) {

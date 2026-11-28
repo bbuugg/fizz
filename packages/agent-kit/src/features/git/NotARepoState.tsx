@@ -50,7 +50,7 @@ export function NotARepoState({
         {t('初始化 git 仓库')}
       </SpinnerButton>
       <p className="max-w-[280px] text-xs text-muted-foreground">
-        {t('初始化后所有文件都是未跟踪状态；建议先补一个')} <code>.gitignore</code>{' '}
+        {t('建议先补')} <code>.gitignore</code>{' '}
         {t('再提交。')}
       </p>
     </div>

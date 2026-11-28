@@ -59,6 +59,7 @@ import { Segmented } from '@fizz/agent-kit/shared/components/Segmented'
 import { ApiSaveDialog } from '@fizz/agent-kit/features/api/ApiSaveDialog'
 import MonacoEditor from '@fizz/agent-kit/features/files/MonacoEditor'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
+import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
 import { openApiClientSocket } from '@fizz/agent-client/web-host'
 import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
@@ -119,6 +120,12 @@ const MSG_ENCODINGS = [
 ] as const
 type MsgEncoding = (typeof MSG_ENCODINGS)[number]['value']
 
+/**
+ * 协议下拉的选项标题（`items` 与选项共用同一份，避免两处字面量漂移）。
+ * Base UI 不给 `items` 时触发器里显示的是原始 value（`ws` / `wss`）。
+ */
+const SCHEME_LABELS: Record<string, string> = { wss: 'wss://', ws: 'ws://' }
+
 /** 一条日志（收 / 发 / 系统事件） */
 interface WsLogEntry {
   id: string
@@ -134,6 +141,7 @@ interface WsLogEntry {
 }
 
 export function WsPage({ requestId }: { requestId: string }) {
+  const isMobile = useIsMobile()
   const { app } = useAppContext()
   const request = app.apiRequests.find((r) => r.id === requestId) ?? null
   /** 本标签是否是「未保存的新连接」草稿（requestId 为哨兵值，不是真实存储条目） */
@@ -664,7 +672,7 @@ export function WsPage({ requestId }: { requestId: string }) {
           size="sm"
           className="shrink-0 gap-1.5"
           disabled={saving}
-          title="保存（Ctrl+S）"
+          title={isMobile ? '保存' : '保存（Ctrl+S）'}
           onClick={() => requestSave()}
         >
           <Save className="size-4" />
@@ -679,14 +687,15 @@ export function WsPage({ requestId }: { requestId: string }) {
         </span>
         <Select
           value={wsScheme}
+          items={SCHEME_LABELS}
           onValueChange={(v) => setWsScheme(v as 'ws' | 'wss')}
         >
           <SelectTrigger size="sm" className="w-24 shrink-0">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="wss">wss://</SelectItem>
-            <SelectItem value="ws">ws://</SelectItem>
+            <SelectItem value="wss">{SCHEME_LABELS.wss}</SelectItem>
+            <SelectItem value="ws">{SCHEME_LABELS.ws}</SelectItem>
           </SelectContent>
         </Select>
         <Input
@@ -708,7 +717,12 @@ export function WsPage({ requestId }: { requestId: string }) {
             {state === 'closing' ? '断开中' : '断开'}
           </Button>
         ) : (
-          <Button size="sm" className="shrink-0" onClick={connect} title="建立连接（Ctrl+Enter 发送消息）">
+          <Button
+            size="sm"
+            className="shrink-0"
+            onClick={connect}
+            title={isMobile ? '建立连接' : '建立连接（Ctrl+Enter 发送消息）'}
+          >
             <Cable className="size-4" />
             连接
           </Button>
@@ -813,13 +827,13 @@ export function WsPage({ requestId }: { requestId: string }) {
               格式化
             </button>
           )}
-          <span className="ml-auto shrink-0 text-muted-foreground">Ctrl+Enter 发送</span>
+          {!isMobile && <span className="ml-auto shrink-0 text-muted-foreground">Ctrl+Enter 发送</span>}
           <Button
             size="sm"
             className="shrink-0"
             disabled={!isOpen || sending || !draft}
             onClick={send}
-            title={isOpen ? '发送一帧（Ctrl+Enter）' : '连接建立后才能发送'}
+            title={isOpen ? (isMobile ? '发送一帧' : '发送一帧（Ctrl+Enter）') : '连接建立后才能发送'}
           >
             <Send className="size-3.5" />
             发送
@@ -861,7 +875,11 @@ export function WsPage({ requestId }: { requestId: string }) {
         <SheetContent side="right" className="w-full gap-0 sm:max-w-[520px]">
           <SheetHeader>
             <SheetTitle>连接配置</SheetTitle>
-            <SheetDescription>握手时带上，改完点「保存」或按 Ctrl/Cmd+S 落盘</SheetDescription>
+            <SheetDescription>
+              {isMobile
+                ? '握手时带上，改完点「保存」落盘'
+                : '握手时带上，改完点「保存」或按 Ctrl/Cmd+S 落盘'}
+            </SheetDescription>
           </SheetHeader>
           {/* 底部不再挂「关闭」按钮：抽屉右上角本来就有一枚关闭图标（`SheetContent`
               默认的 `showCloseButton`），底下再放一颗是同义重复。滚动区因此把整条

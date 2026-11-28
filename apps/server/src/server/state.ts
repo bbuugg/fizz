@@ -72,19 +72,6 @@ interface FizzState {
     }
   >
   pendingFollowups: Map<string, { requestId: string; resolve: (answer: AskFollowupAnswer | null) => void }>
-  /**
-   * 挂起等**客户端执行**的客户端工具调用：callId → 该轮 requestId + 解铃回调。
-   *
-   * 与 `pendingConfirms` / `pendingFollowups` 同构 —— 客户端工具也是「服务端推一帧、
-   * 客户端另开一条 HTTP 回填」的反向通道（见 `client-tool-gate.ts`）。
-   */
-  pendingClientTools: Map<
-    string,
-    {
-      requestId: string
-      resolve: (payload: { ok: boolean; result?: unknown; error?: string }) => void
-    }
-  >
 }
 
 const GLOBAL_KEY = '__FIZZ_STATE__'
@@ -144,7 +131,6 @@ async function getState(): Promise<FizzState> {
     'apiHistory',
     'scripts',
     'scriptGroups',
-    'notesRoots',
     'workspaces',
     'conversations',
     'skills',
@@ -224,18 +210,6 @@ async function getState(): Promise<FizzState> {
     }
   >()
 
-  /**
-   * 挂起等客户端执行的客户端工具调用（见 `client-tool-gate.ts`）。
-   * 粒度与 `pendingConfirms` 一样是「一轮里的多次」—— 模型可能连着调好几个客户端工具。
-   */
-  const pendingClientTools = new Map<
-    string,
-    {
-      requestId: string
-      resolve: (payload: { ok: boolean; result?: unknown; error?: string }) => void
-    }
-  >()
-
   const state: FizzState = {
     envFile,
     stateBus,
@@ -252,8 +226,7 @@ async function getState(): Promise<FizzState> {
     triggerDomain,
     token,
     pendingConfirms,
-    pendingFollowups,
-    pendingClientTools
+    pendingFollowups
   }
   ;(globalThis as Record<string, unknown>)[GLOBAL_KEY] = state
   return state
@@ -311,7 +284,6 @@ export const STORE_KEYS = [
   'conversations',
   'skills',
   'taskTriggers',
-  'notesRoots',
   'containerProjects',
   // 客户端偏好：任何 `savePrefs` 都要推给所有端（见 `POST /api/prefs`）
   'prefs'
@@ -326,4 +298,3 @@ export const TOKEN = _state.token
 
 export const pendingConfirms = _state.pendingConfirms
 export const pendingFollowups = _state.pendingFollowups
-export const pendingClientTools = _state.pendingClientTools

@@ -1,21 +1,22 @@
 /**
  * **分段控件**（横向单选）：一整条凹槽 + 首尾相接的段，选中项浮起。
  *
- * 用 Radix `ToggleGroup`（`type="single"`）而不是 `Tabs`：DOM 里是 `role="radiogroup"`
- * + 单选按钮，读屏念「单选按钮，已选中」；`Tabs` 才给得到「触发器 ↔ 面板」同源的
+ * 用 Base UI `ToggleGroup`（单选）而不是 `Tabs`：DOM 里是 `role="group"` + 单选按钮，
+ * 读屏念「单选按钮，已选中」；`Tabs` 才给得到「触发器 ↔ 面板」同源的
  * 无障碍关系（`aria-controls` / `aria-labelledby`），念的是「标签页 1/2」。
  *
- * ⚠️ 切换**面板**的地方一律用 `@fizz/ui/tabs`，不要用这里：
+ * 判断标准只有一条：**有没有真正的 `TabsContent`**。
  *
- * - `ThemeEditor` 的颜色 / 字体 / 代码 / 背景页签；
- * - 「导入 OpenAPI / Swagger」弹窗的来源切换（从文件 / 从 URL）；
- * - 「添加 / 编辑主机」弹窗顶部的本地终端 ↔ SSH（`HostDialog`）—— 两种类型连字段
- *   集合都不同（本机终端没有凭据、SSH 没有 shell / 工作目录），换的是整块表单，不是
- *   同一个值。它长得像分段控件只是因为它就贴在表单顶上，读屏应该念「标签页 2/2」。
+ * - 有面板、由 `Tabs` 自己管显隐 → 用 `@fizz/ui/tabs`：`ThemeEditor` 的颜色 / 字体 /
+ *   代码 / 背景页签、「导入 OpenAPI / Swagger」弹窗的来源切换（从文件 / 从 URL）。
+ * - 只是「选一个值、内容在外面条件渲染」→ 用这里：设置页的工具权限档 / 明暗 / 界面语言 /
+ *   屏幕常亮 / 滚动缓冲 / 默认终端 / 背景质感 / 背景显示方式，MCP 的传输方式，WS 页的日志
+ *   筛选与消息编码，以及文件树顶栏的「文件 ↔ 源码管理」、添加主机弹窗的「本地终端 ↔ SSH /
+ *   密码 ↔ 私钥 / utf-8 ↔ gbk」。
  *
- * 这里留下的是「选一个取值、内容不变」的字段级多选一：设置页的工具权限档 / 明暗 /
- * 界面语言 / 屏幕常亮 / 滚动缓冲 / 默认终端 / 背景质感 / 背景显示方式，以及 MCP 的
- * 传输方式、WS 页的日志筛选与消息编码。
+ * ⚠️ 后面那两处（文件树、主机表单）换的是**整块区域**，看着像「切页签」，但它们从来没有
+ * `TabsContent` —— 面板是调用方自己 `mode === … && …` 渲染的。硬挂 `role="tab"` 只会让
+ * 「标签页」语义背后没有面板，radiogroup 反而更诚实；视觉上两者本来就同源，用户看不出差别。
  *
  * 视觉上刻意与 `@fizz/ui/tabs` 的 default 变体同源（`bg-muted` 凹槽 + 选中项
  * `bg-background` + `shadow-sm`）：设置页里它们就是同一类「选一个」的控件，长得一样才
@@ -56,6 +57,7 @@ export function Segmented<T extends string>({
   onChange,
   ariaLabel,
   fullWidth = false,
+  size = 'default',
   className
 }: {
   options: ReadonlyArray<SegmentedOption<T>>
@@ -64,21 +66,26 @@ export function Segmented<T extends string>({
   ariaLabel: string
   /** 撑满容器并让各段等宽（弹窗里的短枚举，如 stdio / http / sse） */
   fullWidth?: boolean
+  /**
+   * 高度档位。`default` = 28px 段（整条 34px），配对话框 / 设置页表单；
+   * `sm` = 24px 段（整条 30px），给文件树顶栏那种 36px 工具行。
+   */
+  size?: 'default' | 'sm'
   className?: string
 }) {
   const tr = useT()
   return (
     <ToggleGroup
-      type="single"
       /*
        * `spacing` 保持默认的 2，段间不留缝改用 `gap-0` 压掉根上的 `gap-[--spacing(--gap)]`：
        * `spacing={0}` 会触发「相邻项共享边框」那一套 `first/last:rounded-*`，把每段自己的
        * 圆角改成直角，与「凹槽里各自圆角的滑块」冲突。
        */
-      value={value}
+      value={[value]}
       onValueChange={(next) => {
-        // 再点一次选中的那项时 Radix 会回调空串：单选组必须始终有一项，忽略即可
-        if (next) onChange(next as T)
+        // 再点一次选中的那项时会给空数组：单选组必须始终有一项，忽略即可
+        const picked = next[0]
+        if (picked) onChange(picked as T)
       }}
       aria-label={ariaLabel}
       className={cn(
@@ -96,14 +103,16 @@ export function Segmented<T extends string>({
           title={typeof option.title === 'string' ? tr(option.title) : option.title}
           className={cn(
             // 尺寸与设置页其它小控件同档（`text-xs`）；`min-w-0` 让 `fullWidth` 下等宽不被最小宽顶开
-            'h-7 min-w-0 rounded-md px-3 text-xs font-normal transition-colors',
+            'min-w-0 rounded-md font-normal transition-colors',
+            size === 'sm' ? 'h-6 px-2 text-xs' : 'h-7 px-3 text-xs',
             // 未选中项悬停只变字色，不铺底色（凹槽已经是一层底了，再叠一层发脏）
             'text-muted-foreground hover:bg-transparent hover:text-foreground',
-            // 选中态：白/浮起，与 `Tabs` 的 default 变体一致
-            'data-[state=on]:bg-background data-[state=on]:text-foreground data-[state=on]:shadow-sm',
-            'data-[state=on]:hover:bg-background',
+            // 选中态：白/浮起，与 `Tabs` 的 default 变体一致。
+            // ⚠️ Base UI 的 Toggle 用 presence 属性 `data-pressed`，不再有 `data-state="on"`。
+            'data-pressed:bg-background data-pressed:text-foreground data-pressed:shadow-sm',
+            'data-pressed:hover:bg-background',
             // 暗色下用 `foreground/15` 拉开一档：不能再用 `--input`（描边色，高对比暗里是纯白）
-            'dark:data-[state=on]:bg-foreground/15 dark:data-[state=on]:hover:bg-foreground/15',
+            'dark:data-pressed:bg-foreground/15 dark:data-pressed:hover:bg-foreground/15',
             fullWidth && 'flex-1 basis-0'
           )}
         >

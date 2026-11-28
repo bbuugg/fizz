@@ -60,20 +60,6 @@ export const WINDOW_IPC = {
   revealFile: 'agent-window:revealFile',
   /** 用指定 IDE 打开目录 */
   openIde: 'agent-window:openIde',
-  /**
-   * 外部 Markdown 文件（双击系统里的 `.md` 用本应用打开）。
-   *
-   * 两条组合起来才完整：`externalFileOpen` 是**增量**事件，`takePendingExternalFiles`
-   * 是**存量**拉取。只用前者会丢「监听挂上之前就发完」的那些（见桥上的注释）。
-   */
-  externalFileOpen: 'agent-window:externalFileOpen',
-  takePendingExternalFiles: 'agent-window:takePendingExternalFiles',
-  /**
-   * 渲染端报告当前「改了还没保存」的标签数量（退出拦截用）。
-   *
-   * **单向推送 + 主进程缓存**，不是退出时回来问 —— 见 `DesktopWindowBridge` 上的注释。
-   */
-  setDirtyTabCount: 'agent-window:setDirtyTabCount',
   /** 远程访问：读当前状态（desktop 专属，把进程内后端暴露到一个真实端口给 web 用） */
   loadRemoteAccess: 'agent-window:loadRemoteAccess',
   /** 远程访问：开 / 关（或改端口 / 凭据后重启）端口监听（主进程落盘并立刻起 / 停服务器） */
@@ -236,10 +222,6 @@ export interface DesktopWindowBridge {
   loadCloseToTray(): boolean
   /** 改「关闭时收起到托盘」（主进程落盘，下次启动仍是这个值） */
   setCloseToTray(enabled: boolean): Promise<void>
-  /*
-    这里原先有 `openSettings` / `onSettingsTab` 两个窗口桥方法。设置改成主区域标签后
-    不需要任何跨窗口协作（改完就在同一份 store 里），故一并删除。
-  */
   /**
    * 切换窗口置顶（标题栏那颗图钉）。状态由主进程持有并落盘，重启后保持。
    */
@@ -254,25 +236,6 @@ export interface DesktopWindowBridge {
   revealFile(path: string): Promise<OpenResult>
   /** 用指定 IDE 打开目录（id 来自 listIdes） */
   openIde(id: string, dir: string): Promise<OpenResult>
-  /**
-   * 取走「待打开的外部文件」并清空队列。
-   *
-   * **先存后取**：系统事件（双击关联的 argv / 二实例 / macOS `open-file`）可能在渲染端
-   * 挂上监听**之前**就发完了，只靠订阅会丢 —— 症状是「有时灵」，最难查。所以渲染端启动时
-   * 先拉一次，之后才靠 `onExternalFileOpen` 接增量（与 `@fizz/agent-ui` 的
-   * `features/files/open-file.ts` 同一个坑，那边文件头有完整复盘）。
-   */
-  takePendingExternalFiles(): Promise<string[]>
-  /** 订阅后续的「用本应用打开这个文件」事件；返回退订函数 */
-  onExternalFileOpen(cb: (path: string) => void): () => void
-  /**
-   * 报告当前「改了还没保存」的标签数量。主进程缓存它，`before-quit` 时据它决定要不要拦。
-   *
-   * 为什么是**单向推送 + 主进程缓存**而不是「退出时回来问一句」：退出那一刻渲染进程
-   * 已经不保证还在正常响应，再等一次往返可能永远等不到 —— 那会把退出**卡死**，
-   * 比丢数据更难收拾。缓存下来则退出路径上零往返。
-   */
-  setDirtyTabCount(count: number): Promise<void>
   /** 读远程访问状态（desktop 专属；web 宿主不实现）。**同步**读（sendSync，与 loadCloseToTray 同一套路） */
   loadRemoteAccess(): RemoteAccessState
   /** 开 / 关端口监听（或改端口 / 凭据后重启），返回最新状态 */

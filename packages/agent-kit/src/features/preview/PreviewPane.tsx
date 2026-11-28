@@ -370,7 +370,7 @@ export function PreviewPane({ workspaceId }: { workspaceId: string }): ReactElem
         tone="wait"
         icon={<Loader2 className="size-6 animate-spin" />}
         title={t("正在读取容器状态…")}
-        description={t("马上就好。这一步只是问服务端容器在不在，不会启动任何东西。")}
+        description={t("只是查容器在不在，不会启动任何东西。")}
       />
     )
   }
@@ -496,13 +496,13 @@ export function PreviewPane({ workspaceId }: { workspaceId: string }): ReactElem
       <div className="flex flex-col gap-1.5 border-b border-border/60 px-2.5 py-2">
         <div className="flex min-w-0 items-center gap-1.5">
           <ToggleGroup
-            type="single"
             variant="outline"
             size="sm"
             spacing={0}
-            value={via}
+            value={[via]}
             onValueChange={(next) => {
-              if (next) setChoice(next as Via)
+              const picked = next[0]
+              if (picked) setChoice(picked as Via)
             }}
             className="w-fit shrink-0"
           >
@@ -640,7 +640,7 @@ export function PreviewPane({ workspaceId }: { workspaceId: string }): ReactElem
           tone="wait"
           icon={<Loader2 className="size-6 animate-spin" />}
           title={t("正在等预览服务就绪")}
-          description={t("容器已经起来了，里面的预览服务还在监听。通常一两秒，就绪后自动显示。")}
+          description={t("预览服务还在监听，通常一两秒，就绪后自动显示。")}
         />
       ) : project?.state === 'error' ? (
         <PreviewErrorPage

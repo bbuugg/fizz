@@ -30,9 +30,7 @@ import {
   filesTabKey,
   hostTabKey,
   localTabKey,
-  localFileTabKey,
   logsTabKey,
-  noteTabKey,
   pluginTabKey,
   scriptsTabKey,
   settingsTabKey,
@@ -48,7 +46,7 @@ import {
  * 工具标签的各种类别：连远端主机 / 开本机终端 / 打开一个接口请求 / 打开**脚本管理面板**
  * / 打开一个**插件界面** / 打开一台主机的 **SFTP 文件管理**
  * / 打开全局的 **SSH 隧道面板** / 打开全局的**应用日志面板** / 打开全局的**定时任务管理面板**
- * / 打开一篇**笔记** / 打开一个**本机 Markdown 文档** / 打开全局的**设置面板**
+ * / 打开全局的**设置面板**
  *（新增一类时，`isToolTabKey` 那条 OR 必须同步补上，理由见那里的注释）
  *
  * 「单个主机脚本」**不在**这里：脚本的新建 / 编辑已经是模态框（`ScriptEditDialog`），
@@ -67,8 +65,6 @@ export type ToolTabKind =
   | 'tunnel'
   | 'logs'
   | 'triggers'
-  | 'note'
-  | 'local-file'
   /** 全局单例：服务端那台机器的**整盘文件管理器**（`files:list`） */
   | 'files'
   /** 全局单例：服务端那台机器的**系统监控 + 任务管理器**（`sysmon:list`） */
@@ -163,23 +159,6 @@ export interface ToolTab {
   tunnelHostId?: string
   /** 隧道标签：预选请求的序号（每次 `openTunnelTab` 带 hostId 调用都 +1，见上） */
   tunnelRequestSeq?: number
-  /**
-   * 笔记标签：哪本笔记根（`NotesRoot.id`）+ 根内的**相对路径**。
-   *
-   * ⚠️ 归属**只记在这里**，不编进 key —— 相对路径是分层的、还可能是 Windows 路径，
-   * 且笔记会被重命名（编进 key 就得改 key，状态机不认）。与 `pluginId` 同一取舍。
-   *
-   * 两者**缺一不可**：只有路径的话，两个根下同名的 `README.md` 会被当成同一篇。
-   */
-  noteRootId?: string
-  notePath?: string
-  /**
-   * 外部文件标签：本机**绝对路径**（用本应用打开的那篇 Markdown）。
-   *
-   * 与 `notePath` 不同，这里是绝对路径、且**没有「根」的概念**（路径本身就是全部归属）。
-   * 同样只记在这里、不编进 key（Windows 路径自带 `:`，见 `panel-tabs.ts` 的 `file:<n>`）。
-   */
-  externalPath?: string
   /**
    * 设置面板：**这次打开要落到哪个分组**（`'models'` / `'acp'` …，取值见
    * `features/settings/types` 的 `SettingsTabId`）。
@@ -558,25 +537,23 @@ export function openSettingsTab(tab?: string): string {
     settingsRequestSeq: tab ? (prev?.settingsRequestSeq ?? 0) + 1 : prev?.settingsRequestSeq
   })
   // 已开着时 `openTab` 只激活、不 emit（状态引用没变），面板只能靠版本号知道
-  // 表被就地改了 —— 与下方 `retargetNoteTab` 同一套机制
+  // 表被就地改了 —— 与下面「版本订阅」同一套机制
   if (prev) bumpToolTabsVersion()
   openTab(key)
   return key
 }
 
-// ---------- 笔记标签 ----------
+// ---------- 版本订阅 ----------
 //
-// ## 为什么这里比别的标签多一套「版本订阅」
+// ## 为什么这张表需要一套「版本订阅」
 //
-// 其余工具标签的元数据建好之后**再也不变**（主机名变了由 `PanelView` 去清单里现读）。
-// 笔记不一样：**重命名**要同时改标签名与保存目标路径，而标签 key 是不透明的 `note:<n>`
-// （归属记在表里，见 `ToolTab.noteRootId`）—— 表被就地改了，`panel-store` 却**没有变化**
-// （`openTab` 对已存在的 key 是「切过去」，状态引用不变 → 不 emit → 不重渲染）。
+// 大多数工具标签的元数据建好之后**再也不变**（主机名变了由 `PanelView` 去清单里现读）。
+// 但也有「就地改标签」的情况：设置面板换分组、标签被别名覆盖 —— 表被就地改了，
+// `panel-store` 却**没有变化**（`openTab` 对已存在的 key 是「切过去」，状态引用不变
+// → 不 emit → 不重渲染）。
 //
-// 所以给这张表加一个**自增版本号**：`retargetNoteTab` 改完表就 bump 一次，
-// `NoteTabContent` 用 `useToolTabsVersion()` 订阅它、重新读一遍表。别指望「反正会重渲染」
-// —— 用户重命名一篇正开着的笔记时，恰好什么都没在渲染，界面就会停在旧路径上，
-// 下一次「保存」会**按旧路径重新长出一个文件**（原文件还在，等于凭空多一份）。
+// 所以给这张表加一个**自增版本号**：就地改完表就 bump 一次，视图层用
+// `useToolTabsVersion()` 订阅它、重新读一遍表，别指望「反正会重渲染」。
 
 let tabVersion = 0
 const tabVersionListeners = new Set<() => void>()
@@ -608,8 +585,8 @@ function bumpToolTabsVersion(): void {
  *   取名字，不会继承上一次的别名；
  * - **不回写数据源**：主机名 / 接口名 / 脚本名都不动（那是另一个功能的数据）。
  *
- * 传空串 = 清掉别名（回到原名）。改完 bump 版本让标签条重渲染（理由同 `retargetNoteTab`：
- * 表变了但 `panel-store` 没变化，不 bump 就不重渲染）。
+ * 传空串 = 清掉别名（回到原名）。改完 bump 版本让标签条重渲染
+ * （表变了但 `panel-store` 没变化，不 bump 就不重渲染）。
  */
 export function renameToolTab(key: string, alias: string): void {
   const tab = tabs.get(key)
@@ -619,134 +596,6 @@ export function renameToolTab(key: string, alias: string): void {
   if (next) tab.alias = next
   else delete tab.alias
   bumpToolTabsVersion()
-}
-
-/** 笔记标签的自增序号（key 是 `note:<n>`，归属记在表里的 `noteRootId` / `notePath`） */
-let noteSeq = 0
-
-/**
- * 打开一篇**笔记**标签。
- *
- * **一篇笔记 = 一条标签**：同一个根下的同一个相对路径再点一次是「聚焦已有标签」，不新开
- * —— 笔记有「改了没保存」的现场，开两份必然互相覆盖（与接口请求 / 主机脚本同一取舍）。
- * 两个根下同名的 `README.md` 是**两篇**（归属比对 `noteRootId` + `notePath` 两项）。
- */
-export function openNoteTab(options: {
-  rootId: string
-  /** 相对所属根的路径（`/` 分隔） */
-  path: string
-  /** 标签名（默认取文件名） */
-  label?: string
-  title?: string
-}): string {
-  const existing = [...tabs.values()].find(
-    (tab) =>
-      tab.kind === 'note' && tab.noteRootId === options.rootId && tab.notePath === options.path
-  )
-  if (existing) {
-    openTab(existing.key)
-    return existing.key
-  }
-  const key = noteTabKey(++noteSeq)
-  const label = options.label?.trim() || options.path.split('/').pop() || '笔记'
-  tabs.set(key, {
-    key,
-    kind: 'note',
-    label,
-    title: options.title?.trim() || options.path,
-    noteRootId: options.rootId,
-    notePath: options.path
-  })
-  openTab(key)
-  return key
-}
-
-/**
- * 重命名后把已开的标签**改到新路径**（同时刷新标签名）。
- *
- * 不新开标签、也不关旧标签：文件内容没变（只换了名字），编辑器里那份「改了没保存」的
- * 现场必须留着 —— 换路径只是换**保存目标**（`NoteEditor` 用 ref 读最新路径）。
- * 改完 bump 版本，让 `NoteTabContent` 重新读表。
- *
- * 返回受影响的标签 key（没有开着的就返回空数组）。
- */
-export function retargetNoteTab(
-  rootId: string,
-  oldPath: string,
-  next: { path: string; label?: string }
-): string[] {
-  const affected: string[] = []
-  for (const tab of tabs.values()) {
-    if (tab.kind !== 'note' || tab.noteRootId !== rootId || tab.notePath !== oldPath) continue
-    tab.notePath = next.path
-    tab.label = next.label?.trim() || next.path.split('/').pop() || tab.label
-    tab.title = next.path
-    affected.push(tab.key)
-  }
-  if (affected.length > 0) bumpToolTabsVersion()
-  return affected
-}
-
-/** 某个笔记文件对应的标签 key（没有开着就 null）—— 删除文件时用来关掉它的标签 */
-export function noteTabKeyOf(rootId: string, path: string): string | null {
-  for (const tab of tabs.values()) {
-    if (tab.kind === 'note' && tab.noteRootId === rootId && tab.notePath === path) return tab.key
-  }
-  return null
-}
-
-// ---------- 外部文件标签（用本应用打开的本机 Markdown） ----------
-//
-// 与「笔记」是两条**完全不同**的数据通路：笔记走登记根 + notes API（服务端按根做
-// `resolveInside`），这里走桌面端主进程的 fs + 路径闸（`@fizz/agent-host` 的 `local-files`）。
-// 别把两者合并成一套 —— 笔记根是「服务端那台机器上的目录」，而这个文件在**用户本机**，
-// 服务端可能根本不在同一台机器上。
-
-/** 外部文件标签的自增序号（key 是 `file:<n>`，绝对路径记在表里的 `externalPath`） */
-let localFileSeq = 0
-
-/** 规范化：路径分大小写（Windows 不敏感）与末尾分隔符，去重时按这个比 */
-function normalizeAbsPath(path: string): string {
-  const trimmed = path.trim()
-  // 尾部分隔符去掉（`D:\a\` 与 `D:\a` 是同一个位置）；盘符根保留（`D:\` → `D:`，
-  // 这一条只影响去重比较，渲染与读写始终用原串）
-  return trimmed.length > 1 ? trimmed.replace(/[\\/]+$/, '') : trimmed
-}
-
-/**
- * 打开一个**本机 Markdown 文档**标签。
- *
- * **一个文件 = 一条标签**：同一个绝对路径再开一次是「聚焦已有标签」，不新开 ——
- * 这篇文档有「改了没保存」的现场，开两份必然互相覆盖（与笔记 / 接口请求同一取舍）。
- * 这也是**双击同一个文件两次**时只看到一条标签的原因。
- */
-export function openLocalFileTab(options: { absPath: string; label?: string }): string {
-  const wanted = normalizeAbsPath(options.absPath)
-  const existing = [...tabs.values()].find(
-    (tab) => tab.kind === 'local-file' && normalizeAbsPath(tab.externalPath ?? '') === wanted
-  )
-  if (existing) {
-    openTab(existing.key)
-    return existing.key
-  }
-  const key = localFileTabKey(++localFileSeq)
-  const label = options.label?.trim() || filenameOf(wanted) || 'Markdown'
-  tabs.set(key, {
-    key,
-    kind: 'local-file',
-    label,
-    // 悬停提示给**完整绝对路径**：同名的 README.md 一多，标签名根本分不清是哪个
-    title: wanted,
-    externalPath: wanted
-  })
-  openTab(key)
-  return key
-}
-
-/** 路径里的文件名（两个分隔符都认：主进程传来的 Windows 路径在 mac 上也得能取） */
-function filenameOf(path: string): string {
-  const at = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
-  return at < 0 ? path : path.slice(at + 1)
 }
 
 export function openPluginTab(options: {

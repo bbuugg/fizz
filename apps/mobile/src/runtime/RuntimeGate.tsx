@@ -106,7 +106,6 @@ export function RuntimeGate({ children }: { children: ReactNode }) {
           {busy && <Loader2 className="size-4 animate-spin" />}
           {label}{status.phase === 'installing' ? ` ${status.progress}%` : ''}
         </div>
-        <p className="text-sm leading-relaxed text-muted-foreground">{t('首次打开会解压 APK 内的 Linux 和 Node 环境，无需电脑、服务器或 Termux。模型服务仍需要网络。')}</p>
         {status.error && <p role="alert" className="break-words text-sm text-destructive">{t(status.error)}</p>}
         <Button className="w-full" variant={busy ? 'outline' : 'default'} disabled={status.phase === 'stopping'}
           onClick={() => void run(busy ? 'stop' : 'start')}>

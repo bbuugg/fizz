@@ -193,12 +193,9 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
           if (!next && current) close(current, current.options.cancelValue)
         }}
       >
-        <AlertDialogContent onOpenAutoFocus={(event) => {
-          if (cancelButtonRef.current) {
-            event.preventDefault()
-            cancelButtonRef.current.focus()
-          }
-        }}>
+        {/* Base UI 默认聚焦第一个可聚焦元素；这里显式把焦点交给「取消」，
+            与 Radix AlertDialog 的默认落点一致 */}
+        <AlertDialogContent initialFocus={cancelButtonRef}>
           <AlertDialogHeader>
             <AlertDialogTitle>{options?.title ?? ''}</AlertDialogTitle>
             {options?.description !== undefined && (

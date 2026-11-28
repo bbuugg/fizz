@@ -21,7 +21,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
        *
        * 几处约束：
        * - 用的是本仓库既有的语义色约定（`text-emerald-600 dark:text-emerald-400` 这套
-       *   在 git 状态、插件块、协作面板里已统一），错误色走 `text-destructive` 主题 token
+        *   在 git 状态、插件块、消息面板里已统一），错误色走 `text-destructive` 主题 token
        *   （它在 `tokens.css` 的亮 / 暗两套里各有一个值，比写死 `text-red-600` 更跟主题）；
        * - **深色主题必须配 `dark:`**：toast 底色是 `--popover`，暗色下 600 档的绿 / 琥珀
        *   压在那块深底上几乎看不出颜色；

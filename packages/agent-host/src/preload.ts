@@ -17,8 +17,6 @@ import {
   type AgentSseOpenResult,
   type AgentTransportBridge,
   type AgentTransportRequest,
-  type LocalFileReadResult,
-  type LocalFileWriteResult,
   type PtyDataEvent,
   type PtyExitEvent,
   type PtyOpenRequest,
@@ -75,15 +73,6 @@ export function createAgentTransportBridge(): AgentTransportBridge {
         return ''
       }
     },
-
-    pickLocalMarkdownFile: () =>
-      ipcRenderer.invoke(AGENT_IPC.pickLocalMarkdownFile) as Promise<string | null>,
-
-    readLocalFile: (path: string) =>
-      ipcRenderer.invoke(AGENT_IPC.localFileRead, path) as Promise<LocalFileReadResult>,
-
-    writeLocalFile: (path: string, content: string) =>
-      ipcRenderer.invoke(AGENT_IPC.localFileWrite, path, content) as Promise<LocalFileWriteResult>,
 
     openPty: (input: PtyOpenRequest) =>
       ipcRenderer.invoke(AGENT_IPC.ptyOpen, input) as Promise<PtyOpenResult>,

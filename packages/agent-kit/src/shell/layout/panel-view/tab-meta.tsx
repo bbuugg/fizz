@@ -6,14 +6,12 @@ import {
   Cloud,
   Gauge,
   FileCode2,
-  FileText,
   FolderOpen,
   Globe,
   MessageCircleQuestion,
   MessageSquare,
   MessageSquarePlus,
   Network,
-  NotebookPen,
   CalendarClock,
   FolderTree,
   Puzzle,
@@ -48,9 +46,7 @@ import {
   isFilesTabKey,
   isHostTabKey,
   isLocalTabKey,
-  isLocalFileTabKey,
   isLogsTabKey,
-  isNoteTabKey,
   isPluginTabKey,
   isScriptsTabKey,
   isSettingsTabKey,
@@ -95,9 +91,8 @@ export function useTabMeta(): (key: string) => TabMeta {
   const { app } = useAppContext()
   /** 插件界面清单：标签条上要显示插件声明的图标与名字（数据来自服务端，不在前端算） */
   const pluginSurfaces = usePluginSurfaces(app, app.activeWorkspaceId ?? undefined)
-  // 笔记标签的名字**会变**：重命名后 `retargetNoteTab` 就地改登记表（key 是不透明的
-  // `note:<n>`，名字只在表里），而登记表自己不发通知。不订阅这个版本号，标签条会一直
-  // 停在旧文件名上，直到下一次由别的原因触发的重渲染 —— 用户看到的是「重命名没生效」。
+  // 标签名可能被就地改（设置面板换分组 / 用户给标签起别名），而登记表自己不发通知。
+  // 不订阅这个版本号，标签条会一直停在旧名字上，直到下一次由别的原因触发的重渲染。
   useSyncExternalStore(subscribeToolTabs, getToolTabsVersion, getToolTabsVersion)
   /**
    * 会话运行态：标签图标要跟着「在跑 / 等你点头」变（与侧栏 `AgentSidebar` 同一份数据源，
@@ -231,25 +226,6 @@ export function useTabMeta(): (key: string) => TabMeta {
           label: t(tool?.label ?? '设置'),
           title: t(tool?.title ?? '设置'),
           icon: <Settings className="size-3.5 shrink-0" />
-        }
-      }
-      if (isNoteTabKey(key)) {
-        // 笔记标签：名字与归属都在登记表里（key 是不透明的 `note:<n>`），重命名后就地改
-        const tool = getToolTab(key)
-        return {
-          label: tool?.label ?? '笔记',
-          title: tool?.notePath ?? tool?.title ?? '笔记',
-          icon: <NotebookPen className="size-3.5 shrink-0" />
-        }
-      }
-      if (isLocalFileTabKey(key)) {
-        // 本地文件标签：归属（绝对路径）同样只在登记表里，key 是不透明的 `file:<n>`
-        const tool = getToolTab(key)
-        return {
-          label: tool?.label ?? 'Markdown',
-          // 悬停给完整绝对路径 —— 一堆 README.md 时只看文件名分不清是哪一个
-          title: tool?.externalPath ?? tool?.title ?? 'Markdown',
-          icon: <FileText className="size-3.5 shrink-0" />
         }
       }
       if (isApiTabKey(key)) {

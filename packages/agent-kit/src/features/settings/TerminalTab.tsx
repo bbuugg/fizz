@@ -28,12 +28,14 @@ import {
 import { setTerminalShell, useTerminalShell } from '@fizz/agent-kit/shared/lib/terminal-shell'
 import { Segmented } from '@fizz/agent-kit/shared/components/Segmented'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
+import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
 
 /** 「跟随系统默认」在 ToggleGroup 里的取值（ToggleGroup 只收字符串，null 用哨兵代替） */
 const PLATFORM_DEFAULT = '__platform-default__'
 
 export function TerminalTab({ app }: { app: AgentApp }) {
   const tr = useT()
+  const isMobile = useIsMobile()
   const copyOnSelect = useTerminalCopyOnSelect()
   const pasteOnRightClick = useTerminalPasteOnRightClick()
   const commandPrediction = useTerminalCommandPrediction()
@@ -90,7 +92,7 @@ export function TerminalTab({ app }: { app: AgentApp }) {
           {tr('右键粘贴')}
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          {tr('右键把剪贴板内容粘贴到命令行；选中文字时仍弹原菜单。默认开启。')}
+          {tr('选中文字时仍弹原菜单')}
         </p>
         <div className="flex items-center gap-3">
           <Switch
@@ -110,7 +112,11 @@ export function TerminalTab({ app }: { app: AgentApp }) {
           {tr('命令预测')}
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          {tr('根据历史与常见命令给出补全建议；→ 接受，Ctrl+↑/↓ 换选。')}
+          {tr(
+            isMobile
+              ? '根据历史与常见命令给出补全建议。'
+              : '根据历史与常见命令给出补全建议；→ 接受，Ctrl+↑/↓ 换选。'
+          )}
         </p>
         <div className="flex items-center gap-3">
           <Switch
@@ -130,7 +136,7 @@ export function TerminalTab({ app }: { app: AgentApp }) {
           {tr('记录命令历史')}
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          {tr('记录已执行的命令，供预测和「命令历史」使用；关闭后不再新增记录。')}
+          {tr('关闭后不再新增记录')}
         </p>
         <div className="flex items-center gap-3">
           <Switch
@@ -150,7 +156,7 @@ export function TerminalTab({ app }: { app: AgentApp }) {
           {tr('滚动缓冲')}
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          {tr('一个终端标签能往上翻多少行，超出后最早的行会被丢掉。每个标签各占一份内存，行数调很大又同时开很多标签要留意。')}
+          {tr('每个标签各占一份内存，别开太多')}
         </p>
         <Segmented
           ariaLabel={tr('滚动缓冲')}
@@ -170,7 +176,7 @@ export function TerminalTab({ app }: { app: AgentApp }) {
           {tr('默认终端')}
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          {tr('工具条「终端」按钮默认使用的 shell；只影响新开的终端。在会话顶栏「选择终端」里选过的 shell 会自动记到这里。')}
+          {tr('只影响新开的终端')}
         </p>
         {shells === null ? (
           <p className="text-xs text-muted-foreground">{tr('正在检测可用终端…')}</p>

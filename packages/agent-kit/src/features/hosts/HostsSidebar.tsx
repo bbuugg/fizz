@@ -514,6 +514,15 @@ export function HostsSidebar({
   }, [groups, moveTarget])
 
   /**
+   * 两份分组下拉的可见标题（`items` 与列表共用同一份，避免两处字面量漂移）。
+   * Base UI 不给 `items` 时触发器里显示的是原始 value（分组 id）。
+   */
+  const groupSelectItems: Record<string, string> = {
+    [TOP_GROUP]: t('顶级分组'),
+    ...Object.fromEntries(flatGroupOptions.map((o) => [o.id, o.name]))
+  }
+
+  /**
    * 分组树：**递归渲染**（不再拍平成 `rows` 再按 `depth` 加 `paddingLeft`）。
    *
    * 拍平那版画不出「展开后左侧一条竖线」，而那条线是「谁挂在谁下面」唯一的视觉线索 ——
@@ -661,16 +670,6 @@ export function HostsSidebar({
                     </RowActionButton>
                   </IconTip>
                 }
-                // 只有「一条主机 / 终端都没有、也没有分组」时才算空 —— 有分组时要让分组行露出来。
-                // **加载中不传**：清单还没落地时 hosts / groups 也是空数组，摆出来就是
-                // 「先闪一句还没有主机或终端，再冒出内容」（骨架在 children 里，见下）
-                empty={
-                  hosts.length === 0 &&
-                  groups.length === 0 &&
-                  (app.hostsLoaded || app.error)
-                    ? t('还没有主机或终端。')
-                    : undefined
-                }
               >
                 {/* 清单没落地 = 加载窗口：上骨架，别先闪空态。加载失败（app.error）
                     回退真实空态，错误信息另有横幅展示 */}
@@ -732,7 +731,7 @@ export function HostsSidebar({
           <DialogHeader>
             <DialogTitle>{groupEdit?.id ? t('重命名分组') : t('新建分组')}</DialogTitle>
             <DialogDescription>
-              {t('分组对 SSH 主机与本机终端是**共用**的，可以建多级；条目归属靠拖拽调整。')}
+              {t('SSH 主机与本机终端共用分组。')}
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-3">
@@ -751,6 +750,7 @@ export function HostsSidebar({
             {!groupEdit?.id && (
               <Select
                 value={groupEdit?.parentId ?? TOP_GROUP}
+                items={groupSelectItems}
                 onValueChange={(v) =>
                   setGroupEdit((s) => (s ? { ...s, parentId: v === TOP_GROUP ? undefined : v } : s))
                 }
@@ -836,10 +836,10 @@ export function HostsSidebar({
               {t('移动分组「{name}」', { name: moveTarget?.name ?? '' })}
             </DialogTitle>
             <DialogDescription>
-              {t('整棵子树会一起移动；下拉里已经排掉它自己和它的子分组。')}
+              {t('整棵子树一起移动。')}
             </DialogDescription>
           </DialogHeader>
-          <Select value={moveParent} onValueChange={setMoveParent}>
+          <Select value={moveParent} items={groupSelectItems} onValueChange={setMoveParent}>
             <SelectTrigger className="w-full">
               <SelectValue placeholder={t('顶级分组')} />
             </SelectTrigger>
@@ -1147,8 +1147,8 @@ function HostRow({
 
             ⚠️ `rounded-r-md` 不能省：这层是不透明的渐隐底色，方角压在行上会把行的
             `rounded-md` 右圆角盖掉（表现就是「hover 一行时高亮的右边是直角」）。
-            半径与行一致，两段圆弧正好重合 —— 与 `features/plugins/PluginBlocks`、
-            `features/notes/NotesSidebar` 的同类浮层同一处理。
+            半径与行一致，两段圆弧正好重合 —— 与 `features/plugins/PluginBlocks`
+            的同类浮层同一处理。
           */}
           <div
             className={cn(

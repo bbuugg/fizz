@@ -218,7 +218,7 @@ export function TransferBadge({
         打开时**不抢焦点**：这张清单是「看一眼」的信息位，抢焦点会把焦点从聊天输入框 /
         编辑器里拽走（与后台任务清单同一处理）。
       */
-        onOpenAutoFocus={(event) => event.preventDefault()}
+        initialFocus={false}
       >
         {glass.edge}
         <div className="flex shrink-0 items-center gap-2 px-3 py-1.5">

@@ -119,7 +119,7 @@ export function BranchTargetDialog({
                 在当前工作区分叉
               </Label>
               <p className="text-xs text-muted-foreground">
-                新会话与原会话共用同一个工作区，读写同一份代码。
+                与当前会话共用同一份代码。
               </p>
             </div>
           </div>
@@ -130,7 +130,7 @@ export function BranchTargetDialog({
                 新建 worktree 并签出
               </Label>
               <p className="text-xs text-muted-foreground">
-                先从项目拉一个独立工作树（新分支），新会话在里面干活，互不影响。
+                新分支的独立工作树，互不影响。
               </p>
               {mode === 'worktree' && (
                 <div className="mt-2 space-y-2">

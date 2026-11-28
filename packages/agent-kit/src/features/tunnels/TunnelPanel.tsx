@@ -593,14 +593,18 @@ function TunnelDialog({
           <DialogHeader>
             <DialogTitle>{editing ? '编辑隧道' : '新建隧道'}</DialogTitle>
             <DialogDescription>
-              监听端口开在 {bindTarget} 上；请确认这是你想要的那台机器。
+              监听端口开在 {bindTarget} 上。
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-3">
             <div className="space-y-1.5">
               <Label htmlFor="tunnel-host">主机</Label>
-              <Select value={hostId} onValueChange={setHostId}>
+              <Select
+                value={hostId}
+                items={Object.fromEntries(hosts.map((host) => [host.id, host.name]))}
+                onValueChange={setHostId}
+              >
                 <SelectTrigger variant="muted" id="tunnel-host" className="w-full">
                   <SelectValue placeholder="选择承载隧道的 SSH 主机" />
                 </SelectTrigger>

@@ -183,7 +183,7 @@ export function McpTab({ app }: { app: AgentApp }) {
   return (
     <div className="space-y-3">
       <p className="text-xs leading-4 text-muted-foreground">
-        {tr('MCP 给 Agent 外接工具，支持 stdio / http / sse；每个会话在输入框上方工具条选择启用项。')}
+        {tr('在输入框上方工具条里按会话启用')}
       </p>
 
       {app.mcpServers.map((server) => (
@@ -238,7 +238,7 @@ export function McpTab({ app }: { app: AgentApp }) {
 
       {app.mcpServers.length === 0 && (
         <p className="rounded-md border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
-          {tr('还没有 MCP server。加一个之后，Agent 就能用它的工具。')}
+          {tr('还没有 MCP server。')}
         </p>
       )}
 

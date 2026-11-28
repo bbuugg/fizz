@@ -390,8 +390,18 @@ const containerWorkspaceIdList = app.workspaces
         const dropped: PanelSession = isTerminalTabKey(tabKey)
           ? { ...base, terminals: base.terminals.filter((t) => terminalTabKey(t.id) !== tabKey) }
           : withoutMounted(base, tabKey as SideTabKey)
-        const next: PanelSession = { ...dropped, tabOrder: dropped.tabOrder.filter((k) => k !== tabKey) }
-        if (next.sideTab !== tabKey) return next
+        const next: PanelSession = {
+          ...dropped,
+          tabOrder: dropped.tabOrder.filter((k) =>
+            tabKey === 'files' || tabKey === 'git'
+              ? k !== 'files' && k !== 'git'
+              : k !== tabKey
+          )
+        }
+        const closingActive =
+          next.sideTab === tabKey ||
+          ((tabKey === 'files' || tabKey === 'git') && (next.sideTab === 'files' || next.sideTab === 'git'))
+        if (!closingActive) return next
         const alive = aliveTabs(next)
         return withSideTab(next, alive[alive.length - 1] ?? null)
       })

@@ -27,14 +27,11 @@ import type {
   AgentChatMessage,
   AgentConversation,
   AgentWorkspace,
-  CollabSettings,
-  CollabState,
   ConversationAutoSummary,
   ConversationContextSummary,
   ConversationUsage,
   QueuedMessage
 } from '@fizz/contracts/types'
-import { normalizeCollabSettings, normalizeCollabState } from '@fizz/contracts/types'
 
 /** 项目内的隐藏数据目录（与工作区配置 `<项目>/.fizz/workspace.json` 同一处） */
 export const FIZZ_DIR = '.fizz'
@@ -44,8 +41,6 @@ export const CONVERSATION_DIR = 'conversation'
 export const CONVERSATION_CONFIG_FILE = 'config.json'
 /** 会话的数据文件名 */
 export const CONVERSATION_DATA_FILE = 'conversation.json'
-/** 协作会话的运行态文件名（任务 / 消息 / 状态；只存在于 `kind: 'collab'`） */
-export const CONVERSATION_COLLAB_FILE = 'collab.json'
 /** 两份文件的结构版本（将来结构变更时用于迁移） */
 export const CONVERSATION_FILES_VERSION = 1
 
@@ -55,8 +50,6 @@ const GITIGNORE_CONTENT = '# Fizz 本地数据（工作区配置 / 会话记录�
 /** `config.json` 的形状：模型 / Agent 目标 + 会话可用的 MCP + ACP 运行态 */
 interface ConversationConfigFile {
   version: number
-  kind?: 'chat' | 'collab'
-  collab?: CollabSettings
   backend?: AgentBackend
   configId?: string
   modelId?: string
@@ -205,14 +198,12 @@ function conversationPaths(root: string, id: string): {
   dir: string
   configPath: string
   dataPath: string
-  collabPath: string
 } {
   const dir = join(root, id)
   return {
     dir,
     configPath: join(dir, CONVERSATION_CONFIG_FILE),
     dataPath: join(dir, CONVERSATION_DATA_FILE),
-    collabPath: join(dir, CONVERSATION_COLLAB_FILE)
   }
 }
 
@@ -223,10 +214,6 @@ function splitConversation(conversation: AgentConversation): {
 } {
   const config: ConversationConfigFile = {
     version: CONVERSATION_FILES_VERSION,
-    ...(conversation.kind === 'collab' ? { kind: 'collab' as const } : {}),
-    ...(conversation.kind === 'collab' && conversation.collab
-      ? { collab: normalizeCollabSettings(conversation.collab) }
-      : {}),
     ...(conversation.backend ? { backend: conversation.backend } : {}),
     ...(conversation.configId ? { configId: conversation.configId } : {}),
     ...(conversation.modelId ? { modelId: conversation.modelId } : {}),
@@ -300,14 +287,10 @@ function mergeConversation(configRaw: unknown, dataRaw: unknown): AgentConversat
       : 'builtin'
     : undefined
   const autoSummary = normalizeAutoSummary(data.autoSummary)
-  const kind: 'chat' | 'collab' = config.kind === 'collab' ? 'collab' : 'chat'
   return {
     id: data.id,
     workspaceId: typeof data.workspaceId === 'string' ? data.workspaceId : '',
     title: typeof data.title === 'string' && data.title ? data.title : '新会话',
-    ...(kind === 'collab'
-      ? { kind: 'collab' as const, collab: normalizeCollabSettings(config.collab) }
-      : {}),
     messages: Array.isArray(data.messages) ? data.messages : [],
     ...(backend ? { backend } : {}),
     ...(typeof config.configId === 'string' && config.configId ? { configId: config.configId } : {}),
@@ -399,27 +382,6 @@ export async function listConversationsIn(root: string): Promise<AgentConversati
 export function conversationFilePaths(
   root: string,
   id: string
-): { dir: string; configPath: string; dataPath: string; collabPath: string } {
+): { dir: string; configPath: string; dataPath: string } {
   return conversationPaths(root, id)
-}
-
-/** 读协作运行态；不存在 / 损坏 = 空快照（老会话 / 普通会话天然没有） */
-export async function readCollabStateDir(dir: string): Promise<CollabState | null> {
-  try {
-    const raw = await fs.readFile(join(dir, CONVERSATION_COLLAB_FILE), 'utf8')
-    return normalizeCollabState(JSON.parse(raw) as unknown)
-  } catch {
-    return null
-  }
-}
-
-/** 把一个协作会话的运行态写进它自己的目录（沿用 config/data 的原子写） */
-export async function writeCollabState(
-  root: string,
-  id: string,
-  state: CollabState
-): Promise<void> {
-  const { dir, collabPath } = conversationPaths(root, id)
-  await fs.mkdir(dir, { recursive: true })
-  await writeJsonAtomic(collabPath, normalizeCollabState(state))
 }

@@ -97,7 +97,7 @@ function readKey(key: string): string | null {
  *
  * ⚠️ 别再把它挂回 `DEV` 上。`DEV` 的判据是 `location.protocol === 'http:'`，**桌面端的
  * dev 形态**（渲染端由 Vite dev server 提供）也算 true —— 于是流式回复的**每一个分片**
- * 都要走一次 TextDecoder + console.log。`bash` 的实时输出 / 长正文下这是每秒
+ * 都要走一次 TextDecoder + console.log。`shell` 的实时输出 / 长正文下这是每秒
  * 成百上千次主线程日志：流式明显发卡，而且真出问题时的报错会被自己的日志淹掉（想排查
  * 「连接中断」时恰恰最需要看到那一行）。请求级 / 响应级的日志（每条请求一条）不受影响，
  * 仍旧跟着 `DEV` 走。
@@ -877,23 +877,6 @@ export const desktopHost: AgentHost = {
    * 所以 web / mobile 不实现它就自动没有这条路。
    */
   getPathForFile: (file) => window.fizzHost.getPathForFile(file),
-  /**
-   * 外部 Markdown 文件（双击系统里的 `.md` 用本应用打开）。
-   *
-   * 读 / 写走主进程，且**只认被授权过的路径**（对话框选中的、或系统交来的）——
-   * 授权集合在主进程（`@fizz/agent-host` 的 `local-files`），渲染端绕不过去。
-   */
-  pickLocalMarkdownFile: () => window.fizzHost.pickLocalMarkdownFile(),
-  readLocalFile: (path) => window.fizzHost.readLocalFile(path),
-  writeLocalFile: (path, content) => window.fizzHost.writeLocalFile(path, content),
-  // 存量（先存后取）+ 增量，两个都要：只用事件会丢「监听挂上之前就发完」的那批
-  takePendingExternalFiles: () => window.fizzWindow.takePendingExternalFiles(),
-  onExternalFileOpen: (cb) => window.fizzWindow.onExternalFileOpen(cb),
-  /**
-   * 外部打开 / 读写的入口见上；下面是宿主自己的窗口级能力。
-   */
-  /** 脏标签计数推给主进程缓存 —— 退出拦截时主进程读它，不做往返询问（见 window.ts 的注释） */
-  setDirtyTabCount: (count) => window.fizzWindow.setDirtyTabCount(count),
   /**
    * ZMODEM（rz/sz）的文件能力：全部走主进程的系统对话框 / 写盘
    * （`agent:zmodem:*` 三条通道，见 agent-host 的 transport-ipc）。

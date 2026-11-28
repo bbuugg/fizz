@@ -141,9 +141,7 @@ export function ManageWorktreeDialog({
         <DialogHeader>
           <DialogTitle>{tr('管理工作区')}</DialogTitle>
           <DialogDescription>
-            {tr('{name} 的 .worktree/ 目录：勾一个导入成这个项目下的工作区；已导入的可以移除。', {
-              name: workspace?.name ?? tr('当前项目')
-            })}
+            {tr('勾选导入为工作区，已导入的可移除。')}
           </DialogDescription>
         </DialogHeader>
 

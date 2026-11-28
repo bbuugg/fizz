@@ -42,6 +42,7 @@ import {
   SystemDirPickerLink
 } from '@fizz/agent-kit/shared/components/ServerDirPicker'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
+import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { formatShortcut } from '@fizz/agent-kit/shared/lib/shortcuts'
 import { openFilesTab, openLogsTab, openSysmonTab, openTunnelTab } from '@fizz/agent-kit/shared/lib/tool-tabs'
@@ -216,6 +217,7 @@ export function CommandPalette({
   globalPanels?: boolean
 }) {
   const t = useT()
+  const isMobile = useIsMobile()
 
   /** 页面栈：栈顶 = 当前显示的那一页（深度不限，见文件头） */
   const [stack, setStack] = useState<PalettePage[]>(() =>
@@ -300,6 +302,7 @@ export function CommandPalette({
 
   /** 找动作当前的快捷键展示文本（未绑定返回 undefined，不渲染提示） */
   const hint = (action: string): string | undefined => {
+    if (isMobile) return undefined
     const cfg = shortcuts.find((s) => s.action === action)
     return cfg?.accelerator ? formatShortcut(cfg.accelerator) : undefined
   }
@@ -350,8 +353,9 @@ export function CommandPalette({
    * （行为见 onEscapeKeyDown 的拦截），文案照抄根级会教错用户；二级视图里已经敲了词时
    * Esc 先清词，标签也跟着换成「清除」，否则用户按下去看到的反应和提示对不上。
    */
-  const footerHints: { keys: string[]; label: string }[] =
-    page.kind === 'root'
+  const footerHints: { keys: string[]; label: string }[] = isMobile
+    ? []
+    : page.kind === 'root'
       ? [
           { keys: ['↑', '↓'], label: t('选择') },
           { keys: ['Enter'], label: t('执行') },
@@ -802,9 +806,7 @@ export function CommandPalette({
                     if (action.value === ADD_DIR_ACTION) {
                       push({
                         kind: 'dir',
-                        description: t(
-                          '这里列的是服务端上的目录（Agent 就跑在那台机器上）。选中的目录会登记为项目。'
-                        ),
+                        description: t('选中的目录会登记为项目。'),
                         onPick: (path) => workspaceAdd.addDirectory(path)
                       })
                       return

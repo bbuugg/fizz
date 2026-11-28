@@ -57,6 +57,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@fizz/ui/tabs'
 import { ApiSaveDialog } from '@fizz/agent-kit/features/api/ApiSaveDialog'
 import MonacoEditor from '@fizz/agent-kit/features/files/MonacoEditor'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
+import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { fileToBase64 } from '@fizz/agent-client/api'
 import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
@@ -188,6 +189,7 @@ function stripFileData(fields: ApiFormField[]): ApiFormField[] {
 }
 
 export function ApiPage({ requestId }: { requestId: string }) {
+  const isMobile = useIsMobile()
   const { app } = useAppContext()
   const request = app.apiRequests.find((r) => r.id === requestId) ?? null
   /** 本标签是否是「未保存的新请求」草稿（requestId 为哨兵值，不是真实存储条目） */
@@ -744,7 +746,7 @@ export function ApiPage({ requestId }: { requestId: string }) {
           variant="outline"
           className="ml-auto shrink-0 gap-1.5"
           disabled={saving}
-          title="保存（Ctrl+S）"
+          title={isMobile ? '保存' : '保存（Ctrl+S）'}
           onClick={() => requestSave()}
         >
           <Save className="size-4" />
@@ -776,7 +778,11 @@ export function ApiPage({ requestId }: { requestId: string }) {
       <div ref={reqRowRef} className="shrink-0 px-3 py-2">
         <div className="flex h-8 items-stretch divide-x divide-border overflow-hidden rounded-md border border-input bg-transparent shadow-xs transition-[color,box-shadow] focus-within:border-ring">
           {/* 方法：宽度按 4 个选项里最长的 `DELETE` 给足（`w-[5.25rem]`），免得选中它时整条抖一下 */}
-          <Select value={method} onValueChange={setMethod}>
+          <Select
+            value={method}
+            items={Object.fromEntries(METHOD_OPTIONS.map((o) => [o.value, o.label]))}
+            onValueChange={setMethod}
+          >
             <SelectTrigger
               size="sm"
               icon={false}
@@ -805,7 +811,7 @@ export function ApiPage({ requestId }: { requestId: string }) {
               size="sm"
               variant="destructive"
               className="-my-px -mr-px h-auto shrink-0 rounded-none rounded-r-md"
-              title="取消请求（Ctrl+Enter）"
+              title={isMobile ? '取消请求' : '取消请求（Ctrl+Enter）'}
               onClick={cancelSend}
             >
               <X className="size-4" />
@@ -815,7 +821,7 @@ export function ApiPage({ requestId }: { requestId: string }) {
             <Button
               size="sm"
               className="-my-px -mr-px h-auto shrink-0 rounded-none rounded-r-md"
-              title="发送（Ctrl+Enter）"
+              title={isMobile ? '发送' : '发送（Ctrl+Enter）'}
               onClick={() => void send()}
             >
               <Send className="size-4" />
@@ -1100,7 +1106,7 @@ export function ApiPage({ requestId }: { requestId: string }) {
             </Tabs>
           ) : (
             <div className="px-3 pb-3 text-xs text-muted-foreground">
-              发送请求后在此查看响应（状态码、耗时与正文）。
+              发送请求后在此查看响应。
             </div>
           ))}
       </div>

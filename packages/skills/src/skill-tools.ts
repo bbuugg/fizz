@@ -140,7 +140,7 @@ export function buildSkillsPromptSection(skills: AgentSkill[]): string {
       ...skills.map((s) => `- ${s.name}：${s.description}`),
       '使用约定：',
       '- 判断任务与某个技能相关时，**先调用 skill 读它的完整说明，再严格按说明执行**；不要凭技能名猜做法；',
-      '- 技能说明里提到的脚本 / 参考资料，用 skill 的 file 参数读取，或用 bash 以绝对路径执行；',
+      '- 技能说明里提到的脚本 / 参考资料，用 skill 的 file 参数读取，或用 shell 以绝对路径执行；',
       '- 技能与当前任务无关时不要提及，也不要在正文里罗列技能清单。'
     ].join('\n'),
     [
@@ -149,7 +149,7 @@ export function buildSkillsPromptSection(skills: AgentSkill[]): string {
       ...skills.map((s) => `- ${s.name}: ${s.description}`),
       'Conventions:',
       '- When a task relates to a skill, **first call skill to read its full instructions, then follow them strictly**; do not guess from the name;',
-      '- Read scripts/references mentioned by a skill with skill’s file parameter, or run them via bash with an absolute path;',
+      '- Read scripts/references mentioned by a skill with skill’s file parameter, or run them via shell with an absolute path;',
       '- Do not mention skills unrelated to the current task and do not list them in the reply.'
     ].join('\n')
   )

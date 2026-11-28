@@ -13,11 +13,10 @@
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, dirname, resolve } from 'node:path'
+import { join } from 'node:path'
 import type {
   AgentConversation,
   AgentWorkspace,
-  CollabState,
   AiModelConfig,
   ApiGroup,
   ApiHistoryEntry,
@@ -28,7 +27,6 @@ import type {
   SshCharset,
   SshTunnel,
   HostGroup,
-  NotesRoot,
   TaskTrigger
 } from '@fizz/contracts/types'
 import type { AcpAgentConfig } from '@fizz/acp'
@@ -61,9 +59,7 @@ import {
   fallbackConversationRoot,
   listConversationsIn,
   listRemoteConversations,
-  readCollabStateDir,
   removeConversationDir,
-  writeCollabState as writeCollabStateToRoot,
   writeConversation as writeConversationToRoot
 } from './conversation-store'
 
@@ -122,15 +118,6 @@ export interface StoredLocalHost {
 
 /** 落盘的主机清单条目：SSH 主机或本机终端 */
 export type StoredHost = StoredSshHost | StoredLocalHost
-
-/**
- * 数据文件版本，只服务于**一次性迁移**（见 `load()` 里 `migrate*` 那几个）。
- *
- * 规矩：**改了某个字段的默认值、或改了字段语义，就要 +1**，并在 `load()` 里补一条
- * `version < N` 的迁移 —— 老数据文件里存着的是**旧默认值**，不迁的话新默认值对已有安装
- * 根本不生效（`normalizeXxx` 只会补「缺字段」，不会改「已写着的值」）。
- */
-const DATA_VERSION = 4
 
 /** 落盘的数据形状（和桌面端的 electron-store 不同：这里是**服务端自己的**一份） */
 export interface CoreData {
@@ -259,15 +246,6 @@ export interface CoreData {
   scripts: ScriptEntry[]
   /** 脚本分组（**单层**；只承担归类 + 排序） */
   scriptGroups: ScriptGroup[]
-  // ---------- 笔记（notes）：用户登记进来的任意目录 ----------
-  /**
-   * 笔记根目录清单。
-   *
-   * 只存「登记过哪些目录」—— 笔记正文是磁盘上的真实文件，服务端不复制一份（见
-   * `apps/server/src/server/notes.ts`）。这层登记的作用是给文件接口划边界：
-   * 没登记过的目录一律拒绝。
-   */
-  notesRoots: NotesRoot[]
 }
 
 /**
@@ -285,7 +263,7 @@ function detectDefaultLanguage(): AppLanguage {
 
 function emptyData(): CoreData {
   return {
-    version: DATA_VERSION,
+    version: 4,
     models: [],
     acpAgents: [],
     mcpServers: [],
@@ -309,8 +287,7 @@ function emptyData(): CoreData {
     apiGroups: [],
     apiHistory: [],
     scripts: [],
-    scriptGroups: [],
-    notesRoots: []
+    scriptGroups: []
   }
 }
 
@@ -398,8 +375,7 @@ export function resolveDataDir(): string {
 /**
  * 临时工作区在数据目录里的落点：`<数据目录>/conversations/<年月日>/<会话 id>`（如 `20261122`）。
  *
- * 建临时工作区（`ensureScratchWorkspace`）按这条规则拼路径；旧布局的丢弃逻辑以它为准 ——
- * `conversations/` 下一层的 `<id>` 目录一律视为旧布局（见 `discardLegacyScratchWorkspaces`）。
+ * 建临时工作区（`ensureScratchWorkspace`）按这条规则拼路径。
  *
  * 日期用**本地时间**（用户看的是本机日历）；月 / 日补零保证排序。
  */
@@ -413,12 +389,6 @@ export function scratchWorkspacePath(
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return join(dataDir, 'conversations', `${year}${month}${day}`, conversationId)
-}
-
-/** 路径比较口径：Windows 大小写不敏感，其余平台原样 */
-function normalizePath(path: string): string {
-  const resolved = resolve(path)
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
 }
 
 // ---------- 密钥加解密 ----------
@@ -508,17 +478,10 @@ export class JsonStore {
 
   private async load(): Promise<void> {
     await fs.mkdir(this.dataDir, { recursive: true })
-    /** 老数据文件里残留的会话（迁移用）：新布局下它们不在 agent-core.json 里 */
-    let legacyConversations: AgentConversation[] = []
-    /** 文件里写的版本（缺 = v1）：迁移判定用，也用来决定要不要把新版本号写回去 */
-    let fileVersion = DATA_VERSION
     try {
       const raw = JSON.parse(await fs.readFile(this.filePath, 'utf8')) as Partial<CoreData>
-      legacyConversations = Array.isArray(raw.conversations) ? raw.conversations : []
-      /** 老数据文件的版本（缺 = v1）；下面按它决定要不要跑一次性迁移 */
-      fileVersion = typeof raw.version === 'number' ? raw.version : 1
       this.data = {
-        version: DATA_VERSION,
+        version: 4,
         /**
          * 模型配置：读盘时**就把清单归一化一遍**（`AiModelEntry[]`）。
          *
@@ -529,7 +492,7 @@ export class JsonStore {
          * 于是整个 health 500、服务端看起来「挂了」。
          *
          * 归一化的语义与写盘时**同一条**（`normalizeModelEntries`：丢空 id / 重复 id /
-         * 坏窗口），所以它对正常数据是幂等的，不需要配 DATA_VERSION 迁移。
+         * 坏窗口），所以它对正常数据是幂等的。
          * 注意仍要补 `model`：数据文件里那份是派生字段，清单被归一化后可能对不上。
          */
         models: Array.isArray(raw.models)
@@ -589,55 +552,20 @@ export class JsonStore {
         // 主机脚本：同上，缺了 / 手改坏了都当归空数组
         scripts: arrayOr(raw.scripts),
         scriptGroups: arrayOr(raw.scriptGroups),
-        // 笔记根目录：全新字段，旧数据文件里根本没有 —— 补空数组即可
-        // （**不需要** DATA_VERSION 迁移：迁移是给「已写着的旧默认值」用的，
-        //  这里老文件里压根没这个键，补默认值就够了）
-        notesRoots: arrayOr(raw.notesRoots),
-        // 容器型项目的公网域名：**形状从单个 `domain: string` 改成了 `domains: string[]`**
-        // （v2 → v3）。`normalizeContainerPublicSettings` 认得出老字段并包成一项，所以
-        // 老用户配的那个域名升级后照常生效；`fileVersion < DATA_VERSION` 会让这次装载
-        // 顺手落一次盘，把盘上形状改写成新的 `domains`。
+        // 容器型项目的公网域名：归一化成字符串数组（手改坏 / 缺字段都不抛错）
         containerPublicSettings: normalizeContainerPublicSettings(raw.containerPublicSettings)
       }
     } catch {
       // 首次运行 / 文件损坏：从空数据开始（写盘后即为新文件，旧文件被覆盖）
       this.data = emptyData()
     }
-    if (fileVersion < 4) {
-      // v3 → v4：自动放行固定为 allow_once，移除旧的按 agent 记住策略；保留预设与旧类型。
-      this.data.acpAgents = this.data.acpAgents.map((agent) => {
-        const next = { ...agent } as AcpAgentConfig & { allowStrategy?: unknown }
-        delete next.allowStrategy
-        return next
-      })
-    }
-    // 扫盘装配会话索引，并把老数据文件里还在的会话迁移到会话目录
-    await this.loadConversationsFromDisk(legacyConversations)
+    // 扫盘装配会话索引
+    await this.loadConversationsFromDisk()
     this.loaded = true
-    /**
-     * 老版本的临时会话目录是 `conversations/<会话 id>`（一层）。新布局只认
-     * `conversations/<年月日>/<会话 id>` —— 旧布局**不迁移、不兼容**，启动时直接丢弃
-     * （工作区记录与会话索引一起剔除；磁盘文件不动）。
-     */
-    if (this.discardLegacyScratchWorkspaces()) this.schedulePersist()
-    /**
-     * 跑过一次性迁移（文件版本比当前低）：立刻落一次盘，把**新版本号 + 迁移结果**写回去。
-     *
-     * 不写的话每次启动都会重跑迁移 —— 迁移是「压掉已写着的旧默认值」，重跑就等于
-     * 用户之后手改的那个字段永远被压掉。写回之后 `version` 到位，迁移只生效一次。
-     */
-    if (fileVersion < DATA_VERSION) this.schedulePersist()
   }
 
-  /**
-   * 从磁盘装配会话索引：
-   *
-   * 1. 扫每个工作区的 `<工作区>/.fizz/conversation/`（以及兜底目录
-   *    `<数据目录>/conversations/`）读回全部会话；
-   * 2. 老数据文件里还在、磁盘上没有的会话就地迁移写出去（保证不丢），
-   *    并让 agent-core.json 再写一遍把 `conversations` 字段摘掉。
-   */
-  private async loadConversationsFromDisk(legacy: AgentConversation[]): Promise<void> {
+  /** 从磁盘装配会话索引：扫每个工作区的会话目录与兜底目录读回全部会话 */
+  private async loadConversationsFromDisk(): Promise<void> {
     const merged = new Map<string, AgentConversation>()
     // 兜底目录先装，工作区目录后装（同一 id 以工作区那份为准）
     for (const c of await listConversationsIn(fallbackConversationRoot(this.dataDir))) {
@@ -650,46 +578,7 @@ export class JsonStore {
       if (fallback) continue
       for (const c of await listConversationsIn(root)) merged.set(c.id, c)
     }
-    let migrated = false
-    for (const c of legacy) {
-      if (!c?.id || merged.has(c.id)) continue
-      merged.set(c.id, c)
-      await this.writeConversationNow(c).catch((err) =>
-        console.error('[conversation] 迁移写盘失败：', err)
-      )
-      migrated = true
-    }
     this.data.conversations = [...merged.values()]
-    // 老文件里有会话记录：让下一次落盘把 agent-core.json 里的 conversations 字段摘掉
-    if (legacy.length) this.schedulePersist()
-    if (migrated) {
-      console.log(`[conversation] 已把 ${legacy.length} 条老会话迁移到会话目录`)
-    }
-  }
-
-  /**
-   * 丢弃**旧布局**的临时工作区：`conversations/<会话 id>`（一层）。
-   *
-   * 按新布局，临时会话在 `conversations/<年月日>/<会话 id>`。旧布局不迁移、不兼容 ——
-   * 直接把工作区记录和它的会话从索引里剔除，旧会话不再出现在列表里。
-   *
-   * 磁盘目录**不主动删**：那是用户数据，启动流程里做 `rm -rf` 太危险。需要腾空间时
-   * 用户自己清 `conversations/` 下那些 uuid 目录即可。
-   */
-  private discardLegacyScratchWorkspaces(): boolean {
-    const base = normalizePath(resolve(join(this.dataDir, 'conversations')))
-    const legacy = new Set(
-      this.data.workspaces
-        .filter(
-          (w) => w.scratch && w.path && normalizePath(resolve(dirname(w.path))) === base
-        )
-        .map((w) => w.id)
-    )
-    if (legacy.size === 0) return false
-    this.data.workspaces = this.data.workspaces.filter((w) => !legacy.has(w.id))
-    this.data.conversations = this.data.conversations.filter((c) => !legacy.has(c.workspaceId))
-    console.log(`[workspace] 已丢弃 ${legacy.size} 个旧布局的临时工作区（不迁移、不兼容）`)
-    return true
   }
 
   /** 读一份快照（调用方别直接改它，用 mutate） */
@@ -773,35 +662,6 @@ export class JsonStore {
     const workspace = this.data.workspaces.find((w) => w.id === conversation.workspaceId)
     const { root } = await conversationRootFor(workspace, this.dataDir, { create: true })
     await writeConversationToRoot(root, conversation)
-  }
-
-  /** 读一个协作会话的运行态（任务 / 消息 / 最近状态）；普通会话 / 未写过 = null */
-  async readCollabState(conversationId: string): Promise<CollabState | null> {
-    const conversation = this.data.conversations.find((c) => c.id === conversationId)
-    if (!conversation || conversation.kind !== 'collab') return null
-    const workspace = this.data.workspaces.find((w) => w.id === conversation.workspaceId)
-    const { root } = await conversationRootFor(workspace, this.dataDir, { create: false })
-    const state = await readCollabStateDir(join(root, conversationId))
-    if (state) return state
-    const fallback = await readCollabStateDir(
-      join(fallbackConversationRoot(this.dataDir), conversationId)
-    )
-    return fallback
-  }
-
-  /** 写协作运行态（fire-and-forget，与会话文件共用串行队列） */
-  writeCollabState(conversationId: string, state: CollabState): void {
-    const conversation = this.data.conversations.find((c) => c.id === conversationId)
-    if (!conversation) return
-    // 工作区记录整条取好再入队（与 deleteConversationFiles 同理：远端分支要 id）
-    const workspace = this.data.workspaces.find((w) => w.id === conversation.workspaceId)
-    const dataDir = this.dataDir
-    this.convWriting = this.convWriting
-      .then(async () => {
-        const { root } = await conversationRootFor(workspace, dataDir, { create: true })
-        await writeCollabStateToRoot(root, conversationId, state)
-      })
-      .catch((err) => console.error('[collab] 写盘失败：', err))
   }
 
   /**

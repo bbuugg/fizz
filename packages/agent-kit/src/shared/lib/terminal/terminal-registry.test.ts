@@ -10,7 +10,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   focusTerminal,
-  listTerminals,
   liveTerminal,
   registerTerminal,
   unregisterTerminal,
@@ -29,37 +28,40 @@ function makeHandle(
     read: () => '',
     write: () => {},
     focus: () => {},
-    isAlive: () => alive,
-    outputSeq: () => 0,
-    lastOutputAt: () => 0,
-    outputOffset: () => 0,
-    readSince: () => ({ text: '', offset: 0, truncated: false })
+    isAlive: () => alive
   }
 }
 
+/** 自己记下注册过的 key（登记表是模块级单例，逐用例清空避免互相污染） */
+const registeredKeys: string[] = []
+function register(handle: TerminalHandle): void {
+  registerTerminal(handle)
+  registeredKeys.push(handle.tabKey)
+}
+
 afterEach(() => {
-  // 登记表是模块级单例：每条用例后清空，避免互相污染
-  for (const handle of listTerminals()) unregisterTerminal(handle.tabKey)
+  for (const key of registeredKeys) unregisterTerminal(key)
+  registeredKeys.length = 0
 })
 
 describe('liveTerminal', () => {
   it('命中登记在册、还活着的 SSH 终端', () => {
-    registerTerminal(makeHandle('host:h1#1', 'ssh'))
+    register(makeHandle('host:h1#1', 'ssh'))
     expect(liveTerminal('host:h1#1')?.tabKey).toBe('host:h1#1')
   })
 
   it('本机终端同样可写（当前视图是本机终端时就地跑）', () => {
-    registerTerminal(makeHandle('local:1', 'local'))
+    register(makeHandle('local:1', 'local'))
     expect(liveTerminal('local:1')?.tabKey).toBe('local:1')
   })
 
   it('已退出的终端不算（否则脚本会写进一个死掉的会话）', () => {
-    registerTerminal(makeHandle('host:h1#1', 'ssh', false))
+    register(makeHandle('host:h1#1', 'ssh', false))
     expect(liveTerminal('host:h1#1')).toBeNull()
   })
 
   it('容器工作台不算（脚本是主机侧的东西，写进纯文本通道会跑错地方）', () => {
-    registerTerminal(makeHandle('container:1', 'container'))
+    register(makeHandle('container:1', 'container'))
     expect(liveTerminal('container:1')).toBeNull()
   })
 
@@ -68,21 +70,21 @@ describe('liveTerminal', () => {
   })
 
   it('空标签（当前视图不是标签）返回 null', () => {
-    registerTerminal(makeHandle('host:h1#1', 'ssh'))
+    register(makeHandle('host:h1#1', 'ssh'))
     expect(liveTerminal(null)).toBeNull()
     expect(liveTerminal(undefined)).toBeNull()
     expect(liveTerminal('')).toBeNull()
   })
 
   it('按 key 精确认，不会因为同一主机有别的终端就串到别处', () => {
-    registerTerminal(makeHandle('host:h1#1', 'ssh'))
-    registerTerminal(makeHandle('host:h1#2', 'ssh'))
+    register(makeHandle('host:h1#1', 'ssh'))
+    register(makeHandle('host:h1#2', 'ssh'))
     expect(liveTerminal('host:h1#2')?.tabKey).toBe('host:h1#2')
     expect(liveTerminal('host:h1#1')?.tabKey).toBe('host:h1#1')
   })
 
   it('注销之后立刻失效', () => {
-    registerTerminal(makeHandle('host:h1#1', 'ssh'))
+    register(makeHandle('host:h1#1', 'ssh'))
     unregisterTerminal('host:h1#1')
     expect(liveTerminal('host:h1#1')).toBeNull()
   })
@@ -91,7 +93,7 @@ describe('liveTerminal', () => {
 describe('focusTerminal', () => {
   it('把焦点交给登记在册的那条终端', () => {
     const focus = vi.fn()
-    registerTerminal({ ...makeHandle('host:h1#1', 'ssh'), focus })
+    register({ ...makeHandle('host:h1#1', 'ssh'), focus })
     focusTerminal('host:h1#1')
     expect(focus).toHaveBeenCalledTimes(1)
   })

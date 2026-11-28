@@ -36,8 +36,10 @@ function CommandDialog({
   showCloseButton = true,
   commandProps,
   onEscapeKeyDown,
+  onOpenChange,
   ...props
-}: React.ComponentProps<typeof Dialog> & {
+}: Omit<React.ComponentProps<typeof Dialog>, "children" | "onOpenChange"> & {
+  children?: React.ReactNode
   title?: string
   description?: string
   className?: string
@@ -45,13 +47,30 @@ function CommandDialog({
   /** 透传给内部 Command 根（如二级搜索视图用 shouldFilter=false 关掉 cmdk 本地过滤） */
   commandProps?: Omit<React.ComponentProps<typeof CommandPrimitive>, "children">
   /**
-   * 拦 Esc：Radix 在 document 捕获层处理 Esc 并关闭弹层，`event.preventDefault()` 可挡住。
+   * 拦 Esc：Base UI 的关闭走 Root 的 `onOpenChange`（reason 为 `escape-key`），
+   * 回调里对原生事件 `preventDefault()` 等于 `eventDetails.cancel()` —— 弹层不关。
    * 二级命令视图用它实现「Esc 先回上一级，最后才关面板」。
    */
   onEscapeKeyDown?: (event: KeyboardEvent) => void
+  onOpenChange?: (open: boolean) => void
 }) {
   return (
-    <Dialog {...props}>
+    <Dialog
+      {...props}
+      onOpenChange={(open, eventDetails) => {
+        onOpenChange?.(open)
+        if (open || eventDetails.reason !== "escape-key" || !onEscapeKeyDown) return
+        const event = eventDetails.event as KeyboardEvent
+        const original = event.preventDefault.bind(event)
+        let prevented = false
+        event.preventDefault = () => {
+          prevented = true
+          original()
+        }
+        onEscapeKeyDown(event)
+        if (prevented) eventDetails.cancel()
+      }}
+    >
       <DialogHeader className="sr-only">
         <DialogTitle>{title}</DialogTitle>
         <DialogDescription>{description}</DialogDescription>
@@ -67,7 +86,6 @@ function CommandDialog({
         */
         className={cn("top-[10vh] translate-y-0 overflow-hidden p-0", className)}
         showCloseButton={showCloseButton}
-        onEscapeKeyDown={onEscapeKeyDown}
       >
         <Command
           // 搜索框的高 / 图标尺寸由 `CommandInput` 自己给，这里只调列表与分组的内边距。

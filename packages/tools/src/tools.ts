@@ -1,5 +1,5 @@
 /**
- * 工作区 Agent 工具集：读 / 写 / 编辑 / 查文件（glob）/ 查内容（grep）/ 执行命令（bash）。
+ * 工作区 Agent 工具集：读 / 写 / 编辑 / 查文件（glob）/ 查内容（grep）/ 执行命令（shell）。
  *
  * 工具名、参数名、默认值、返回值信封与错误文案保持固定形状：同一段提示词、
  * 同一套模型习惯可以直接沿用。
@@ -13,7 +13,7 @@
  *
  * 所有工具都绑定一个工作区根目录（root），文件路径经 `resolveInside` 越界校验后落盘。
  *
- * 权限：**会改动东西的工具**（write / edit / bash）统一走 `guardWrite` 一道闸 ——
+ * 权限：**会改动东西的工具**（write / edit / shell）统一走 `guardWrite` 一道闸 ——
  * - `readonly`：直接回绝（不落盘、不执行），并告诉模型让用户去切换模式；
  * - `confirm`：经 requestConfirm 弹卡片等用户点「允许」，被拒绝就当次调用放弃；
  *   没有可用的 requestConfirm 通道时**按拒绝处理**（fail-closed）；
@@ -59,7 +59,7 @@ export type AgentPermissionMode = 'full' | 'confirm' | 'readonly'
  * 单个文件整体读入的上限（字节）：超过就不当文本处理。
  *
  * 超限只有「读不动」这一个理由（模型自己也读不动这么大一段），按行分段用
- * read 的 offset/limit 即可，不走 output-log（那里只留给 bash）。
+ * read 的 offset/limit 即可，不走 output-log（那里只留给 shell）。
  */
 const MAX_FILE_BYTES = 8_000_000
 
@@ -87,7 +87,7 @@ function versionOf(stat: { size: number; mtimeMs?: number }): string {
 }
 
 export interface AgentToolOptions {
-  /** 确认模式下 bash 执行前需用户批准（整轮固定的静态档） */
+  /** 确认模式下 shell 执行前需用户批准（整轮固定的静态档） */
   permissionMode: AgentPermissionMode
   /**
    * **运行中实时读取权限档**（优先于上面的静态 `permissionMode`）。
@@ -98,7 +98,7 @@ export interface AgentToolOptions {
    */
   getPermissionMode?: () => AgentPermissionMode
   /**
-   * 命令沙箱开关（设置 → AI → 偏好，默认 `off`）。开启后 `bash` 经平台沙箱执行，
+   * 命令沙箱开关（设置 → AI → 偏好，默认 `off`）。开启后 `shell` 经平台沙箱执行，
    * 只允许写工作区与临时目录；**只作用于本地工作区**（远端首期不隔离）。
    *
    * 与权限档正交：权限档决定「要不要问」，它决定「批准之后能写哪」。
@@ -118,7 +118,7 @@ export interface AgentToolOptions {
     sandboxRequestedMode?: SandboxMode
   }) => Promise<boolean>
   /**
-   * `bash` 每次**启动命令前**调用：`stop` 由调用方持有，调用即杀
+   * `shell` 每次**启动命令前**调用：`stop` 由调用方持有，调用即杀
    * 这条命令的进程树（工具结果收尾成「已中止」）。整轮 abort 仍走
    * `options.abortSignal`（tools 内部把它联动到同一个 per-command controller）。
    * 不传 = 没有单条停止能力（行为与加这些回调之前逐字节一致）。
@@ -129,7 +129,7 @@ export interface AgentToolOptions {
   /** 命令执行期间的 stdout / stderr 实时增量（纯转发，不缓存） */
   onCommandOutput?: (toolCallId: string, stream: 'stdout' | 'stderr', chunk: string) => void
   /**
-   * `bash` 带 `run_in_background: true` 时调用：把它登记成一条**后台任务**。
+   * `shell` 带 `run_in_background: true` 时调用：把它登记成一条**后台任务**。
    * 不传 = 没有后台执行能力（工具会如实回绝）。
    */
   onBackgroundCommand?: (req: {
@@ -457,12 +457,12 @@ function intentOf(input: unknown): string {
 }
 
 /**
- * 把后端执行结果拼成 `bash` 的模型可见文本：
+ * 把后端执行结果拼成 `shell` 的模型可见文本：
  * stdout、`[stderr]` 段、`[exit code: N]` 标记；全空写 `(no output)`。
  *
  * 非 0 退出码**不是**工具错误（模型自己决定怎么办）；只有启动失败这种基础设施问题才抛错。
  */
-async function formatBashOutput(
+async function formatShellOutput(
   backend: WorkspaceBackend,
   command: string,
   result: WorkspaceExecResult,
@@ -505,7 +505,7 @@ async function formatBashOutput(
   const full = markers.length ? `${body.trimEnd()}\n${markers.join('\n')}` : body.trimEnd()
   return summarizeLongOutput(full, {
     backend,
-    tool: 'bash',
+    tool: 'shell',
     detail: command.slice(0, 200)
   })
 }
@@ -584,7 +584,7 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
       return `当前是只读模式：${denied}。请把这一点告诉用户（他可以在「设置 → 通用」里把权限切换成「确认模式」或「完全访问」），不要反复尝试同类操作。`
     }
     if (mode !== 'confirm') return null
-    // 没有审批通道时**失败关闭**：与 `guardMutation` / `client-tool-gate` / ACP 同一条口径。
+    // 没有审批通道时**失败关闭**：与 `guardMutation` / ACP 同一条口径。
     // 曾经这里直接放行 —— 那等于「没人能点允许」的环境反而裸跑改动类工具，方向是反的。
     if (!opts.requestConfirm) {
       return `「${req.toolName}」需要用户确认，但当前环境没有可用的确认通道（无界面 / 未接入审批），已取消这次调用。请告诉用户这次没有执行，不要重试。`
@@ -883,7 +883,7 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
       }
     }),
 
-    bash: tool({
+    shell: tool({
       description:
         tr(
           '在工作区目录下执行 shell 命令并返回输出（stdout + stderr）。适用于运行构建 / 测试 / git 操作 / 安装依赖 / 启动服务等。命令默认超时 120 秒。' +
@@ -945,7 +945,7 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
 
         const guardRequest = {
           toolCallId: options.toolCallId,
-          toolName: 'bash',
+          toolName: 'shell',
           command,
           intent: intentOf(input)
         }
@@ -973,7 +973,7 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
            */
           // 提权必须有确认通道：没有就按拒绝（与 guardWrite 同一条 fail-closed 口径）
           if (opts.requestConfirm === undefined) {
-            return '「bash」需要用户确认，但当前环境没有可用的确认通道（无界面 / 未接入审批），已取消这次调用。请告诉用户这次没有执行，不要重试。'
+            return '「shell」需要用户确认，但当前环境没有可用的确认通道（无界面 / 未接入审批），已取消这次调用。请告诉用户这次没有执行，不要重试。'
           }
           const approved = await opts.requestConfirm({
             ...guardRequest,
@@ -1051,7 +1051,7 @@ export function buildAgentTools(root: string, opts: AgentToolOptions): ToolSet {
             onOutput: (stream, chunk) => opts.onCommandOutput?.(toolCallId, stream, chunk),
             ...(callSandbox ? { sandbox: callSandbox } : {})
           })
-          return await formatBashOutput(backend, command, result, t)
+          return await formatShellOutput(backend, command, result, t)
         } finally {
           opts.onCommandEnd?.(toolCallId)
           options.abortSignal?.removeEventListener('abort', stop)

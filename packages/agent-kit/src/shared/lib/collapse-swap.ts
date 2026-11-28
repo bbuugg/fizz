@@ -4,7 +4,7 @@
  * ## 解决的观感问题
  *
  * 工具卡（`PartView` 的 ToolCallCard）收起时，`ToolContent`（ai-elements）带
- * `data-[state=closed]:animate-out slide-out-to-top-2`，有 ~150ms 的滑动淡出。如果正好
+ * `data-closed:animate-out slide-out-to-top-2`，有 ~150ms 的滑动淡出。如果正好
  * 在这一帧内容也换了（工具刚跑完：入参预览 → 结果 / diff；或用户点收起的同一刻收到结果），
  * 那 150ms 里屏幕上渲染的就是**新内容** —— 用户看到「内容先变成 diff，然后才折叠」，
  * 中间闪一下（用户报的）。

@@ -8,6 +8,7 @@
  */
 import type { CSSProperties } from 'react'
 import type { GitChange } from '@fizz/git'
+import { treeIndent } from './tree-indent'
 
 /** 目录行：一棵子树，折叠状态下连同里面的文件一起收起 */
 export interface ChangeTreeDir {
@@ -34,25 +35,20 @@ export interface ChangeTreeFile {
 
 export type ChangeTreeNode = ChangeTreeDir | ChangeTreeFile
 
-/** 每层缩进多少 px：跟行内图标（chevron size-3.5 + gap-1.5 ≈ 20px）同量级，肉眼看是一档一档的 */
-const INDENT_STEP = 12
-
-/** 顶层行也留一点左内边距，与面板其它内容对齐 */
-const INDENT_BASE = 6
-
-/** 某一层的左内边距（像素）。目录行、文件行与它们下方的 diff 共用同一套基准。 */
-export function changeTreeIndentPx(depth: number): number {
-  return INDENT_BASE + depth * INDENT_STEP
-}
-
 /**
- * 某一层的左内边距。目录行与文件行共用它（`GitChangeTree.tsx` 与 `GitPanel` 的文件行），
+ * 某一层的左内边距。目录行与文件行共用它（`GitChangeTree.tsx` 与 `ChangeRow.tsx`），
  * 否则两边的层级会错开半格。
+ *
+ * 基准 20px = 分组标题的折叠箭头（`px-2` + 8px）再往里一档 12px：展开后的子项要看得出
+ * 缩进在标题下面，又不至于挪到标题文字那一列去（那样窄面板里可用宽度太少）。步长 14px
+ * 与文件树一致（层级越深越往里）；rem 表达让它跟着手机端的根字号一起放大。
+ *
+ * 缩进只作用在**行内按钮**上（背景挂在外层行），所以 hover 底色仍然铺满整行。
  *
  * 用行内 style 而不是拼接 className：那个 class 名是运行期算出来的，Tailwind 扫源码扫不到。
  */
 export function changeTreeIndent(depth: number): CSSProperties {
-  return { paddingLeft: changeTreeIndentPx(depth) }
+  return { paddingLeft: treeIndent(depth, 14, 20) }
 }
 
 /** 排序用：目录排在文件前面（各自按名称排），数字当数字比，`2` 排在 `10` 前面 */

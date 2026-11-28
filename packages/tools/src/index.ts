@@ -8,7 +8,7 @@
  *   由调用方注入答复通道）；
  * - `web-fetch.ts` —— 联网抓取（Playwright 渲染 + turndown 转 Markdown，
  *   两者都走动态 import，没装时给可读错误）；
- * - `output-log.ts` —— 超预算的 **bash / web_fetch 输出**把**全文**落进工作区的
+ * - `output-log.ts` —— 超预算的 **shell / web_fetch 输出**把**全文**落进工作区的
  *   `.fizz/tool-output/`（返回相对路径 + 全文行数 + 本次返回哪几行）；续读不靠专用工具，
  *   模型用本来就有的 `read`（offset/limit 按行翻）或 `grep`（关键词检索）——
  *   早先那套 `read_log` 工具已移除，理由见该文件顶部。其余工具靠自己的分页参数，不走这里。
@@ -16,7 +16,7 @@
  *   却仍带颜色（`npm run` 注入 `FORCE_COLOR`），工具结果与后台任务日志都要先过它。
  * - `git-read.ts` —— `git_read`：只读 git 视图（status / diff / log / show）。**刻意不给**
  *   写仓库的动作（checkout / add / commit …），也不进 `buildAgentTools` 的 all ——
- *   它只服务没有 bash 的 subagent（父 agent 要看 diff 自己跑 git，那边有审批）。
+ *   它只服务没有 shell 的 subagent（父 agent 要看 diff 自己跑 git，那边有审批）。
  * - `project-tools.ts` —— 项目管理工具组（创建 / 列出 / 打开 / 删除项目与 worktree），
  *   服务能力经 deps 注入，普通会话与项目助手共用；
  * - `model-tools.ts` —— 模型配置工具组（配置的列 / 增 / 改 / 删、从上游拉模型清单、

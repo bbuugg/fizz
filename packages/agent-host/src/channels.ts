@@ -16,15 +16,6 @@ export const AGENT_IPC = {
   sseClose: 'agent:sse:close',
   /** 弹系统目录选择框（桌面端选工作区目录用；web 没有本机文件系统） */
   pickDirectory: 'agent:pickDirectory',
-  /**
-   * 「用本应用打开的本机 Markdown 文件」的三条通道：选文件 / 读 / 写。
-   *
-   * ⚠️ 后两条**只认被授权过的路径**（用户在对话框里选中的、或系统交来的），
-   * 见 `./local-files` 的路径闸 —— 它们**不是**通用的文件读写口子。
-   */
-  pickLocalMarkdownFile: 'agent:pickLocalMarkdownFile',
-  localFileRead: 'agent:localFile:read',
-  localFileWrite: 'agent:localFile:write',
   /** 系统默认浏览器打开链接（快捷功能 link；协议白名单在主进程侧校验） */
   openExternal: 'agent:system:openExternal',
   /** 系统默认程序打开本地路径（快捷功能 path） */
@@ -145,19 +136,6 @@ export interface PtyExitEvent {
   exitCode: number
 }
 
-// ---------- 「用本应用打开的本机 Markdown 文件」 ----------
-
-/**
- * 读一个被授权的本机文件的结果。
- *
- * 刻意用可辨识联合而不是「失败时返回 null」：界面要区分「读失败」和「内容为空」，
- * 而空文件是完全合法的一种笔记 / 文档。
- */
-export type LocalFileReadResult = { ok: true; content: string } | { ok: false; error: string }
-
-/** 写回一个被授权的本机文件的结果 */
-export type LocalFileWriteResult = { ok: true } | { ok: false; error: string }
-
 // ---------- ZMODEM（rz/sz）文件传输 ----------
 
 /** 系统文件选择框选中的一个文件：名字 + 字节（结构化克隆把 Buffer 变成 Uint8Array） */
@@ -243,17 +221,6 @@ export interface AgentTransportBridge {
    * 同步返回：drop 事件里要立刻用；拿不到路径（传进来的不是 File）返回空串。
    */
   getPathForFile(file: DroppedFile): string
-  /**
-   * 弹系统文件选择框选一个本机 **Markdown** 文件，返回绝对路径（用户取消返回 null）。
-   *
-   * 过滤条件**写死 markdown**、不接受渲染端指定，选中的路径同时会被**授权**
-   * （进 `./local-files` 的路径闸）—— 之后 `readLocalFile` / `writeLocalFile` 才认它。
-   */
-  pickLocalMarkdownFile(): Promise<string | null>
-  /** 读一个**被授权**的本机文件（UTF-8）。未授权的路径一律 `ok: false`，读不到内容也不抛 */
-  readLocalFile(path: string): Promise<LocalFileReadResult>
-  /** 写回一个**被授权**的本机文件（UTF-8，整份覆盖）。未授权的路径一律 `ok: false` */
-  writeLocalFile(path: string, content: string): Promise<LocalFileWriteResult>
   /** 开一个**本机** PTY 终端（shell 由 `shellId` 指定，不传则按平台默认挑；可带额外 args / 启动后自动命令），失败返回 error */
   openPty(input: PtyOpenRequest): Promise<PtyOpenResult>
   /** 向终端写输入（按键 / 粘贴的文本，或 ZMODEM 的二进制帧） */

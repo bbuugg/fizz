@@ -4,11 +4,9 @@
  * 这块是「保存下来 + 助手间共享 + 支持切换」的地基，坏了的后果都不是报错而是**悄悄丢历史**，
  * 所以几条约束必须钉住：
  *
- * 1. v1（按 panelKey 一格）能迁到 v2 会话池，`global` 那格成为当前会话；
- * 2. 迁移**先写 v2 再删 v1**，且写失败时 v1 必须留着（下次还能再迁一遍）；
- * 3. 消息为空 = 删掉这一段（不留空壳）；
- * 4. 份数超上限丢最老的，但**刚写的那段**永远留着；
- * 5. 单段就超容量上限时宁可不落盘（不要写爆配额把别的会话一起挤掉）。
+ * 1. 消息为空 = 删掉这一段（不留空壳）；
+ * 2. 份数超上限丢最老的，但**刚写的那段**永远留着；
+ * 3. 单段就超容量上限时宁可不落盘（不要写爆配额把别的会话一起挤掉）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentChatMessage } from '@fizz/contracts/agent-api'
@@ -21,7 +19,6 @@ import {
 } from './assistant-history'
 
 const V2_KEY = 'fizz.agent.assistant.conversations.v2'
-const V1_KEY = 'fizz.agent.assistant.history.v1'
 
 /** 最小 localStorage 替身（node 环境下没有） */
 class FakeStorage {
@@ -69,84 +66,6 @@ const turn = (text: string): AgentChatMessage[] => [
   message('user', text, `u-${text}`),
   message('assistant', `回答：${text}`, `a-${text}`)
 ]
-
-describe('assistant-history · v1 迁移', () => {
-  it('把按 panelKey 的旧结构收进会话池，global 那格成为当前会话', () => {
-    storage.map.set(
-      V1_KEY,
-      JSON.stringify({
-        global: { sessionId: 'asst-1', messages: turn('全局'), updatedAt: 100 },
-        'local:3': { sessionId: 'asst-2', messages: turn('终端'), updatedAt: 200 }
-      })
-    )
-
-    const store = loadAssistantStore()
-
-    expect(Object.keys(store.conversations).sort()).toEqual(['asst-1', 'asst-2'])
-    expect(store.activeId).toBe('asst-1')
-    // 迁完就该把 v1 删掉，否则每次读都白跑一遍
-    expect(storage.getItem(V1_KEY)).toBe(null)
-    expect(storage.getItem(V2_KEY)).toBeTruthy()
-  })
-
-  it('同一个 sessionId 出现在多格：留更新时间较新的那份', () => {
-    storage.map.set(
-      V1_KEY,
-      JSON.stringify({
-        global: { sessionId: 'asst-1', messages: turn('旧'), updatedAt: 100 },
-        'local:1': { sessionId: 'asst-1', messages: turn('新'), updatedAt: 300 }
-      })
-    )
-
-    const store = loadAssistantStore()
-
-    expect(Object.keys(store.conversations)).toEqual(['asst-1'])
-    expect(store.conversations['asst-1'].updatedAt).toBe(300)
-    expect(store.conversations['asst-1'].messages[0].parts).toEqual([
-      { type: 'text', text: '新' }
-    ])
-  })
-
-  it('没有 global 那格时落到最近更新的一段', () => {
-    storage.map.set(
-      V1_KEY,
-      JSON.stringify({
-        'local:1': { sessionId: 'asst-1', messages: turn('旧'), updatedAt: 100 },
-        'local:2': { sessionId: 'asst-2', messages: turn('新'), updatedAt: 300 }
-      })
-    )
-
-    expect(loadAssistantStore().activeId).toBe('asst-2')
-  })
-
-  it('写不进 v2（配额满）时 v1 必须留着，下次还能再迁', () => {
-    storage.map.set(
-      V1_KEY,
-      JSON.stringify({ global: { sessionId: 'asst-1', messages: turn('全局'), updatedAt: 100 } })
-    )
-    storage.failWrites = true
-
-    const store = loadAssistantStore()
-
-    // 内存里照样拿得到（本次会话不受影响）
-    expect(store.activeId).toBe('asst-1')
-    // 但盘上不能「迁一半」：v1 还在，v2 没写
-    expect(storage.getItem(V1_KEY)).toBeTruthy()
-    expect(storage.getItem(V2_KEY)).toBe(null)
-  })
-
-  it('空消息的旧格子不迁移（不造空会话）', () => {
-    storage.map.set(
-      V1_KEY,
-      JSON.stringify({ global: { sessionId: 'asst-1', messages: [], updatedAt: 100 } })
-    )
-
-    const store = loadAssistantStore()
-
-    expect(store.conversations).toEqual({})
-    expect(store.activeId).toBe(null)
-  })
-})
 
 describe('assistant-history · 读写', () => {
   it('存进去能原样读回来（含 activeId）', () => {

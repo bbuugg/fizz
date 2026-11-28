@@ -23,6 +23,7 @@ import type { UploadFileRef } from "@fizz/contracts/agent-api";
 import { ComposerToolbar } from "@fizz/agent-kit/features/chat/ComposerToolbar";
 import type { AgentApp } from "@fizz/agent-kit/shared/hooks/useAgentApp";
 import { useT } from "@fizz/agent-kit/shared/lib/language";
+import { useIsMobile } from "@fizz/agent-kit/shared/hooks/useIsMobile";
 import { type AgentChatMessage } from "@fizz/contracts/types";
 import { AcpModePill } from "@fizz/agent-kit/features/chat/AcpModePill";
 import { ComposerStatusBar } from "@fizz/agent-kit/features/chat/ComposerStatusBar";
@@ -105,6 +106,7 @@ export function useMainComposerProps(
   },
 ): ChatComposerProps {
   const t = useT()
+  const isMobile = useIsMobile()
   const { textInput } = usePromptInputController();
   /**
    * 提交那一刻的草稿 / 最新草稿：`onStarted` 可能在几百毫秒后才到（ACP 建会话），
@@ -249,7 +251,9 @@ export function useMainComposerProps(
     sending: app.preparingSend || (!app.activeConversationId && app.creatingConversation),
     // 提示语不按工作区分支：没选项目也能聊（发送时服务端建临时工作区），
     // 换一句「不指定项目」的文案只会让人以为这里少了什么。
-    placeholder: t("想让我帮你做什么…（Enter 发送，Shift+Enter 换行）"),
+    placeholder: t(
+      isMobile ? "想让我帮你做什么…" : "想让我帮你做什么…（Enter 发送，Shift+Enter 换行）",
+    ),
     // 输入框卡片内（`header`）从上到下：引用 / 附件预览 / 编辑条（正在改哪条历史）/
     // 编辑插话条（正在改哪条未生效插话）/ 统一的待发送列表（插话 + 队列），都与输入框浑然一体
     //（各自自带底部分隔线）

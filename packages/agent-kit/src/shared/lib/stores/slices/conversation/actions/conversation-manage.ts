@@ -3,7 +3,6 @@
  * 内部助手一律从 ctx 拿，internals 不会反过来依赖它。
  */
 import { isRemoteWorkspace } from "@fizz/contracts/types";
-import { defaultCollabSettings } from "@fizz/agent-kit/shared/lib/collab-defaults";
 import { errorMessage } from "@fizz/agent-kit/shared/lib/stores/shared";
 import { saveActiveWorkspaceId, saveActiveConversationId, saveQueue } from "../storage";
 import type { ConvInternals } from "../internals/context";
@@ -13,7 +12,7 @@ export function createConversationManageActions(
   ctx: ConvInternals,
 ): Pick<
   ConversationSlice,
-  "selectWorkspace" | "newConversation" | "newCollabConversation" | "deleteConversation" | "clearConversation" | "deleteMessage" | "deleteMessagesFrom" | "resendMessage"
+  "selectWorkspace" | "newConversation" | "deleteConversation" | "clearConversation" | "deleteMessage" | "deleteMessagesFrom" | "resendMessage"
 > {
   const { set, get, api, readSlice, writeSlice, dropSlice, preferredTarget, guardTarget, removeMessages, resolveConvId, isFocus } = ctx;
 
@@ -132,18 +131,6 @@ export function createConversationManageActions(
         }));
         // 没选项目：服务端刚建了个临时工作区 —— 清单不刷新的话顶栏 / 侧栏认不出它
         if (!wid) set({ workspaces: await api.listWorkspaces() });
-        // 请求与临时工作区刷新期间用户可能已经切走；迟到结果只并入清单，不抢焦点或改恢复位置。
-        if (
-          resolveConvId(undefined) === sourceConversationId &&
-          get().activeWorkspaceId === sourceWorkspaceId
-        ) {
-          set({
-            activeWorkspaceId: created.workspaceId,
-            activeConversationId: created.id,
-          });
-          saveActiveWorkspaceId(created.workspaceId);
-          saveActiveConversationId(created.id);
-        }
         /**
          * 新任务页选好的 ACP 档位：会话一建好就下发。agent 侧 `session/new` 给的默认档
          * 未必是用户选的那个，而这一轮马上就要发 —— 等下一轮再补就是「第一轮按错的档跑」。
@@ -163,6 +150,19 @@ export function createConversationManageActions(
               draft.thought,
             );
         }
+        // 页面切换放到所有异步准备之后：否则新会话会先以空列表露出，档位设置结束后才出现
+        // 乐观用户消息，造成消息区闪一下。等待期间用户若切走，迟到结果只并入清单、不抢焦点。
+        if (
+          resolveConvId(undefined) === sourceConversationId &&
+          get().activeWorkspaceId === sourceWorkspaceId
+        ) {
+          set({
+            activeWorkspaceId: created.workspaceId,
+            activeConversationId: created.id,
+          });
+          saveActiveWorkspaceId(created.workspaceId);
+          saveActiveConversationId(created.id);
+        }
         // 只消费本次创建的草稿；等待期间新选的档位属于下一次创建。
         if (draft && get().draftAcp === draft) set({ draftAcp: null });
         // 会话已经建好、界面立刻就能用：档位下发在上面（要等 agent 应答），那几百毫秒
@@ -172,17 +172,6 @@ export function createConversationManageActions(
         get().setError(errorMessage(err));
         return settle(null);
       }
-    },
-    newCollabConversation: async (workspaceId) => {
-      const preferred = preferredTarget();
-      return get().newConversation(workspaceId, undefined, {
-        backend: "builtin",
-        ...(preferred
-          ? { configId: preferred.configId, modelId: preferred.modelId }
-          : {}),
-        kind: "collab",
-        collab: defaultCollabSettings(),
-      });
     },
     deleteConversation: async (id) => {
       const api = get().getApi();

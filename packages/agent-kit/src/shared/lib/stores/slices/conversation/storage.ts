@@ -147,7 +147,7 @@ export function saveToolIntent(value: boolean): void {
  * 命令沙箱开关：默认 **off**（与加这个开关之前完全一致）。
  *
  * 显式开启才隔离 —— 没有可用后端的平台（Windows / 缺 bwrap 的容器）开着会让
- * bash 直接失败，所以不能替用户默认打开。
+ * shell 直接失败，所以不能替用户默认打开。
  */
 const SANDBOX_MODE_KEY = "fizz.web.sandboxMode";
 export function loadSandboxMode(): CommandSandboxMode {

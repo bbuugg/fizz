@@ -17,7 +17,6 @@ import { join } from 'node:path'
 import {
   app,
   BrowserWindow,
-  dialog,
   ipcMain,
   Menu,
   nativeImage,
@@ -37,12 +36,6 @@ import {
   stopRemoteAccess
 } from '@fizz/agent-host'
 import { listInstalledIdes, openFileManagerAt, openIdeWith, revealInFileManager } from './opener'
-import {
-  deliverStartupArgs,
-  initExternalFiles,
-  openMarkdownDocument,
-  takePendingExternalFiles
-} from './external-files'
 import {
   cancelDownload,
   checkForUpdates,
@@ -71,32 +64,6 @@ let tray: Tray | null = null
 let quitting = false
 /** 电源请求句柄（`prevent-app-suspension`）；退出时释放，见 will-quit */
 let powerSaveBlockerId: number | null = null
-
-/**
- * 当前有几个标签「改了还没保存」（渲染端持续推来的）。
- *
- * 退出路径上**不做往返询问**（那时渲染进程已经不保证还在响应，等不到就是永久卡住），
- * 所以渲染端一有变化就推，这里只当缓存读 —— 见 `before-quit`。
- */
-let dirtyTabCount = 0
-
-/**
- * 用户已确认过「有未保存修改，仍然退出」。
- *
- * 与 `quitting` **不是一回事**，别合并：`quitting` 在 `createWindow()` 的 `close` 处理里
- * 是「放行关闭、别收托盘」的开关（`WINDOW_IPC.quit` / 安装器都要提前置它），而这一位
- * 只回答「退出拦截还要不要再拦一次」。
- */
-let quitConfirmed = false
-
-/**
- * 退出确认框正开着。
- *
- * 不加这道闸的话，连点两下「退出」（托盘菜单 / `Ctrl+Q` 都行）就会**叠出两个原生确认框** ——
- * 原生框是模态的，第二个通常藏在第一个后面，用户点掉一个还得再点掉一个，看起来就是
- * 「退不掉」。`before-quit` 是会被触发多次的，别假设它只有一次。
- */
-let quitPromptOpen = false
 
 /**
  * 后端异步收尾（`backendManager.drain()`）是否已经跑过。
@@ -381,18 +348,6 @@ function broadcastToWindows(channel: string, payload: unknown): void {
   }
 }
 
-/*
- * 外部 Markdown 文件（双击系统里的 `.md`）的三个入口。
- *
- * ⚠️ 必须在**模块求值期**就调：macOS 的 `open-file` 可能早于 `whenReady` 触发，
- * 放进 ready 回调里挂监听就晚了（这次打开的请求直接丢）。这里在 `broadcastToWindows`
- * 定义之后调用，读起来顺 —— 函数声明会提升，`whenReady` 又还没 resolve，时机是对的。
- */
-initExternalFiles({
-  broadcast: broadcastToWindows,
-  getWindow: () => mainWindow
-})
-
 /**
  * 窗口控制 IPC：自定义标题栏的最小化 / 最大化(还原) / 关闭 / 状态查询 / 系统通知。
  * 与根应用同一套语义，通道名独立（见 ../shared/window）。
@@ -501,20 +456,6 @@ function registerWindowIpc(): void {
   ipcMain.handle(WINDOW_IPC.revealFile, (_e, path: string) => revealInFileManager(path))
   ipcMain.handle(WINDOW_IPC.openIde, (_e, id: string, dir: string) => openIdeWith(id, dir))
 
-  // ---------- 外部 Markdown 文件（双击系统里的 .md） ----------
-  /**
-   * 渲染端启动时取走「监听挂上之前就发完了」的那批（先存后取，见 ./external-files 文件头）。
-   * 拉一次就清空 —— 渲染端只该在挂载时调一次，重渲染反复调会把同一个文件重开一遍。
-   */
-  ipcMain.handle(WINDOW_IPC.takePendingExternalFiles, () => takePendingExternalFiles())
-  /**
-   * 脏标签计数（退出拦截用）。**只更新缓存，绝不在这里弹任何东西** ——
-   * 渲染端每次 `dirty` 变化都会推一次，这里做重活会让打字变卡。
-   */
-  ipcMain.handle(WINDOW_IPC.setDirtyTabCount, (_e, count: number) => {
-    dirtyTabCount = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0
-  })
-
   // ---------- 远程访问（desktop 专属） ----------
   // sendSync：设置页挂载时同步取一次（与 loadCloseToTray 同一套路）
   ipcMain.on(WINDOW_IPC.loadRemoteAccess, (event) => {
@@ -564,14 +505,6 @@ function registerWindowIpc(): void {
     // ⚠️ 没有可安装的更新时**别动 `quitting`**：置上之后「关闭按钮收起到托盘」就永久失效了
     if (updaterStatus().state !== 'downloaded') return false
     quitting = true
-    /**
-     * 同时**绕过退出拦截**（`quitConfirmed`）。
-     *
-     * 这是用户明确点的「重启去装更新」，安装器还等着我们把进程让出来 —— 此时再拦一次
-     * 弹个「有未保存的修改」，轻则莫名其妙，重则让更新装不上。顺带一提：`quitAndInstall`
-     * 内部也走 `app.quit()`，不绕过的话 `before-quit` 那边会把这次退出拦下来。
-     */
-    quitConfirmed = true
     return quitAndInstall()
   })
 }
@@ -709,24 +642,6 @@ function installApplicationMenu(): void {
   const template: Electron.MenuItemConstructorOptions[] = [
     // mac 应用菜单（关于 / 隐藏 / 退出），里面本来就没有刷新项
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : []),
-    {
-      label: '文件',
-      submenu: [
-        /*
-         * 「打开 Markdown…」是外部文件那条路的**第二个入口**（第一个是双击系统里的 .md）。
-         * 加速键挂菜单而不是渲染端：菜单加速键在浏览器进程里先行一步，不会被渲染端的
-         * 快捷键分发吞掉，也不依赖任何界面挂载出来。
-         *
-         * 走 `openMarkdownDocument()` 与双击关联**同一条出口**（选完过闸 → 入队 → 广播），
-         * 渲染端因此只有一条处理路径。
-         */
-        {
-          label: '打开 Markdown…',
-          accelerator: 'CmdOrCtrl+O',
-          click: () => void openMarkdownDocument()
-        }
-      ]
-    },
     { role: 'editMenu' },
     {
       label: '视图',
@@ -970,14 +885,6 @@ void app.whenReady().then(() => {
   void backendManager.start()
   createWindow()
 
-  /*
-   * 首实例的「双击关联」参数：Windows / Linux 把文件路径放在 `process.argv` 里。
-   *
-   * 放在 `createWindow()` 之后读，但**顺序其实无关** —— 路径先进 `pending` 队列，
-   * 渲染端挂载时会自己来取（那一刻它才听得到广播）。见 `./external-files` 的「先存后取」。
-   */
-  deliverStartupArgs()
-
   // 电源请求：托盘常驻意味着「没有可见窗口」是常态，别让系统把后台的我们冻掉
   keepAppAwake()
 
@@ -996,63 +903,13 @@ void app.whenReady().then(() => {
 })
 
 /**
- * 有未保存的修改时问一句（原生确认框）。
- *
- * 用**主进程的**对话框而不是渲染端的弹窗：这一步发生时窗口可能已经不可见（收在托盘里
- * 通过托盘菜单退出），渲染端的弹窗会出现在一个看不见的窗口上 —— 用户只看到「退不掉」。
- */
-async function confirmQuitWithDirtyTabs(count: number): Promise<boolean> {
-  const options: Electron.MessageBoxOptions = {
-    type: 'warning',
-    buttons: ['取消', '仍然退出'],
-    defaultId: 0,
-    cancelId: 0,
-    noLink: true,
-    title: '有未保存的修改',
-    message: `有 ${count} 个标签改了还没保存。`,
-    detail: '现在退出会丢掉这些修改。'
-  }
-  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
-  const result = win
-    ? await dialog.showMessageBox(win, options)
-    : await dialog.showMessageBox(options)
-  return result.response === 1
-}
-
-/**
  * 真退出（托盘菜单 / Cmd+Q / 卸载器）时才放行 close；否则一律拦成「收起到托盘」。
  *
  * ⚠️ **`quitting` 只在真的要退时才置**。它在 `createWindow()` 的 `close` 处理里是
  * 「放行关闭、别收托盘」的开关，抢跑到「用户取消了退出」那一支就会留下一个坏状态：
  * 之后点标题栏的 X 会直接退出应用，而不是收进托盘 —— 而用户以为自己刚取消了。
  */
-app.on('before-quit', (event) => {
-  /*
-   * 退出拦截：有脏标签就先问一次。
-   *
-   * 计数是渲染端**持续推来的缓存**，这里零往返（见 `dirtyTabCount` 的注释）——
-   * 退出路径上再等一次 IPC 很可能永远等不到，那会把退出卡死，比丢数据更难收拾。
-   */
-  if (!quitConfirmed && dirtyTabCount > 0) {
-    event.preventDefault()
-    // 确认框已经开着：只拦不停（否则连点退出会叠出好几个框，见 `quitPromptOpen`）
-    if (quitPromptOpen) return
-    quitPromptOpen = true
-    void confirmQuitWithDirtyTabs(dirtyTabCount)
-      .then((confirmed) => {
-        if (!confirmed) {
-          // 取消了：把可能被提前置上的 `quitting` 收回来（见这个监听的注释）
-          quitting = false
-          return
-        }
-        quitConfirmed = true
-        app.quit()
-      })
-      .finally(() => {
-        quitPromptOpen = false
-      })
-    return
-  }
+app.on('before-quit', () => {
   quitting = true
 })
 

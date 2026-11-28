@@ -102,7 +102,7 @@ useEffect(() => {
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-3">
         <p className="text-xs leading-4 text-muted-foreground">
-          {tr('Token 用量。数据来自每轮结束时随消息落盘的 usage')}
+          {tr('数据来自每轮结束时落盘的 usage')}
         </p>
         <Button
           size="sm"

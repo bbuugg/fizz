@@ -25,7 +25,7 @@ export function ForkDialog({
       open={open}
       onOpenChange={onOpenChange}
       title="从此签出"
-      description="以选中的消息为终点创建分支会话：历史到这里为止，之后两边各自独立（类似 git 从这里拉一个分支）。"
+      description="以这条消息为终点分出新会话，原会话不受影响。"
       confirmLabel="签出"
       busyLabel="签出中…"
       onSubmit={async (target) => {

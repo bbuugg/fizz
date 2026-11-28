@@ -520,14 +520,9 @@ function ToolHeadLabel({
  * 在流里是连着的三张卡，形状一致才看得出是同一件事的推进）。搜内容用放大镜、找文件用
  * 「文件 + 放大镜」、列目录用文件夹 —— 这三步常挨在一起，各给一颗才不至于一路扳手。
  *
- * 终端助手那四个（`run_in_terminal` / `read_terminal_output` / `send_keys` /
- * `list_terminal_sessions`）与 `bash` 用**同一颗**方形终端（带框的那个）：它们都是
- * 「跑命令」，扫对话流时该是同一个符号。跑在哪一台机器、哪条终端上由**标题**区分
- * （见 `TOOL_LABELS` 那段说明），不要靠换图标 —— 光板 `Terminal` 与带框的 `SquareTerminal`
- * 在 16px 下几乎分不出来，反而像两套图标混用（2026-11 用户明确要求统一成带框的）。
  */
 const TOOL_HEAD_ICONS: Record<string, LucideIcon> = {
-  bash: SquareTerminalIcon,
+  shell: SquareTerminalIcon,
   read: FileTextIcon,
   write: FilePlusIcon,
   edit: FilePenIcon,
@@ -539,10 +534,6 @@ const TOOL_HEAD_ICONS: Record<string, LucideIcon> = {
   todowrite: ListChecksIcon,
   // 读取技能说明：书本，与「读文件」的文件字形分开
   skill: BookOpenIcon,
-  run_in_terminal: SquareTerminalIcon,
-  read_terminal_output: SquareTerminalIcon,
-  send_keys: SquareTerminalIcon,
-  list_terminal_sessions: SquareTerminalIcon,
   // 项目管理助手专用的目录浏览（工具名见 project-tools）
   list_dirs: FolderTreeIcon,
 };
@@ -577,10 +568,10 @@ const ACP_KIND_ICONS: Record<string, LucideIcon> = {
  * 工具名 + ACP 类别 → 头部图标；认不出的一律扳手。
  *
  * 顺序是**工具名优先、类别兜底**：
- * - 内置工具（`bash` / `read` / 派活 `agent-*` …）只靠名字，图标一个都不变；
+ * - 内置工具（`shell` / `read` / 派活 `agent-*` …）只靠名字，图标一个都不变；
  * - 外部 Agent 报了 `name` 且命中表时照名字走（不同 agent 可能复用 `read` 之类的名字）；
  * - 名字认不出（多半是占位名 `"tool"` 或各家自己的命名）再看 `acpKind`，最后才扳手。
- *   ⚠️ 别把顺序倒过来：`kind` 是粗类别，命中它会把 `bash`、派活卡这些各有专门字形的
+ *   ⚠️ 别把顺序倒过来：`kind` 是粗类别，命中它会把 `shell`、派活卡这些各有专门字形的
  *   工具压成「一类一个图标」。
  *
  * 导出给过程分组的抬头用（`TurnStepGroup` 的 `kind + toolName + acpKind`）：那里与这里
@@ -817,7 +808,7 @@ export const ToolHeader = ({
               // 键盘 Tab 到这个 Trigger 上时箭头必须现身（`REVEAL_ON_HOVER_ARROW` 里的
               // `group-focus-visible/row` 要求整行 `group/row` 自身被聚焦，而它是 div、
               // 不可聚焦 —— 这里用 Trigger 自己的 `group` 补一条）。
-              "size-4 shrink-0 group-focus-visible:opacity-100 group-data-[state=open]:rotate-90"
+              "size-4 shrink-0 group-focus-visible:opacity-100 group-data-panel-open:rotate-90"
             )}
           />
         </CollapsibleTrigger>
@@ -844,7 +835,7 @@ export type ToolContentProps = ComponentProps<typeof CollapsibleContent>;
 export const ToolContent = ({ className, ...props }: ToolContentProps) => (
   <CollapsibleContent
     className={cn(
-      "min-w-0 max-w-full overflow-hidden data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 text-popover-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
+      "min-w-0 max-w-full overflow-hidden data-closed:fade-out-0 data-closed:slide-out-to-top-2 data-open:slide-in-from-top-2 text-popover-foreground outline-none data-closed:animate-out data-open:animate-in",
       className
     )}
     {...props}

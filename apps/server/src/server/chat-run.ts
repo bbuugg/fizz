@@ -37,7 +37,7 @@ export interface ChatRun {
   /** 用户点「停止」时 abort 它（runAgent / runAcpAgent 的 signal） */
   controller: AbortController
   /**
-   * 正在执行的 bash 停止表（toolCallId → 只停它的 stop）。
+   * 正在执行的 shell 停止表（toolCallId → 只停它的 stop）。
    * 由 tools 层的 per-command AbortController 经 runAgent → mountAssembly 注册，
    * `POST /api/chat/command/stop` 命中它 = 杀那一条命令的进程树，与整轮停止
    * （`controller`）互不影响。收尾时清空（chat-turn 的 .then 链）。
@@ -62,11 +62,6 @@ export interface ChatRun {
   steerInbox: AgentChatMessage[]
   /** ACP 轮次的中止要杀进程（只 abort signal 不够）：会话坐标 */
   acpTarget?: { agentId: string; conversationId: string }
-  /**
-   * 多智能体协作：取消当前轮里某个正在跑的子任务。由 `chat-turn` 在构建运行时挂上，
-   * `POST /api/chat/collab/cancel` 找到会话在跑的 run 后调它（返回 false = 任务已不在跑）。
-   */
-  collabCancel?: (taskId: string) => boolean
   /**
    * 这一轮助手消息的落盘 id（发起那一轮的客户端给的，见 `ChatRequest.assistantMessageId`）。
    * 收尾落盘沿用它，`ChatRunSummary` 也把它给出去 —— 接手这条 run 的端才能用同一个 id 建占位。
@@ -152,7 +147,7 @@ export function compactFrames(frames: ChatStreamFrame[]): ChatStreamFrame[] {
       }
       continue
     }
-    // 工具输出增量（bash 实时输出）：同 toolCallId 同 stream 相邻合并。
+    // 工具输出增量（shell 实时输出）：同 toolCallId 同 stream 相邻合并。
     // 命令输出帧是全场最密的（stdout 每秒多帧），不合并把 4000 帧上限刷爆后
     // 回放会把更早的帧挤掉。合并后回放内容守恒（纯字符串拼接）。
     if (

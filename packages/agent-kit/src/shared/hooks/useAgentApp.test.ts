@@ -159,17 +159,15 @@ describe('agentAppFrom：写动作带上本视图的 id', () => {
     expect(argsOf('compressContextNow')[0]).toBe(VIEW)
   })
 
-  it('权限档 / 协作配置也带视图 id', () => {
+  it('权限档也带视图 id', () => {
     const { store, argsOf } = makeStore()
     const app = agentAppFrom(store, VIEW)
 
     app.setPermissionMode('full')
     app.setAcpPermissionMode('allow')
-    app.cancelCollabTask('task-1')
 
     expect(argsOf('setPermissionMode')[1]).toBe(VIEW)
     expect(argsOf('setAcpPermissionMode')[1]).toBe(VIEW)
-    expect(argsOf('cancelCollabTask')[1]).toBe(VIEW)
   })
 
   it('队列 / 消息 / 签出 / 队列泵都带视图 id', () => {

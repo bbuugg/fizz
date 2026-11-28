@@ -60,32 +60,7 @@ describe('normalizeStore', () => {
   })
 })
 
-describe('背景属于主题（老数据迁移）', () => {
-  it('老版 backgrounds map 搬进对应自定义主题的 background', () => {
-    const store = normalizeStore({
-      active: 'custom-1',
-      custom: [{ id: 'custom-1', name: 'c', radius: 1, texture: 'none', vars: { light: {}, dark: {} } }],
-      backgrounds: { 'custom-1': bg('v1') }
-    })
-    expect(store.custom[0].background.video?.key).toBe('v1')
-    expect(store.overrides).toEqual({})
-  })
-
-  it('内置主题的老背景搬进 overrides，且只带背景（不生成变量覆盖）', () => {
-    const store = normalizeStore({
-      active: 'ocean',
-      backgrounds: { ocean: bg(null, 'data:image/png;base64,AA') }
-    })
-    expect(store.overrides.ocean.background.image).toBe('data:image/png;base64,AA')
-    expect(store.overrides.ocean.vars).toBeUndefined()
-    expect(store.overrides.ocean.radius).toBeUndefined()
-  })
-
-  it('未知 id 的背景被丢弃（只允许内置主题进 overrides）', () => {
-    const store = normalizeStore({ backgrounds: { nope: bg('v1') } })
-    expect(store.overrides).toEqual({})
-  })
-
+describe('背景覆盖层', () => {
   it('新格式 overrides 原样保留', () => {
     const store = normalizeStore({
       overrides: {
@@ -100,14 +75,6 @@ describe('背景属于主题（老数据迁移）', () => {
     expect(store.overrides.ocean.vars?.light['--primary']).toBe('#123456')
     expect(store.overrides.ocean.radius).toBe(0.5)
     expect(store.overrides.ocean.texture).toBe('dots')
-  })
-
-  it('自定义主题自己的 background 优先于老 map', () => {
-    const store = normalizeStore({
-      custom: [customTheme({ background: bg(null, 'data:image/png;base64,BB') })],
-      backgrounds: { 'custom-1': bg('v1') }
-    })
-    expect(store.custom[0].background.image).toBe('data:image/png;base64,BB')
   })
 })
 

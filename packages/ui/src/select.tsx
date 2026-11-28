@@ -4,26 +4,49 @@ import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
 import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react"
-import { Select as SelectPrimitive } from "radix-ui"
-import { useDismissFocusGuard } from "./focus-dismiss"
+import { Select as SelectPrimitive } from "@base-ui/react/select"
 import { useGlassPanel } from "./liquid-glass"
 import { resolveCollisionPadding } from "./safe-area"
 
-function Select({
-  ...props
-}: React.ComponentProps<typeof SelectPrimitive.Root>) {
-  return <SelectPrimitive.Root data-slot="select" {...props} />
+type SelectRootProps = Omit<
+  SelectPrimitive.Root.Props<any>,
+  "onValueChange"
+> & {
+  /**
+   * 选中值回调。Base UI 会多带一个 `eventDetails`，且**清空时可能给 `null`**；
+   * Radix 从不给 null，所以这里把 nullish 挡掉再转出去 —— 调用点仍然是
+   * `useState<string>` + `onValueChange={setState}` 的老写法。
+   */
+  onValueChange?: (
+    value: any,
+    eventDetails: SelectPrimitive.Root.ChangeEventDetails
+  ) => void
 }
+
+function SelectRoot({ onValueChange, ...props }: SelectRootProps) {
+  return (
+    <SelectPrimitive.Root
+      {...props}
+      onValueChange={(value, eventDetails) => {
+        if (value === null || value === undefined) return
+        onValueChange?.(value, eventDetails)
+      }}
+    />
+  )
+}
+
+/** Base UI 的 `Select.Root` 是泛型组件；这里包一层把 null 挡掉（见 `SelectRoot`）。 */
+const Select = SelectRoot
 
 function SelectGroup({
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Group>) {
+}: SelectPrimitive.Group.Props) {
   return <SelectPrimitive.Group data-slot="select-group" {...props} />
 }
 
 function SelectValue({
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Value>) {
+}: SelectPrimitive.Value.Props) {
   return <SelectPrimitive.Value data-slot="select-value" {...props} />
 }
 
@@ -68,7 +91,7 @@ function SelectTrigger({
    */
   icon = true,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Trigger> &
+}: SelectPrimitive.Trigger.Props &
   VariantProps<typeof selectTriggerVariants> & {
     size?: "sm" | "default"
     /** 是否渲染右侧的下拉箭头（见上面的说明） */
@@ -84,9 +107,7 @@ function SelectTrigger({
     >
       {children}
       {icon && (
-        <SelectPrimitive.Icon asChild>
-          <ChevronDownIcon className="size-4 opacity-50" />
-        </SelectPrimitive.Icon>
+        <SelectPrimitive.Icon render={<ChevronDownIcon className="size-4 opacity-50" />} />
       )}
     </SelectPrimitive.Trigger>
   )
@@ -95,10 +116,8 @@ function SelectTrigger({
 function SelectContent({
   className,
   children,
-  position = "item-aligned",
-  align = "center",
   /**
-   * 面板顶部的**固定区**（标题 + 一句说明），渲染在 Viewport 之外：
+   * 面板顶部的**固定区**（标题 + 一句说明），渲染在列表之外：
    * 选项再多也只滚列表，头不跟着滚。
    *
    * 用在哪：权限选择那两颗 pill（`PermissionPill` / `AcpPermissionPill`）——
@@ -106,95 +125,108 @@ function SelectContent({
    * 普通 Select（设置页、表单）不要传，会白占一截高度。
    */
   header,
-  onPointerDown,
-  onPointerDownOutside,
-  onCloseAutoFocus,
+  align = "center",
+  side,
+  sideOffset,
+  alignOffset,
+  /**
+   * 面板是否把选中项铺在触发器上（Radix 的 `position="item-aligned"`）。
+   * 传 `false` 等价于 Radix 的 `position="popper"`。
+   */
+  alignItemWithTrigger = true,
+  collisionPadding,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Content> & {
-  /** 面板顶部的固定区（见上）；不传 = 没有这一块 */
-  header?: React.ReactNode
-}) {
-  // 指针关闭不回焦（否则触发器会被 :focus-visible 描成主色边框），见 focus-dismiss.ts
-  const dismissFocus = useDismissFocusGuard()
+}: SelectPrimitive.Popup.Props &
+  Pick<
+    SelectPrimitive.Positioner.Props,
+    | "side"
+    | "align"
+    | "alignOffset"
+    | "sideOffset"
+    | "alignItemWithTrigger"
+    | "collisionPadding"
+  > & {
+    /** 面板顶部的固定区（见上）；不传 = 没有这一块 */
+    header?: React.ReactNode
+  }) {
   // 液态玻璃外壳与指针追踪（边缘光圈）由 Hook 统一给
   const glass = useGlassPanel(props)
   return (
     <SelectPrimitive.Portal>
-      <SelectPrimitive.Content
-        data-slot="select-content"
-        collisionPadding={resolveCollisionPadding(props.collisionPadding)}
-        onPointerDown={(event) => {
-          dismissFocus.markPointer()
-          onPointerDown?.(event)
-        }}
-        onPointerDownOutside={(event) => {
-          dismissFocus.markPointer()
-          onPointerDownOutside?.(event)
-        }}
-        onCloseAutoFocus={(event) => dismissFocus.closeAutoFocus(event, onCloseAutoFocus)}
-        className={cn(
-          // 弹出面板（select 的「二级」下拉）：与 Dialog / AlertDialog / 选择器面板同一套
-          // 液态玻璃外壳 —— 实色面板底、淡描边与景深投影都来自 `GLASS_PANEL_CLASS`，
-          // 跟随指针的边缘光圈由 `LiquidGlassPanel` 铺在内容之上。
-          // ⚠️ 别再往这里加 `bg-*` / `border-*` / `shadow-*`：会把玻璃材质换掉。
-          //
-          // 滚动交给 `Select.Viewport`（它自带 `flex:1` + `overflow:hidden auto`，Radix 的
-          // 上下滚动按钮读的也是它的 `scrollTop`）：Content 只当 `flex flex-col` 的定高外壳，
-          // 这样边缘光圈是相对**面板**定位的，不会跟着列表一起滚走。
-          //
-          // 尺寸兜底（窄窗口 / 小屏）：
-          // - 高度取「Radix 给的可用高度」与「视口高度 - 2rem」的**较小者**，超了就面板内滚；
-          // - 宽度封顶到视口宽 - 1rem：否则 `min-w-*` / 长选项会把面板撑出视口，
-          //   超出去的那截被浏览器直接裁掉（用户看到的就是「菜单一半被 hidden」）。
-          "relative z-50 flex max-h-[min(var(--radix-select-content-available-height),calc(100vh_-_2rem))] max-w-[calc(100vw_-_1rem)] min-w-[8rem] origin-(--radix-select-content-transform-origin) flex-col overflow-hidden rounded-xl text-popover-foreground data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
-          position === "popper" &&
-            "data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1",
-          glass.className,
-          className
-        )}
-        position={position}
+      <SelectPrimitive.Positioner
+        side={side}
         align={align}
-        {...props}
-        {...glass.handlers}
+        alignOffset={alignOffset}
+        sideOffset={sideOffset}
+        alignItemWithTrigger={alignItemWithTrigger}
+        collisionPadding={resolveCollisionPadding(collisionPadding)}
+        className="isolate z-50"
       >
-        {glass.edge}
-        {header ? (
-          <div
-            data-slot="select-header"
-            className="shrink-0 border-b border-border px-4 pt-3.5 pb-3"
-          >
-            {header}
-          </div>
-        ) : null}
-        <SelectScrollUpButton />
-        <SelectPrimitive.Viewport
+        <SelectPrimitive.Popup
+          data-slot="select-content"
+          /*
+           * 指针关闭不回焦（否则触发器会被 :focus-visible 描成主色边框）。
+           * Base UI 把「关闭时要不要回焦」收成 `finalFocus`：键盘关照旧回焦，指针关就不动。
+           */
+          finalFocus={(closeType) => closeType === "keyboard"}
           className={cn(
-            // 有 header = 「富面板」（权限那两颗），内边距放宽一档：选中项的灰底要离面板
-            // 边缘留出气口，4px 会贴边显得像被裁掉。
-            header ? "p-2" : "p-1",
-            // Viewport 是面板里唯一的滚动区（Radix 自带 `flex:1` + `overflow:hidden auto`）：
-            // 必须能收缩到内容以下才滚得起来，否则会把 Content 顶高、把面板撑出视口。
-            "min-h-0",
-            position === "popper" &&
-              // `min-h-` 而不是 `h-`：锁死成触发器高度的话，多出来的选项在 Viewport 里放不下，
-              // 面板看起来就只剩「第一项」，其余看不见
-              "min-h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)] scroll-my-1"
+            // 弹出面板（select 的「二级」下拉）：与 Dialog / AlertDialog / 选择器面板同一套
+            // 液态玻璃外壳 —— 实色面板底、淡描边与景深投影都来自 `GLASS_PANEL_CLASS`，
+            // 跟随指针的边缘光圈由 `LiquidGlassPanel` 铺在内容之上。
+            // ⚠️ 别再往这里加 `bg-*` / `border-*` / `shadow-*`：会把玻璃材质换掉。
+            //
+            // 滚动交给 `Select.List`（它自带 `flex:1` + `overflow:hidden auto`）：Popup 只当
+            // `flex flex-col` 的定高外壳，这样边缘光圈是相对**面板**定位的，不会跟着列表滚走。
+            //
+            // 尺寸兜底（窄窗口 / 小屏）：
+            // - 高度取「可用高度」与「视口高度 - 2rem」的**较小者**，超了就面板内滚；
+            // - 宽度封顶到视口宽 - 1rem：否则 `min-w-*` / 长选项会把面板撑出视口。
+            "relative z-50 flex max-h-[min(var(--available-height),calc(100vh_-_2rem))] max-w-[calc(100vw_-_1rem)] min-w-[8rem] origin-(--transform-origin) flex-col overflow-hidden rounded-xl text-popover-foreground data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95",
+            glass.className,
+            className
           )}
+          {...props}
+          {...glass.handlers}
         >
-          {children}
-        </SelectPrimitive.Viewport>
-        <SelectScrollDownButton />
-      </SelectPrimitive.Content>
+          {glass.edge}
+          {header ? (
+            <div
+              data-slot="select-header"
+              className="shrink-0 border-b border-border px-4 pt-3.5 pb-3"
+            >
+              {header}
+            </div>
+          ) : null}
+          <SelectScrollUpButton />
+          <SelectPrimitive.List
+            className={cn(
+              // 有 header = 「富面板」（权限那两颗），内边距放宽一档：选中项的灰底要离面板
+              // 边缘留出气口，4px 会贴边显得像被裁掉。
+              header ? "p-2" : "p-1",
+              // List 是面板里唯一的滚动区：必须能收缩到内容以下才滚得起来，
+              // 否则会把面板顶高、把面板撑出视口。
+              "min-h-0"
+            )}
+          >
+            {children}
+          </SelectPrimitive.List>
+          <SelectScrollDownButton />
+        </SelectPrimitive.Popup>
+      </SelectPrimitive.Positioner>
     </SelectPrimitive.Portal>
   )
 }
 
-function SelectLabel({
-  className,
-  ...props
-}: React.ComponentProps<typeof SelectPrimitive.Label>) {
+/**
+ * 分组标题。
+ *
+ * ⚠️ Base UI 的 `Select.GroupLabel` 必须待在 `Select.Group` 里（它要给组写
+ * `aria-labelledby`，context 缺失会直接抛错）；本仓大量标题是「自由漂浮」的，
+ * 所以这里仍是一个普通 div。可访问性上少一次自动关联，视觉与排版完全一致。
+ */
+function SelectLabel({ className, ...props }: React.ComponentProps<"div">) {
   return (
-    <SelectPrimitive.Label
+    <div
       data-slot="select-label"
       className={cn("px-2 py-1.5 text-xs text-muted-foreground", className)}
       {...props}
@@ -212,7 +244,7 @@ function SelectLabel({
  *
  * 选中态**不铺底色**（两种形态一致）：底色是 hover / 键盘焦点的语言，被选中项再铺一层，
  * 就分不清「我选的是哪个」和「光标停在哪」了（2026-11 用户明确要求去掉）。
- * 两种形态共用同一份 Radix `Item`，所以键盘导航 / 选中语义完全一致；差别只在排版。
+ * 两种形态共用同一份 Base UI `Item`，所以键盘导航 / 选中语义完全一致；差别只在排版。
  */
 function SelectItem({
   className,
@@ -220,7 +252,7 @@ function SelectItem({
   description,
   icon,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Item> & {
+}: SelectPrimitive.Item.Props & {
   /** 第二行说明；传了就是「富行」形态（见上） */
   description?: React.ReactNode
   /** 富行左侧的图标（一行形态直接把图标塞进 children 即可） */
@@ -233,14 +265,14 @@ function SelectItem({
       className={cn(
         // `cursor-pointer` 而不是 shadcn 原样的 `cursor-default`：这一排 pill / 下拉里的
         // 每一项都是「点一下就生效」的动作，鼠标移上去该给出可点的反馈（2026-11 用户要求）。
-        // 禁用项不受影响 —— 它们走 `data-[disabled]:pointer-events-none`，根本吃不到指针。
-        "relative flex w-full cursor-pointer text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 [&_svg:not([class*='text-'])]:text-muted-foreground",
+        // 禁用项不受影响 —— 它们走 `data-disabled:pointer-events-none`，根本吃不到指针。
+        "relative flex w-full cursor-pointer text-sm outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 [&_svg:not([class*='text-'])]:text-muted-foreground",
         rich
           ? // 富行：勾改成绝对定位到右上，所以右侧留 pr-10。**选中不铺底色**（只有勾），
             // 底色留给 hover / 键盘焦点 —— 两件事共用一个视觉就分不清「我选的」和「光标在哪」
             "items-start gap-3 rounded-lg py-2.5 pr-10 pl-3 focus:bg-accent"
           : // 一行：shadcn 原样，同样**不加**选中底色
-            "items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 focus:bg-accent focus:text-accent-foreground *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2",
+            "items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 focus:bg-accent focus:text-accent-foreground",
         className
       )}
       {...props}
@@ -258,14 +290,14 @@ function SelectItem({
         </SelectPrimitive.ItemIndicator>
       </span>
       {rich ? (
-        <SelectPrimitive.ItemText asChild>
-          <div className="flex min-w-0 flex-1 items-start gap-3">
-            {icon ? <span className="mt-[3px] flex shrink-0 items-center">{icon}</span> : null}
-            <div className="min-w-0">
-              <div className="leading-5 font-medium">{children}</div>
-              <div className="mt-0.5 text-[13px] leading-5 text-muted-foreground">
-                {description}
-              </div>
+        <SelectPrimitive.ItemText
+          render={<div className="flex min-w-0 flex-1 items-start gap-3" />}
+        >
+          {icon ? <span className="mt-[3px] flex shrink-0 items-center">{icon}</span> : null}
+          <div className="min-w-0">
+            <div className="leading-5 font-medium">{children}</div>
+            <div className="mt-0.5 text-[13px] leading-5 text-muted-foreground">
+              {description}
             </div>
           </div>
         </SelectPrimitive.ItemText>
@@ -279,7 +311,7 @@ function SelectItem({
 function SelectSeparator({
   className,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Separator>) {
+}: SelectPrimitive.Separator.Props) {
   return (
     <SelectPrimitive.Separator
       data-slot="select-separator"
@@ -292,36 +324,36 @@ function SelectSeparator({
 function SelectScrollUpButton({
   className,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.ScrollUpButton>) {
+}: SelectPrimitive.ScrollUpArrow.Props) {
   return (
-    <SelectPrimitive.ScrollUpButton
+    <SelectPrimitive.ScrollUpArrow
       data-slot="select-scroll-up-button"
       className={cn(
-        "flex cursor-default items-center justify-center py-1",
+        "flex w-full cursor-default items-center justify-center py-1",
         className
       )}
       {...props}
     >
       <ChevronUpIcon className="size-4" />
-    </SelectPrimitive.ScrollUpButton>
+    </SelectPrimitive.ScrollUpArrow>
   )
 }
 
 function SelectScrollDownButton({
   className,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.ScrollDownButton>) {
+}: SelectPrimitive.ScrollDownArrow.Props) {
   return (
-    <SelectPrimitive.ScrollDownButton
+    <SelectPrimitive.ScrollDownArrow
       data-slot="select-scroll-down-button"
       className={cn(
-        "flex cursor-default items-center justify-center py-1",
+        "flex w-full cursor-default items-center justify-center py-1",
         className
       )}
       {...props}
     >
       <ChevronDownIcon className="size-4" />
-    </SelectPrimitive.ScrollDownButton>
+    </SelectPrimitive.ScrollDownArrow>
   )
 }
 

@@ -87,8 +87,6 @@ function confirmOf(confirm: AgentConfirmRequest): { confirm: ConversationConfirm
       toolName: confirm.toolName,
       command: confirm.command,
       ...(confirm.intent ? { intent: confirm.intent } : {}),
-      ...(confirm.agentId ? { agentId: confirm.agentId } : {}),
-      ...(confirm.agentName ? { agentName: confirm.agentName } : {}),
       ...(confirm.options?.length
         ? {
             options: confirm.options.map((option) => ({

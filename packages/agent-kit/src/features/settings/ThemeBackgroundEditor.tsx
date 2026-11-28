@@ -99,7 +99,7 @@ export function ThemeBackgroundEditor({
   return (
     <div className="space-y-3">
       <p className="text-xs leading-4 text-muted-foreground">
-        {tr('只作用于「{name}」，新素材会替换旧素材；视频建议短小，持续解码较费电。', { name: themeLabel })}
+        {tr('只作用于「{name}」；视频越大越费电', { name: themeLabel })}
       </p>
       <input
         ref={fileInputRef}
@@ -188,7 +188,7 @@ export function ThemeBackgroundEditor({
             <span className="w-9 font-mono">{background.blur}px</span>
           </div>
           <p className="text-[0.6875rem] leading-4 text-muted-foreground">
-            {tr('「铺满」裁掉多出来的部分；「完整显示」整幅都看得见，留出的边用主题底色填。遮罩越高，背景越淡、文字越清楚；拉到最高基本就看不见背景了。')}
+            {tr('遮罩越高，背景越淡、文字越清楚')}
           </p>
         </div>
       ) : (

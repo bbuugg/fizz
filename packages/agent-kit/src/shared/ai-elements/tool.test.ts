@@ -10,7 +10,7 @@
  * 不只是展开后的卡片，组抬头那一排也全成了扳手。
  *
  * 这里钉住三档顺序：名字命中就用名字的、名字认不出才看类别、都没有才扳手 ——
- * 以及**顺序不能倒**（类别是粗粒度，倒过来会把 `bash` 这类有专门字形的工具压成一类一个图标）。
+ * 以及**顺序不能倒**（类别是粗粒度，倒过来会把 `shell` 这类有专门字形的工具压成一类一个图标）。
  */
 import { describe, expect, it } from 'vitest'
 import { FilePenIcon, FileTextIcon, SquareTerminalIcon, WrenchIcon } from 'lucide-react'
@@ -23,8 +23,8 @@ describe('toolHeadIcon · ACP 类别兜底', () => {
     expect(toolHeadIcon('tool', 'execute')).toBe(SquareTerminalIcon)
   })
 
-  it('工具名命中时优先于类别（别把 bash 之类的专门字形压成类别图标）', () => {
-    expect(toolHeadIcon('bash', 'read')).not.toBe(FileTextIcon)
+  it('工具名命中时优先于类别（别把 shell 之类的专门字形压成类别图标）', () => {
+    expect(toolHeadIcon('shell', 'read')).not.toBe(FileTextIcon)
     expect(toolHeadIcon('read', 'execute')).toBe(FileTextIcon)
   })
 

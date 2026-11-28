@@ -63,10 +63,8 @@ import { ScriptsPanel } from '@fizz/agent-kit/features/scripts/ScriptsPanel'
 import { SftpPanel } from '@fizz/agent-kit/features/sftp/SftpPanel'
 import { TunnelPanel } from '@fizz/agent-kit/features/tunnels/TunnelPanel'
 import { TriggersPanel } from '@fizz/agent-kit/features/tasks/TriggersPanel'
-import { LocalFileTabContent } from '@fizz/agent-kit/features/local-file/LocalFileTabContent'
 import { FileManagerPanel } from '@fizz/agent-kit/features/file-manager/FileManagerPanel'
 import { SysmonPanel } from '@fizz/agent-kit/features/system-tasks/SysmonPanel'
-import { NoteTabContent } from '@fizz/agent-kit/features/notes/NoteTabContent'
 import { PluginTabContent } from '@fizz/agent-kit/features/plugins/PluginTabContent'
 import { NEW_API_REQUEST_ID, NEW_WS_REQUEST_ID } from '@fizz/agent-kit/features/api/api-client'
 import {
@@ -74,8 +72,6 @@ import {
   isApiTabKey,
   isConversationTabKey,
   isFilesTabKey,
-  isLocalFileTabKey,
-  isNoteTabKey,
   isPluginTabKey,
   isScriptsTabKey,
   isSftpTabKey,
@@ -300,18 +296,6 @@ function PanelTabContent({ tabKey, active }: { tabKey: string; active: boolean }
   // 归属（哪个插件 / 哪个面）在 `tool-tabs` 的登记表里，key 只是不透明的 `plugin:<n>`。
   if (isPluginTabKey(tabKey)) {
     return <PluginTabContent tabKey={tabKey} />
-  }
-
-  // 笔记标签：归属（哪个根 + 哪篇）在 `tool-tabs` 的登记表里，key 只是不透明的 `note:<n>`。
-  // `active` 必须传下去 —— 所有标签都常挂载，`Ctrl/Cmd+S` 只有**正被看着的那篇**该响应。
-  if (isNoteTabKey(tabKey)) {
-    return <NoteTabContent tabKey={tabKey} active={active} />
-  }
-
-  // 本地文件标签：用本应用打开的一篇**本机** Markdown（绝对路径，读写走主进程 fs）。
-  // 与上面的笔记标签是两条独立通路，见 `features/local-file/LocalFileTabContent.tsx` 的对照表。
-  if (isLocalFileTabKey(tabKey)) {
-    return <LocalFileTabContent tabKey={tabKey} active={active} />
   }
 
   // 文件管理标签：全局单例（`files:list`），浏览**服务端那台机器**的整盘。

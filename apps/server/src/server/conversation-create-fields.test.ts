@@ -55,10 +55,4 @@ describe('conversationCreateFields：新建会话要落哪些字段', () => {
     expect(fields.messages).toHaveLength(1)
   })
 
-  it('kind 不是 collab 时，既不落 kind 也不落 collab 配置', () => {
-    const fields = conversationCreateFields({ kind: 'chat', collab: {} as never })
-
-    expect(fields.kind).toBeUndefined()
-    expect(fields.collab).toBeUndefined()
-  })
 })

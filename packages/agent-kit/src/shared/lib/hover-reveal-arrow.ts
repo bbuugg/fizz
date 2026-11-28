@@ -8,7 +8,7 @@
  * 裸 `group`，而 `group-hover:` 生成的 `.group:hover .target` 匹配**任意祖先**的 `.group:hover` ——
  * 用裸 `group-hover:` 的结果是「鼠标停在消息任意位置，这一轮里所有箭头一起亮」，
  * 而不是「悬停哪一行亮哪一行」。所以变体统一写成 `group-hover/row:`，触发行也必须
- * 同时带 `group/row`（可以再叠一个裸 `group` 给 `group-data-[state=open]` 那类旋转用）。
+ * 同时带 `group/row`（可以再叠一个裸 `group` 给 `group-data-panel-open` 那类旋转用）。
  *
  * ⚠️ **Tailwind v4 把 `hover:` / `group-hover:` 整个包进 `@media (hover: hover)`。**
  * 所以「基座 `opacity-0` + `group-hover/row:opacity-100`」在没有 hover 能力的设备上等于

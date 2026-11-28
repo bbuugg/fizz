@@ -394,10 +394,19 @@ export function AcpTab({ app }: { app: AgentApp }) {
   /** 弹窗里的候选列表（null 时按空列表渲染） */
   const detectRows = detected ?? []
 
+  /**
+   * 协议版本下拉的可见标题（`items` 与选项共用同一份，避免两处字面量漂移）。
+   * Base UI 不给 `items` 时触发器里显示的是原始 value（`v1` / `v2`）。
+   */
+  const protocolItems: Record<string, string> = {
+    v1: tr('v1（stable，推荐）'),
+    v2: tr('v2（draft，agent 必须支持）')
+  }
+
   return (
     <div className="space-y-3">
       <p className="text-xs leading-4 text-muted-foreground">
-        {tr('ACP 会话由外部 agent 进程运行；模型、技能与提示词由它自己管理。命令在服务端执行。')}
+        {tr('命令在服务端执行')}
       </p>
 
       {app.acpAgents.map((agent) => {
@@ -604,7 +613,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
           <div className="space-y-1.5 border-t border-border/60 px-3 py-2">
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-muted-foreground">
-                {tr('空闲超过 10 分钟会自动回收；有轮次在跑的不回收。')}
+                {tr('空闲 10 分钟回收，运行中不回收')}
               </span>
               <Button
                 size="sm"
@@ -735,14 +744,15 @@ export function AcpTab({ app }: { app: AgentApp }) {
               </div>
               <Select
                 value={acpProtocol}
+                items={protocolItems}
                 onValueChange={(v) => setAcpProtocol(v as AcpProtocolVersion)}
               >
                 <SelectTrigger variant="muted" className="h-9 w-full min-w-0 overflow-hidden text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="v1">{tr('v1（stable，推荐）')}</SelectItem>
-                  <SelectItem value="v2">{tr('v2（draft，agent 必须支持）')}</SelectItem>
+                  <SelectItem value="v1">{protocolItems.v1}</SelectItem>
+                  <SelectItem value="v2">{protocolItems.v2}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -920,7 +930,7 @@ export function AcpTab({ app }: { app: AgentApp }) {
             )}
             {!authBusy && authMethods.length === 0 && (
               <div className="text-xs text-muted-foreground">
-                {tr('这个 agent 没有广告登录方式（可能不需要登录，或还没完成初始化）。')}
+                {tr('没有广告登录方式')}
               </div>
             )}
             {!authBusy &&

@@ -1,6 +1,6 @@
 {
   "name": "@fizz/mobile",
-  "version": "0.0.36",
+  "version": "0.0.37",
   "description": "Fizz 安卓端：Capacitor + APK 内置 Linux / Node 本机运行环境",
   "private": true,
   "type": "module",

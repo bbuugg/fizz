@@ -343,15 +343,6 @@ export function applyEvent(parts: AgentMessagePart[], event: AgentStreamEvent): 
     // 把 live 助手消息拆成两段、把它插进中间（见 conversation.ts）。parts 不动。
     case 'user-injected':
       return next
-    // 多智能体协作的运行态（任务 / 消息 / Agent 状态 / 子 Agent 输出）由
-    // handleFrame 路由到 conversation slice 的 `collab` 现场，主消息 parts 不掺和。
-    case 'collab-task':
-    case 'collab-message':
-    case 'collab-agent':
-    case 'collab-delta':
-    case 'collab-tool':
-      return next
-
     /**
      * ⚠️ 运行期兜底，**不能删**（它同时也是「不无限重连」的兜底）。
      *
@@ -421,7 +412,7 @@ export function toolState(part: AgentMessagePart): {
 }
 
 /**
- * 这条 part 是不是「**bash 正在跑**」（命令已启动、还没有结果）。
+ * 这条 part 是不是「**shell 正在跑**」（命令已启动、还没有结果）。
  *
  * 实时输出区的开关，也是卡片头部停止钮「只停这一条命令」还是「中止整轮」的分流判据
  * （见 PartView 的 `onStop`）。判据刻意**不看 `liveOutput`**：
@@ -434,11 +425,11 @@ export function toolState(part: AgentMessagePart): {
  * 用户点不开内容区，也就摸不到原先挂在内容区里的停止钮，只能干等它自己结束。
  * 头部那颗停止钮（不依赖内容区，未结算态照样可点）正是为此补上的。
  *
- * 所以只看三件事：是 bash、结果还没到、入参已定型
+ * 所以只看三件事：是 shell、结果还没到、入参已定型
  * （`input-streaming` 时命令还没开始跑，该走「正在写入参」那个预览）。
  */
 export function isCommandRunning(part: AgentMessagePart): boolean {
-  if (part.type !== 'tool-call' || part.toolName !== 'bash') return false
+  if (part.type !== 'tool-call' || part.toolName !== 'shell') return false
   const { hasOutput, streamingInput } = toolState(part)
   return !hasOutput && !streamingInput
 }
@@ -451,11 +442,11 @@ export function isCommandRunning(part: AgentMessagePart): boolean {
  * 工具自己在执行期登记 stop**，不需要新接口、也不需要新按钮。
  *
  * 目前三类：
- * - `bash`：杀那一棵进程树；
+ * - `shell`：杀那一棵进程树；
  * - `web_fetch`：abort 这一次抓取（抓境外站点动辄等 30s，不该为它废掉整轮）；
  * - 派活工具 `agent-<id>`：abort 这一个子 run（见 `isStoppableToolName` 的说明）。
  */
-export const STOPPABLE_TOOLS: ReadonlySet<string> = new Set(['bash', 'web_fetch'])
+export const STOPPABLE_TOOLS: ReadonlySet<string> = new Set(['shell', 'web_fetch'])
 
 /**
  * 派活工具（`agent-<id>`）也支持单条停止 —— 前缀判定，**不要**把 id 一个个塞进
@@ -522,20 +513,13 @@ export function textOf(message: AgentChatMessage): string {
  * 列出来的每个 key 都该在下面有一条。
  */
 export const TOOL_LABELS: Record<string, string> = {
-  // 对齐 DeepSeek Harness 后的名字（read / write / edit / glob / grep / bash）
+  // 命令工具与其它内置工具统一使用稳定的公开名称
   read: '读取文件',
   write: '写入文件',
   edit: '编辑文件',
   glob: '查找文件',
   grep: '搜索内容',
-  bash: '执行命令',
-  // 终端助手（客户端执行）的四个工具。名字与 bash 刻意分开：前者在**用户
-  // 眼前那条终端**里敲（等同人手输入），后者是服务端起一个子进程，失败面完全不同，
-  // 卡片上混成同一个名字会让人分不清命令到底跑在哪。
-  run_in_terminal: '在终端执行',
-  read_terminal_output: '读取终端输出',
-  send_keys: '发送按键',
-  list_terminal_sessions: '列出终端会话',
+  shell: '执行命令',
   // Agent 维护的任务清单（`todo` 是 2026-11 之前的旧名，界面不再兼容）
   todowrite: '更新待办清单',
   // 全局只读工具：不依赖工作区，任何会话（含未绑定目录的「任务」会话）都可用
@@ -887,6 +871,15 @@ export function toolErrorText(output: unknown): string {
     // 循环引用之类
     return t('工具执行失败')
   }
+}
+
+/**
+ * ACP 有时会在过程 content 与最终 rawOutput 中重复携带同一条失败正文。
+ * 过程文本与统一错误块相同就不必再画一遍；不同的过程输出仍保留。
+ */
+export function isDuplicateToolErrorText(text: string, output: unknown): boolean {
+  const candidate = text.trim()
+  return candidate.length > 0 && candidate === toolErrorText(output).trim()
 }
 
 /**

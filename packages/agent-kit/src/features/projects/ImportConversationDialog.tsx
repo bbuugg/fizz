@@ -180,16 +180,18 @@ export function ImportConversationDialog({
         <DialogHeader>
           <DialogTitle>{tr('导入会话')}</DialogTitle>
           <DialogDescription>
-            {tr('从 ACP agent 侧拉取 {name} 下的既有会话，可多选；绑定后直接继续对话（历史保存在 agent 侧）。', {
-              name: workspace?.name ?? tr('当前项目')
-            })}
+            {tr('可多选；绑定后直接续聊，历史留在 agent 侧。')}
           </DialogDescription>
         </DialogHeader>
 
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1.5">
             <span className="text-sm font-medium">{tr('ACP Agent')}</span>
-            <Select value={agentId} onValueChange={(v) => void pickAgent(v)}>
+            <Select
+              value={agentId}
+              items={Object.fromEntries(app.acpAgents.map((agent) => [agent.id, agent.name]))}
+              onValueChange={(v) => void pickAgent(v)}
+            >
               <SelectTrigger variant="muted" className="w-full" aria-label={tr('选择 ACP Agent')}>
                 <SelectValue
                   placeholder={app.acpAgents.length ? tr('选择 Agent…') : tr('还没有配置 ACP Agent')}

@@ -1296,7 +1296,7 @@ export function FileManagerPanel(): React.JSX.Element {
             ) : inTrash ? (
               fm.trashItems.length === 0 ? (
                 <div className="mx-4 mt-10 rounded-md border border-dashed border-border px-4 py-8 text-center text-xs text-muted-foreground">
-                  回收站是空的。删除的文件会先放到这里，可以还原。
+                  回收站是空的。
                 </div>
               ) : (
                 <div className="flex flex-col">

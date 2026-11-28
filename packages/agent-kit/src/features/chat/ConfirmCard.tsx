@@ -1,7 +1,7 @@
 /**
  * 命令执行审批卡（confirm 模式）。
  *
- * 服务端在要执行破坏性操作（`bash`）或 ACP agent 发来
+ * 服务端在要执行破坏性操作（`shell`）或 ACP agent 发来
  * 权限请求（`session/request_permission`）时**停住等答复**，流里推一帧 `confirm`；
  * 这里渲染成一张卡，用户点选后 POST 回去，流才继续。
  *
@@ -201,7 +201,7 @@ function ConfirmBody({
             换行不截断（`break-words`）—— 这是真正要读的那句话。
             模型没给意图时回落到「是否允许执行这次操作？」：图标只说明了「这是一张要答复
             的卡」，不说明「什么事」，这一行是唯一交代动作性质的地方，空着会只剩一堆标签。
-            标签（工具名 / agent 名）退到右端：它们是**出处**，不是要读的内容 —— 尤其
+            标签（工具名）退到右端：它们是**出处**，不是要读的内容 —— 尤其
             ACP 的工具名是 `acp/bash` 这类机器名，摆在句首会把真正的句子顶到第二行去。 */}
         <span className="min-w-0 grow break-words text-sm font-medium text-foreground">
           {confirm.intent || tr('是否允许执行这次操作？')}
@@ -212,11 +212,6 @@ function ConfirmBody({
           <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">
             {label}
           </span>
-          {confirm.agentName && (
-            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-              {confirm.agentName}
-            </span>
-          )}
           {index !== undefined && (
             <span className="shrink-0 pt-0.5 text-xs tabular-nums text-muted-foreground">
               {tr('第 {index} / {total} 项', { index, total: count })}

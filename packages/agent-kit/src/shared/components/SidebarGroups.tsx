@@ -80,11 +80,6 @@
  * - 标题行同时是折叠按钮，所以有 `DRAG_THRESHOLD` 死区：没超过几像素就只当点击；
  *   拖动结束后紧跟的那次 `click` 要吞掉，否则松手会顺带折叠/展开一次；
  * - `extra` 里的按钮不参与拖动（指针事件在那一层就 `stopPropagation`）。
- *
- * ## 空态
- *
- * `empty` 传文案即可（`count` 为 0 时渲染）。**加载中不要传** —— 否则列表请求还没落地
- * 就会先闪一句「还没有项目」。需要骨架屏的调用方自己判断，把它放进 `children`。
  */
 import {
   useRef,
@@ -180,7 +175,7 @@ export interface SidebarGroupProps {
   extra?: ReactNode
   /** 内容容器自己滚（默认）。传 `false` 时容器不滚，children 自己负责（例如「搜索框 + 列表」） */
   scroll?: boolean
-  /** `count` 为 0 时显示的空态文案；**加载中不要传**，见文件头 */
+  /** `count` 为 0 时渲染的空态内容；不给就什么都不画（侧栏各组已经不再摆「还没有…」） */
   empty?: ReactNode
   /**
    * 记住的像素高度（px）。**传了就一直是它**，另一组收起 / 展开都不清 —— 模式切换
@@ -409,9 +404,8 @@ export function SidebarGroup({
 /**
  * 组内容的加载骨架：几行等高的假行（`h-7` 对齐一条侧栏行）。
  *
- * 与 `empty` 是**配套**的两半，见文件头那条「加载中不要传空态」：加载中 `count` 也是 0，
- * 传了 `empty` 就会先闪一句「还没有…」；正确做法是加载中把 `empty` 留空、把这里放进
- * `children`，等清单位落（`hostsLoaded` / `conversationsLoaded`）之后再交回真实列表 / 空态。
+ * 加载中把这里放进 `children`，等清单落地（`hostsLoaded` / `conversationsLoaded`）之后再
+ * 交回真实列表；组本身不再渲染空态文案。
  *
  * 不自带水平内边距：调用方的组往往已经有 `px-2`（真实行自带同样的内边距），这里再加一层
  * 会比真实行窄一档，骨架切列表时横向抖一下。

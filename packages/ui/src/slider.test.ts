@@ -10,10 +10,12 @@ describe('Slider 拇指语义', () => {
       min: 0, max: 2, value: [1],
       thumbProps: { 'aria-label': '思考强度', 'aria-valuetext': '深入' },
     }))
-    const thumb = html.match(/<[^>]+role="slider"[^>]*>/)?.[0]
-    expect(thumb).toBeDefined()
-    expect(thumb).toContain('aria-label="思考强度"')
-    expect(thumb).toContain('aria-valuetext="深入"')
-    expect(thumb).toContain('aria-valuemax="2"')
+    // Base UI 的拇指是 `<div>` 包一个隐藏的 `<input type="range">`，无障碍属性落在
+    // 那个 input 上（原生 range 的隐式 role 就是 slider），所以断言要认 input。
+    const input = html.match(/<input[^>]*type="range"[^>]*>/)?.[0]
+    expect(input).toBeDefined()
+    expect(input).toContain('aria-label="思考强度"')
+    expect(input).toContain('aria-valuetext="深入"')
+    expect(input).toContain('max="2"')
   })
 })

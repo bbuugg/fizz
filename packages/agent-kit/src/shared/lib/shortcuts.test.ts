@@ -45,27 +45,11 @@ function keyEvent(overrides: Partial<KeyComboEvent> = {}): KeyComboEvent {
   }
 }
 
-describe('侧边栏快捷键：默认值与迁移', () => {
+describe('侧边栏快捷键：默认值与配置', () => {
   it('首次使用与恢复默认均绑定 Ctrl/Cmd+B', () => {
     expect(sidebarAccelerator(loadShortcuts())).toBe('CommandOrControl+B')
     saveShortcuts(DEFAULT_AGENT_SHORTCUTS)
     expect(sidebarAccelerator(loadShortcuts())).toBe('CommandOrControl+B')
-  })
-
-  it('一次性迁移旧 Alt+1 默认值，并保留其他动作的自定义绑定', () => {
-    storage.set(STORAGE_KEY, JSON.stringify([
-      { action: 'toggle-sidebar-alt', accelerator: 'Alt+1' },
-      { action: 'toggle-terminal', accelerator: 'Alt+T' }
-    ]))
-
-    const shortcuts = loadShortcuts()
-
-    expect(sidebarAccelerator(shortcuts)).toBe('CommandOrControl+B')
-    expect(shortcuts.find((shortcut) => shortcut.action === 'toggle-terminal')?.accelerator).toBe('Alt+T')
-    expect(JSON.parse(storage.get(STORAGE_KEY)!)).toMatchObject({
-      version: 1,
-      shortcuts
-    })
   })
 
   it.each(['Alt+S', 'CommandOrControl+B', ''])('旧侧栏自定义 / 禁用配置原样保留：%j', (accelerator) => {
@@ -76,19 +60,7 @@ describe('侧边栏快捷键：默认值与迁移', () => {
     expect(sidebarAccelerator(loadShortcuts())).toBe(accelerator)
   })
 
-  it('Ctrl/Cmd+B 已被其他动作自定义占用时保留旧 Alt+1，避免迁移制造冲突', () => {
-    storage.set(STORAGE_KEY, JSON.stringify([
-      { action: 'toggle-sidebar-alt', accelerator: 'Alt+1' },
-      { action: 'toggle-terminal', accelerator: 'Ctrl+B' }
-    ]))
-
-    const shortcuts = loadShortcuts()
-
-    expect(sidebarAccelerator(shortcuts)).toBe('Alt+1')
-    expect(findShortcutByEvent(shortcuts, keyEvent({ ctrlKey: true }))?.action).toBe('toggle-terminal')
-  })
-
-  it('迁移完成后用户主动改回 Alt+1，后续加载不再覆盖', () => {
+  it('用户主动改回 Alt+1，后续加载不再覆盖', () => {
     const shortcuts = DEFAULT_AGENT_SHORTCUTS.map((shortcut) => (
       shortcut.action === 'toggle-sidebar-alt' ? { ...shortcut, accelerator: 'Alt+1' } : shortcut
     ))
@@ -96,18 +68,6 @@ describe('侧边栏快捷键：默认值与迁移', () => {
 
     expect(sidebarAccelerator(loadShortcuts())).toBe('Alt+1')
     expect(sidebarAccelerator(loadShortcuts())).toBe('Alt+1')
-  })
-
-  it('迁移落盘失败时本次加载仍使用新默认值', () => {
-    storage.set(STORAGE_KEY, JSON.stringify([
-      { action: 'toggle-sidebar-alt', accelerator: 'Alt+1' }
-    ]))
-    vi.stubGlobal('localStorage', {
-      getItem: (key: string) => storage.get(key) ?? null,
-      setItem: () => { throw new Error('quota') }
-    })
-
-    expect(sidebarAccelerator(loadShortcuts())).toBe('CommandOrControl+B')
   })
 
   it.each(['null', '{}', 'invalid'])('损坏配置回落默认值：%s', (raw) => {

@@ -12,6 +12,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   isAwaitingApproval,
+  isDuplicateToolErrorText,
   toolCardHead,
   toolLabel,
   toolState,
@@ -33,7 +34,7 @@ describe('toolCardHead · 类别随抬头一起出去', () => {
   })
 
   it('内置工具：没有类别就不凭空造一个', () => {
-    expect(toolCardHead(toolCall('bash'), undefined, false).acpKind).toBeUndefined()
+    expect(toolCardHead(toolCall('shell'), undefined, false).acpKind).toBeUndefined()
   })
 })
 
@@ -59,14 +60,14 @@ describe('待办清单工具名 · 当前注册名与未知名兜底', () => {
  */
 describe('isAwaitingApproval · 审批挂起按 toolCallId 命中', () => {
   it('命中：同一 toolCallId 在审批表里', () => {
-    const part = toolCall('bash')
+    const part = toolCall('shell')
     // 它同时也是「会被误判成执行中」的那一档，这正是要修的前提
     expect(toolState(part).state).toBe('input-available')
     expect(isAwaitingApproval(part, new Set(['call-1']))).toBe(true)
   })
 
   it('未命中 / 没有审批现场：不误伤别的工具卡', () => {
-    const part = toolCall('bash')
+    const part = toolCall('shell')
     expect(isAwaitingApproval(part, new Set(['call-2']))).toBe(false)
     expect(isAwaitingApproval(part, undefined)).toBe(false)
   })
@@ -74,5 +75,20 @@ describe('isAwaitingApproval · 审批挂起按 toolCallId 命中', () => {
   it('非 tool-call：永远不是待审批', () => {
     const part = { type: 'text', text: 'hi' } as const
     expect(isAwaitingApproval(part, new Set(['call-1']))).toBe(false)
+  })
+})
+
+/**
+ * ACP 命令失败时，过程更新里的 content 文本和最终 rawOutput 可能是同一份错误正文。
+ * 前者在直显内容里、后者在统一错误块里各渲染一次；这里防止相同错误被重复展示。
+ */
+describe('isDuplicateToolErrorText · ACP 错误正文去重', () => {
+  it('识别与最终错误输出相同的过程文本，包括嵌套 rawOutput', () => {
+    expect(isDuplicateToolErrorText('permission denied', 'permission denied')).toBe(true)
+    expect(isDuplicateToolErrorText('permission denied', { content: 'permission denied' })).toBe(true)
+  })
+
+  it('不隐藏与错误输出不同的过程文本', () => {
+    expect(isDuplicateToolErrorText('partial stdout', { error: 'command failed' })).toBe(false)
   })
 })

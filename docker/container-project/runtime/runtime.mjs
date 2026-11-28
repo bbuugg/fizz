@@ -2,13 +2,13 @@ import { asSchema, jsonSchema, stepCountIs, streamText, tool } from "ai";
 import { createHash, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { z } from "zod";
-import { accessSync, constants, existsSync, lstatSync, promises, readdirSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, promises, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { simpleGit } from "simple-git";
 import { rm } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { chromium } from "playwright";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createAnthropic } from "@ai-sdk/anthropic";
@@ -108,7 +108,7 @@ function findPwsh() {
 	]) ?? findInPath("pwsh");
 }
 /**
-* `bash` 这类**一次性命令执行**该用哪个 shell（只返回可执行文件路径，参数由调用方拼）。
+* Agent 的 `shell` 工具这类**一次性命令执行**该用哪个 shell（只返回可执行文件路径，参数由调用方拼）。
 *
 * Windows 上优先 PowerShell 7（`pwsh`）：同一套语法但启动更快、UTF-8 默认行为更少坑；
 * 没装才退回系统自带的 `powershell.exe`（5.1）。POSIX 恒为 `/bin/bash`。
@@ -121,7 +121,7 @@ function findPwsh() {
 /**
 * Git for Windows 的 `bash.exe` 绝对路径；没装返回 null。
 *
-* Agent 的 `bash` 在 Windows 上优先用它能拿到 POSIX 工具链（ls / grep / sed /
+* Agent 的 `shell` 在 Windows 上优先用它能拿到 POSIX 工具链（ls / grep / sed /
 * 管道），与主流编码代理一致；没有 Git Bash 时回退 PowerShell（见 `commandShellPath()`）。
 *
 * 探测覆盖官方安装器（Program Files 下 32/64 位）、Git for Windows 便携版
@@ -138,10 +138,11 @@ function gitBashPath() {
 	]) ?? findInPath("bash.exe");
 }
 /**
-* `bash` 这类**一次性命令执行**该用哪个 shell（只返回可执行文件路径，参数由调用方拼）。
+* Agent 的 `shell` 工具这类**一次性命令执行**该用哪个 shell（只返回可执行文件路径，参数由调用方拼）。
 *
 * Windows 上**优先 Git Bash**（拿到 POSIX 工具链，与主流编码代理一致）；没有 Git Bash 才退回
 * PowerShell 7（`pwsh`，启动更快、UTF-8 默认行为更少坑），再没装就退到系统自带的 5.1。
+* 传 `{ noMsys: true }`（命令要进沙箱时）则跳过 Git Bash —— MSYS2 在限制性令牌下起不来。
 * POSIX 恒为 `/bin/bash`。
 *
 * ⚠️ 与 `resolveShell()` 的关键区别：**这里不做「认不出来就回落默认」**；调用方用的是
@@ -149,9 +150,13 @@ function gitBashPath() {
 * 而 `powershell.exe` 与 `bash.exe`（随 Git 安装）都一定存在。**也不看用户选的终端 shell** ——
 * 那是交互式终端的选择，与 agent 跑命令用什么是两件事。
 */
-function commandShellPath() {
+function commandShellPath(options = {}) {
 	if (process.platform !== "win32") return "/bin/bash";
-	return gitBashPath() ?? findPwsh() ?? "powershell.exe";
+	if (options.noMsys !== true) {
+		const bash = gitBashPath();
+		if (bash !== null) return bash;
+	}
+	return findPwsh() ?? "powershell.exe";
 }
 // packages/contracts/src/workspace.ts
 /**
@@ -440,7 +445,7 @@ var CONTAINER_AGENT_TOOL_KEYS = [
 	"edit",
 	"glob",
 	"grep",
-	"bash",
+	"shell",
 	"todowrite",
 	"skill",
 	"web_fetch",
@@ -509,6 +514,18 @@ function resolveMaxRetries(override) {
 function resolveToolCallConcurrency(override) {
 	return Math.min(10, Math.max(1, typeof override === "number" && Number.isFinite(override) ? Math.round(override) : 3));
 }
+new Set(Object.keys({
+	"image/png": "png",
+	"image/jpeg": "jpg",
+	"image/webp": "webp",
+	"image/gif": "gif",
+	"application/pdf": "pdf",
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+	"text/plain": "txt",
+	"text/markdown": "md",
+	"text/csv": "csv",
+	"application/json": "json"
+}));
 // packages/contracts/src/browser.ts
 /**
 * ⚠️ 视口**不跟随面板尺寸**。
@@ -568,6 +585,17 @@ var MOBILE_PLATFORM = "Linux armv8l";
 * key = 中文原文；未翻译的条目自动回落到中文。
 */
 var COMMON = {
+	"Fizz 在手机上运行": "Fizz runs on your phone",
+	"正在安装手机本地环境…": "Installing the on-device environment…",
+	"正在启动本机引擎…": "Starting the local engine…",
+	"正在连接本机引擎…": "Connecting to the local engine…",
+	"正在停止本机引擎…": "Stopping the local engine…",
+	"本机引擎已停止": "The local engine is stopped",
+	"本机引擎启动失败": "The local engine failed to start",
+	"启动本机引擎": "Start local engine",
+	"运行日志": "Runtime logs",
+	"本机引擎未提供连接凭据": "The local engine did not provide connection credentials",
+	"首次打开会解压 APK 内的 Linux 和 Node 环境，无需电脑、服务器或 Termux。模型服务仍需要网络。": "On first launch, Linux and Node are extracted from the APK. No computer, server or Termux is required. Model services still need a network connection.",
 	"设置": "Settings",
 	"关闭": "Close",
 	"取消": "Cancel",
@@ -575,6 +603,8 @@ var COMMON = {
 	"保存中…": "Saving…",
 	"删除": "Delete",
 	"编辑": "Edit",
+	"视图": "View",
+	"窗口置顶": "Always on Top",
 	"确定": "OK",
 	"确认": "Confirm",
 	"执行": "Run",
@@ -715,11 +745,10 @@ var COMMON = {
 	"当前未启用验证码": "Captcha is not enabled",
 	"开始新对话": "Start a new chat",
 	"想让我帮你做什么…（Enter 发送，Shift+Enter 换行）": "Ask the agent to do something… (Enter to send, Shift+Enter for a new line)",
+	"想让我帮你做什么…": "Ask the agent to do something…",
 	"有什么想问的？…（不指定项目，会话存在服务端）": "What would you like to ask?… (No project attached; the conversation is stored on the server)",
 	"附件上传中，等上传完成后再发": "Uploading attachments — please wait until they finish",
 	"新对话（初始页）": "New chat (start page)",
-	"还没有任务。": "No tasks yet.",
-	"还没有项目。": "No projects yet.",
 	"新建会话": "New conversation",
 	"会话": "Chats",
 	"运行脚本": "Run script",
@@ -799,6 +828,12 @@ var COMMON = {
 	"浏览器没把锁给下来（系统省电策略、或页面刚从后台回来还没拿到前台权限时会这样）。点「再试一次」；仍不行就手动锁一次屏再解锁。": "The browser refused the wake lock (power-saving policy, or the page just returned from the background without foreground permission yet). Click “Try again”; if that fails, lock and unlock the screen manually.",
 	"当前浏览器不支持屏幕唤醒锁（iOS Safari 与部分桌面浏览器尚未实现），页面里没有这个开关能开的替代方案 —— 需要的话改用系统的「屏幕常亮」设置。": "This browser does not support the screen wake lock (not implemented in iOS Safari and some desktop browsers). There is no in-page alternative — use the system’s “keep screen awake” setting instead.",
 	"新建工作区": "New workspace",
+	"本地": "Local",
+	"远程": "Remote",
+	"打开文件面板": "Open files panel",
+	"选择当前目录": "Select this folder",
+	"选择当前目录（{shortcut}）": "Select this folder ({shortcut})",
+	"选一个工作区，打开它的新建会话页面": "Pick a workspace to open its new-conversation page",
 	"管理工作区": "Manage workspaces",
 	"菜单": "Menu",
 	"导入 / 导出": "Import / export",
@@ -831,6 +866,25 @@ var COMMON = {
 var SETTINGS = {
 	"基础": "Basics",
 	"通用": "General",
+	"消息展开与折叠": "Message expansion and collapse",
+	"分别设置过程组、工具调用和思考内容的默认状态与自动折叠时机。": "Set the default state and auto-collapse timing independently for process groups, tool calls, and reasoning.",
+	"预设": "Presets",
+	"全部折叠": "All collapsed",
+	"生成时展开，整轮结束后收起": "Expand while generating, collapse when the turn ends",
+	"自定义": "Custom",
+	"过程组": "Process groups",
+	"工具调用": "Tool calls",
+	"思考内容": "Reasoning",
+	"默认状态": "Default state",
+	"自动折叠": "Auto-collapse",
+	"从不": "Never",
+	"整轮结束后": "When the turn ends",
+	"工具完成后": "When the tool finishes",
+	"思考结束后": "When reasoning ends",
+	"折叠": "Collapsed",
+	"展开": "Expanded",
+	"{name}默认状态": "{name} default state",
+	"{name}自动折叠时机": "{name} auto-collapse timing",
 	"外观": "Appearance",
 	"快捷键": "Shortcuts",
 	"终端": "Terminal",
@@ -951,6 +1005,7 @@ var SETTINGS = {
 	"下载中断，请重试。": "Download interrupted — try again.",
 	"下载失败，请重试。": "Download failed — try again.",
 	"检查更新失败：{reason}": "Check failed: {reason}",
+	"GitHub 接口被限流或被网络拦截（HTTP 403），请稍后重试。": "GitHub API is rate-limited or blocked (HTTP 403). Please try again later.",
 	"重启并安装": "Restart and install",
 	"正在后台下载，可继续使用。": "Downloading in the background; you can keep using the app.",
 	"会退出应用，安装完成后自动打开。": "The app will quit and reopen automatically when installation finishes.",
@@ -1105,7 +1160,7 @@ var SETTINGS = {
 };
 // packages/i18n/src/dict/agent.ts
 /**
-* AI Agent 模块英文文案：模型配置、MCP、ACP、技能、插件、子任务、工具权限、思考档与多智能体协作。
+* AI Agent 模块英文文案：模型配置、MCP、ACP、技能、插件、子任务、工具权限与思考档。
 *
 * key = 中文原文；未翻译的条目自动回落到中文。
 */
@@ -1125,6 +1180,8 @@ var AGENT = {
 	"搜索技能": "Search skills",
 	"停用技能 {name}": "Disable skill {name}",
 	"启用技能 {name}": "Enable skill {name}",
+	"查看技能 {name} 的内容": "View the content of skill {name}",
+	"查看 SKILL.md 内容": "View SKILL.md content",
 	"没扫到技能。在任一位置放入": "No skills found. Put a SKILL.md under any location",
 	"后点「刷新」。": "then click “Refresh”.",
 	"没有匹配「{keyword}」的技能。": "No skills match “{keyword}”.",
@@ -1311,6 +1368,15 @@ var AGENT = {
 	"删除 ACP agent {name}": "Delete ACP agent {name}",
 	"移除模型 {name}": "Remove model {name}",
 	"检测已安装": "Detect installed",
+	"检测 ACP agent {name}": "Check ACP agent {name}",
+	"重新检测 ACP agent {name}": "Recheck ACP agent {name}",
+	"检测这个 Agent 能否正常启动并完成 ACP 握手": "Check whether this agent can start and complete the ACP handshake",
+	"正在检测…": "Checking…",
+	"检测失败": "Check failed",
+	"检测失败：{error}": "Check failed: {error}",
+	"点击重试": "Click to retry",
+	"检测正常": "Check passed",
+	"上次检测：{time}": "Last checked: {time}",
 	"添加 ACP agent": "Add ACP agent",
 	"预设 agent（点击填入默认命令与参数，保存前可以修改）": "Preset agents (click to fill in the default command and arguments; you can edit them before saving)",
 	"运行中的 ACP 进程": "Running ACP processes",
@@ -1327,13 +1393,6 @@ var AGENT = {
 	"同一个命令（含参数）只能添加一次。": "The same command (including arguments) can only be added once.",
 	"名称，如 Codex CLI": "Name, e.g. Codex CLI",
 	"启动命令，如 codex-acp": "Command, e.g. codex-acp",
-	"类型（决定会话里的模式 UI：opencode → 权限档，pi → 思考档，通用 → 不显示）": "Type (controls the mode UI in conversations: opencode → permission levels, pi → thinking levels, generic → hidden)",
-	"通用（不显示模式 UI）": "Generic (no mode UI)",
-	"opencode（Session Modes 当权限档）": "opencode (Session Modes as permission levels)",
-	"pi（thought_level 当思考档）": "pi (thought_level as thinking levels)",
-	"「完全放行」时的答复：缺省「仅允许一次」（下次仍会询问）；选「永久记住」后由 agent 自己记着不再问，届时切回「确认」也要不回询问": "Reply for “allow all”: defaults to “allow once” (asks again next time); with “remember forever” the agent stops asking and switching back to “confirm” will not restore prompts",
-	"仅允许一次（推荐，下次仍会询问）": "Allow once (recommended; asks again next time)",
-	"允许并永久记住（agent 侧不再询问）": "Allow and remember forever (agent stops asking)",
 	"检测已安装的 ACP agent": "Detected ACP agents",
 	"这些是服务端 PATH 上找到的命令。勾选要添加的条目，点「添加」一次写进去；已经添加过的会自动勾上并标注。": "These commands were found on the server PATH. Check the ones to add and click “Add”; already-added ones are checked and marked.",
 	"探测失败：{error}": "Detection failed: {error}",
@@ -1451,27 +1510,6 @@ var AGENT = {
 	"插件方法「{method}」调用失败": "Plugin method “{method}” failed",
 	"选择 MCP（已选 {count} 个）": "Select MCP ({count} selected)",
 	"选择 MCP": "Select MCP",
-	"多智能体协作": "Multi-agent",
-	"协作智能体": "Collaboration agents",
-	"@ 点名由该智能体处理；不点名时全体判断是否需要接手": "@mention goes to that agent; without @ every agent decides whether the message is theirs",
-	"添加智能体": "Add agent",
-	"还没有智能体，先添加一个": "No agents yet — add one first",
-	"协作设置": "Collaboration settings",
-	"控制同一时刻并行跑几个 Agent，以及单轮最多触发多少次运行（含 SendMessage 唤醒）。": "Limits how many agents run in parallel and how many runs a single turn may trigger (including SendMessage wake-ups).",
-	"并行上限": "Parallel limit",
-	"单轮运行上限": "Runs per turn",
-	"正在执行": "Running",
-	"正在回复": "Replying",
-	"协作记录": "Collaboration log",
-	"用户点名、Agent 之间的 SendMessage 投递与每条回复的摘要。": "User mentions, SendMessage deliveries between agents, and a summary of each reply.",
-	"还没有协作记录": "No collaboration log yet",
-	"删除这个智能体？": "Delete this agent?",
-	"删除后它不再接收 @ 点名或广播；已开始的运行会被取消，历史消息保留。": "It will no longer receive @mentions or broadcasts; running tasks are cancelled and history is kept.",
-	"空闲": "Idle",
-	"排队": "Queued",
-	"等回答": "Waiting for answer",
-	"用户": "User",
-	"点名智能体": "Mention an agent",
 	"从 ACP agent 侧拉取 {name} 下的既有会话，可多选；绑定后直接继续对话（历史保存在 agent 侧）。": "Pull existing sessions from the ACP agent under {name}; multi-select, then continue chatting right away (history stays on the agent side).",
 	"当前项目": "current project",
 	"选择 ACP Agent": "Choose an ACP agent",
@@ -1503,6 +1541,9 @@ var AGENT = {
 	"始终允许此命令": "Always allow this command",
 	"拒绝一次": "Deny once",
 	"始终拒绝此命令": "Always deny this command",
+	"剩余 {time} 后自动拒绝": "Auto-denies in {time}",
+	"放宽「命令沙箱」到{level}，仅这一次：{reason}": "Widen the command sandbox to {level}, this once: {reason}",
+	"仅工作区": "Workspace only",
 	"到点自动起一轮会话 · 共 {total} 条 · {enabledCount} 条启用中": "Starts a conversation automatically on schedule · {total} total · {enabledCount} enabled",
 	"新建定时任务": "New scheduled task",
 	"立即运行": "Run now",
@@ -1697,16 +1738,24 @@ var CHAT = {
 	"外部 Agent 每次请求权限时怎么答复；按会话记住，换会话要重选。": "How to reply when the external agent requests permission; remembered per conversation, so pick it again in a new one.",
 	"确认（逐次询问）": "Confirm (ask every time)",
 	"每次请求权限都弹确认卡，由你决定是否允许。": "Every permission request shows a confirmation card for you to decide.",
-	"完全放行（不再询问）": "Allow all (never ask)",
-	"服务端直接替你答复「允许」，确认卡不再出现。": "The server answers “allow” on your behalf, so no confirmation card appears.",
+	"完全放行（逐次自动允许）": "Allow all (one request at a time)",
+	"每次请求仅自动允许本次，不让 Agent 记住授权；不支持单次允许时仍会询问。": "Automatically allow each request once without asking the agent to remember permission; ask for confirmation if one-time approval is unavailable.",
 	"正在读取这个外部 Agent 的模式…": "Reading modes from the external agent…",
-	"切换权限档失败：{error}": "Failed to switch permission mode: {error}",
+	"切换模式失败：{error}": "Failed to switch mode: {error}",
+	"读取模式失败：{error}": "Failed to read modes: {error}",
+	"当前模型不支持这个模式": "The current model does not support this mode",
+	"模型配置尚未就绪，请稍后切换模式": "Model configuration is not ready. Try changing the mode again later",
 	"未知错误": "Unknown error",
 	"模式：{name}（由外部 Agent 提供，可切换）": "Mode: {name} (provided by the external agent; switchable)",
 	"模式（由外部 Agent 提供，可切换）": "Mode (provided by the external agent; switchable)",
 	"模式：{name}": "Mode: {name}",
 	"模式": "Mode",
 	"正在读取这个外部 Agent 的思考档…": "Reading thinking levels from the external agent…",
+	"正在更新模型配置…": "Updating model configuration…",
+	"读取思考档失败：{error}": "Failed to read thinking levels: {error}",
+	"生成期间不能切换思考强度": "Thinking level cannot be changed during generation",
+	"当前模型不支持这个思考档": "The current model does not support this thinking level",
+	"会话正忙，请稍后切换思考档": "The conversation is busy. Try changing the thinking level again later",
 	"切换思考档失败：{error}": "Failed to switch thinking level: {error}",
 	"思考档：{name}": "Thinking level: {name}",
 	"思考档：{name}（由外部 Agent 提供，session/set_config_option 切换）": "Thinking level: {name} (provided by the external agent; switched via session/set_config_option)",
@@ -1760,7 +1809,7 @@ var CHAT = {
 	"等待回答": "Waiting for answer",
 	"ACP 会话": "ACP conversation",
 	"对话会话": "Chat conversation",
-	"多智能体协作会话": "Multi-agent conversation",
+	"远端工作区会话": "Remote workspace conversation",
 	"未查看": "Unseen",
 	"定时任务起的会话，还没点开过": "Scheduled-task conversation that has not been opened",
 	"确认归档": "Confirm archive",
@@ -1774,12 +1823,29 @@ var CHAT = {
 	"正在重启…": "Restarting…",
 	"正在处理会话": "Working on session",
 	"已重新加载会话": "Session reloaded",
+	"正在检查会话状态…": "Checking session status…",
+	"正在连接 Agent 并恢复历史…": "Connecting to Agent and restoring history…",
+	"正在同步聊天记录…": "Syncing chat history…",
+	"重新连接 Agent 并同步聊天记录，保留原会话和上下文": "Reconnect Agent and sync history, keeping the original session and context",
+	"重新加载会话失败：{error}": "Failed to reload session: {error}",
 	"重新加载会话": "Reload session",
 	"重新加载会话失败": "Failed to reload session",
 	"正在重新加载会话…": "Reloading session…",
 	"正在重新加载…": "Reloading…",
 	"历史消息没有显示？": "History not showing?",
 	"转换为内置 Agent 会话": "Convert to built-in Agent conversation",
+	"分叉 ACP 会话": "Fork ACP conversation",
+	"分叉 ACP 会话失败：{error}": "Failed to fork ACP conversation: {error}",
+	"正在分叉 ACP 会话…": "Forking ACP conversation…",
+	"正在分叉…": "Forking…",
+	"已创建 ACP 分支会话": "ACP branch conversation created",
+	"这条 ACP 会话尚未绑定 Agent 会话，无法分叉": "This ACP conversation has no bound Agent session to fork",
+	"找不到这条会话的工作区目录，无法分叉": "Cannot fork: the conversation workspace directory is unavailable",
+	"这一轮还在运行或等待答复，结束后再分叉": "Wait until the current turn and any pending replies have finished before forking",
+	"Agent 未返回新的分叉会话 ID": "The Agent did not return a new forked session ID",
+	"这个 agent 不支持 session/fork": "This Agent does not support session/fork",
+	"ACP 分支已创建，但本地绑定失败；可通过“导入会话”找回：{error}": "The ACP branch was created, but its local binding failed. Recover it using “Import conversation”: {error}",
+	"{title}（分支）": "{title} (branch)",
 	"列出目录": "List directory",
 	"查找文件": "Find files",
 	"搜索内容": "Search contents",
@@ -1925,6 +1991,7 @@ var CHAT = {
 	"下载图片": "Download image",
 	"正在运行": "Running",
 	"未指定工作区": "No workspace",
+	"选择工作区": "Select workspace",
 	"在 {workspace} 里做点什么？": "What would you like to do in {workspace}?",
 	"（目录不存在）": " (directory missing)",
 	"工作区：Agent 只能读写这个目录里的东西": "Workspace: the agent can only read and write inside this directory",
@@ -1946,6 +2013,10 @@ var CHAT = {
 	"跟随 agent 默认": "Follow agent default",
 	"还没有模型配置": "No model configs yet",
 	"它没有可选的模型": "It has no selectable models",
+	"正在加载模型清单…": "Loading model list…",
+	"正在重新加载模型清单…": "Reloading model list…",
+	"模型清单加载失败：{error}": "Failed to load models: {error}",
+	"重新加载模型清单": "Reload model list",
 	"搜索模型 / Agent": "Search models / agents",
 	"没有匹配的模型": "No matching models",
 	"远端工作区不能用外部 Agent（ACP）：它要在服务端本机起一个进程，够不到 SSH 主机上的目录。请用内置模型。": "External agents (ACP) are not available in a remote workspace: they run as a process on the server machine and cannot reach directories on the SSH host. Use a built-in model.",
@@ -1991,6 +2062,8 @@ var CHAT = {
 	"正在检测终端…": "Detecting terminals…",
 	"工作区文件": "Workspace files",
 	"工作区文件 · {name}": "Workspace files · {name}",
+	"文件 / 源码管理": "Files / Source control",
+	"工作区文件与源码管理 · {name}": "Workspace files and source control · {name}",
 	"收起工作区文件": "Hide workspace files",
 	"源码管理": "Source control",
 	"源代码管理": "Source control",
@@ -2043,6 +2116,18 @@ var CHAT = {
 * key = 中文原文；未翻译的条目自动回落到中文。
 */
 var HOSTS = {
+	"选择 SSH 执行目标": "Choose SSH execution target",
+	"请先选择 SSH 执行目标": "Choose an SSH execution target first",
+	"SSH 登录目录": "SSH login directory",
+	"独立 SSH 执行，不读取或输入当前终端": "Independent SSH execution; does not read or type into this terminal",
+	"目标随助手会话保存，切换终端标签不会更改；每条命令独立执行。": "The target is saved with this assistant conversation and stays fixed when switching terminal tabs. Each command runs independently.",
+	"请选择主机": "Choose a host",
+	"默认工作目录": "Default working directory",
+	"留空使用 SSH 登录目录": "Leave empty to use the SSH login directory",
+	"工作目录必须是远端 POSIX 绝对路径": "The working directory must be an absolute remote POSIX path",
+	"让助手管理远端文件与命令": "Let the assistant manage remote files and commands",
+	"试试：「读取配置文件」「搜索错误日志」「在远端运行构建」": "Try: “Read the config file”, “Search error logs”, or “Run a build remotely”",
+	"让助手读写远端文件 / 执行命令…": "Read or write remote files / run commands…",
 	"主机": "Hosts",
 	"新建终端": "New terminal",
 	"清屏": "Clear",
@@ -2090,6 +2175,7 @@ var HOSTS = {
 	"默认使用 {name}": "Use {name} by default",
 	"宿主没提供可选的终端，只能用平台默认。": "The host does not expose selectable terminals; only the platform default is available.",
 	"根据历史与常见命令给出补全建议；→ 接受，Ctrl+↑/↓ 换选。": "Suggests completions from history and common commands; → to accept, Ctrl+↑/↓ to change.",
+	"根据历史与常见命令给出补全建议。": "Suggests completions from history and common commands.",
 	"工具条「终端」按钮默认使用的 shell；只影响新开的终端。在会话顶栏「选择终端」里选过的 shell 会自动记到这里。": "The shell the toolbar “Terminal” button uses by default; only affects new terminals. A shell picked from “Choose terminal” in the conversation header is remembered here automatically.",
 	"本地终端": "Local terminal",
 	"SSH 主机": "SSH host",
@@ -2128,7 +2214,6 @@ var HOSTS = {
 	"留空 = {n}；0 = 关。": "Empty = {n}; 0 = off.",
 	"新建主机": "New host",
 	"主机与终端": "Hosts & terminals",
-	"还没有主机或终端。": "No hosts or terminals yet.",
 	"新建分组": "New group",
 	"重命名分组": "Rename group",
 	"分组名称": "Group name",
@@ -2157,6 +2242,7 @@ var HOSTS = {
 	"打开 {name} · {detail}": "Open {name} · {detail}",
 	"打开 {name} · {detail} · 再点会新开一个标签": "Open {name} · {detail} · clicking again opens another tab",
 	"编辑 {name}": "Edit {name}",
+	"复制 {name}": "Duplicate {name}",
 	"删除 {name}": "Delete {name}",
 	"连接": "Connect",
 	"SFTP 文件管理": "SFTP files",
@@ -2206,13 +2292,6 @@ var API = {
 	"接口请求": "API requests",
 	"接口": "API"
 };
-// packages/i18n/src/dict/notes.ts
-/**
-* 笔记模块英文文案：笔记的导航文案。该模块界面目前直接写中文，未接入 `t()`，新文案加到这里。
-*
-* key = 中文原文；未翻译的条目自动回落到中文。
-*/
-var NOTES = { "笔记": "Notes" };
 // packages/i18n/src/dict/workspace.ts
 /**
 * 工作区 / 项目模块英文文案：工作区与项目、文件管理、Git / worktree、容器、预览、快捷功能。
@@ -2381,7 +2460,6 @@ var WORKSPACE = {
 	"容器设置…": "Container settings…",
 	"导入会话": "Import conversation",
 	"移除工作区": "Remove workspace",
-	"空空如也。": "Nothing here yet.",
 	"再点一次右侧按钮确认删除": "Click the right button again to confirm deletion",
 	"服务端未检测到 git：点开查看安装教程": "git not detected on the server: open for installation instructions",
 	"服务端未检测到 git": "git not detected on the server",
@@ -2414,6 +2492,8 @@ var WORKSPACE = {
 	"已复制：{name}": "Copied: {name}",
 	"已剪切 {count} 项（Ctrl+V 或右键目标文件夹选「粘贴到此处」）": "Cut {count} item(s) (press Ctrl+V or right-click the target folder and choose “Paste here”)",
 	"已剪切：{name}（Ctrl+V 或右键目标文件夹选「粘贴到此处」）": "Cut: {name} (press Ctrl+V or right-click the target folder and choose “Paste here”)",
+	"已剪切 {count} 项": "Cut {count} item(s)",
+	"已剪切：{name}": "Cut: {name}",
 	"当前数据源不支持移动": "This data source does not support moving",
 	"当前数据源不支持复制": "This data source does not support copying",
 	"它们已经在这个目录里了": "They are already in this directory",
@@ -2458,6 +2538,8 @@ var WORKSPACE = {
 	"新建文件夹": "New folder",
 	"上传文件": "Upload file",
 	"删除 {count} 项": "Delete {count} item(s)",
+	"已暂存": "Staged",
+	"未暂存": "Unstaged",
 	"关闭其他": "Close others",
 	"关闭右侧": "Close to the right",
 	"关闭左侧": "Close to the left",
@@ -2493,6 +2575,7 @@ var WORKSPACE = {
 	"编辑源码": "Edit source",
 	"显示被忽略的文件": "Show ignored files",
 	"刷新文件树": "Refresh file tree",
+	"刷新 diff": "Refresh diff",
 	"返回文件列表": "Back to file list",
 	"未打开文件": "No file open",
 	"切换行号": "Toggle line numbers",
@@ -2679,6 +2762,9 @@ var WORKSPACE = {
 	"没有可切换的分支": "No branches to switch to",
 	"删除分支": "Delete branch",
 	"删除分支 {name}": "Delete branch {name}",
+	"复制分支名": "Copy branch name",
+	"复制分支名 {name}": "Copy branch name {name}",
+	"已复制分支名": "Branch name copied",
 	"先选择工作区": "Select a workspace first",
 	"当前分支：{branch}（会话中不能切分支）": "Current branch: {branch} (cannot switch while running)",
 	"会话中不能初始化仓库": "Cannot initialize a repository while running",
@@ -2687,9 +2773,9 @@ var WORKSPACE = {
 	"初始化仓库失败：{error}": "Failed to initialize repository: {error}",
 	"删除分支失败：{error}": "Failed to delete branch: {error}",
 	"提交信息（Ctrl / ⌘ + Enter 提交）": "Commit message (Ctrl / ⌘ + Enter to commit)",
+	"提交信息": "Commit message",
 	"提交已暂存的改动": "Commit the staged changes",
 	"先在「已暂存的更改」里暂存改动": "Stage changes under “Staged changes” first",
-	"没有未提交的改动": "No uncommitted changes",
 	"推送": "Push",
 	"推送 {count}": "Push {count}",
 	"推送到…": "Push to…",
@@ -2728,7 +2814,6 @@ var WORKSPACE = {
 	"说明（可空，如：调一半的登录页）": "Message (optional, e.g. half-done login page)",
 	"连未跟踪文件一起收（": "Also stash untracked files (",
 	"）—— 不勾的话新文件会留在工作区": ") — leave unchecked and new files stay in the working tree",
-	"还没有贮藏": "No stashes yet",
 	"弹出": "Pop",
 	"应用": "Apply",
 	"弹出（git stash pop）：应用这次贮藏，并从栈里删掉": "Pop (git stash pop): apply this stash and remove it from the stack",
@@ -2740,6 +2825,7 @@ var WORKSPACE = {
 	"回滚": "Revert",
 	"回滚 {count} 个文件": "Revert {count} files",
 	"回滚「更改」里列出的文件？": "Revert the files listed under “Changes”?",
+	"回滚全部": "Revert all",
 	"回滚「更改」里列出的这些文件（未暂存 + 未跟踪）": "Revert the files listed under “Changes” (unstaged + untracked)",
 	"回滚「{path}」里的改动？": "Revert changes in “{path}”?",
 	"回滚这个目录": "Revert this directory",
@@ -2771,7 +2857,6 @@ var WORKSPACE = {
 	"其中 {count} 个还没被 git 跟踪，会**直接从磁盘上删除**。": "{count} of them are not tracked by git and will **be deleted from disk**.",
 	"历史提交": "Commit history",
 	"加载更多": "Load more",
-	"还没有提交": "No commits yet",
 	"查看 {short} 改了什么": "Show what {short} changed",
 	"收起 {short} 的改动": "Collapse changes in {short}",
 	"查看 {path} 在这次提交里的改动": "Show changes to {path} in this commit",
@@ -2786,8 +2871,6 @@ var WORKSPACE = {
 	"已复制完整提交哈希": "Full commit hash copied",
 	"已复制短哈希": "Short hash copied",
 	"没有可复制的提交哈希": "No commit hash to copy",
-	"这次提交没有文件改动（空提交，或合并提交默认不带 diff）。": "This commit has no file changes (empty commit, or a merge commit which has no diff by default).",
-	"这次提交没有可显示的文本改动（可能全是二进制文件或纯 mode 变更）。": "This commit has no displayable text changes (they may all be binary or pure mode changes).",
 	"二进制": "Binary",
 	"没有可展示的文本差异（二进制文件，或只有权限 / 模式变化）": "No displayable text diff (binary file, or only permission / mode changes)",
 	"文件已删除（没有原文可对比）": "File deleted (no original content to compare)"
@@ -2799,7 +2882,6 @@ var WORKSPACE = {
 	...CHAT,
 	...HOSTS,
 	...API,
-	...NOTES,
 	...WORKSPACE
 });
 // packages/i18n/src/index.ts
@@ -2918,7 +3000,7 @@ function buildSkillsPromptSection(skills) {
 		...skills.map((s) => `- ${s.name}：${s.description}`),
 		"使用约定：",
 		"- 判断任务与某个技能相关时，**先调用 skill 读它的完整说明，再严格按说明执行**；不要凭技能名猜做法；",
-		"- 技能说明里提到的脚本 / 参考资料，用 skill 的 file 参数读取，或用 bash 以绝对路径执行；",
+		"- 技能说明里提到的脚本 / 参考资料，用 skill 的 file 参数读取，或用 shell 以绝对路径执行；",
 		"- 技能与当前任务无关时不要提及，也不要在正文里罗列技能清单。"
 	].join("\n"), [
 		"## Available skills",
@@ -2926,7 +3008,7 @@ function buildSkillsPromptSection(skills) {
 		...skills.map((s) => `- ${s.name}: ${s.description}`),
 		"Conventions:",
 		"- When a task relates to a skill, **first call skill to read its full instructions, then follow them strictly**; do not guess from the name;",
-		"- Read scripts/references mentioned by a skill with skill’s file parameter, or run them via bash with an absolute path;",
+		"- Read scripts/references mentioned by a skill with skill’s file parameter, or run them via shell with an absolute path;",
 		"- Do not mention skills unrelated to the current task and do not list them in the reply."
 	].join("\n"));
 }
@@ -2939,7 +3021,7 @@ function buildSkillsPromptSection(skills) {
 * 子进程的输出是**终端字节流**：颜色（`\u001b[32m➜\u001b[39m`）、加粗、清行、光标显隐、
 * 超链接（OSC 8）全在里面。这些字节只在真终端上有意义，落到两个地方就是纯噪音：
 *
-* 1. **工具结果**（`bash` 回给模型的文本）：模型看到的是 `[32m` 这种残渣，
+* 1. **工具结果**（`shell` 回给模型的文本）：模型看到的是 `[32m` 这种残渣，
 *    既占预算又可能被当成正文照抄；
 * 2. **后台任务日志**（`background-tasks.ts` 的每行）：界面是纯文本渲染，用户会看到
 *    `[1mLocal[22m:` 这种半截转义。
@@ -2989,7 +3071,7 @@ var MAX_HELD_TAIL = 512;
 * 扣住的是「上一块末尾那个还没收全的转义序列」，最长 `MAX_HELD_TAIL` 字符；超了说明上游
 * 根本不是转义序列（或者是永远收不了尾的 OSC），直接 `stripAnsi` 放出去，不再等。
 *
-* 用途：`bash` 的实时输出（`liveOutput`）—— 那里是**渲染态**，逐块追加，
+* 用途：`shell` 的实时输出（`liveOutput`）—— 那里是**渲染态**，逐块追加，
 * 漏出去半截转义就会一直显示到这张卡片消失。
 */
 function createAnsiStripper() {
@@ -3015,7 +3097,7 @@ function createAnsiStripper() {
 /**
 * 子进程管道的输出解码：**乐观 UTF-8、整行回退 GBK**。
 *
-* 为什么需要它：Windows 上 `bash` 走 Git Bash（见 `tools.ts` 的
+* 为什么需要它：Windows 上命令执行走 Git Bash（见 `tools.ts` 的
 * `resolveShellSpawn`），Git Bash 的 coreutils 吐 UTF-8 —— 但命令里显式调用的
 * `powershell`（系统自带的 5.1）往管道写的是**系统 OEM 代码页**（中文 Windows 是
 * 936/GBK）。以前这里一律 `chunk.toString('utf8')`，于是 `Get-NetTCPConnection :
@@ -3284,6 +3366,592 @@ function toRelative(path, root) {
 	if (!normalized.startsWith(`${base}/`)) return null;
 	return normalized.slice(base.length + 1);
 }
+// packages/tools/src/sandbox/profiles.ts
+/**
+* 各平台沙箱 runner 的 profile 拼装（纯函数，不 spawn）。
+*
+* 这里只做「把一份文件效果策略翻译成 runner 认识的参数」这一件事，探针与选择在
+* `index.ts`。三份方言的来源是 harness 的 `sandbox-local/src/profiles.ts`：
+*
+* - bwrap：`--ro-bind / /` 把整个根挂成只读，再用 `--tmpfs /tmp` + `--bind` 开两个写口；
+* - Seatbelt：SBPL 里 `(deny file-write*)` 后再按 canonical 路径放开；
+* - Windows ACL：不在这里（需要受限令牌 + capability SID，见 README/阶段计划）。
+*
+* ⚠️ `workspaceRoot` 必须已经是**执行世界里的绝对路径**。Seatbelt 的匹配是
+* canonical 的（macOS 上 `/tmp` 就是 `/private/tmp`），所以写口统一过
+* {@link writableRoots} 做 realpath + 去重，别在这里自己拼。
+*/
+/**
+* 解析到执行层真正比较的那个路径（符号链接全部展开）。
+*
+* 解析失败（不存在 / 无权限）时**原样返回**：不存在的写口本来就匹配不到任何东西，
+* 这是保守结果；随手回落到一个「看起来能用」的目录反而会放开调用方没点名的路径。
+*/
+function canonicalPath(path) {
+	try {
+		return realpathSync.native(path);
+	} catch {
+		return path;
+	}
+}
+/**
+* `workspace-write` 真正允许写的根：工作区 + 宿主 `/tmp` + 平台临时目录。
+*
+* `os.tmpdir()` 不能省：mkstemp 一族默认往那里写，少了它这个模式承诺的
+* 「可用临时目录」就是假的。
+*/
+function writableRoots(policy, tempRoot = tmpdir()) {
+	if (policy.mode !== "workspace-write") return [];
+	return [...new Set([
+		policy.workspaceRoot,
+		"/tmp",
+		tempRoot
+	].map(canonicalPath))];
+}
+/**
+* bwrap 的 profile 参数（`--` 与命令 argv 之前的那一段）。
+*
+* `--die-with-parent` 必须有：不然宿主进程被强杀后，沙箱里的命令会变成孤儿继续跑。
+*/
+function bwrapProfileArgs(policy) {
+	const args = [
+		"--ro-bind",
+		"/",
+		"/",
+		"--dev",
+		"/dev",
+		"--unshare-pid",
+		"--proc",
+		"/proc",
+		"--die-with-parent"
+	];
+	if (policy.mode === "workspace-write") {
+		args.push("--tmpfs", "/tmp");
+		args.push("--bind", policy.workspaceRoot, policy.workspaceRoot);
+	}
+	return args;
+}
+/** 把一个路径写成 SBPL 字符串字面量（反斜杠与双引号都要转义） */
+function sbplString(path) {
+	return `"${path.replaceAll("\\", String.raw`\\`).replaceAll("\"", String.raw`\"`)}"`;
+}
+/**
+* macOS `sandbox-exec` 的参数（`-p <profile>`，后面接 `--` 与命令 argv）。
+*
+* 只关 `file-write*`：读全放开（`allow default`），否则 bash 连自己的配置都读不了。
+*/
+function seatbeltProfileArgs(policy, tempRoot) {
+	const forms = [
+		"(version 1)",
+		"(allow default)",
+		"(deny file-write*)",
+		`(allow file-write* (literal ${sbplString("/dev/null")}))`
+	];
+	const roots = writableRoots(policy, tempRoot);
+	if (roots.length > 0) forms.push(`(allow file-write* ${roots.map((root) => `(subpath ${sbplString(root)})`).join(" ")})`);
+	return ["-p", forms.join(" ")];
+}
+/**
+* 拒绝方言：powershell/.NET 的 `Access to the path '...' is denied.`、
+* cmd 的 `Access is denied.`、Node 的 EACCES/EPERM。
+*
+* ⚠️ 只收**带错误码或 Windows 专有措辞**的串：`permission denied` / `operation not permitted`
+* 这种通用文本在普通失败里到处都是（文件被占用、git index.lock、工具自身权限错误），
+* 照单全收会把「命令自己失败」误报成「被沙箱拒绝」，模型就会去申请放宽沙箱。
+*/
+var WINDOWS_ACL_DENIAL_SIGNATURES = [
+	"access is denied",
+	"拒绝访问",
+	"access to the path",
+	"eacces: permission denied",
+	"eperm: operation not permitted"
+];
+/** runner 自己坏了的证据：只认它自己的退出码 + 前缀，正常命令打印同样的字不算 */
+var WINDOWS_ACL_RUNNER_FAILURE_RULES = [{
+	allowedExitCodes: [127],
+	fatalSignatures: ["windows-acl-run: "]
+}];
+/**
+* 拼出实际要 spawn 的 argv。
+* @param launcher - runner 的启动前缀（如 `[node, runner.js]` 或一个原生 exe）
+* @param policy - 本次的文件效果策略（`read-only` / `workspace-write`）
+* @param tempRoot - 已存在的临时根；runner 会在它下面建 per-call 私有目录
+* @param argv - 调用方的原始 argv（完整程序 + 参数，**不拼接**）
+*/
+function windowsAclArgv(launcher, policy, tempRoot, argv) {
+	return [
+		...launcher,
+		"--workspace",
+		policy.workspaceRoot,
+		"--temp",
+		tempRoot,
+		"--mode",
+		policy.mode,
+		"--",
+		...argv
+	];
+}
+/**
+* 探针 argv：只读档跑 `cmd /c exit 0`。退出 0 才算 token 与 spawn 链路真的能用。
+* 只读档不碰 DACL，所以探针不会在用户工作区留下任何 ACE。
+*/
+function windowsAclProbeArgv(launcher, tempRoot) {
+	return windowsAclArgv(launcher, {
+		mode: "read-only",
+		workspaceRoot: tempRoot
+	}, tempRoot, [
+		"cmd",
+		"/c",
+		"exit",
+		"0"
+	]);
+}
+// packages/tools/src/sandbox/classify.ts
+function linesOf(stderr) {
+	return stderr.split(/\r?\n/);
+}
+/**
+* 退出码非零且 stderr 某行包含任一签名 → 视为被策略拒绝。
+*
+* 退出码为 0 时一律不算：命令自己把 `permission denied` 打印到 stderr 是常事
+* （`grep: ... permission denied` 之后仍然 exit 0），不能误报。
+*/
+function matchesSignature(exitCode, stderr, signatures) {
+	if (exitCode === null || exitCode === 0) return false;
+	if (signatures.length === 0) return false;
+	const haystack = linesOf(stderr).map((line) => line.toLowerCase());
+	return signatures.some((signature) => {
+		const needle = signature.toLowerCase();
+		return haystack.some((line) => line.includes(needle));
+	});
+}
+/**
+* 命中 runner 失败规则时返回**命中的那一行**（作为错误详情），否则 undefined。
+*
+* 顺序与文档一致：先按 `allowedExitCodes` 门控，再按整行精确匹配剔除
+* `informationalLines`，最后才在剩余行里找致命签名。
+*/
+function classifyRunnerFailure(exitCode, stderr, rules) {
+	if (exitCode === null || exitCode === 0) return void 0;
+	const lines = linesOf(stderr);
+	for (const rule of rules) {
+		if (rule.allowedExitCodes !== void 0 && !rule.allowedExitCodes.includes(exitCode)) continue;
+		const informational = new Set((rule.informationalLines ?? []).map((line) => line.trim().toLowerCase()));
+		const fatal = rule.fatalSignatures.map((signature) => signature.toLowerCase());
+		for (const line of lines) {
+			const normalized = line.trim().toLowerCase();
+			if (normalized.length === 0) continue;
+			if (informational.has(normalized)) continue;
+			if (fatal.some((signature) => normalized.includes(signature))) return { detail: line.trim() };
+		}
+	}
+}
+/**
+* 归因顺序：**runner 失败优先于拒绝**。
+*
+* 两者都可能带非零退出码与相似的 stderr，但含义相反：runner 失败代表命令从未执行
+* （重试同一条命令没有意义），拒绝代表命令跑了但被内核挡住（可以换做法或申请提权）。
+*/
+function classifyConfinedRun(exitCode, stderr, denialSignatures, runnerFailureRules) {
+	const runnerFailure = classifyRunnerFailure(exitCode, stderr, runnerFailureRules);
+	if (runnerFailure !== void 0) return {
+		denied: false,
+		runnerFailed: runnerFailure.detail
+	};
+	return { denied: matchesSignature(exitCode, stderr, denialSignatures) };
+}
+// packages/tools/src/sandbox/escalation.ts
+/** 严格更宽阶梯：当前档 → 允许申请的目标档 */
+var WIDER_SANDBOX_MODES = {
+	"read-only": ["workspace-write", "danger-full-access"],
+	"workspace-write": ["danger-full-access"],
+	"danger-full-access": []
+};
+/**
+* 校验参数配对与非空理由（schema 表达不了的约束）。
+* @throws 参数不合法时抛错（调用方把消息原样交给模型）
+*/
+function validateEscalationArgs(sandboxPermissions, justification) {
+	if (sandboxPermissions !== void 0 && justification === void 0) throw new Error("invalid escalation: sandbox_permissions requires a justification");
+	if (justification !== void 0 && sandboxPermissions === void 0) throw new Error("invalid escalation: justification is only valid together with sandbox_permissions");
+	if (justification !== void 0 && justification.trim().length === 0) throw new Error("invalid justification: expected a non-empty sentence");
+}
+/**
+* 把模型的参数解析成一次提权申请；不需要提权时返回 undefined。
+*
+* @param sandboxPermissions - 模型给的 `sandbox_permissions`
+* @param justification - 模型给的理由
+* @param effective - 这次调用**实际**会用的沙箱档（沙箱关着就是 `danger-full-access`）
+*/
+function resolveSandboxEscalation(sandboxPermissions, justification, effective) {
+	validateEscalationArgs(sandboxPermissions, justification);
+	if (sandboxPermissions === void 0) return void 0;
+	if (justification === void 0) return void 0;
+	if (sandboxPermissions !== "workspace-write" && sandboxPermissions !== "danger-full-access") throw new Error("invalid sandbox_permissions: expected \"workspace-write\" or \"danger-full-access\"");
+	if (sandboxPermissions === effective) return void 0;
+	if (effective === "danger-full-access") throw new Error("sandbox_permissions is not available: the command sandbox is off, commands already run unrestricted");
+	if (!WIDER_SANDBOX_MODES[effective].includes(sandboxPermissions)) throw new Error(`invalid sandbox_permissions: "${sandboxPermissions}" is not wider than the current mode "${effective}"`);
+	return {
+		mode: sandboxPermissions,
+		justification
+	};
+}
+// packages/tools/src/sandbox/index.ts
+/**
+* 进程沙箱 seam：把一条即将 spawn 的 argv 包成受文件效果策略约束的 argv。
+*
+* 语义照 DeepSeek Harness 的 `ctx.sandbox`（`sandbox-conclusion.md` 是它的结论摘要），
+* 但**不引入 cordis**：我们只需要「选后端 → 包 argv → 给判定事实」这三件事。
+*
+* 三条规矩，改这里之前先看一眼：
+*
+* 1. **fail closed**：受限模式拿不到可用后端就抛 {@link SandboxUnavailableError}，
+*    绝不静默裸跑 —— 「以为隔离了其实没有」比直接报错危险得多；
+* 2. **传 argv 数组，不传 shell 字符串**：包装层不做任何拼接 / 转义；
+* 3. **判定事实跟着这一次包装走**（`denialSignatures` 是方言，不是并集），
+*    并发调用可能落在不同后端上。
+*
+* 平台支持：Linux 用 bwrap（Landlock 需要原生 launcher，暂未接）；macOS 用
+* `sandbox-exec`；Windows 用随包分发的 windows-acl runner（受限令牌 + capability
+* SID 写入白名单）。三种后端都要探针跑通才算可用 —— 一律如实报不可用，不给假承诺。
+*/
+/**
+* 把一个具体的沙箱档翻译成一次命令的策略（`danger-full-access` = 不隔离）。
+* 提权之后要走的就是它：调用方已经知道**确切**的档位，不需要再过一遍开关。
+*
+* 远端工作区同样返回策略 —— 包装由远端后端在**远端主机**上做（bwrap），
+* 这里只负责把模式与写边界（远端 POSIX 根）描述清楚。
+*/
+function sandboxPolicyForMode(mode, workspaceRoot) {
+	if (mode === "danger-full-access") return void 0;
+	return {
+		mode,
+		workspaceRoot
+	};
+}
+/**
+* 把「设置里的开关」翻译成一次命令的策略。
+*
+* - 开关是 `off` → 不传策略（完全不进沙箱路径）；
+* - 其余 → `workspace-write`，写边界就是工作区根（本地路径或远端 POSIX 路径）。
+*/
+function resolveCommandSandbox(setting, backend) {
+	if (setting !== "workspace-write") return void 0;
+	return sandboxPolicyForMode("workspace-write", backend.root);
+}
+/** 与 harness 同一个错误码，方便上层区分「沙箱不可用」和「命令失败」 */
+var SANDBOX_UNAVAILABLE = "SANDBOX_UNAVAILABLE";
+/**
+* bwrap 的方言：本地 backend 与远端（SSH）backend 共用同一份。
+* 两处各写一份的话，远端改了签名、本地没改，归因就会一边对一边错。
+*/
+var BWRAP_DENIAL_SIGNATURES = ["read-only file system"];
+var BWRAP_RUNNER_FAILURE_RULES = [{ fatalSignatures: ["bwrap: "] }];
+/** 受限模式没有可用后端时抛出（命令**没有**执行） */
+var SandboxUnavailableError = class extends Error {
+	mode;
+	code = SANDBOX_UNAVAILABLE;
+	constructor(mode, detail) {
+		super(`沙箱模式 "${mode}" 在当前系统上没有可用的后端，命令没有执行。Linux 需要安装 bubblewrap（bwrap）；macOS 需要 sandbox-exec；Windows 需要随包分发的 windows-acl runner 能正常启动。也可以在「设置 → AI → 偏好」里把「命令沙箱」切到关闭再试。` + (detail === void 0 ? "" : `（${detail}）`));
+		this.mode = mode;
+		this.name = "SandboxUnavailableError";
+	}
+};
+var DEFAULT_PROBE_TIMEOUT_MS = 5e3;
+/** 失败原因里保留的原话长度上限（够看清一行报错，又不会把整段栈灌进错误卡片） */
+var PROBE_DETAIL_MAX = 300;
+/**
+* 真实探针：跑一次最简单的受限命令，退出 0 才算这个 runner 真能用。
+*
+* ⚠️ **必须异步 spawn**：探针跑在服务端进程里，`spawnSync` 会把整个事件循环按住
+* （SSE 心跳、其它会话的请求、PTY 转发全停），而探针超时默认就有 5 秒。
+*
+* 失败时**必须**把 stderr 的最后一句话带出来：runner 起不来有很多种原因
+* （依赖没打进包里、受限令牌创建被拒、koffi 原生模块加载失败……），
+* 界面只显示「探针失败」时，排查只能靠手动重跑一遍探针。
+*/
+function runProbe(argv, timeoutMs, env) {
+	const [program, ...args] = argv;
+	if (program === void 0) return Promise.resolve({
+		ok: false,
+		detail: "探针 argv 为空"
+	});
+	return new Promise((resolve) => {
+		let settled = false;
+		let stderr = "";
+		let timer;
+		const settle = (outcome) => {
+			if (settled) return;
+			settled = true;
+			if (timer !== void 0) clearTimeout(timer);
+			resolve(outcome);
+		};
+		const child = spawn(program, args, {
+			stdio: [
+				"ignore",
+				"ignore",
+				"pipe"
+			],
+			windowsHide: true,
+			...env ? { env: {
+				...process.env,
+				...env
+			} } : {}
+		});
+		timer = setTimeout(() => {
+			settle({
+				ok: false,
+				detail: `探针超时（${timeoutMs}ms）`
+			});
+			try {
+				child.kill();
+			} catch {}
+		}, timeoutMs);
+		child.stderr?.on("data", (d) => {
+			stderr = (stderr + String(d)).slice(-8e3);
+		});
+		child.on("error", (err) => {
+			settle({
+				ok: false,
+				detail: err.message.slice(0, PROBE_DETAIL_MAX)
+			});
+		});
+		child.on("close", (code) => {
+			if (code === 0) return settle({ ok: true });
+			const lastLine = stderr.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "").pop();
+			const exit = code === null ? "被信号终止" : `退出码 ${code}`;
+			settle({
+				ok: false,
+				detail: (lastLine === void 0 ? exit : `${exit}：${lastLine}`).slice(0, PROBE_DETAIL_MAX)
+			});
+		});
+	});
+}
+/** 探针失败原因 = 归因 + 对方原话（有就带上） */
+function probeReason(reason, outcome) {
+	return outcome.detail === void 0 || outcome.detail === "" ? reason : `${reason}：${outcome.detail}`;
+}
+function bwrapProbeArgv() {
+	return [
+		"bwrap",
+		...bwrapProfileArgs({
+			mode: "read-only",
+			workspaceRoot: "/"
+		}),
+		"--",
+		"true"
+	];
+}
+function seatbeltProbeArgv(tempRoot) {
+	return [
+		"sandbox-exec",
+		...seatbeltProfileArgs({
+			mode: "read-only",
+			workspaceRoot: "/"
+		}, tempRoot),
+		"--",
+		"true"
+	];
+}
+/** 显式指定 runner 产物的环境变量（自定义部署 / 排障用） */
+var RUNNER_ENV = "FIZZ_WIN_SANDBOX_RUNNER";
+/**
+* runner 产物相对**当前 bundle** 的候选位置。
+*
+* - server：`apps/server/dist/index.js` → 同目录下的 `win-sandbox/`；
+* - desktop：`apps/desktop/out/main/index.js` → 上一层的 `win-sandbox/`；
+* - vitest：源码 `packages/tools/src/sandbox/index.ts` → 再上一层。
+*
+* 构建脚本（`packages/win-sandbox/build.mjs`）负责把产物放到这些位置。
+*/
+var RUNNER_CANDIDATES = [
+	"./win-sandbox/runner.mjs",
+	"../win-sandbox/runner.mjs",
+	"../../win-sandbox/runner.mjs"
+];
+/**
+* 解析随包分发的 windows-acl runner。
+*
+* - 普通 node / 服务端：`[process.execPath, <产物>/win-sandbox/runner.mjs]`；
+* - Electron 打包态：`process.execPath` 是 Electron 本体，必须带
+*   `ELECTRON_RUN_AS_NODE=1` 才会当 node 跑；子进程也读不到 asar，所以路径要换成
+*   `app.asar.unpacked` 镜像（打包配置已把 runner 与 koffi 解包出来）。
+*
+* 解析失败（没构建 / 被裁剪）返回 undefined —— 上层按「后端不可用」fail closed。
+*/
+function resolveWindowsRunner() {
+	const entry = resolveRunnerEntry();
+	if (entry === void 0) return void 0;
+	return {
+		command: [process.execPath, entry],
+		...process.versions.electron !== void 0 ? { env: { ELECTRON_RUN_AS_NODE: "1" } } : {}
+	};
+}
+/** 先试显式环境变量，再试相对当前 bundle 的固定位置；asar 内的路径换成解包镜像 */
+function resolveRunnerEntry() {
+	const explicit = process.env[RUNNER_ENV];
+	const explicitHit = explicit === void 0 || explicit === "" ? void 0 : existingFile(explicit);
+	if (explicitHit !== void 0) return explicitHit;
+	for (const relative of RUNNER_CANDIDATES) {
+		let path;
+		try {
+			path = fileURLToPath(new URL(relative, import.meta.url));
+		} catch {
+			continue;
+		}
+		const hit = existingFile(path);
+		if (hit !== void 0) return hit;
+	}
+}
+/**
+* 文件存在就返回它；在 asar 里则返 `app.asar.unpacked` 里的同位置镜像。
+*
+* ⚠️ **解包镜像优先**：Electron 的 fs 补丁让 asar 内的路径 `existsSync` 也为真，
+* 但 runner 是 `ELECTRON_RUN_AS_NODE` 起的**纯 node** 子进程，它不认 asar 虚拟路径 ——
+* 拿到 asar 内的路径就会 ENOENT。
+*/
+function existingFile(path) {
+	const marker = `${sep}app.asar${sep}`;
+	if (path.includes(marker)) {
+		const unpacked = path.replace(marker, `${sep}app.asar.unpacked${sep}`);
+		if (existsSync(unpacked)) return unpacked;
+	}
+	return existsSync(path) ? path : void 0;
+}
+/**
+* 建一个沙箱实例。不传 `options` 就是生产形态；测试用 `probe` / `platform` 注入，
+* 不要为了测分支真的去起 bwrap。
+*/
+function createSandbox(options = {}) {
+	const platform = options.platform ?? process.platform;
+	const probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+	const probe = options.probe ?? runProbe;
+	const tempRoot = options.tempRoot;
+	let resolvedRunner;
+	let runnerResolved = false;
+	let cached;
+	/** 显式注入优先（空数组 = 明确「没有 runner」）；否则第一次需要时解析随包分发的 */
+	function windowsRunner() {
+		if (options.windowsLauncher !== void 0) {
+			if (options.windowsLauncher.length === 0) return void 0;
+			return {
+				command: [...options.windowsLauncher],
+				...options.windowsLauncherEnv ? { env: options.windowsLauncherEnv } : {}
+			};
+		}
+		if (!runnerResolved) {
+			runnerResolved = true;
+			resolvedRunner = resolveWindowsRunner();
+		}
+		return resolvedRunner;
+	}
+	/** 跑探针并把「测试注入的 boolean」与「真实探针的结构化结果」归一化 */
+	async function runProbeFor(argv, env) {
+		const result = await probe(argv, probeTimeoutMs, env);
+		return typeof result === "boolean" ? { ok: result } : result;
+	}
+	/**
+	* 选后端：按平台选，Linux 只认 bwrap。
+	*
+	* 探针只跑一次并缓存 —— 每条命令都探一次等于每条命令多起一个进程，
+	* 而「bwrap 能不能用」在一次运行里不会变。并发调用共享同一个 pending promise：
+	* 探针是异步的，两条命令同时进来时不能各起一个。
+	*/
+	let pending;
+	async function select() {
+		if (cached !== void 0) return cached;
+		if (pending !== void 0) return pending;
+		pending = probeAvailability();
+		try {
+			cached = await pending;
+			return cached;
+		} finally {
+			pending = void 0;
+		}
+	}
+	async function probeAvailability() {
+		if (platform === "linux") {
+			const outcome = await runProbeFor(bwrapProbeArgv());
+			cached = outcome.ok ? {
+				available: true,
+				runner: "bwrap"
+			} : {
+				available: false,
+				reason: probeReason("bwrap 探针失败（未安装，或容器里缺 user namespace 权限）", outcome)
+			};
+		} else if (platform === "darwin") {
+			const outcome = await runProbeFor(seatbeltProbeArgv(tempRoot));
+			cached = outcome.ok ? {
+				available: true,
+				runner: "seatbelt"
+			} : {
+				available: false,
+				reason: probeReason("sandbox-exec 探针失败（系统不提供或被限制）", outcome)
+			};
+		} else if (platform === "win32") {
+			const runner = windowsRunner();
+			if (runner === void 0) cached = {
+				available: false,
+				reason: "未找到 windows-acl runner（随包的 win-sandbox/runner.mjs 缺失，见 packages/win-sandbox/build.mjs）"
+			};
+			else {
+				const outcome = await runProbeFor(windowsAclProbeArgv(runner.command, tempRoot ?? tmpdir()), runner.env);
+				cached = outcome.ok ? {
+					available: true,
+					runner: "windows-acl"
+				} : {
+					available: false,
+					reason: probeReason("windows-acl runner 探针失败（受限令牌或进程创建被拒绝）", outcome)
+				};
+			}
+		} else cached = {
+			available: false,
+			reason: `当前平台（${platform}）没有已接入的沙箱后端`
+		};
+		return cached;
+	}
+	return {
+		availability: select,
+		async confine(argv, policy, opts = {}) {
+			const selected = await select();
+			if (!selected.available) throw new SandboxUnavailableError(policy.mode, selected.reason);
+			opts.signal?.throwIfAborted();
+			if (selected.runner === "bwrap") return {
+				argv: [
+					"bwrap",
+					...bwrapProfileArgs(policy),
+					"--",
+					...argv
+				],
+				enforcement: "full",
+				denialSignatures: BWRAP_DENIAL_SIGNATURES,
+				runnerFailureRules: BWRAP_RUNNER_FAILURE_RULES
+			};
+			if (selected.runner === "seatbelt") return {
+				argv: [
+					"sandbox-exec",
+					...seatbeltProfileArgs(policy, tempRoot),
+					"--",
+					...argv
+				],
+				enforcement: "full",
+				denialSignatures: ["operation not permitted"],
+				runnerFailureRules: [{ fatalSignatures: ["sandbox-exec: "] }]
+			};
+			const runner = windowsRunner();
+			if (runner === void 0) throw new SandboxUnavailableError(policy.mode, "windows-acl runner 未安装");
+			return {
+				argv: windowsAclArgv(runner.command, policy, tempRoot ?? tmpdir(), argv),
+				enforcement: "partial",
+				denialSignatures: WINDOWS_ACL_DENIAL_SIGNATURES,
+				runnerFailureRules: WINDOWS_ACL_RUNNER_FAILURE_RULES,
+				...runner.env ? { env: runner.env } : {}
+			};
+		}
+	};
+}
+/** 生产单例：首次 `confine` 才探针，import 本身不起进程 */
+var sandbox = createSandbox();
 // packages/tools/src/backend.ts
 /**
 * 工作区后端的**本地实现**：把原先直接散在 `tools.ts` 里的 fs / 搜索 / 进程执行
@@ -3356,13 +4024,21 @@ function killChild(child, isWin) {
 * 前台（`runCommand`）与后台（`spawnBackgroundShell`）**必须用同一份判定**：两条路要是
 * 各挑一次 shell，同一条命令「直接跑」和「丢后台跑」的行为就会不一样 —— 最典型的是
 * Windows 上前台走 Git Bash、后台掉进 PowerShell，管道 / `&&` / 单引号整个不认。
+*
+* 唯一的例外是沙箱（`sandboxed`）：Windows 上 MSYS2 在限制性令牌里起不来，只能换 PowerShell。
 */
-function resolveShellSpawn(command) {
+function resolveShellSpawn(command, options = {}) {
 	const isWin = process.platform === "win32";
-	const bashPath = isWin ? gitBashPath() : null;
+	/**
+	* 沙箱里的 Windows 只能用 PowerShell：MSYS2 运行时在限制性令牌下**必然**起不来
+	* （cygheap 改自己令牌的 DefaultDacl 被拒 → `couldn't create signal pipe, Win32 error 5`），
+	* cmd / pwsh 同沙箱正常。不换 shell 的话沙箱开着时一条命令都跑不了。
+	*/
+	const noMsys = options.sandboxed === true;
+	const bashPath = isWin && !noMsys ? gitBashPath() : null;
 	const useBash = !isWin || Boolean(bashPath);
 	return {
-		shellCmd: isWin ? bashPath ?? commandShellPath() : "/bin/bash",
+		shellCmd: isWin ? bashPath ?? commandShellPath({ noMsys }) : "/bin/bash",
 		shellArgs: isWin ? useBash ? ["-lc", command] : [
 			"-NoLogo",
 			"-NoProfile",
@@ -3378,13 +4054,55 @@ function resolveShellSpawn(command) {
 	};
 }
 /** 本地执行：与改造前的 `runCommand` 同一套进程树终止 / 解码 / 截断语义，只返回原始结果 */
-function localExec(command, cwd, opts) {
-	const { shellCmd, shellArgs, env, isWin } = resolveShellSpawn(command);
+async function localExec(command, cwd, opts) {
+	const { shellCmd, shellArgs, env, isWin } = resolveShellSpawn(command, { sandboxed: opts.sandbox !== void 0 });
 	const timeoutMs = opts.timeoutMs ?? 12e4;
 	const maxBytes = opts.maxBytes ?? 4e6;
-	const child = spawn(shellCmd, shellArgs, {
+	/**
+	* 沙箱：**包在 spawn 之前，包的是完整 argv**（不是往命令字符串前面拼一段 —— 引号、
+	* 空格、`--` 都会出事）。拿不到可用后端时按 fail closed 返回「没启动」，绝不裸跑。
+	*/
+	let argv = [shellCmd, ...shellArgs];
+	let confinement;
+	if (opts.sandbox) {
+		if (opts.signal?.aborted) return {
+			stdout: "",
+			stderr: "",
+			exitCode: null,
+			reason: "aborted",
+			truncated: false
+		};
+		try {
+			const facts = await sandbox.confine(argv, opts.sandbox, opts.signal ? { signal: opts.signal } : {});
+			argv = facts.argv;
+			confinement = {
+				policy: opts.sandbox,
+				facts
+			};
+		} catch (err) {
+			if (opts.signal?.aborted) return {
+				stdout: "",
+				stderr: "",
+				exitCode: null,
+				reason: "aborted",
+				truncated: false
+			};
+			return {
+				stdout: "",
+				stderr: "",
+				exitCode: null,
+				reason: "error",
+				error: err instanceof Error ? err.message : String(err),
+				truncated: false
+			};
+		}
+	}
+	const child = spawn(argv[0], argv.slice(1), {
 		cwd,
-		env,
+		env: confinement?.facts.env ? {
+			...env,
+			...confinement.facts.env
+		} : env,
 		windowsHide: true,
 		...isWin ? {} : { detached: true }
 	});
@@ -3404,13 +4122,20 @@ function localExec(command, cwd, opts) {
 			opts.signal?.removeEventListener("abort", onAbort);
 			stdout += decodeStdout.flush();
 			stderr += decodeStderr.flush();
+			const outcome = confinement && reason === "exit" ? classifyConfinedRun(exitCode ?? null, stderr, confinement.facts.denialSignatures, confinement.facts.runnerFailureRules) : void 0;
+			const sandboxResult = outcome && confinement ? {
+				mode: confinement.policy.mode,
+				denied: outcome.denied,
+				...outcome.runnerFailed ? { runnerFailed: outcome.runnerFailed } : {}
+			} : void 0;
 			resolve({
 				stdout,
 				stderr,
 				exitCode: exitCode ?? null,
 				reason,
 				error,
-				truncated
+				truncated,
+				...sandboxResult ? { sandbox: sandboxResult } : {}
 			});
 		};
 		const reap = () => {
@@ -3667,7 +4392,7 @@ function buildSearchContext(hits, source, context) {
 }
 // packages/tools/src/output-log.ts
 /**
-* 超长工具输出的落盘：**bash** / **web_fetch** 结果太长时，把全文写进工作区的
+* 超长工具输出的落盘：**shell** / **web_fetch** 结果太长时，把全文写进工作区的
 * `.fizz/tool-output/`，只回「头 + 尾」正文，外加一组**行号坐标**让模型自己把剩下的读完。
 *
 * ## 为什么落进工作区，而不是数据目录
@@ -3677,7 +4402,7 @@ function buildSearchContext(hits, source, context) {
 *
 * 1. **只有专用工具能读**。数据目录在工作区之外，`read` 的 `resolveInside` 够不着；
 *    于是模型想精读中段，只能用 `read_log`（字符偏移，与它熟悉的按行翻页是两套心智），
-*    或者 `bash` 拼 `sed`/`grep` —— 而只读模式下 bash 被 guardWrite 拦死，
+*    或者 `shell` 拼 `sed`/`grep` —— 而只读模式下 shell 被 guardWrite 拦死，
 *    那份数据**根本读不回来**。
 * 2. **多一个要维护的工具**：schema、系统提示词、只读子任务白名单里都得带着它。
 *
@@ -3703,7 +4428,7 @@ function buildSearchContext(hits, source, context) {
 /**
 * 单个工具结果回给模型的字符预算（也是命令输出落盘的触发阈值）。
 *
-* read / grep 用它做行裁剪提示的分界，bash 用它决定是否落盘。
+* read / grep 用它做行裁剪提示的分界，shell 用它决定是否落盘。
 */
 var MAX_TOOL_RESULT_CHARS = 4e3;
 /** 摘要里留给「头 + 尾」正文的额度：剩下的 ~1600 字符给说明块，保证整体塞得进预算 */
@@ -3833,7 +4558,7 @@ function clipToBudget(text, max = SUMMARY_BODY_CHARS) {
 * 单个文件整体读入的上限（字节）：超过就不当文本处理。
 *
 * 超限只有「读不动」这一个理由（模型自己也读不动这么大一段），按行分段用
-* read 的 offset/limit 即可，不走 output-log（那里只留给 bash）。
+* read 的 offset/limit 即可，不走 output-log（那里只留给 shell）。
 */
 var MAX_FILE_BYTES = 8e6;
 /** 一次 read 的**默认且最大**行数（传更大的值是错误，不是夹取） */
@@ -3944,14 +4669,15 @@ function intentOf(input) {
 	return typeof value === "string" ? value.trim() : "";
 }
 /**
-* 把后端执行结果拼成 `bash` 的模型可见文本：
+* 把后端执行结果拼成 `shell` 的模型可见文本：
 * stdout、`[stderr]` 段、`[exit code: N]` 标记；全空写 `(no output)`。
 *
 * 非 0 退出码**不是**工具错误（模型自己决定怎么办）；只有启动失败这种基础设施问题才抛错。
 */
-async function formatBashOutput(backend, command, result, timeoutMs) {
+async function formatShellOutput(backend, command, result, timeoutMs) {
 	const out = stripAnsi(result.stdout);
 	const err = stripAnsi(result.stderr);
+	if (result.sandbox?.runnerFailed) throw new Error(`sandbox runner failed: ${result.sandbox.runnerFailed}`);
 	if (result.reason === "error") throw new Error(`command failed to start: ${result.error ?? "unknown error"}`);
 	let body = out;
 	if (err.length > 0) {
@@ -3963,9 +4689,10 @@ async function formatBashOutput(backend, command, result, timeoutMs) {
 	if (result.reason === "timeout") markers.push(`[timed out after ${timeoutMs}ms]`);
 	if (result.reason === "aborted") markers.push("[stopped: cancelled]");
 	if (result.reason === "exit" && result.exitCode !== 0) markers.push(`[exit code: ${result.exitCode}]`);
+	if (result.sandbox?.denied) markers.push(tr("[沙箱：workspace-write 下这条命令的写入被拒绝] 只能写工作区与临时目录；需要越界时请用户关闭「命令沙箱」，或把操作挪进工作区。", "[sandbox: file access denied under workspace-write] Only the workspace and temp dirs are writable; ask the user to turn off the command sandbox or move the work inside the workspace."));
 	return summarizeLongOutput(markers.length ? `${body.trimEnd()}\n${markers.join("\n")}` : body.trimEnd(), {
 		backend,
-		tool: "bash",
+		tool: "shell",
 		detail: command.slice(0, 200)
 	});
 }
@@ -3973,10 +4700,22 @@ async function formatBashOutput(backend, command, result, timeoutMs) {
 function buildAgentTools(root, opts) {
 	const currentMode = () => opts.getPermissionMode?.() ?? opts.permissionMode;
 	const backend = opts.backend ?? createLocalBackend(root);
+	const sandboxPolicy = resolveCommandSandbox(opts.sandboxMode, backend);
 	const isWin = process.platform === "win32";
-	const bashPath = isWin ? gitBashPath() : null;
-	const shellNote = backend.kind === "remote" ? "命令运行在远端 Linux 主机的 POSIX shell（bash/sh）中：可以用 ls / grep / sed / find / cat、管道与 Unix 语法；路径是远端主机上的绝对路径。" : isWin ? bashPath ? "命令运行在 Git Bash（POSIX）环境：可以用 ls / grep / sed / find / cat / 管道等 Unix 工具与语法；Windows 路径建议写成 C:/xxx 或 /c/xxx 形式。" : "命令运行在 PowerShell 环境（未检测到 Git Bash）。" : "命令运行在 bash 环境。";
-	const shellNoteEn = backend.kind === "remote" ? "Commands run in a POSIX shell (bash/sh) on the remote Linux host: ls / grep / sed / find / cat, pipes, and Unix syntax are available; paths are absolute paths on that host." : isWin ? bashPath ? "Commands run in Git Bash (POSIX): you can use ls / grep / sed / find / cat, pipes, and Unix syntax. For Windows paths prefer C:/xxx or /c/xxx." : "Commands run in PowerShell (Git Bash not detected)." : "Commands run in bash.";
+	/**
+	* 沙箱开着的 Windows 用不了 Git Bash（MSYS2 在限制性令牌下起不来，后端已换成 PowerShell）。
+	* 提示词必须跟着换，否则模型照旧写 `ls | grep` 然后一条条失败。
+	*/
+	const winSandboxShell = isWin && backend.kind === "local" && sandboxPolicy !== void 0;
+	const bashPath = isWin && !winSandboxShell ? gitBashPath() : null;
+	const shellNote = backend.kind === "remote" ? "命令运行在远端 Linux 主机的 POSIX shell（bash/sh）中：可以用 ls / grep / sed / find / cat、管道与 Unix 语法；路径是远端主机上的绝对路径。" : isWin ? bashPath ? "命令运行在 Git Bash（POSIX）环境：可以用 ls / grep / sed / find / cat / 管道等 Unix 工具与语法；Windows 路径建议写成 C:/xxx 或 /c/xxx 形式。" : winSandboxShell ? "命令运行在 PowerShell（文件沙箱下 Git Bash 无法启动，只能用 PowerShell）：用 Get-ChildItem / Get-Content / Select-String / Copy-Item 与管道；不要用 ls / grep / sed / awk / cat、`&&`、`2>/dev/null`；串联多步命令用 `;`，路径写成 C:/xxx。" : "命令运行在 PowerShell 环境（未检测到 Git Bash）。" : "命令运行在 bash 环境。";
+	const shellNoteEn = backend.kind === "remote" ? "Commands run in a POSIX shell (bash/sh) on the remote Linux host: ls / grep / sed / find / cat, pipes, and Unix syntax are available; paths are absolute paths on that host." : isWin ? bashPath ? "Commands run in Git Bash (POSIX): you can use ls / grep / sed / find / cat, pipes, and Unix syntax. For Windows paths prefer C:/xxx or /c/xxx." : winSandboxShell ? "Commands run in PowerShell (Git Bash cannot start inside the file sandbox, so PowerShell is the only option): use Get-ChildItem / Get-Content / Select-String / Copy-Item and pipes; do not use ls / grep / sed / awk / cat, `&&`, or `2>/dev/null`; chain steps with `;` and write paths as C:/xxx." : "Commands run in PowerShell (Git Bash not detected)." : "Commands run in bash.";
+	/**
+	* 沙箱提示：模型不会自己意识到「批准了也不等于能写系统目录」。不说清的话，
+	* 它会把内核的 permission denied 当成命令写错，换个写法反复重试。
+	*/
+	const sandboxNote = sandboxPolicy ? "\n本次命令在文件沙箱中执行：只能写工作区与临时目录，越界写入会被系统拒绝；确实需要越界时，带 sandbox_permissions + justification 申请一次放宽（会弹卡片问用户）。" : "";
+	const sandboxNoteEn = sandboxPolicy ? "\nCommands run in a file sandbox: only the workspace and temp dirs are writable; writes elsewhere are denied. If a write outside is genuinely required, ask once via sandbox_permissions + justification (the user gets a confirmation card)." : "";
 	/**
 	* 观察表：本次工具集生命周期内「模型读过哪些文件、读到的版本是什么」。
 	*
@@ -4203,26 +4942,51 @@ function buildAgentTools(root, opts) {
 				return formatGrepOutput(files, matches.length);
 			}
 		}),
-		bash: tool({
-			description: tr("在工作区目录下执行 shell 命令并返回输出（stdout + stderr）。适用于运行构建 / 测试 / git 操作 / 安装依赖 / 启动服务等。命令默认超时 120 秒。输出超过一个工具结果的预算时会被完整落盘到工作区的 .fizz/tool-output/ 下，结果里给出相对路径、全文行数与本次返回了哪几行；其余部分用 read 传那个 path 加 offset / limit 按行接着读，也可以用 grep 检索（常见于构建 / 测试的完整日志）。注意这是真实执行环境，删除、覆盖、危险命令（rm -rf、git push --force 等）前先说明影响。需要在**本轮结束后继续跑**的进程（dev server / watch / 长构建）把 run_in_background 设为 true：调用会立刻返回一个后台任务 id，它不受本轮超时与停止影响，输出显示在输入框上方的任务面板里；当前这一轮就要用它的输出时**不要**开这个开关。" + shellNote, "Run a shell command in the workspace and return stdout + stderr. Use it for builds, tests, git, installing dependencies, starting services, etc. Default timeout is 120 seconds. If output exceeds one tool result, the full text is saved under .fizz/tool-output/ and the result includes the relative path, total lines, and which lines were returned; read the rest with read offset/limit on that path, or search it with grep (common for full build/test logs). This is a real execution environment: explain the impact before deleting, overwriting, or running dangerous commands (rm -rf, git push --force, etc.). Set run_in_background: true for processes that must keep running after this turn (dev servers, watchers, long builds): the call returns a background task id immediately, it is not affected by this turn's timeout or stop, and its output shows in the task panel above the input box; do NOT set it when the current turn needs the output." + shellNoteEn),
+		shell: tool({
+			description: tr("在工作区目录下执行 shell 命令并返回输出（stdout + stderr）。适用于运行构建 / 测试 / git 操作 / 安装依赖 / 启动服务等。命令默认超时 120 秒。输出超过一个工具结果的预算时会被完整落盘到工作区的 .fizz/tool-output/ 下，结果里给出相对路径、全文行数与本次返回了哪几行；其余部分用 read 传那个 path 加 offset / limit 按行接着读，也可以用 grep 检索（常见于构建 / 测试的完整日志）。注意这是真实执行环境，删除、覆盖、危险命令（rm -rf、git push --force 等）前先说明影响。需要在**本轮结束后继续跑**的进程（dev server / watch / 长构建）把 run_in_background 设为 true：调用会立刻返回一个后台任务 id，它不受本轮超时与停止影响，输出显示在输入框上方的任务面板里；当前这一轮就要用它的输出时**不要**开这个开关。" + shellNote + sandboxNote, "Run a shell command in the workspace and return stdout + stderr. Use it for builds, tests, git, installing dependencies, starting services, etc. Default timeout is 120 seconds. If output exceeds one tool result, the full text is saved under .fizz/tool-output/ and the result includes the relative path, total lines, and which lines were returned; read the rest with read offset/limit on that path, or search it with grep (common for full build/test logs). This is a real execution environment: explain the impact before deleting, overwriting, or running dangerous commands (rm -rf, git push --force, etc.). Set run_in_background: true for processes that must keep running after this turn (dev servers, watchers, long builds): the call returns a background task id immediately, it is not affected by this turn's timeout or stop, and its output shows in the task panel above the input box; do NOT set it when the current turn needs the output." + shellNoteEn + sandboxNoteEn),
 			inputSchema: z.object({
 				command: z.string().describe("The command to execute."),
 				timeoutMs: z.number().optional().describe("Timeout in milliseconds; default 120000, max 300000."),
 				workdir: z.string().optional().describe("Working directory for this command. Defaults to the session workspace; a relative path is resolved against it."),
-				run_in_background: z.boolean().optional().describe("Run in the background and return a job id immediately. No timeout applies. Do not set it when this turn needs the output.")
+				run_in_background: z.boolean().optional().describe("Run in the background and return a job id immediately. No timeout applies. Do not set it when this turn needs the output."),
+				sandbox_permissions: z.enum(["workspace-write", "danger-full-access"]).optional().describe("Only together with `justification`: ask the user to widen the command sandbox for THIS call, after a write was denied. Omit it when the work can stay inside the workspace."),
+				justification: z.string().optional().describe("Required with `sandbox_permissions`: one short sentence for the user explaining why this exact command must write outside the workspace.")
 			}),
 			execute: async (input, options) => {
 				const { command } = input;
 				if (command.trim().length === 0) throw new Error("invalid command: expected a non-empty string");
 				const runInBackground = input.run_in_background ?? false;
 				const cwd = input.workdir ?? "";
-				const refused = await guardWrite("命令未运行", {
+				const guardRequest = {
 					toolCallId: options.toolCallId,
-					toolName: "bash",
+					toolName: "shell",
 					command,
 					intent: intentOf(input)
-				});
-				if (refused) return refused;
+				};
+				/**
+				* 沙箱提权：参数配对 / 阶梯校验必须在**弹任何卡之前** —— 参数写错不该让用户
+				* 先看一张莫名其妙的审批卡；沙箱没开时也直接纠正模型，而不是问「要不要放宽」。
+				*/
+				const effectiveSandboxMode = sandboxPolicy?.mode ?? "danger-full-access";
+				const escalation = resolveSandboxEscalation(input.sandbox_permissions, input.justification, effectiveSandboxMode);
+				let callSandbox = sandboxPolicy;
+				if (escalation) {
+					if (currentMode() === "readonly") {
+						const refused = await guardWrite("命令未运行", guardRequest);
+						if (refused) return refused;
+					}
+					if (opts.requestConfirm === void 0) return "「shell」需要用户确认，但当前环境没有可用的确认通道（无界面 / 未接入审批），已取消这次调用。请告诉用户这次没有执行，不要重试。";
+					if (!await opts.requestConfirm({
+						...guardRequest,
+						sandboxJustification: escalation.justification,
+						sandboxRequestedMode: escalation.mode
+					})) return "用户拒绝了放宽沙箱的申请，命令**没有**执行。请告诉用户，并尽量在沙箱允许的范围内（只写工作区与临时目录）完成这一步，不要反复申请。";
+					callSandbox = sandboxPolicyForMode(escalation.mode, backend.root);
+				} else {
+					const refused = await guardWrite("命令未运行", guardRequest);
+					if (refused) return refused;
+				}
+				const callSandboxMode = callSandbox?.mode ?? "danger-full-access";
 				const execDir = backend.resolve(cwd);
 				const stat = await backend.stat(execDir);
 				if (!stat) throw new Error(`cannot run "${command}": working directory not found: ${cwd || "."}`);
@@ -4234,12 +4998,13 @@ function buildAgentTools(root, opts) {
 				* 本轮的 abort / 超时都打不到它（那正是「dev server 活过这一轮」的实现方式）。
 				*/
 				if (runInBackground) {
-					if (backend.kind === "remote") return "远端工作区首期不支持后台执行（run_in_background），命令**没有**启动。请改为普通执行（受本轮超时约束），或让用户在远端自己开一个终端。";
+					if (backend.kind === "remote" && !opts.onBackgroundCommand) return "远端工作区首期不支持后台执行（run_in_background），命令**没有**启动。请改为普通执行（受本轮超时约束），或让用户在远端自己开一个终端。";
 					if (!opts.onBackgroundCommand) return "当前环境不支持后台执行（没有任务登记通道），命令**没有**启动。请改为普通执行，或让用户自己开一个终端。";
 					const started = await opts.onBackgroundCommand({
 						command,
 						cwd: execDir,
-						title: command
+						title: command,
+						sandboxMode: callSandboxMode
 					});
 					return [
 						`已在后台启动：${command}`,
@@ -4266,9 +5031,10 @@ function buildAgentTools(root, opts) {
 						cwd: execDir,
 						timeoutMs: t,
 						signal: ctrl.signal,
-						onOutput: (stream, chunk) => opts.onCommandOutput?.(toolCallId, stream, chunk)
+						onOutput: (stream, chunk) => opts.onCommandOutput?.(toolCallId, stream, chunk),
+						...callSandbox ? { sandbox: callSandbox } : {}
 					});
-					return await formatBashOutput(backend, command, result, t);
+					return await formatShellOutput(backend, command, result, t);
 				} finally {
 					opts.onCommandEnd?.(toolCallId);
 					options.abortSignal?.removeEventListener("abort", stop);
@@ -4339,7 +5105,7 @@ function globToRegExpSource(glob) {
 function summarizeToolEvidence(toolName, text, budget = 2e3) {
 	if (text.length <= budget) return text;
 	if (budget < 200) return text.slice(0, budget);
-	const diagnosticBudget = /^(bash|terminal|exec|run|test|web_fetch)/i.test(toolName) ? Math.floor(budget * .35) : 0;
+	const diagnosticBudget = /^(shell|terminal|exec|run|test|web_fetch)/i.test(toolName) ? Math.floor(budget * .35) : 0;
 	let diagnostics = "";
 	if (diagnosticBudget) for (const pattern of [/\b(error|failed|failure|exception|exit code|timed out)\b|TS\d{4}|失败|错误/i, /\b(passed|tests?)\b|通过/i]) {
 		const lines = /[^\r\n]+/g;
@@ -4628,12 +5394,6 @@ function unquotePath(raw) {
 	}
 	return Buffer.from(out).toString("utf8");
 }
-z.enum([
-	"opencode",
-	"pi",
-	"generic"
-]);
-z.enum(["once", "always"]);
 // packages/tools/src/ask-followup.ts
 /**
 * `ask` 工具（**传输无关**的共享实现，桌面端 / server 共用）。
@@ -5392,15 +6152,15 @@ function buildWebFetchTool(root, stopHooks = {}, backend) {
 /**
 * `git_read`：给 agent 的**只读 git 视图**。
 *
-* 为什么单独做一个窄工具，而不是让 agent 用 `bash` 跑 git：
-* - `bash` 既能读也能写；「只读 agent 带 bash」是个假承诺
+* 为什么单独做一个窄工具，而不是让 agent 用 `shell` 跑 git：
+* - `shell` 既能读也能写；「只读 agent 带 shell」是个假承诺
 *   （`rm` / `git checkout .` / `git reset --hard` 都能毁东西）；
 * - 白名单式的窄接口把危险面压到「四条只读命令」，且天然免疫 `-i` / `-p` 这类
 *   会挂死的交互参数；
 * - 输出统一走 `clipToBudget`，一条 `git diff` 不会把上下文炸掉。
 *
 * ⚠️ 这里**刻意不给** checkout / add / commit / reset / push / stash：写仓库的活
-* 留给父 agent 的 bash（那里有审批链路）。真要做写操作窄工具时，
+* 留给父 agent 的 shell（那里有审批链路）。真要做写操作窄工具时，
 * 也要照审批的规矩来，不能因为「git 命令而已」就绕过 requestConfirm。
 */
 /**
@@ -5416,7 +6176,7 @@ var REF_RE = /^[A-Za-z0-9._/^~{}()[\]@,-]+$/;
 var MAX_LOG_ENTRIES = 50;
 function buildGitReadTool(root) {
 	return { git_read: tool({
-		description: tr("只读地看这个 git 仓库：当前改动（git status / git diff）、最近的提交历史（git log）、某个提交的内容（git show）。适合「改了什么」「最近谁动过这里」「这个提交干了什么」这类问题。只能看，不能改仓库（要提交 / 回滚 / 切分支请用 bash，那边有审批）。", "Read-only view of this git repository: current changes (git status / git diff), recent history (git log), and a specific commit (git show). Suitable for questions like “what changed”, “who touched this recently”, or “what did this commit do”. Read-only: use bash for commit / rollback / branch switching (that path has approval)."),
+		description: tr("只读地看这个 git 仓库：当前改动（git status / git diff）、最近的提交历史（git log）、某个提交的内容（git show）。适合「改了什么」「最近谁动过这里」「这个提交干了什么」这类问题。只能看，不能改仓库（要提交 / 回滚 / 切分支请用 shell，那边有审批）。", "Read-only view of this git repository: current changes (git status / git diff), recent history (git log), and a specific commit (git show). Suitable for questions like “what changed”, “who touched this recently”, or “what did this commit do”. Read-only: use shell for commit / rollback / branch switching (that path has approval)."),
 		inputSchema: z.object({
 			action: z.enum([
 				"status",
@@ -5686,18 +6446,9 @@ async function removeBrowserProfileDir(dir) {
 	}).catch(() => void 0);
 }
 // packages/tools/src/browser/engine.ts
-/**
-* 浏览器引擎：一个会话 = 一个 headless Chromium（Playwright 起），画面走 CDP screencast
-* 推给订阅者（后端 WS 处理器，再经 desktop 内部 WS / web server WS 到渲染端面板）。
-*
-* 与 dogi 的差异只在于事件出口：dogi 是「注册一个 IPC broadcaster」，这里换成
-* **同进程内的订阅中心（hub）**——后端 WS handler 按 sessionId 订阅，引擎把帧 / 状态
-* 直接推给它，再由它转成 WS 帧。这样 desktop 与 web 共用同一份引擎与同一套传输
-* （各自只是把 hub 的事件接到自己的 WS 上），不需要为两者各写一套 IPC 通道。
-*
-* 本模块刻意与 Electron / 具体宿主解耦（依赖经 `setBrowserProfilesRoot` /
-* `setBrowserChannelResolver` 注入），可被纯 Node 验证脚本直接跑。
-*/
+async function loadChromium() {
+	return (await import("playwright")).chromium;
+}
 /** screencast 帧节流：最多 ~30fps，避免把 CPU 都喂给编码（静止页面也会持续推帧） */
 var MIN_FRAME_INTERVAL = 33;
 var BrowserSession = class {
@@ -5761,6 +6512,7 @@ var BrowserSession = class {
 	}
 	/** 一次启动尝试：成功即把本会话的 browser/context/page 装配好并开播；失败抛错由调用方收尾 */
 	async launch(attempt, preset) {
+		const chromium = await loadChromium();
 		this.channelLabel = attempt.label;
 		const contextOptions = {
 			viewport: this.viewport,
@@ -6324,7 +7076,7 @@ var MAX_STRUCTURED_OUTPUT_CHARS = 8e3;
 /**
 * 工具结果 -> 模型消息的输出结构（字符串走 text，其余序列化成 json；失败走 error-text）。
 *
-* 这里**不做落盘**：output-log（全文落盘 + 行号续读）只用于 bash /
+* 这里**不做落盘**：output-log（全文落盘 + 行号续读）只用于 shell /
 * web_fetch（见 @fizz/tools 的 output-log.ts），其余工具的超长输出要么靠自己的参数
 * 分页（read / grep），要么在这里按字符上限截断 —— 结构化结果至少
 * 要有上限，否则一个返回大数组的工具能把整轮上下文顶爆。
@@ -6355,6 +7107,7 @@ function toToolOutput(output, isError) {
 * 的说明）；它挡的是**每轮重发**把请求体顶爆。
 */
 var MAX_INLINE_TOTAL_BYTES = 15728640;
+/** 文档文本也要有整轮限制，避免许多小文件把上下文占满。 */
 var MAX_ATTACHMENT_TEXT_CHARS = 1e5;
 function createInlineBudget(maxBytes = MAX_INLINE_TOTAL_BYTES) {
 	return {
@@ -6398,7 +7151,7 @@ async function planAttachments(files, opts) {
 	const seenInBatch = /* @__PURE__ */ new Set();
 	for (let i = files.length - 1; i >= 0; i--) {
 		const file = files[i];
-		if (budget && (seenInBatch.has(file.url) || (opts?.omitCounted && budget.counted.has(file.url)))) {
+		if (budget && (seenInBatch.has(file.url) || opts?.omitCounted && budget.counted.has(file.url))) {
 			planned[i] = {
 				file,
 				resolved: {
@@ -6408,7 +7161,10 @@ async function planAttachments(files, opts) {
 			};
 			continue;
 		}
-		const item = { file, resolved: await resolveOne(file, opts?.resolveAttachment) };
+		const item = {
+			file,
+			resolved: await resolveOne(file, opts?.resolveAttachment)
+		};
 		planned[i] = item;
 		if (!budget || item.resolved.kind === "omit") continue;
 		seenInBatch.add(file.url);
@@ -6449,7 +7205,10 @@ function attachmentsToParts(planned) {
 			continue;
 		}
 		if (resolved.kind === "text") {
-			parts.push({ type: "text", text: resolved.text });
+			parts.push({
+				type: "text",
+				text: resolved.text
+			});
 			continue;
 		}
 		if (resolved.kind === "inline") {
@@ -6968,6 +7727,7 @@ function contextMessagesDigest(messages) {
 			type: "text",
 			text: message.content
 		}] : message.content.map((part) => {
+			if (!("providerOptions" in part)) return part;
 			const { providerOptions: _providerOptions, ...content } = part;
 			return content;
 		})
@@ -9061,9 +9821,9 @@ function buildAgentSystemPrompt(workspacePath, workspaceName, skills = [], proje
 		"Conventions:",
 		"- Always use paths relative to the workspace root;",
 		"- Call tools directly. Never narrate calls or results in prose such as “[calling tool xxx]”;",
-		"- For oversized output (bash / web_fetch), return only the beginning and end. The full text is saved to a workspace file under .fizz/tool-output/ and the result includes its path, total lines, and which lines were returned. To read the middle, call read on that path with offset/limit, or search it with grep — do not stop at the summary and do not re-run the command or re-fetch the page for the same content;",
+		"- For oversized output (shell / web_fetch), return only the beginning and end. The full text is saved to a workspace file under .fizz/tool-output/ and the result includes its path, total lines, and which lines were returned. To read the middle, call read on that path with offset/limit, or search it with grep — do not stop at the summary and do not re-run the command or re-fetch the page for the same content;",
 		"- Before dangerous operations (rm -rf, git push --force, deleting/overwriting files), explain the impact first;",
-		"- After editing, verify with bash when possible — prefer the project’s own typecheck/lint, the fastest static check;",
+		"- After editing, verify with shell when possible — prefer the project’s own typecheck/lint, the fastest static check;",
 		"- When done, summarize concisely what you did, how you verified it, and what remains."
 	] : [
 		`你是一个运行在 Fizz 中的 AI Agent（编程与运维助手），工作区是「${workspaceName}」（${workspacePath}）。`,
@@ -9071,9 +9831,9 @@ function buildAgentSystemPrompt(workspacePath, workspaceName, skills = [], proje
 		"使用约定：",
 		"- 所有路径一律使用相对工作区根目录的路径；",
 		"- 需要工具时直接调用，不要在正文里用「[调用工具 xxx]」这类文字复述调用过程或结果；",
-		"- 超长输出（bash / web_fetch）只回「开头 + 结尾」，但全文已落盘到结果里给出的那个工作区文件（.fizz/tool-output/ 下），里面写着路径、全文行数与本次返回了哪几行。需要中段时用 read 传那个 file_path 加 offset / limit 按行读回来，或 grep 检索它 ——不要停在摘要上、也不要为同一段内容反复重跑命令或重新抓页面；",
+		"- 超长输出（shell / web_fetch）只回「开头 + 结尾」，但全文已落盘到结果里给出的那个工作区文件（.fizz/tool-output/ 下），里面写着路径、全文行数与本次返回了哪几行。需要中段时用 read 传那个 file_path 加 offset / limit 按行读回来，或 grep 检索它 ——不要停在摘要上、也不要为同一段内容反复重跑命令或重新抓页面；",
 		"- 危险操作（rm -rf、git push --force、删除 / 覆盖文件）先说明影响再执行；",
-		"- 改完文件后尽量用 bash 验证 —— 优先跑项目自带的类型检查 / lint，这是最快的静态验证；",
+		"- 改完文件后尽量用 shell 验证 —— 优先跑项目自带的类型检查 / lint，这是最快的静态验证；",
 		"- 任务完成时用简洁的中文总结做了什么、验证结果如何、有何遗留。"
 	];
 	lines.push("", buildPlanningSection());
@@ -9193,7 +9953,7 @@ function buildPlanningSection() {
 */
 var BUILTIN_ORIGIN = "builtin";
 /**
-* 文件 / 命令工具插件（glob / read / write / bash …）。
+* 文件 / 命令工具插件（glob / read / write / shell …）。
 * `root` 为空（未绑定工作区的「任务」会话）时**不注册任何工具** —— 与从前的行为一致，
 * 避免工具拿空路径当 cwd 乱写文件。
 */
@@ -9379,8 +10139,8 @@ function wrapToolsWithHooks(tools, hooks) {
 /**
 * 只读子任务的工具白名单。
 *
-* ⚠️ 刻意**不含** `bash`：它既能读也能写（`rm` / `git checkout` 都能毁东西），
-* 「只读 agent 带 bash」是个假承诺。git 只读视图走单独的 `git_read`
+* ⚠️ 刻意**不含** `shell`：它既能读也能写（`rm` / `git checkout` 都能毁东西），
+* 「只读 agent 带 shell」是个假承诺。git 只读视图走单独的 `git_read`
 * （窄接口 + 输出预算），见 tools/src/git-read.ts。
 *
 * ⚠️ 刻意**不含**技能工具：技能可能在别的工作区路径上，派出去反而读错东西；侦察只看代码。
@@ -10870,7 +11630,7 @@ function normalizeUsage(usage) {
 *
 * 为什么是 1 秒：正常流式下一帧是几十毫秒级（思考 / 工具入参增量同频，见
 * `INPUT_DELTA_FLUSH_MS`），慢模型单 token 也就几百毫秒；而一次工具执行、一条
-* bash 命令、一次审批等待都是秒级起步。1s 既留得住慢模型的真实吐字间隔，
+* shell 命令、一次审批等待都是秒级起步。1s 既留得住慢模型的真实吐字间隔，
 * 又能把工具空窗整段剔掉。
 */
 var TPS_IDLE_GAP_MS = 1e3;
@@ -10900,9 +11660,9 @@ function markTurnOutputDelta(clock, now, idleGapMs = TPS_IDLE_GAP_MS) {
 * 这个事件算不算「模型在吐 token」—— 只认模型自己生成的增量。
 *
 * 刻意排除的几类：
-* - `tool-result` / `tool-output-delta`：**工具自己**在产出（bash 的 stdout 能流几十秒），
+* - `tool-result` / `tool-output-delta`：**工具自己**在产出（shell 的 stdout 能流几十秒），
 *   它不是模型的生成速度，计进去分母就又被工具时长污染；
-* - `file-part` / `subagent-*` / `collab-*`：不是本轮主模型吐的字（子任务的 token
+* - `file-part` / `subagent-*`：不是本轮主模型吐的字（子任务的 token
 *   单独记在 `TurnUsage.subagents`，不并进父的 outputTokens），分子没有它们，分母也不能有；
 * - 空串增量：上游常先发一帧 `delta: ''` 占位（`tool-call-delta` 的「开始流式生成」
 *   那一帧也只有 id 没有内容），它不是内容，认了会把窗口撑大。
@@ -10969,7 +11729,7 @@ function resolveScopeWorkspace(scope) {
 * 标准装配：内置文件 / 命令工具 → extraTools → 调用方插件 → web_fetch。
 *
 * 只产出 `AgentAssembly`，**不建 Context、不挂载、不套钩子** —— 挂载与审批/钩子壳
-* 统一由 `runAgent` 的 `mountAssembly` 做。这样标准会话与自造 profile（助手 / 协作）
+* 统一由 `runAgent` 的 `mountAssembly` 做。这样标准会话与自定义 profile
 * 走的是同一条管线，不会出现「一部分工具受插件钩子管辖、另一部分不受」。
 *
 * 上下文估算要用它：系统提示词与工具 schema 每轮都要发出去，却不在 `messages` 里，
@@ -10988,6 +11748,7 @@ function assembleStandard(deps) {
 		{ plugin: fileToolsPlugin(deps.workspace.path, {
 			permissionMode: deps.permissionMode ?? "full",
 			...deps.getPermissionMode ? { getPermissionMode: deps.getPermissionMode } : {},
+			...deps.sandboxMode ? { sandboxMode: deps.sandboxMode } : {},
 			...deps.requestConfirm ? { requestConfirm: deps.requestConfirm } : {},
 			...deps.workspaceBackend ? { backend: deps.workspaceBackend } : {},
 			...deps.commandStops ? {
@@ -11374,6 +12135,7 @@ async function runAgent(opts) {
 		projectDoc: opts.projectDoc ?? null,
 		...opts.permissionMode ? { permissionMode: opts.permissionMode } : {},
 		...opts.getPermissionMode ? { getPermissionMode: opts.getPermissionMode } : {},
+		...opts.sandboxMode ? { sandboxMode: opts.sandboxMode } : {},
 		...opts.requestConfirm ? { requestConfirm: opts.requestConfirm } : {},
 		...opts.commandStops ? { commandStops: opts.commandStops } : {},
 		...opts.onBackgroundCommand ? { onBackgroundCommand: opts.onBackgroundCommand } : {},
@@ -11577,7 +12339,7 @@ async function runAgent(opts) {
 				},
 				signal: runSignal,
 				/**
-				* 单条停止：派活卡上的停止钮与 `bash` 走**同一张表**、
+				* 单条停止：派活卡上的停止钮与 `shell` 走**同一张表**、
 				* 同一个 `POST /api/chat/command/stop` —— 停一个子任务不必废掉整轮。
 				*/
 				...opts.commandStops ? { commandStops: opts.commandStops } : {},

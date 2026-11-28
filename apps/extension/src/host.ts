@@ -168,7 +168,6 @@ export const extensionHost: AgentHost = {
       return Promise.resolve({ ok: false, error: '链接格式不合法' })
     }
   }
-  // 不实现 pickLocalDirectory / getPathForFile / pickLocalMarkdownFile / readLocalFile /
-  // writeLocalFile / takePendingExternalFiles / onExternalFileOpen / setDirtyTabCount：
+  // 不实现 pickLocalDirectory / getPathForFile：
   // 扩展同样碰不到「本机文件系统」（那是服务端那台机器），理由与 apps/web/src/host.ts 逐字相同。
 }

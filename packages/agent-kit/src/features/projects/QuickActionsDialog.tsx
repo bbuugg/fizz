@@ -287,8 +287,8 @@ export function QuickActionsDialog({
       <Dialog open={open} onOpenChange={(next) => (next ? undefined : onClose())}>
         <DialogContent
           className="flex max-h-[min(480px,85dvh)] flex-col overflow-hidden sm:max-w-md"
-          // 打开时不抢焦点（用户要求）：Radix 默认会聚焦第一个可聚焦元素
-          onOpenAutoFocus={(event) => event.preventDefault()}
+          // 打开时不抢焦点（用户要求）：默认会聚焦第一个可聚焦元素
+          initialFocus={false}
         >
           <DialogTitle>{tr('快捷功能')}</DialogTitle>
 
@@ -350,7 +350,7 @@ export function QuickActionsDialog({
         <DialogContent
           className="flex max-h-[min(480px,85dvh)] flex-col overflow-hidden sm:max-w-[480px]"
           // 编辑弹窗同样不自动聚焦：下面的名称输入框也不挂 autoFocus
-          onOpenAutoFocus={(event) => event.preventDefault()}
+          initialFocus={false}
         >
           <DialogTitle>
             {actions.some((a) => a.id === draft?.id) ? tr('编辑快捷功能') : tr('添加快捷功能')}
@@ -447,9 +447,9 @@ export function QuickActionsDialog({
                 <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   {DraftIcon && <DraftIcon className="size-3.5" />}
                   {draft.kind === 'command'
-                    ? tr('命令会在工作区目录里新开一条内嵌终端执行；多条命令用换行分隔，按顺序逐行执行。')
+                    ? tr('在工作区新开内嵌终端，按行顺序执行。')
                     : draft.kind === 'path'
-                      ? tr('相对路径按工作区根目录解析，用系统默认程序打开（仅桌面端支持）。')
+                      ? tr('相对路径按工作区根目录解析（仅桌面端）。')
                       : tr('用系统默认浏览器打开该链接。')}
                 </div>
               </div>

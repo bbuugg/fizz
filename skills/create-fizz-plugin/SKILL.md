@@ -154,7 +154,7 @@ waterfall（拦截改写）用 **around 范式**：先 `next()` 放行拿到下�
 ```ts
 export default function (ctx) {
   ctx.hooks.on('tool:call', (name, input, next) => {
-    if (name === 'bash') console.log('要跑命令了', input)
+    if (name === 'shell') console.log('要跑命令了', input)
     return next() // around：放行后再返回；不调 next() 就直接返回自己的值 = 中断
   })
 }

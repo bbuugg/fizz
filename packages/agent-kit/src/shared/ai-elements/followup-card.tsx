@@ -795,15 +795,15 @@ function AnswerSummary({
             />
             {statusLabel}
           </Badge>
-          {/* 箭头展开时转 90°：`group` + `data-state` 都在触发器上（同 ToolHeader）。
+          {/* 箭头展开时转 90°：`group` + `data-panel-open` 都在触发器上（同 ToolHeader）。
               没有 `group` 箭头就永远朝右。 */}
-          <ChevronRight className="size-4 shrink-0 transition-transform group-data-[state=open]:rotate-90" />
+          <ChevronRight className="size-4 shrink-0 transition-transform group-data-panel-open:rotate-90" />
         </span>
       </CollapsibleTrigger>
       {/* 内容区：动画 class 与 `ToolContent` 逐条一致（同一套淡入淡出 + 上下位移），
           边框盒与 `PartView` 直显分支的 `border border-border rounded-lg mt-2` 一样。
-          Radix 在 `data-state=closed` 时给 hidden，所以收起后不占位。 */}
-      <CollapsibleContent className="data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 outline-none data-[state=closed]:animate-out data-[state=open]:animate-in flex flex-col gap-2 border border-border rounded-lg mt-2 p-3">
+          Base UI 的 Panel 收起时给 `data-closed`（Radix 是 `data-state=closed`），且自身不占位。 */}
+      <CollapsibleContent className="data-closed:fade-out-0 data-closed:slide-out-to-top-2 data-open:slide-in-from-top-2 outline-none data-closed:animate-out data-open:animate-in flex flex-col gap-2 border border-border rounded-lg mt-2 p-3">
         {questions.map((q) => {
           const answer = byId.get(q.id)
           const sel = answer?.selected ?? []

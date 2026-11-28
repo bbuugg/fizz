@@ -104,7 +104,6 @@ import {
   Trash2,
   AlertTriangle,
   Clock,
-  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 import { getAgentHostOrNull } from "@fizz/agent-client/host";
@@ -380,10 +379,9 @@ export function AgentSidebar({
    */
   onDeleteConversation: (conversationId: string) => Promise<boolean>;
   /**
-   * 项目行行尾的两个「新建」（会话 / 协作）与「更多」菜单里的几项。
+    * 项目行行尾的「新建」入口与「更多」菜单里的几项。
    *
    * - `conversation`：**不弹窗** —— 落到该项目的「创建新任务」页，会话等第一句发送时才建
-   * - `collab`：直接建会话（默认班子，不弹窗）
    * - `worktree*`：由 `AgentApp` 弹出对应的新建弹窗
    *   （定时任务不在项目行上了：它不再依附项目，入口只有顶部那颗按钮 → 主区域面板）
    *
@@ -977,10 +975,9 @@ export function AgentSidebar({
         title={statusText}
       >
         {/* 行首图标槽（类型 + 运行态），见 `ConversationRowIcon`：
-            会话分普通对话 / 多智能体协作 / 外部 ACP 三种，在跑 / 等确认 / 等回答时临时盖掉类型图标。 */}
+          会话分普通对话 / 外部 ACP 两种，在跑 / 等确认 / 等回答时临时盖掉类型图标。 */}
         <ConversationRowIcon
           backend={conversation.backend}
-          kind={conversation.kind}
           remote={remoteWorkspaceIds.has(workspaceId)}
           acpCommand={acpAgent?.command}
           acpPreset={acpAgent?.preset}
@@ -1375,7 +1372,6 @@ export function AgentSidebar({
     const list = byWorkspace.get(workspace.id) ?? [];
     /** 这个项目下挂的 worktree 子项目（递归成下一级） */
     const childWorktrees = worktreesByParent.get(workspace.id) ?? [];
-    const itemCount = list.length;
     /** 子树里有会话在跑 / 在等 → 项目行的图标跟着转（与会话行同款），tooltip 也带上说明 */
     const wsActivity = workspaceActivity(workspace.id);
     const wsStatus = wsActivity.waiting
@@ -1665,26 +1661,11 @@ export function AgentSidebar({
                     不该从项目行的菜单里另开一个主区域标签。
                   */}
                   {/*
-                    多智能体协作**点一下直接建会话**（默认班子，见 `defaultCollabSettings()`），
-                    不再弹窗选模型 / 配班子 —— 建好后在会话左侧的 Agent 名单里改成员 / 角色 / 工具。
-                    普通会话（内置 / ACP）走「创建新任务」页，类型在页面的模型下拉里选。
-                  */}
-                  {/* 远端工作区首期不支持协作会话（编排在本机跑，文件却在远端） */}
-                  {!workspace.remote && (
-                    <DropdownMenuItem
-                      disabled={wsMissing}
-                      onSelect={() => onNewInWorkspace("collab", workspace.id)}
-                    >
-                      <Users className="size-4" />
-                      {t("多智能体协作")}
-                    </DropdownMenuItem>
-                  )}
-                  {/*
                     ⚠️ 这里**不再有「定时任务」**：新建定时任务统一走主区域的
                     `triggers:list` 面板（侧栏顶部那颗同名按钮 → 面板里的「新建定时任务」，
                     项目在那个表单里选）。入口按项目分散过一次就很难找回来 ——
                     到底在哪个项目里建的、和另一条什么关系，只能挨个点开看。
-                    ⚠️ 也**不再有「新建流程」**：流程功能整个删除，能力并进了多智能体协作。
+                    ⚠️ 也**不再有「新建流程」**：流程功能已删除。
                   */}
                   {/*
                     worktree 收进「工作区」二级菜单：新建（建目录 + 建分支）与加载（登记 `.worktree/`
@@ -1898,11 +1879,6 @@ export function AgentSidebar({
               renderConversationRow(conversation, workspace.id),
             )}
             {childWorktrees.map((child) => renderWorkspaceRow(child))}
-            {itemCount === 0 && childWorktrees.length === 0 && (
-              <div className="px-2 py-1 text-xs leading-5 text-muted-foreground">
-                {t("空空如也。")}
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -1949,11 +1925,6 @@ export function AgentSidebar({
       // 横向 padding 不在这里加：行自己带 `px-2`，容器也带 `px-2`，
       // 这里再叠一层就把行推到 24px、和 16px 的标签文字错开（见下方容器注释）
       className="pb-1"
-      // 加载中不传空态：清单没落地时任务数就是 0，摆「还没有任务」是一次闪屏
-      // （与「工作区」组同一条理由，骨架在 children 里）
-      empty={
-        app.conversationsLoaded || app.error ? t("还没有任务。") : undefined
-      }
     >
       {!app.conversationsLoaded && !app.error ? (
         <SidebarRowsSkeleton rows={2} />
@@ -1995,10 +1966,6 @@ export function AgentSidebar({
       resizeAbove={tasksResizable ? resizeTasks : undefined}
       onResizeDraggingChange={handleGroupsResizingChange}
       className="pb-2"
-      // 加载中不传空态：列表请求还没落地，摆「还没有项目」就是一次闪屏
-      empty={
-        app.conversationsLoaded || app.error ? t("还没有项目。") : undefined
-      }
       /*
         拖拽落点挂在**内容容器**上，不挂标题行：标题行是「上下拖改两组高度」的抓手
         （`resizeAbove`），两种拖拽挤在同一块会互相抢指针。子元素上的 dragover 会冒泡到

@@ -64,7 +64,7 @@ describe('审批挂起期间的停止钮', () => {
 
     const pending = gate.requestConfirm({
       toolCallId: 'tc-1',
-      toolName: 'bash',
+      toolName: 'shell',
       command: 'npm test',
       intent: '跑一下单测'
     })
@@ -94,7 +94,7 @@ describe('审批挂起期间的停止钮', () => {
     })
     const pending = gate.requestConfirm({
       toolCallId: 'tc-2',
-      toolName: 'bash',
+      toolName: 'shell',
       command: 'npm run build'
     })
 
@@ -136,8 +136,8 @@ describe('切到完全访问时自动批准挂起审批', () => {
       title: '会话 B',
       confirmTimeoutMs: 0
     })
-    const pendingA = gateA.requestConfirm({ toolCallId: 'tc-a', toolName: 'bash', command: 'echo a' })
-    const pendingB = gateB.requestConfirm({ toolCallId: 'tc-b', toolName: 'bash', command: 'echo b' })
+    const pendingA = gateA.requestConfirm({ toolCallId: 'tc-a', toolName: 'shell', command: 'echo a' })
+    const pendingB = gateB.requestConfirm({ toolCallId: 'tc-b', toolName: 'shell', command: 'echo b' })
 
     releaseConfirmsFor(runA.requestId, true)
 
@@ -172,7 +172,7 @@ describe('内置审批选项的文案', () => {
     })
     const pending = gate.requestConfirm({
       toolCallId: 'tc-3',
-      toolName: 'bash',
+      toolName: 'shell',
       command: 'rm -rf dist'
     })
 
@@ -215,7 +215,7 @@ describe('沙箱提权是一次性决定', () => {
     })
     const req = {
       toolCallId: 'tc-esc',
-      toolName: 'bash',
+      toolName: 'shell',
       command: 'echo x > /etc/fizz',
       sandboxRequestedMode: 'danger-full-access' as const,
       sandboxJustification: '需要写入系统配置目录'
@@ -263,7 +263,7 @@ describe('审批超时的到期时刻', () => {
       confirmTimeoutMs: 60_000
     })
     const before = Date.now()
-    const pending = gate.requestConfirm({ toolCallId: 'tc-t', toolName: 'bash', command: 'echo t' })
+    const pending = gate.requestConfirm({ toolCallId: 'tc-t', toolName: 'shell', command: 'echo t' })
     const confirm = framesOf(run).find((f) => f.type === 'confirm')?.confirm as
       | { id: string; expiresAt?: number }
       | undefined
@@ -283,7 +283,7 @@ describe('审批超时的到期时刻', () => {
       title: '测试会话',
       confirmTimeoutMs: 0
     })
-    const pending = gate.requestConfirm({ toolCallId: 'tc-t2', toolName: 'bash', command: 'echo t' })
+    const pending = gate.requestConfirm({ toolCallId: 'tc-t2', toolName: 'shell', command: 'echo t' })
     const confirm = framesOf(run).find((f) => f.type === 'confirm')?.confirm
     expect(confirm).not.toHaveProperty('expiresAt')
 

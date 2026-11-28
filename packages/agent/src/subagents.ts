@@ -52,8 +52,8 @@ import { stepBudgetHint } from './prompt'
 /**
  * 只读子任务的工具白名单。
  *
- * ⚠️ 刻意**不含** `bash`：它既能读也能写（`rm` / `git checkout` 都能毁东西），
- * 「只读 agent 带 bash」是个假承诺。git 只读视图走单独的 `git_read`
+ * ⚠️ 刻意**不含** `shell`：它既能读也能写（`rm` / `git checkout` 都能毁东西），
+ * 「只读 agent 带 shell」是个假承诺。git 只读视图走单独的 `git_read`
  * （窄接口 + 输出预算），见 tools/src/git-read.ts。
  *
  * ⚠️ 刻意**不含**技能工具：技能可能在别的工作区路径上，派出去反而读错东西；侦察只看代码。
@@ -694,7 +694,7 @@ export interface BuildDelegationToolsOptions {
   /**
    * 单条停止表（`toolCallId` → 只停这一次派活）。
    *
-   * 与 `bash` / `web_fetch` **共用 run 上那同一张表**（`ChatRun.commandStops`）：
+   * 与 `shell` / `web_fetch` **共用 run 上那同一张表**（`ChatRun.commandStops`）：
    * 前端点派活卡上的停止钮 → `POST /api/chat/command/stop`（requestId + toolCallId）
    * → 服务端查表 abort 这一个子 run，父轮继续往下跑。
    *
@@ -749,7 +749,7 @@ export function buildDelegationTools(
       ...(opts.backend ? { backend: opts.backend } : {})
     }),
     ...buildWebFetchTool(opts.workspacePath ?? '', {}, opts.backend),
-    // git_read 只给子任务：父有 bash，不需要它。远端首期不提供 git 只读视图，
+    // git_read 只给子任务：父有 shell，不需要它。远端首期不提供 git 只读视图，
     // 连工具都不建 —— 白名单里还留着它会让 filterToolSet 直接抛错。
     ...(remote ? {} : buildGitReadTool(opts.workspacePath))
   }

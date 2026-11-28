@@ -730,7 +730,7 @@ export const CONTAINER_AGENT_TOOL_KEYS: readonly string[] = [
   'edit',
   'glob',
   'grep',
-  'bash',
+  'shell',
   'todowrite',
   'skill',
   'web_fetch',
@@ -877,99 +877,6 @@ export function isRemoteWorkspace(
   workspace: Pick<AgentWorkspace, 'remote'> | null | undefined
 ): boolean {
   return !!workspace?.remote?.hostId
-}
-
-// ---------- 笔记（登记任意目录，管理其中的 Markdown） ----------
-
-/**
- * 一篇笔记的**根目录**：用户登记进来的任意文件夹，服务端只在这里面读写 `.md`。
- *
- * 为什么要有这层登记、而不是像工作区那样直接把路径传给文件接口：所有笔记文件接口
- * 都先 `resolveInside(root.path, rel)`，**没登记过的目录一律 403**。少了这层，
- * 那组接口就等于「读写服务端任意路径」的通用口子（见 `apps/server/src/server/notes.ts`）。
- */
-export interface NotesRoot {
-  id: string
-  /** 绝对路径 */
-  path: string
-  /** 展示名（默认取目录名，可改） */
-  name: string
-  createdAt: number
-}
-
-/** 笔记树里的一项：子目录，或一篇 `.md` */
-export interface NotesEntry {
-  /** 相对所属根目录的路径，**一律 `/` 分隔**（跨平台统一，别用 path.join 的产物） */
-  path: string
-  /** 名字（文件含扩展名） */
-  name: string
-  type: 'dir' | 'file'
-  /** 修改时间（毫秒） */
-  mtime: number
-  /** 字节数（目录恒为 0） */
-  size: number
-}
-
-/**
- * `GET /api/notes/files` 应答：某个目录**一层**的内容。
- *
- * 刻意只列一层（前端懒加载）：笔记根是用户挑的任意目录，可能很大；展开某个子目录时
- * 客户端再单独请求那一层（`dir` 传子目录的相对路径）。
- */
-export interface NotesDirResult {
-  /** 这一层相对根目录的路径（根目录是 `''`） */
-  dir: string
-  /** 子目录 + `.md` 文件（目录在前，各自按名字排序） */
-  entries: NotesEntry[]
-}
-
-/** `GET /api/notes/file` 应答：一篇笔记的正文 */
-export interface NotesFileResult {
-  /** 相对所属根目录的路径（`/` 分隔） */
-  path: string
-  content: string
-}
-
-/** `POST /api/notes/roots` 请求体：登记一个目录 */
-export interface NotesRootInput {
-  /** 绝对路径 */
-  path: string
-  /** 展示名；不给就取目录名 */
-  name?: string
-}
-
-/** `POST /api/notes/file` 请求体：把一篇笔记整体覆盖写成 `content` */
-export interface NotesWriteInput {
-  rootId: string
-  /** 相对根目录的路径（`/` 分隔）；文件不存在则创建 */
-  path: string
-  content: string
-}
-
-/** `POST /api/notes/file/new` 请求体：在 `dir` 下新建一篇空笔记 */
-export interface NotesCreateInput {
-  rootId: string
-  /** 相对根目录的目录路径（`''` = 根目录） */
-  dir: string
-}
-
-/** `POST /api/notes/file/new` 应答：新笔记的相对路径（客户端据此开标签） */
-export interface NotesCreateResult {
-  path: string
-}
-
-/** `POST /api/notes/file/rename` 请求体：只换文件名，不换目录 */
-export interface NotesRenameInput {
-  rootId: string
-  /** 原相对路径（`/` 分隔） */
-  path: string
-  /** 新文件名（单层；带不带 `.md` 都行，服务端会补） */
-  name: string
-}
-
-/** `POST /api/notes/file/rename` 应答 */
-export interface NotesRenameResult {
-  path: string
 }
 
 /**
@@ -1200,12 +1107,8 @@ export interface AgentChatMessage {
   stopReason?: AgentStopReason
   /** 这一轮实际跑了多少步（只有 `stopReason` 存在时给：撞上限时用户要看「用满了多少」） */
   steps?: number
-  /**
-   * 协作会话里这条回复是哪个 Agent 说的（只有 `kind: 'collab'` 的助手消息有）。
-   * 渲染端据此在消息上方标出 Agent 名；普通会话的消息不带这两个字段。
-   */
-  agentId?: string
-  agentName?: string
+  /** Local-only marker: animate a newly inserted optimistic user message; never sent to the server. */
+  animateOnSend?: boolean
   /**
    * 上下文占用快照（见流事件的 `context-usage`）。
    *
@@ -1356,211 +1259,6 @@ export interface AcpThoughtLevelState {
  */
 export type AcpPermissionMode = 'confirm' | 'allow'
 
-// ---------------------------------------------------------------------------
-// 多智能体协作（collab）
-// ---------------------------------------------------------------------------
-//
-// 一个 collab 会话 = 一条共享会话 + 若干平级的内置 Agent。
-// 用户点名（@）谁就由谁处理；没有点名则广播给全部 Agent，各自判断是否接手；
-// Agent 之间需要协同用 `SendMessage` 投递消息。
-//
-// ⚠️ 这里只放**跨端契约**（渲染端要名单 / 服务端要持久化 / agent 要编排）。运行时
-// 编排器在 `@fizz/agent/src/collab.ts`，不要把这些类型反向塞进 agent 包。
-
-export type CollabAgentStatus =
-  | 'idle'
-  | 'queued'
-  | 'running'
-  | 'waiting'
-  | 'done'
-  | 'error'
-  | 'cancelled'
-
-export type CollabTaskStatus = 'queued' | 'running' | 'done' | 'error' | 'cancelled'
-
-export type CollabMessageKind = 'delegate' | 'result' | 'note' | 'ask' | 'answer' | 'system'
-
-/** 一个可配置的协作 Agent。 */
-export interface CollabAgentConfig {
-  id: string
-  name: string
-  /** 一句话职责（写进该 Agent 的系统提示词，也用作 @ 候选的说明） */
-  role: string
-  /** 系统提示词（追加在 Fizz 基础提示词之后） */
-  instructions: string
-  /** 模型配置 id（`AiModelConfig.id`）；缺省 = 沿用会话主模型 */
-  configId?: string
-  /** 上游模型 id（`AiModelConfig.models` 的一项） */
-  modelId?: string
-  /** 权限档；默认 `readonly`（子 Agent 不默认获得写权限） */
-  permissionMode: AiPermissionMode
-  /**
-   * 允许使用的工具 key 白名单；缺省 = 只读基础集。
-   * key 与 `@fizz/tools` 的 `buildAgentTools` 输出一致（如 `read` / `write`）。
-   */
-  tools: string[]
-  /** 单个任务最多跑多少步（工具轮）；缺省 12，服务端收敛到 1~40 */
-  maxSteps?: number
-}
-
-/** 一个协作会话的配置（落会话目录的 `config.json`） */
-export interface CollabSettings {
-  /** 参与共享会话的 Agent 名单（平级；没有「主智能体」） */
-  agents: CollabAgentConfig[]
-  /** 同一时刻最多并行跑几个 Agent */
-  maxParallel: number
-  /** 单轮用户消息最多触发多少次 Agent 运行（含 SendMessage 唤醒），防止无限协同烧钱 */
-  maxTasksPerTurn: number
-}
-
-export function createCollabAgent(overrides: Partial<CollabAgentConfig> = {}): CollabAgentConfig {
-  return {
-    id: `agent-${Math.random().toString(36).slice(2, 10)}`,
-    name: '新智能体',
-    role: '通用协作助手',
-    instructions: '',
-    permissionMode: 'readonly',
-    tools: [...COLLAB_DEFAULT_TOOLS],
-    ...overrides
-  }
-}
-
-export const DEFAULT_COLLAB_SETTINGS: CollabSettings = {
-  agents: [],
-  maxParallel: 3,
-  maxTasksPerTurn: 16
-}
-
-const COLLAB_DEFAULT_TOOLS = ['read', 'glob', 'grep', 'web_fetch']
-
-function clampInt(value: unknown, fallback: number, min: number, max: number): number {
-  const n = typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : fallback
-  return Math.min(max, Math.max(min, n))
-}
-
-/** 收敛手改坏 / 老数据的协作配置：绝不抛错，并且保证 agent id 唯一 */
-export function normalizeCollabSettings(value: unknown): CollabSettings {
-  const input = (value ?? {}) as Partial<CollabSettings>
-  const seen = new Set<string>()
-  const agents: CollabAgentConfig[] = []
-  for (const raw of Array.isArray(input.agents) ? input.agents : []) {
-    if (!raw || typeof raw !== 'object') continue
-    const item = raw as Partial<CollabAgentConfig>
-    let id = typeof item.id === 'string' ? item.id.trim() : ''
-    if (!id || seen.has(id)) id = createCollabAgent().id
-    seen.add(id)
-    const name = typeof item.name === 'string' && item.name.trim() ? item.name.trim() : '未命名智能体'
-    const role = typeof item.role === 'string' ? item.role.trim() : ''
-    const instructions = typeof item.instructions === 'string' ? item.instructions : ''
-    const tools = Array.isArray(item.tools)
-      ? [
-          ...new Set(
-            item.tools.filter((t): t is string => typeof t === 'string' && !!t.trim())
-          )
-        ]
-      : [...COLLAB_DEFAULT_TOOLS]
-    const permissionMode: AiPermissionMode =
-      item.permissionMode === 'full' || item.permissionMode === 'confirm'
-        ? item.permissionMode
-        : 'readonly'
-    const configId =
-      typeof item.configId === 'string' && item.configId.trim() ? item.configId.trim() : undefined
-    const modelId =
-      typeof item.modelId === 'string' && item.modelId.trim() ? item.modelId.trim() : undefined
-    agents.push({
-      id,
-      name,
-      role,
-      instructions,
-      permissionMode,
-      tools,
-      ...(configId && modelId ? { configId, modelId } : {}),
-      ...(item.maxSteps !== undefined
-        ? { maxSteps: clampInt(item.maxSteps, 12, 1, 40) }
-        : {})
-    })
-  }
-  return {
-    agents,
-    maxParallel: clampInt(input.maxParallel, DEFAULT_COLLAB_SETTINGS.maxParallel, 1, 8),
-    maxTasksPerTurn: clampInt(
-      input.maxTasksPerTurn,
-      DEFAULT_COLLAB_SETTINGS.maxTasksPerTurn,
-      1,
-      64
-    )
-  }
-}
-
-/** 一次 Agent 运行（用户点名 / 广播 / SendMessage 唤醒） */
-export interface CollabTask {
-  id: string
-  agentId: string
-  agentName: string
-  /** 发起方：`user` 或某个 agent id */
-  from: string
-  /** 上层任务 id（SendMessage 唤醒时指向投递方那次运行；用户发起为 undefined） */
-  parentTaskId?: string
-  prompt: string
-  /** 主智能体补充的上下文（可选；会拼在 prompt 前） */
-  context?: string
-  status: CollabTaskStatus
-  output?: string
-  error?: string
-  /**
-   * 这一轮的**过程记录**（思考 / 正文 / 工具调用 + 结果），形状与主消息的 `parts` 完全同构。
-   *
-   * 存在的理由：子 Agent 没有会话记录，任务原先只存 `prompt` + 最终 `output`，右侧面板
-   * 里就只有「一问一答两段纯文本」—— 主对话每轮都有的思考折叠条、工具调用行通通没有，
-   * 观感差得很远。有它之后 `CollabAgentChatPanel` 直接把 `parts` 交给同一个 `MessageList`，
-   * 折叠条 / 工具卡 / 代码块都是同一套渲染。与内置子任务的 `SubagentDelegation.parts`
-   * 同一口径。
-   *
-   * 缺省 = 老任务（加这个字段之前跑的）或没跑到任何事件：渲染端退回 `output` 纯文本。
-   * 落盘前会按字符预算裁剪（见 `@fizz/agent` 的 `collab-parts.ts`），所以这里**不是**
-   * 完整过程，只是最近若干步。
-   */
-  parts?: AgentMessagePart[]
-  /** 本任务用量（只统计子 Agent 自己） */
-  usage?: { inputTokens: number; outputTokens: number; totalTokens: number }
-  createdAt: number
-  startedAt?: number
-  finishedAt?: number
-}
-
-/** Agent 之间的一条可见消息（SendMessage 投递记录） */
-export interface CollabMessage {
-  id: string
-  from: string
-  to: string
-  kind: CollabMessageKind
-  text: string
-  taskId?: string
-  createdAt: number
-}
-
-/** 单个 Agent 的实时运行态（内存态；刷新后从 collab.json 恢复为最近一次快照） */
-export interface CollabAgentRuntime {
-  status: CollabAgentStatus
-  taskId?: string
-  toolName?: string
-  step?: number
-  startedAt?: number
-  updatedAt: number
-  /** 正在流式输出的文本（只用于名单实时展示，不落盘） */
-  liveText?: string
-  error?: string
-}
-
-/** 协作会话的持久化状态（独立文件 `collab.json`，避免会话列表被任务/消息撑大） */
-export interface CollabState {
-  version: 1
-  tasks: CollabTask[]
-  messages: CollabMessage[]
-  statuses: Record<string, CollabAgentRuntime>
-  updatedAt: number
-}
-
 /**
  * 流式增量并入 parts：接进**本步内最近的一条同类型 part**，不一个字一个 part。
  *
@@ -1575,7 +1273,7 @@ export interface CollabState {
  * - 整轮结束后除最后一小段正文，其余全被收进折叠条 —— 正文等于被藏了。
  * 往回找同类那条接着写，两种流交替回来就是「一条思考 + 一条正文」。
  *
- * 前后端共用这一份：服务端收口消息 / `CollabTask.parts`、前端拼运行中的实时预览，
+ * 前后端共用这一份：服务端收口消息、前端拼运行中的实时预览，
  * 两处的合并口径必须一致，否则「跑的时候」和「跑完之后」的卡片会跳一下。
  */
 export function appendPartDelta(
@@ -1637,152 +1335,12 @@ export function foldToolResult(
   }
 }
 
-/**
- * 过程记录的形状收敛。
- *
- * `collab.json` 是本地文件，用户可能手改坏；渲染端会按 `type` 直接分支，所以这里
- * 只留认得的分支，字段不全的整条丢掉。
- *
- * `tool-result` 不收：结果在写盘前已经折叠到对应 `tool-call.output` 上（与主对话
- * 落盘口径一致），单独一条飘着渲染出来也是一张空卡。
- */
-function normalizeCollabParts(value: unknown): AgentMessagePart[] {
-  const out: AgentMessagePart[] = []
-  for (const raw of Array.isArray(value) ? value : []) {
-    if (!raw || typeof raw !== 'object') continue
-    const part = raw as Record<string, unknown>
-    if (part.type === 'text' || part.type === 'reasoning') {
-      if (typeof part.text !== 'string') continue
-      out.push({ type: part.type, text: part.text })
-      continue
-    }
-    if (part.type === 'tool-call') {
-      if (typeof part.toolCallId !== 'string' || typeof part.toolName !== 'string') continue
-      out.push({
-        type: 'tool-call',
-        toolCallId: part.toolCallId,
-        toolName: part.toolName,
-        input: part.input ?? null,
-        ...(part.output === undefined ? {} : { output: part.output }),
-        ...(part.isError === true ? { isError: true } : {})
-      })
-    }
-  }
-  return out
-}
-
-export function normalizeCollabState(value: unknown): CollabState {
-  const input = (value ?? {}) as Partial<CollabState>
-  const tasks: CollabTask[] = []
-  for (const raw of Array.isArray(input.tasks) ? input.tasks : []) {
-    if (!raw || typeof raw !== 'object') continue
-    const t = raw as Partial<CollabTask>
-    if (!t.id || !t.agentId) continue
-    tasks.push({
-      id: String(t.id),
-      agentId: String(t.agentId),
-      agentName: typeof t.agentName === 'string' ? t.agentName : String(t.agentId),
-      from: typeof t.from === 'string' ? t.from : 'main',
-      ...(typeof t.parentTaskId === 'string' ? { parentTaskId: t.parentTaskId } : {}),
-      prompt: typeof t.prompt === 'string' ? t.prompt : '',
-      ...(typeof t.context === 'string' ? { context: t.context } : {}),
-      status:
-        t.status === 'running' ||
-        t.status === 'done' ||
-        t.status === 'error' ||
-        t.status === 'cancelled'
-          ? t.status
-          : 'queued',
-      ...(typeof t.output === 'string' ? { output: t.output } : {}),
-      ...(typeof t.error === 'string' ? { error: t.error } : {}),
-      ...(() => {
-        // 过程记录：空数组不必写进文件（老任务没有这个字段）
-        const parts = normalizeCollabParts(t.parts)
-        return parts.length ? { parts } : {}
-      })(),
-      ...(t.usage && typeof t.usage === 'object'
-        ? {
-            usage: {
-              inputTokens: Number(t.usage.inputTokens) || 0,
-              outputTokens: Number(t.usage.outputTokens) || 0,
-              totalTokens: Number(t.usage.totalTokens) || 0
-            }
-          }
-        : {}),
-      createdAt: Number(t.createdAt) || Date.now(),
-      ...(typeof t.startedAt === 'number' ? { startedAt: t.startedAt } : {}),
-      ...(typeof t.finishedAt === 'number' ? { finishedAt: t.finishedAt } : {})
-    })
-  }
-  const messages: CollabMessage[] = []
-  for (const raw of Array.isArray(input.messages) ? input.messages : []) {
-    if (!raw || typeof raw !== 'object') continue
-    const m = raw as Partial<CollabMessage>
-    if (!m.id || !m.from || !m.to) continue
-    messages.push({
-      id: String(m.id),
-      from: String(m.from),
-      to: String(m.to),
-      kind:
-        m.kind === 'delegate' ||
-        m.kind === 'result' ||
-        m.kind === 'note' ||
-        m.kind === 'ask' ||
-        m.kind === 'answer' ||
-        m.kind === 'system'
-          ? m.kind
-          : 'note',
-      text: typeof m.text === 'string' ? m.text : '',
-      ...(typeof m.taskId === 'string' ? { taskId: m.taskId } : {}),
-      createdAt: Number(m.createdAt) || Date.now()
-    })
-  }
-  const statuses: Record<string, CollabAgentRuntime> = {}
-  const rawStatuses = (input.statuses ?? {}) as Record<string, Partial<CollabAgentRuntime>>
-  for (const [id, raw] of Object.entries(rawStatuses)) {
-    if (!raw || typeof raw !== 'object') continue
-    const status: CollabAgentStatus =
-      raw.status === 'queued' ||
-      raw.status === 'running' ||
-      raw.status === 'waiting' ||
-      raw.status === 'done' ||
-      raw.status === 'error' ||
-      raw.status === 'cancelled'
-        ? raw.status
-        : 'idle'
-    statuses[id] = {
-      status: status === 'running' || status === 'queued' || status === 'waiting' ? 'idle' : status,
-      ...(typeof raw.taskId === 'string' ? { taskId: raw.taskId } : {}),
-      ...(typeof raw.toolName === 'string' ? { toolName: raw.toolName } : {}),
-      ...(typeof raw.step === 'number' ? { step: raw.step } : {}),
-      ...(typeof raw.startedAt === 'number' ? { startedAt: raw.startedAt } : {}),
-      updatedAt: Number(raw.updatedAt) || Date.now(),
-      ...(typeof raw.error === 'string' ? { error: raw.error } : {})
-    }
-  }
-  return {
-    version: 1,
-    tasks: tasks.slice(-200),
-    messages: messages.slice(-500),
-    statuses,
-    updatedAt: Number(input.updatedAt) || Date.now()
-  }
-}
-
 export interface AgentConversation {
   id: string
   /** 所属工作区 id */
   workspaceId: string
   /** 标题（默认由首条用户消息截断生成，可重命名） */
   title: string
-  /**
-   * 会话形态：
-   * - 缺省 / `'chat'` = 普通对话（内置 Agent 或 ACP，由 `backend` 决定）；
-   * - `'collab'` = 多智能体协作（主智能体 + 可配置子 Agent，仅内置 Agent）。
-   */
-  kind?: 'chat' | 'collab'
-  /** 协作配置（仅 `kind: 'collab'`；运行态见独立的 `collab.json`） */
-  collab?: CollabSettings
   /** 该会话的完整消息历史 */
   messages: AgentChatMessage[]
   /**
@@ -2157,59 +1715,6 @@ export type AgentStreamEvent =
       /** 子 run 自己跑了多久（毫秒；拿不到就不带） */
       durationMs?: number
     }
-  // -------------------------------------------------------------------------
-  // 多智能体协作（collab）：**全部是运行态的旁路事件**，不参与主消息落盘
-  // -------------------------------------------------------------------------
-  | {
-      /** 任务新增 / 状态变化（queued → running → done/error/cancelled） */
-      type: 'collab-task'
-      task: CollabTask
-    }
-  | {
-      /** Agent 之间的一条可见消息（派活 / 结果 / 追问 / 备注） */
-      type: 'collab-message'
-      message: CollabMessage
-    }
-  | {
-      /** 单个 Agent 的运行状态（空闲 / 排队 / 运行 / 等回答 / 出错） */
-      type: 'collab-agent'
-      agentId: string
-      agentName: string
-      status: CollabAgentStatus
-      taskId?: string
-      toolName?: string
-      step?: number
-      error?: string
-      updatedAt: number
-    }
-  | {
-      /** 子 Agent 的正文 / 思考增量（名单卡片实时预览；收敛以任务 output 为准） */
-      type: 'collab-delta'
-      agentId: string
-      taskId?: string
-      channel: 'text' | 'reasoning'
-      delta: string
-    }
-  | {
-      /** 子 Agent 的工具开始 / 结束（名单卡片上显示当前在干什么） */
-      type: 'collab-tool'
-      agentId: string
-      taskId?: string
-      toolCallId: string
-      toolName: string
-      phase: 'start' | 'end'
-      ok?: boolean
-      /** 工具入参 / 结果的短摘要（服务端截断，仅展示） */
-      label?: string
-      /**
-       * 入参（`start`）/ 结果（`end`）的全文，服务端截断到 600 字符。
-       *
-       * `label` 只有一行摘要，够名单角标用；共享对话区要把它拼成**工具卡**，卡片上得能
-       * 看出「读的是哪个文件、跑出来什么」—— 摘要到不了那个粒度。
-       */
-      input?: string
-      output?: string
-    }
   | {
       /**
        * 工具**入参的流式增量**：上游一边生成入参一边发（引擎的 `tool-call-delta`
@@ -2234,7 +1739,7 @@ export type AgentStreamEvent =
   | {
       /**
        * 工具**输出的流式增量**：命令执行期间 stdout / stderr 实时上来
-       * （bash 的实时输出）。与 `tool-call-delta` 的关系同 `text-delta`
+       * （shell 的实时输出）。与 `tool-call-delta` 的关系同 `text-delta`
        * 之于 text part —— 增量只喂渲染，收敛以完整 `tool-result` 为准。
        *
        * 服务端 `foldEventIntoParts` 刻意不认它（不进落盘历史）：跑完 `tool-result`
@@ -2433,7 +1938,7 @@ export interface AgentConfirmOption {
   kind: AgentPermissionOptionKind
 }
 
-/** Agent 确认模式下 bash 执行前的主进程请示 */
+/** Agent 确认模式下 shell 执行前的主进程请示 */
 export interface AgentConfirmRequest {
   /** 确认请求 id，回复时原样带回 */
   id: string
@@ -2450,9 +1955,6 @@ export interface AgentConfirmRequest {
   intent?: string
   workspaceId?: string
   workspaceName?: string
-  /** 多智能体协作：发起这次审批的子 Agent（主智能体 / 普通会话不填） */
-  agentId?: string
-  agentName?: string
   /**
    * ACP 的权限选项（agent 在 `session/request_permission` 里广告的原样透传）。
    * 给了它，界面就渲染这组选项让用户挑（答复带 optionId）；不给则是内置的「允许 / 拒绝」。
@@ -2485,9 +1987,6 @@ export interface AgentConfirmInput {
   command: string
   /** 模型对这一步的意图（一句话，引擎注入的 `intent` 字段）；没有就不传 */
   intent?: string
-  /** 多智能体协作：发起这次审批的子 Agent（主智能体 / 普通会话不填） */
-  agentId?: string
-  agentName?: string
   /** 命令沙箱提权：目标档（`sandbox_permissions`），与理由成对 */
   sandboxRequestedMode?: SandboxMode
   /** 命令沙箱提权：申请理由（模型写的一句话） */
@@ -3086,7 +2585,7 @@ export const BUILTIN_SUBAGENT_IDS: readonly string[] = ['explorer', 'reviewer', 
  * 子智能体可以使用的**只读**工具。
  *
  * 为什么只有这几个：子 run 恒为 `readonly` 且没有审批通道（见 `buildDelegationTools`），
- * 给它 `write` / `edit` / `bash` 只会得到「当前是只读模式」的拒绝 —— 那是假能力。
+ * 给它 `write` / `edit` / `shell` 只会得到「当前是只读模式」的拒绝 —— 那是假能力。
  *
  * 顺序即设置页里的展示顺序。
  */

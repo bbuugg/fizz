@@ -2,8 +2,8 @@
 
 /**
  * 「添加 / 编辑主机」表单弹窗：**本地终端** 与 **SSH 主机** 共用一套表单，
- * 顶部用 Tab（`Tabs`）切换两种类型（参考 dogi 的 `SshProfileDialog`）。
- * 编辑已有条目时**不显示**类型 Tab —— 类型不可改。
+ * 顶部用分段控件（`Segmented`）切换两种类型（参考 dogi 的 `SshProfileDialog`）。
+ * 编辑已有条目时**不显示**类型切换 —— 类型不可改。
  *
  * 主机管理现在归「主机」功能区：拆成「清单（`HostsSidebar`）+ 表单（本文件）」两半，
  * 清单常驻侧栏，表单只在点「添加 / 编辑」时出现。
@@ -46,7 +46,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@fizz/ui/dialog'
-import { Tabs, TabsList, TabsTrigger } from '@fizz/ui/tabs'
+import { Segmented } from '@fizz/agent-kit/shared/components/Segmented'
 import { useAppContext } from '@fizz/agent-kit/shared/hooks/use-app-context'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
@@ -265,6 +265,26 @@ export function HostDialog({
 
   const canSave = kind === 'local' ? name.trim().length > 0 : host.trim().length > 0 && username.trim().length > 0
 
+  /**
+   * 两个下拉的可见标题（`items` 与选项共用同一份，避免两处字面量漂移）。
+   * Base UI 不给 `items` 时触发器里显示的是原始 value（哨兵 / 主机 id）。
+   */
+  const shellDefaultLabel = t('跟随平台默认')
+  const shellItems: Record<string, string> = {
+    [NO_SHELL]: shellDefaultLabel,
+    ...Object.fromEntries((terminalShells?.shells ?? []).map((s) => [s.id, s.name]))
+  }
+  const noJumpLabel = t('不使用跳板')
+  const jumpItems: Record<string, string> = {
+    [NO_JUMP]: noJumpLabel,
+    ...Object.fromEntries(
+      jumpOptions.map((h) => [
+        h.id,
+        t('{name}（{summary}）', { name: h.name, summary: hostSummary(h) })
+      ])
+    )
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/*
@@ -294,16 +314,16 @@ export function HostDialog({
               编辑已有条目时不显示 —— 类型不可改（要换类型就删了重建）。
               紧贴表单区的顶边：它和下面的字段是同一块「编辑面板」的两个部分 */}
           {!editing && (
-            <Tabs
+            <Segmented
+              ariaLabel={t('主机类型')}
+              options={[
+                { value: 'local', label: t('本地终端') },
+                { value: 'ssh', label: 'SSH' }
+              ]}
               value={kind}
-              onValueChange={(value) => switchKind(value as HostKind)}
-              className="w-full shrink-0"
-            >
-              <TabsList className="w-full">
-                <TabsTrigger value="local">{t('本地终端')}</TabsTrigger>
-                <TabsTrigger value="ssh">SSH</TabsTrigger>
-              </TabsList>
-            </Tabs>
+              onChange={switchKind}
+              fullWidth
+            />
           )}
 
           {/* min-w-0 别删：本层是 flex 子项，默认 `min-width: auto`，
@@ -331,13 +351,14 @@ export function HostDialog({
                   <Label>Shell</Label>
                   <Select
                     value={shellId || NO_SHELL}
+                    items={shellItems}
                     onValueChange={(value) => setShellId(value === NO_SHELL ? '' : value)}
                   >
                     <SelectTrigger variant="muted" className="w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value={NO_SHELL}>{t('跟随平台默认')}</SelectItem>
+                      <SelectItem value={NO_SHELL}>{shellDefaultLabel}</SelectItem>
                       {terminalShells?.shells.map((shell) => (
                         <SelectItem key={shell.id} value={shell.id}>
                           {shell.name}
@@ -366,7 +387,7 @@ export function HostDialog({
                     不写清的话用户会以为「我在项目里点它，就该在这个项目目录」。
                   */}
                   <p className="text-xs text-muted-foreground">
-                    {t('这条终端固定从这个目录打开，与当前打开的项目无关；留空 = 主目录。')}
+                    {t('留空 = 主目录；与当前项目无关。')}
                   </p>
                 </div>
 
@@ -383,7 +404,7 @@ export function HostDialog({
                     onChange={(e) => setArgsText(e.target.value)}
                   />
                   <p className="text-xs text-muted-foreground">
-                    {t('追加在 shell 自带参数之后；不做引号解析，所以一行就是一个参数。')}
+                    {t('一行一个参数，不做引号解析。')}
                   </p>
                 </div>
 
@@ -439,13 +460,17 @@ export function HostDialog({
                   />
                 </div>
 
-                {/* 认证方式 Tab：两种写法字段完全不同，一眼看清当前是哪种 */}
-                <Tabs value={authType} onValueChange={(value) => setAuthType(value as SshAuthType)} className="w-full">
-                  <TabsList className="w-full">
-                    <TabsTrigger value="password">{t('密码')}</TabsTrigger>
-                    <TabsTrigger value="privateKey">{t('私钥')}</TabsTrigger>
-                  </TabsList>
-                </Tabs>
+                {/* 认证方式：两种写法字段完全不同，一眼看清当前是哪种 */}
+                <Segmented
+                  ariaLabel={t('认证方式')}
+                  options={[
+                    { value: 'password', label: t('密码') },
+                    { value: 'privateKey', label: t('私钥') }
+                  ]}
+                  value={authType}
+                  onChange={setAuthType}
+                  fullWidth
+                />
 
                 {authType === 'password' ? (
                   <Input
@@ -516,16 +541,17 @@ export function HostDialog({
                   <Label>{t('跳板机')}</Label>
                   <Select
                     value={jumpHostId || NO_JUMP}
+                    items={jumpItems}
                     onValueChange={(value) => setJumpHostId(value === NO_JUMP ? '' : value)}
                   >
                     <SelectTrigger variant="muted" className="w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value={NO_JUMP}>{t('不使用跳板')}</SelectItem>
+                      <SelectItem value={NO_JUMP}>{noJumpLabel}</SelectItem>
                       {jumpOptions.map((h) => (
                         <SelectItem key={h.id} value={h.id}>
-                          {t('{name}（{summary}）', { name: h.name, summary: hostSummary(h) })}
+                          {jumpItems[h.id]}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -537,16 +563,16 @@ export function HostDialog({
                   {/* 字符集：中文 Windows 服务器（代码页 936）上的老程序输出 GBK，显示乱码时切过来 */}
                   <div className="flex flex-col gap-1.5">
                     <Label>{t('字符集')}</Label>
-                    <Tabs
+                    <Segmented
+                      ariaLabel={t('字符集')}
+                      options={[
+                        { value: 'utf-8', label: 'utf-8' },
+                        { value: 'gbk', label: 'gbk' }
+                      ]}
                       value={charset}
-                      onValueChange={(value) => setCharset(value as SshCharset)}
-                      className="w-full"
-                    >
-                      <TabsList className="w-full">
-                        <TabsTrigger value="utf-8">utf-8</TabsTrigger>
-                        <TabsTrigger value="gbk">gbk</TabsTrigger>
-                      </TabsList>
-                    </Tabs>
+                      onChange={setCharset}
+                      fullWidth
+                    />
                   </div>
 
                   <div className="flex flex-col gap-1.5">

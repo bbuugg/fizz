@@ -41,38 +41,26 @@ import {
   useRef,
   useState,
   type ComponentProps,
-  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
-  type RefCallback,
   type TouchEvent as ReactTouchEvent
 } from 'react'
 import {
-  ChevronDown,
   ChevronLeft,
-  ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
   ClipboardCopy,
   ClipboardPaste,
   Copy,
   Download,
-  File as FileIcon,
-  FileAudio,
-  FileCode,
-  FileCode2,
-  FileImage,
-  FileJson,
   FilePlus2,
   FileSymlink,
-  FileText,
-  FileVideo,
   Files,
-  Folder,
   FolderOpen,
   FolderPlus,
   FolderSearch,
+  GitBranch,
   Hash,
   ListX,
   Loader2,
@@ -91,12 +79,10 @@ import {
   X
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { ImageViewer } from '@fizz/ui/image-viewer'
 import { Button } from '@fizz/ui/button'
-import { Input } from '@fizz/ui/input'
+import { Segmented } from '@fizz/agent-kit/shared/components/Segmented'
 import {
   ResizableHandle,
-  ResizablePanel,
   ResizablePanelGroup,
   usePanelRef
 } from '@fizz/ui/resizable'
@@ -122,11 +108,14 @@ import {
   useFilesPaneWidth
 } from '@fizz/agent-kit/shared/lib/files-pane-width'
 import { setLineNumbers, setWordWrap, useLineNumbers, useWordWrap } from '@fizz/agent-kit/shared/lib/editor-view-prefs'
-import { previewKindOf, isPreviewable, isEditable, isMediaKind, hasDualView, type PreviewKind } from '@fizz/agent-kit/shared/lib/preview'
+import { previewKindOf, isPreviewable, isEditable, isMediaKind, hasDualView } from '@fizz/agent-kit/shared/lib/preview'
 import { notifyWorkspaceFsChanged } from '@fizz/agent-kit/shared/lib/fs-changed'
-import MonacoEditor, { monacoLanguageOf } from '@fizz/agent-kit/features/files/MonacoEditor'
-import { FileMarkdownPreview } from '@fizz/agent-kit/features/files/FileMarkdownPreview'
-import { FileHtmlPreview } from '@fizz/agent-kit/features/files/FileHtmlPreview'
+import { FilesPanelFileBody } from '@fizz/agent-kit/features/files/FilesPanelFileBody'
+import { FilesPanelOverlays } from '@fizz/agent-kit/features/files/FilesPanelOverlays'
+import type { Clipboard, DiffTab, MenuAction, NameDialogText, OpenTab } from '@fizz/agent-kit/features/files/files-panel-types'
+import { diffRefreshIsNoop, showsDiffPlaceholder } from '@fizz/agent-kit/features/files/git-diff-tab'
+import { GitPanel } from '@fizz/agent-kit/features/git/GitPanel'
+import { parseUnifiedDiff } from '@fizz/agent-kit/shared/lib/diff'
 import {
   consumeOpenFileRequest,
   matchesOpenFileRequest,
@@ -135,6 +124,7 @@ import {
 import { useShowIgnored, setShowIgnored } from '@fizz/agent-kit/shared/lib/fs-tree-prefs'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
 import type { AgentFsEntry, FsListResult } from '@fizz/contracts/agent-api'
+import type { GitChange } from '@fizz/git'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -142,136 +132,12 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger
 } from '@fizz/ui/context-menu'
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle
-} from '@fizz/ui/sheet'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@fizz/ui/dialog'
 import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
 import { getAgentHostOrNull } from '@fizz/agent-client/host'
 // 只有要区分「409 = 同名冲突」这一种错误，才需要摸到 api 层的错误类型
 import { ApiError } from '@fizz/agent-client/api'
-
-function FileTypeIcon({ name }: { name: string }) {
-  const lower = name.toLowerCase()
-  const ext = lower.includes('.') ? lower.slice(lower.lastIndexOf('.') + 1) : ''
-  if (ext === 'json' || ext === 'jsonc') return <FileJson className="size-4 shrink-0 text-amber-500" />
-  const kind = previewKindOf(name)
-  if (kind === 'image' || kind === 'svg') return <FileImage className="size-4 shrink-0 text-emerald-500" />
-  if (kind === 'video') return <FileVideo className="size-4 shrink-0 text-violet-500" />
-  if (kind === 'audio') return <FileAudio className="size-4 shrink-0 text-pink-500" />
-  // md 与 html 都是「可预览也能改」的文本，用同一支文档图标（与纯文本区分在预览态，不在树里）
-  if (kind === 'markdown' || kind === 'html') return <FileCode2 className="size-4 shrink-0 text-sky-500" />
-  if (ext === 'ts' || ext === 'tsx' || ext === 'js' || ext === 'jsx') {
-    return <FileCode className="size-4 shrink-0 text-sky-500" />
-  }
-  return <FileText className="size-4 shrink-0 text-muted-foreground" />
-}
-
-/**
- * 文件树的一行。桌面右键菜单与手机长按菜单都只是它的**外壳**，
- * 行本体两条路共用一份（图标 / 缩进 / 高亮 / 尾部插槽）。
- *
- * 整体是 div 而不是 button：尾部要放「更多操作」按钮（手机上），
- * button 套 button 是非法 HTML，浏览器会把内层悄悄提出去。
- *
- * ⚠️ 桌面端这一行是 `<ContextMenuTrigger asChild>` 的子元素：Radix 的 Slot 会把
- * `onContextMenu` / `ref` / `data-state` 等 props **合并到本组件上**，本组件必须把它们
- * 透传到真实 DOM 节点，右键菜单才会弹出来 —— 只声明自己的 props 而不 `...rest` 透传，
- * Radix 合并进来的触发器 props 会被全部丢掉（表现为右键无反应）。
- */
-function TreeRow({
-  depth,
-  name,
-  isDir,
-  open,
-  active,
-  selected,
-  ignored,
-  onActivate,
-  trailing,
-  touch,
-  cut,
-  ...rest
-}: {
-  depth: number
-  name: string
-  isDir: boolean
-  open: boolean
-  active: boolean
-  /** 键盘 / 多选的落点：与「已打开」(active) 是两回事，可同时出现在两行上 */
-  selected?: boolean
-  /**
-   * 命中忽略规则的条目（只在「显示被忽略」开着时才会出现在树里）。
-   * 整行压暗 + 悬停标题里点明 —— 用户得知道「这东西平时是被藏起来的」，
-   * 否则会以为它本来就该在这儿、下次开关关掉又找不到。
-   */
-  ignored?: boolean
-  /** 传原始鼠标事件：调用方要靠 ctrl / shift 修饰键决定单选 / 多选 / 范围选 */
-  onActivate: (e: ReactMouseEvent<HTMLButtonElement>) => void
-  /** 行尾插槽（手机端的「更多操作」按钮） */
-  trailing?: ReactNode
-  /** 手机长按手势；不传说明走桌面渲染，不挂任何触摸回调 */
-  touch?: TouchHandlers
-  /** 已被剪切、正等着粘贴的条目：整行压暗 */
-  cut?: boolean
-} & Omit<ComponentProps<'div'>, 'children'>) {
-  const t = useT()
-  return (
-    <div
-      {...touch}
-      {...rest}
-      style={{ paddingLeft: treeIndent(depth, 14, 8), ...rest.style }}
-      className={cn(
-        'flex items-center gap-1.5 py-1 pr-2 text-sm',
-        active ? 'bg-primary/15 text-foreground' : 'text-foreground',
-        selected && 'bg-primary/20 text-foreground ring-1 ring-primary/40 ring-inset',
-        'hover:bg-foreground/10',
-        cut && 'opacity-50',
-        ignored && 'opacity-45 hover:opacity-80',
-        rest.className
-      )}
-    >
-      <button
-        type="button"
-        onClick={onActivate}
-        title={ignored ? t("{name}（命中忽略规则，默认不显示）", { name }) : name}
-        className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-      >
-        {isDir ? (
-          <>
-            {open ? (
-              <ChevronDown className="size-3.5 shrink-0" />
-            ) : (
-              <ChevronRight className="size-3.5 shrink-0" />
-            )}
-            {open ? (
-              <FolderOpen className="size-4 shrink-0 text-primary/80" />
-            ) : (
-              <Folder className="size-4 shrink-0 text-primary/80" />
-            )}
-          </>
-        ) : (
-          <>
-            <span className="w-3.5 shrink-0" />
-            <FileTypeIcon name={name} />
-          </>
-        )}
-        <span className="min-w-0 flex-1 truncate">{name}</span>
-      </button>
-      {trailing}
-    </div>
-  )
-}
+import { FileTypeIcon, TreeRow, type TouchHandlers } from '@fizz/agent-kit/features/files/FileTreeRow'
+import { PaneShell, SplitFrame } from '@fizz/agent-kit/features/files/FilesPanelLayout'
 
 interface DirState {
   open: boolean
@@ -288,24 +154,6 @@ interface DirState {
  * 用文件路径当 id：同一路径只会有一个标签，再次点开是切过去而不是重读 —— 重读会把
  * 未保存的改动冲掉。媒体标签只存可播放 URL，不存正文。
  */
-interface OpenTab {
-  /** 文件路径，兼作标签 id */
-  path: string
-  kind: PreviewKind | null
-  viewMode: 'preview' | 'edit'
-  content: string
-  /** 上次读入 / 保存的内容基线，与 `content` 不等即为「脏」 */
-  savedContent: string
-  /** 文本正文读取中（编辑器先显示空，避免闪现上一个文件的内容） */
-  loading: boolean
-  /** 保存请求进行中 */
-  saving: boolean
-  mediaUrl: string | null
-  mediaLoading: boolean
-  /** 这个标签自己的读取 / 保存错误 */
-  error: string | null
-}
-
 /**
  * 文件标签在**关闭守卫注册表**里的 key（`file:<path>`）。
  *
@@ -344,40 +192,6 @@ function isBlankAreaTarget(target: EventTarget | null, container: EventTarget | 
   const el = target as HTMLElement | null
   if (!el || typeof el.dataset === 'undefined') return false
   return el === container || el.dataset.fsBlank !== undefined
-}
-
-/** 剪贴板里的一个条目：路径 + 类型（文件/目录）+ 名字（粘贴时拼新路径用） */
-interface ClipboardEntry {
-  path: string
-  type: 'file' | 'dir'
-  name: string
-}
-
-/** 剪贴板内容：一批条目 + 模式（粘贴时据此决定复制还是移动） */
-interface Clipboard {
-  entries: ClipboardEntry[]
-  /** `copy` = 复制（可反复粘贴）；`cut` = 剪切（粘贴一次即移动，随后清空剪贴板） */
-  mode: 'copy' | 'cut'
-}
-
-/**
- * 菜单里的一个动作。桌面右键菜单（`ContextMenuItem`）与手机底部菜单（`Sheet`）
- * 渲染的是**同一份**动作清单 —— 一端加能力另一端自动跟上，不会悄悄跑偏。
- */
-interface MenuAction {
-  label: string
-  icon: ReactNode
-  danger?: boolean
-  /** 当前用不上（如已是最后一个标签时的「关闭右侧」）：置灰且点不动 */
-  disabled?: boolean
-  run: () => void
-}
-
-/** 手机长按的手势回调（挂在行容器上：手指按下 / 移动 / 抬起） */
-interface TouchHandlers {
-  onTouchStart: (e: ReactTouchEvent) => void
-  onTouchEnd: () => void
-  onTouchMove: (e: ReactTouchEvent) => void
 }
 
 /**
@@ -634,98 +448,16 @@ function workspaceSource(getApp: () => AgentApp | undefined, workspaceId: string
   }
 }
 
-/**
- * 文件面板的外框（整个面板的根 div，`useContainerWidth` 量宽的就是它）。
- *
- * - **两栏形态**：根 div 里再套 `ResizablePanelGroup`（`@fizz/ui/resizable`，底层
- *   react-resizable-panels），拖拽 / 键盘微调 / min-max 夹取 / 容器变化时的重排都交给组件。
- * - **单栏形态**与「容器宽度还没量到的首帧」：只剩根 div，两个 `PaneShell` 直接并进 flex，
- *   与改造前逐像素一致。
- *
- * `containerRef` 挂在根 div 上：两种形态是同一个 DOM 节点（React 按位置 + 类型复用），
- * 切换时不会重新挂载、也不会重新量一次宽度。
- */
-function SplitFrame({
-  split,
-  containerRef,
-  onKeyDownCapture,
-  onLayoutChanged,
-  children
-}: {
-  split: boolean
-  containerRef: RefCallback<HTMLDivElement>
-  onKeyDownCapture?: ComponentProps<'div'>['onKeyDownCapture']
-  onLayoutChanged: NonNullable<ComponentProps<typeof ResizablePanelGroup>['onLayoutChanged']>
-  children: ReactNode
-}) {
-  return (
-    <div
-      ref={containerRef}
-      onKeyDownCapture={onKeyDownCapture}
-      className="flex h-full min-h-0 w-full bg-background"
-    >
-      {split ? (
-        <ResizablePanelGroup orientation="horizontal" className="min-h-0" onLayoutChanged={onLayoutChanged}>
-          {children}
-        </ResizablePanelGroup>
-      ) : (
-        children
-      )}
-    </div>
-  )
-}
-
-/**
- * 文件树 / 编辑区的外壳。
- *
- * - 两栏形态：`ResizablePanel`，宽度交给 Group 的布局。`className` / `style` 落在它的
- *   **内层** div 上 —— 库默认写的是 `overflow: auto`，要盖住只能走 `style`（内联值优先）。
- * - 单栏 / 容器还没量到宽度：普通 `div`，宽度自己给（与改造前逐像素一致）。
- *
- * ⚠️ 跨 `FILES_SINGLE_PANE_BELOW_WIDTH` 时会换掉父元素类型，子树**重挂**（Monaco 重建：
- * 内容从 `activeTab.content` 恢复，撤销栈与滚动位置不保留）。这是「两栏交给 Group」的代价；
- * 另一条路是让 Group 在单栏下把一侧压到 0 宽，那样每次翻页都要命令式改尺寸，还会闪一帧。
- */
-function PaneShell({
-  split,
-  panel,
-  className,
-  style,
-  children
-}: {
-  split: boolean
-  /**
-   * 两栏形态下交给 `ResizablePanel` 的尺寸约束。
-   *
-   * ⚠️ 不传 ≠ 退回普通 div —— 两栏形态下**必须**是 `ResizablePanel`：Group 只认自己注册的
-   * 面板，漏一个就只剩「一个面板 + 一个野 div」，那个面板占满 100%、编辑区被挤成 0 宽、
-   * 分隔条也不生成，看起来就是「只有一栏、还拖不动」。
-   */
-  panel?: Omit<ComponentProps<typeof ResizablePanel>, 'className' | 'style' | 'children'>
-  className: string
-  style?: CSSProperties
-  children: ReactNode
-}) {
-  if (!split) {
-    return (
-      <div className={className} style={style}>
-        {children}
-      </div>
-    )
-  }
-  return (
-    <ResizablePanel {...panel} className={className} style={style}>
-      {children}
-    </ResizablePanel>
-  )
-}
-
 export function FilesPanel({
   app,
   workspaceId,
   panelKey,
   source,
-  visible = true
+  visible = true,
+  mode = 'files',
+  onModeChange,
+  gitMounted = false,
+  onGitChanges
 }: {
   app?: AgentApp
   /** 这个面板固定服务的工作区（按会话各挂一套：面板常驻，工作区不会中途变化） */
@@ -749,6 +481,12 @@ export function FilesPanel({
    * 同名 prop 一个语义。默认 `true`：不声明可见性的调用方（流程节点容器）保持原行为。
    */
   visible?: boolean
+  /** Embedded workspaces can switch the tree column between files and Git while sharing this preview area. */
+  mode?: 'files' | 'git'
+  onModeChange?: (mode: 'files' | 'git') => void
+  /** Keep the Git state component mounted after its first use so drafts and branch/history state survive mode switches. */
+  gitMounted?: boolean
+  onGitChanges?: (info: { count: number; truncated: boolean; branch: string | null } | null) => void
 }) {
   const [dirs, setDirs] = useState<Record<string, DirState>>({})
 
@@ -782,9 +520,13 @@ export function FilesPanel({
   const wordWrap = useWordWrap()
   const lineNumbers = useLineNumbers()
 
-  /** 右侧打开的标签页（数组顺序 = 显示顺序）；`activeId` 是当前标签的 path */
+  /** 文件文档继续按路径保存状态，并保留未保存关闭确认。 */
   const [tabs, setTabs] = useState<OpenTab[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
+  /** Diff 是虚拟文档，按路径与暂存状态分别标识。 */
+  const [diffTabs, setDiffTabs] = useState<DiffTab[]>([])
+  const [activeDiffKey, setActiveDiffKey] = useState<string | null>(null)
+  const [tabOrder, setTabOrder] = useState<string[]>([])
 
   /** 目录（树）加载失败的错误 —— 与某个文件标签自己的读写错误是两码事 */
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -795,6 +537,19 @@ export function FilesPanel({
 
   /** 当前激活的标签（没打开任何文件时为 null） */
   const activeTab = tabs.find((t) => t.path === activeId) ?? null
+  const activeDiff = diffTabs.find((tab) => tab.key === activeDiffKey) ?? null
+
+  const rightFileTabKey = (path: string): string => JSON.stringify(['file', path])
+  const gitDiffTabKey = (path: string, staged: boolean): string =>
+    JSON.stringify(['git-diff', staged ? 'staged' : 'worktree', path])
+  const activateFile = (path: string | null): void => {
+    setActiveDiffKey(null)
+    setActiveId(path)
+  }
+  const activateDiff = (key: string): void => {
+    setActiveId(null)
+    setActiveDiffKey(key)
+  }
 
   /**
    * 外部「打开这个文件」的请求（消息下方的文档入口发来的，见 `features/files/open-file.ts`）。
@@ -805,15 +560,33 @@ export function FilesPanel({
   /** 标签条（横向滚动容器）与每个 tab 元素的 ref：用来把激活的 tab 滚进视口 */
   const tabStripRef = useRef<HTMLDivElement | null>(null)
   const tabElRefs = useRef(new Map<string, HTMLDivElement>())
+  const activeStripKey = activeId ? rightFileTabKey(activeId) : activeDiffKey
+
+  const activateTabKey = (
+    key: string | null,
+    fileTabs: OpenTab[] = tabs,
+    gitTabs: DiffTab[] = diffTabs
+  ): void => {
+    if (!key) {
+      activateFile(null)
+      return
+    }
+    const file = fileTabs.find((tab) => rightFileTabKey(tab.path) === key)
+    if (file) {
+      activateFile(file.path)
+      return
+    }
+    if (gitTabs.some((tab) => tab.key === key)) activateDiff(key)
+  }
 
   /**
    * 激活的 tab 若被横向滚出视口（最典型：文件树里点一个已打开、但 tab 没露出来的文件），
    * 把它滚回可见。只动标签条自己的 `scrollLeft`，不碰任何祖先的滚动位置。
    */
   useEffect(() => {
-    if (!activeId) return
+    if (!activeStripKey) return
     const strip = tabStripRef.current
-    const el = tabElRefs.current.get(activeId)
+    const el = tabElRefs.current.get(activeStripKey)
     if (!strip || !el) return
     const stripRect = strip.getBoundingClientRect()
     const elRect = el.getBoundingClientRect()
@@ -822,7 +595,7 @@ export function FilesPanel({
     } else if (elRect.right > stripRect.right) {
       strip.scrollTo({ left: strip.scrollLeft + (elRect.right - stripRect.right), behavior: 'smooth' })
     }
-  }, [activeId])
+  }, [activeStripKey])
 
   /** 就地改一个标签（找不到就忽略）；读文件 / 保存 / 切视图的异步收尾都走它 */
   const patchTab = (path: string, patch: Partial<OpenTab>): void =>
@@ -832,17 +605,25 @@ export function FilesPanel({
    * 关掉一批标签。当前标签若在其中，激活被关位置右侧的第一个（没有则取最后一个）；
    * 全关完了就回到「未打开文件」空态。
    */
-  const closeTabs = (paths: string[]): void => {
-    if (paths.length === 0) return
-    const kill = new Set(paths)
-    const next = tabs.filter((t) => !kill.has(t.path))
-    setTabs(next)
-    if (activeId && kill.has(activeId)) {
-      const firstIdx = tabs.findIndex((t) => kill.has(t.path))
-      const fallback = next[Math.min(firstIdx, next.length - 1)]
-      setActiveId(fallback ? fallback.path : null)
+  const closePanelTabsNow = (paths: string[], diffKeys: string[]): void => {
+    const killFiles = new Set(paths)
+    const killDiffs = new Set(diffKeys)
+    const nextFiles = tabs.filter((tab) => !killFiles.has(tab.path))
+    const nextDiffs = diffTabs.filter((tab) => !killDiffs.has(tab.key))
+    const removedKeys = new Set([...paths.map(rightFileTabKey), ...diffKeys])
+    const remainingOrder = tabOrder.filter((key) => !removedKeys.has(key))
+    setTabs(nextFiles)
+    setDiffTabs(nextDiffs)
+    setTabOrder(remainingOrder)
+    if (activeStripKey && removedKeys.has(activeStripKey)) {
+      const index = tabOrder.indexOf(activeStripKey)
+      const fallbackKey = remainingOrder[Math.min(Math.max(index, 0), remainingOrder.length - 1)] ?? null
+      activateTabKey(fallbackKey, nextFiles, nextDiffs)
     }
   }
+
+  const closeTabs = (paths: string[]): void => closePanelTabsNow(paths, [])
+  const closeDiffTab = (key: string): void => closePanelTabsNow([], [key])
 
   /**
    * 请求关闭一批标签（关闭按钮 / 标签右键菜单 / 中键共用）：先**逐个**问这批文件标签的
@@ -857,6 +638,19 @@ export function FilesPanel({
     const approved = await askTabCloseGuards(targets.map(fileTabKey))
     if (approved.length === 0) return
     closeTabs(approved.map(pathOfFileTabKey))
+  }
+
+  /** 混合关闭文件与 diff 时，只询问脏文件，再一并关闭获准的标签。 */
+  const requestClosePanelTabs = async (keys: string[]): Promise<void> => {
+    const filePaths = keys.flatMap((key) => {
+      const tab = tabs.find((item) => rightFileTabKey(item.path) === key)
+      return tab ? [tab.path] : []
+    })
+    const diffKeys = keys.filter((key) => diffTabs.some((tab) => tab.key === key))
+    const approved = filePaths.length
+      ? await askTabCloseGuards(filePaths.map(fileTabKey))
+      : []
+    closePanelTabsNow(approved.map(pathOfFileTabKey), diffKeys)
   }
 
   /** 关闭单个标签 */
@@ -937,6 +731,10 @@ export function FilesPanel({
   const remapPaths = (remap: (p: string) => string): void => {
     setTabs((prev) => prev.map((t) => (t.path === remap(t.path) ? t : { ...t, path: remap(t.path) })))
     setActiveId((cur) => (cur ? remap(cur) : cur))
+    setTabOrder((current) => current.map((key) => {
+      const tab = tabs.find((item) => rightFileTabKey(item.path) === key)
+      return tab ? rightFileTabKey(remap(tab.path)) : key
+    }))
   }
 
   // ---- 剪贴板（复制 / 粘贴）----
@@ -1048,6 +846,91 @@ export function FilesPanel({
    */
   const [pane, setPane] = useState<'tree' | 'file'>('tree')
 
+  const diffTabsRef = useRef(diffTabs)
+  diffTabsRef.current = diffTabs
+  const diffRequestsRef = useRef(new Map<string, number>())
+
+  /**
+   * 将 Git diff 读入预览标签；用序号丢弃快速切换后过期的响应。
+   *
+   * **已有内容时是静默刷新**：面板会周期性地（`GitPanel` 的轮询 / fs 变更回调）把打开的
+   * diff 全部重拉一遍。以前每次都先置 `loading: true`，右侧于是每几秒换成「读取 diff…」
+   * 占位再换回来 —— 整块 diff 被卸载重挂，看着就是闪一下、滚动位置也回顶。现在只有
+   * **首次打开**（还没有 hunks）才显示占位；原文没变时连 state 都不动。
+   */
+  const loadGitDiff = async (tab: Pick<DiffTab, 'key' | 'path' | 'staged' | 'deleted'>): Promise<void> => {
+    const request = (diffRequestsRef.current.get(tab.key) ?? 0) + 1
+    diffRequestsRef.current.set(tab.key, request)
+    const before = diffTabsRef.current.find((item) => item.key === tab.key)
+    if (showsDiffPlaceholder(before)) {
+      setDiffTabs((current) => current.map((item) =>
+        item.key === tab.key ? { ...item, deleted: tab.deleted, loading: true, error: null } : item
+      ))
+    }
+    try {
+      if (!app || !workspaceId) throw new Error(t('工作区不可用'))
+      const result = await app.gitDiff(workspaceId, tab.path, tab.staged)
+      if (diffRequestsRef.current.get(tab.key) !== request) return
+      // 原文一样就一个字段都不动：`setDiffTabs` 换个新数组同样会把整块 diff 重渲染一遍
+      const current = diffTabsRef.current.find((item) => item.key === tab.key)
+      if (current && diffRefreshIsNoop(current, result.diff, tab.deleted)) return
+      setDiffTabs((current) => current.map((item) =>
+        item.key === tab.key
+          ? {
+              ...item,
+              deleted: tab.deleted,
+              diffText: result.diff,
+              hunks: parseUnifiedDiff(result.diff),
+              loading: false,
+              error: null
+            }
+          : item
+      ))
+    } catch (error) {
+      if (diffRequestsRef.current.get(tab.key) !== request) return
+      // 已经有内容时刷新失败：留着旧内容，别拿错误页把用户正在看的东西顶掉
+      // （轮询失败是常态：文件正在被写时 `git diff` 可能短暂报错，下一次轮询就恢复了）
+      const current = diffTabsRef.current.find((item) => item.key === tab.key)
+      if (current && current.hunks !== null) return
+      setDiffTabs((current) => current.map((item) =>
+        item.key === tab.key
+          ? { ...item, loading: false, error: error instanceof Error ? error.message : String(error) }
+          : item
+      ))
+    }
+  }
+
+  const openGitDiff = (path: string, staged: boolean, deleted: boolean): void => {
+    const key = gitDiffTabKey(path, staged)
+    const existing = diffTabs.find((tab) => tab.key === key)
+    const tab: DiffTab = existing
+      ? { ...existing, deleted }
+      : { key, path, staged, deleted, hunks: null, diffText: null, loading: true, error: null }
+    if (!existing) {
+      setDiffTabs((current) => current.some((item) => item.key === key) ? current : [...current, tab])
+      setTabOrder((current) => current.includes(key) ? current : [...current, key])
+    }
+    activateDiff(key)
+    setPane('file')
+    void loadGitDiff(tab)
+  }
+
+  const refreshOpenGitDiffs = (changes?: readonly GitChange[]): void => {
+    for (const tab of diffTabsRef.current) {
+      const change = changes?.find((item) => item.path === tab.path)
+      const deleted = changes === undefined
+        ? tab.deleted
+        : !!change && (tab.staged ? change.index === 'D' : change.worktree === 'D')
+      void loadGitDiff({ ...tab, deleted })
+    }
+  }
+
+  const changeMode = (next: 'files' | 'git'): void => {
+    // 窄容器单栏布局切换左侧模式时，回到对应列表；共享预览区继续保留已打开的标签。
+    setPane('tree')
+    onModeChange?.(next)
+  }
+
   /**
    * 数据来源：显式传的 `source` 优先，否则用 `app` + `workspaceId` 造一个。
    *
@@ -1073,7 +956,7 @@ export function FilesPanel({
    * 关掉之后还停在内容页，用户看到的是一块「未打开文件」的空白 + 一颗返回键 —— 白白挡着树。
    * 让它自动退回文件树，下面两个 `hidden` 都读这一个值，不会各判各的。
    */
-  const filePaneShown = !singlePane || (pane === 'file' && tabs.length > 0)
+  const filePaneShown = !singlePane || (pane === 'file' && tabs.length + diffTabs.length > 0)
 
   /**
    * 「显示被忽略的文件」开关（全局偏好，见 `lib/fs-tree-prefs`）。
@@ -1136,7 +1019,7 @@ export function FilesPanel({
     setLoadError(null)
 
     if (tabs.some((t) => t.path === entry.path)) {
-      setActiveId(entry.path)
+      activateFile(entry.path)
       return
     }
 
@@ -1157,13 +1040,16 @@ export function FilesPanel({
 
     // 用函数式更新 + 去重：`tabs` 是本次渲染的快照，连点两下会看到同一份旧值，
     // 不去重就会插进两个同 path 的标签（key 撞车）
-    const addTab = (tab: OpenTab): void =>
+    const addTab = (tab: OpenTab): void => {
       setTabs((prev) => (prev.some((t) => t.path === tab.path) ? prev : [...prev, tab]))
+      const key = rightFileTabKey(tab.path)
+      setTabOrder((prev) => prev.includes(key) ? prev : [...prev, key])
+    }
 
     if (isMediaKind(kind)) {
       // 二进制 / 媒体：只取可播放 URL，正文不读（binary 最终落到「不支持预览」）
       addTab({ ...base, viewMode: 'preview', mediaLoading: true })
-      setActiveId(entry.path)
+      activateFile(entry.path)
       const url = await fsSource.mediaUrl(entry.path)
       patchTab(entry.path, { mediaUrl: url, mediaLoading: false })
       return
@@ -1171,7 +1057,7 @@ export function FilesPanel({
 
     // 文本（纯源码 + svg / markdown / html 的源码形态）：先挂空标签进加载态，读回来再填
     addTab({ ...base, loading: true })
-    setActiveId(entry.path)
+    activateFile(entry.path)
     try {
       const file = await fsSource.read(entry.path)
       patchTab(entry.path, {
@@ -1196,8 +1082,11 @@ export function FilesPanel({
     // 折叠快照跟着整棵树一起作废：它记的是上一个工作区的展开态
     setCollapsedFrom(null)
     // 换工作区 / 来源：所有标签一起作废（它们指向的是上一个工作区的文件）
+    for (const [key, request] of diffRequestsRef.current) diffRequestsRef.current.set(key, request + 1)
     setTabs([])
-    setActiveId(null)
+    setDiffTabs([])
+    setTabOrder([])
+    activateFile(null)
     setLoadError(null)
     setClipboard(null)
     setSelection([])
@@ -1394,8 +1283,12 @@ export function FilesPanel({
     })
     toast.success(
       entries.length > 1
-        ? t('已剪切 {count} 项（Ctrl+V 或右键目标文件夹选「粘贴到此处」）', { count: entries.length })
-        : t('已剪切：{name}（Ctrl+V 或右键目标文件夹选「粘贴到此处」）', { name: entries[0].name })
+        ? isMobile
+          ? t('已剪切 {count} 项', { count: entries.length })
+          : t('已剪切 {count} 项（Ctrl+V 或右键目标文件夹选「粘贴到此处」）', { count: entries.length })
+        : isMobile
+          ? t('已剪切：{name}', { name: entries[0].name })
+          : t('已剪切：{name}（Ctrl+V 或右键目标文件夹选「粘贴到此处」）', { name: entries[0].name })
     )
     setMobileMenuEntry(null)
   }
@@ -2108,50 +2001,50 @@ export function FilesPanel({
   )
 
   /**
-   * 标签条上右键某个标签时的动作清单（浏览器标签那一套）。作用范围按**标签条的显示顺序**
+   * 标签条上右键某个标签时的动作清单（浏览器标签那一套）。作用范围按**混合标签条的显示顺序**
    * 算：「右侧 / 左侧」指这个标签右边 / 左边的那一批，「关闭其他」则是除它以外的全部。
-   * 没有可关的项时对应项置灰（如右键的就是最后一个标签，「关闭右侧」无从关起）。
+   * 文件标签仍经过关闭守卫；diff 是虚拟标签，不需要确认。
    */
-  const tabMenuActionsOf = (path: string): MenuAction[] => {
-    const idx = tabs.findIndex((t) => t.path === path)
+  const tabMenuActionsOf = (key: string): MenuAction[] => {
+    const all = orderedPanelTabs.map((entry) => entry.key)
+    const idx = all.indexOf(key)
     if (idx < 0) return []
-    const all = tabs.map((t) => t.path)
     const right = all.slice(idx + 1)
     const left = all.slice(0, idx)
-    const others = all.filter((p) => p !== path)
+    const others = all.filter((item) => item !== key)
     return [
-      { label: t('关闭'), icon: <X className="size-4" />, run: () => requestCloseTabs([path]) },
+      { label: t('关闭'), icon: <X className="size-4" />, run: () => void requestClosePanelTabs([key]) },
       {
         label: t('关闭其他'),
         icon: <ListX className="size-4" />,
         disabled: others.length === 0,
-        run: () => requestCloseTabs(others)
+        run: () => void requestClosePanelTabs(others)
       },
       {
         label: t('关闭右侧'),
         icon: <PanelRightClose className="size-4" />,
         disabled: right.length === 0,
-        run: () => requestCloseTabs(right)
+        run: () => void requestClosePanelTabs(right)
       },
       {
         label: t('关闭左侧'),
         icon: <PanelLeftClose className="size-4" />,
         disabled: left.length === 0,
-        run: () => requestCloseTabs(left)
+        run: () => void requestClosePanelTabs(left)
       },
       {
         label: t('关闭全部'),
         icon: <SquareX className="size-4" />,
         disabled: all.length === 0,
-        run: () => requestCloseTabs(all)
+        run: () => void requestClosePanelTabs(all)
       }
     ]
   }
 
   /** 标签的桌面右键菜单项（关闭相关的 5 项，「关闭全部」前加一条分隔线） */
-  const tabMenuItems = (path: string): ReactNode => (
+  const tabMenuItems = (key: string): ReactNode => (
     <>
-      {tabMenuActionsOf(path).map((a, i) => (
+      {tabMenuActionsOf(key).map((a, i) => (
         <Fragment key={a.label}>
           {i === 4 && <ContextMenuSeparator />}
           <ContextMenuItem
@@ -2324,6 +2217,18 @@ export function FilesPanel({
       <RefreshCw className="size-3.5" />
     </RowActionButton>
   )
+
+  /** Git diff 的刷新动作也挂在对应标签上，和文件标签的磁盘刷新保持一致。 */
+  const reloadDiffAction = (tab: DiffTab): ReactNode => (
+    <RowActionButton
+      title={t('刷新 diff')}
+      aria-label={t('刷新 diff')}
+      disabled={tab.loading}
+      onClick={() => void loadGitDiff(tab)}
+    >
+      <RefreshCw className={cn('size-3.5', tab.loading && 'animate-spin')} />
+    </RowActionButton>
+  )
   /**
    * 「预览 / 编辑源码」切换钮：挂在**标签条右侧动作区的最右端**（`保存` 之后）。
    *
@@ -2388,13 +2293,7 @@ export function FilesPanel({
   const panelError = loadError ?? activeTab?.error ?? null
 
   /** 命名弹窗的文案：新建（文件 / 文件夹）与重命名共用同一套 UI，这里按 mode 定标题 / 说明 / 占位 / 按钮 */
-  const nameDialogText = ((): {
-    title: string
-    description: string
-    placeholder: string
-    confirm: string
-    busy: string
-  } | null => {
+  const nameDialogText = ((): NameDialogText | null => {
     if (nameDialog === null) return null
     if (nameDialog.mode === 'rename') {
       const base = nameDialog.path.split('/').pop() ?? nameDialog.path
@@ -2545,6 +2444,21 @@ export function FilesPanel({
     </div>
   )
 
+  type OrderedPanelTab =
+    | { type: 'file'; key: string; tab: OpenTab }
+    | { type: 'diff'; key: string; tab: DiffTab }
+  const orderedPanelTabs = tabOrder.reduce<OrderedPanelTab[]>((ordered, key) => {
+    const file = tabs.find((tab) => rightFileTabKey(tab.path) === key)
+    if (file) {
+      ordered.push({ type: 'file', key, tab: file })
+      return ordered
+    }
+    const diff = diffTabs.find((tab) => tab.key === key)
+    if (diff) ordered.push({ type: 'diff', key, tab: diff })
+    return ordered
+  }, [])
+  const gitAvailable = !!app && !!workspaceId && !!panelKey && !source && !!onModeChange
+
   return (
     <SplitFrame
       split={split}
@@ -2579,96 +2493,150 @@ export function FilesPanel({
         }
         style={split ? { overflow: 'hidden' } : singlePane ? undefined : { width: treePaneWidth }}
       >
-        <div className="flex h-9 shrink-0 items-center gap-1.5 px-2.5">
-          <Files className="size-4 shrink-0 text-muted-foreground" />
-          <span className="min-w-0 flex-1 truncate text-sm font-medium" title={rootLabel}>
-            {rootLabel}
-          </span>
-          {/* 桌面端头部只留两颗常驻开关：新建 / 上传 / 粘贴到根目录都收进了**文件树空白处的
-              右键菜单**（见 `blankMenuActions`）—— 根目录没有条目可右键这件事，改由「列表下方
-              那块留白」承担，头部不必再挤一排按钮。
-              手机端没有右键，这几个入口仍留在头部。 */}
-          {isMobile && (
-            <MobileFilesHeaderActions
-              canUpload={canUpload}
-              uploading={uploading.length > 0}
-              uploadTarget={currentPasteTarget()}
-              clipboardLabel={
-                clipboard
-                  ? clipboard.entries.length > 1
-                    ? t('{count} 项', { count: clipboard.entries.length })
-                    : clipboard.entries[0].name
-                  : null
-              }
-              onNewFile={() => handleNewEntry('file', '')}
-              onNewFolder={() => handleNewEntry('folder', '')}
-              onUpload={() => openUploadPicker(currentPasteTarget())}
-              onPasteRoot={() => requestPaste('')}
+        {gitAvailable && (
+          <div className="flex h-9 shrink-0 items-center px-2">
+            <Segmented
+              ariaLabel={t('文件与源码管理')}
+              options={[
+                {
+                  value: 'files',
+                  title: t('文件'),
+                  label: (
+                    <>
+                      <Files className="size-3.5" />
+                      {t('文件')}
+                    </>
+                  )
+                },
+                {
+                  value: 'git',
+                  title: t('源码管理'),
+                  label: (
+                    <>
+                      <GitBranch className="size-3.5" />
+                      {t('源码管理')}
+                    </>
+                  )
+                }
+              ]}
+              value={mode}
+              onChange={changeMode}
+              size="sm"
+              fullWidth
             />
-          )}
-          {/* 「显示被忽略的文件」：工作区来源独有（见 canShowIgnored）。
-              默认藏起来的是内置黑名单（node_modules / .git / dist / vendor / .env…）
-              与工作区 .gitignore 命中的条目 —— Agent 的工具该看不见它们，但人要看得见 */}
-          {canShowIgnored && (
-            <IconTip
-              label={
-                showIgnored
-                  ? t('隐藏被忽略的文件（.gitignore / 默认规则）')
-                  : t('显示被忽略的文件（.gitignore / 默认规则）')
-              }
-            >
+          </div>
+        )}
+        {mode === 'files' && (
+          <div
+            className={cn(
+              'flex shrink-0 items-center justify-between gap-2 px-2',
+              gitAvailable ? 'h-8' : 'h-9'
+            )}
+          >
+            <span className="min-w-0 flex-1 truncate text-sm font-medium" title={rootLabel}>
+              {rootLabel}
+            </span>
+            <div className="flex shrink-0 items-center gap-1.5">
+            {/* 桌面端头部只留两颗常驻开关：新建 / 上传 / 粘贴到根目录都收进了**文件树空白处的
+                右键菜单**（见 `blankMenuActions`）—— 根目录没有条目可右键这件事，改由「列表下方
+                那块留白」承担，头部不必再挤一排按钮。
+                手机端没有右键，这几个入口仍留在头部。 */}
+            {isMobile && (
+              <MobileFilesHeaderActions
+                canUpload={canUpload}
+                uploading={uploading.length > 0}
+                uploadTarget={currentPasteTarget()}
+                clipboardLabel={
+                  clipboard
+                    ? clipboard.entries.length > 1
+                      ? t('{count} 项', { count: clipboard.entries.length })
+                      : clipboard.entries[0].name
+                    : null
+                }
+                onNewFile={() => handleNewEntry('file', '')}
+                onNewFolder={() => handleNewEntry('folder', '')}
+                onUpload={() => openUploadPicker(currentPasteTarget())}
+                onPasteRoot={() => requestPaste('')}
+              />
+            )}
+            {/* 「显示被忽略的文件」：工作区来源独有（见 canShowIgnored）。
+                默认藏起来的是内置黑名单（node_modules / .git / dist / vendor / .env…）
+                与工作区 .gitignore 命中的条目 —— Agent 的工具该看不见它们，但人要看得见 */}
+            {canShowIgnored && (
+              <IconTip
+                label={
+                  showIgnored
+                    ? t('隐藏被忽略的文件（.gitignore / 默认规则）')
+                    : t('显示被忽略的文件（.gitignore / 默认规则）')
+                }
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className={cn(
+                    'size-6 shrink-0 p-0',
+                    showIgnored ? 'text-primary' : 'text-muted-foreground'
+                  )}
+                  aria-label={t("显示被忽略的文件")}
+                  aria-pressed={showIgnored}
+                  onClick={() => setShowIgnored(!showIgnored)}
+                >
+                  {showIgnored ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+                </Button>
+              </IconTip>
+            )}
+            {/* 折叠所有 / 展开折叠前的树：一次收起全部分支，再点一次回到折叠前那个展开态。
+                没展开任何子目录时置灰（点了也没反应）；折叠后高亮，形态一眼可辨 */}
+            <IconTip label={collapsedFrom ? t('展开折叠前的目录') : t('折叠所有目录')}>
               <Button
                 size="sm"
                 variant="ghost"
                 className={cn(
                   'size-6 shrink-0 p-0',
-                  showIgnored ? 'text-primary' : 'text-muted-foreground'
+                  collapsedFrom ? 'text-primary' : 'text-muted-foreground'
                 )}
-                aria-label={t("显示被忽略的文件")}
-                aria-pressed={showIgnored}
-                onClick={() => setShowIgnored(!showIgnored)}
+                aria-label={collapsedFrom ? t('展开折叠前的目录') : t('折叠所有目录')}
+                aria-pressed={collapsedFrom !== null}
+                disabled={!collapsedFrom && !hasOpenDirs}
+                onClick={collapsedFrom ? restoreCollapsedDirs : collapseAllDirs}
               >
-                {showIgnored ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+                {collapsedFrom ? (
+                  <ChevronsUpDown className="size-3.5" />
+                ) : (
+                  <ChevronsDownUp className="size-3.5" />
+                )}
               </Button>
             </IconTip>
-          )}
-          {/* 折叠所有 / 展开折叠前的树：一次收起全部分支，再点一次回到折叠前那个展开态。
-              没展开任何子目录时置灰（点了也没反应）；折叠后高亮，形态一眼可辨 */}
-          <IconTip label={collapsedFrom ? t('展开折叠前的目录') : t('折叠所有目录')}>
-            <Button
-              size="sm"
-              variant="ghost"
-              className={cn(
-                'size-6 shrink-0 p-0',
-                collapsedFrom ? 'text-primary' : 'text-muted-foreground'
-              )}
-              aria-label={collapsedFrom ? t('展开折叠前的目录') : t('折叠所有目录')}
-              aria-pressed={collapsedFrom !== null}
-              disabled={!collapsedFrom && !hasOpenDirs}
-              onClick={collapsedFrom ? restoreCollapsedDirs : collapseAllDirs}
-            >
-              {collapsedFrom ? (
-                <ChevronsUpDown className="size-3.5" />
-              ) : (
-                <ChevronsDownUp className="size-3.5" />
-              )}
-            </Button>
-          </IconTip>
-          <IconTip label={t("刷新文件树")}>
-            <Button size="sm" variant="ghost" className="size-6 shrink-0 p-0 text-muted-foreground" aria-label={t("刷新文件树")} onClick={refresh}>
-              <RefreshCw className="size-3.5" />
-            </Button>
-          </IconTip>
-        </div>
+            <IconTip label={t("刷新文件树")}>
+              <Button size="sm" variant="ghost" className="size-6 shrink-0 p-0 text-muted-foreground" aria-label={t("刷新文件树")} onClick={refresh}>
+                <RefreshCw className="size-3.5" />
+              </Button>
+            </IconTip>
+            </div>
+          </div>
+        )}
         {/* 树的快捷键挂在列表这一层（不是整个面板）：右 Monaco 的文本编辑快捷键不能被吞掉。
             桌面端整块再套一层 ContextMenu：右击空白处弹「粘贴 / 复制当前路径 / 新建 / 上传 / 刷新」 */}
-        {isMobile ? (
+        {mode === 'files' && (isMobile ? (
           treeList
         ) : (
           <ContextMenu>
             <ContextMenuTrigger asChild>{treeList}</ContextMenuTrigger>
             <ContextMenuContent className="w-48">{blankMenuItems}</ContextMenuContent>
           </ContextMenu>
+        ))}
+        {gitMounted && app && workspaceId && panelKey && (
+          <div className={cn('flex min-h-0 flex-1 flex-col', mode !== 'git' && 'hidden')}>
+            <GitPanel
+              app={app}
+              workspaceId={workspaceId}
+              visible={visible && mode === 'git'}
+              tabKey={panelKey}
+              onChanges={onGitChanges}
+              onOpenDiff={openGitDiff}
+              onDiffsRefresh={refreshOpenGitDiffs}
+            />
+          </div>
         )}
       </PaneShell>
 
@@ -2721,39 +2689,58 @@ export function FilesPanel({
             ref={tabStripRef}
             className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto no-scrollbar"
           >
-            {tabs.length === 0 ? (
+            {orderedPanelTabs.length === 0 ? (
               <span className="flex items-center px-2.5 text-sm text-muted-foreground">{t("未打开文件")}</span>
             ) : (
-              tabs.map((t) => {
-                const isActive = t.path === activeId
-                const tabDirty = t.content !== t.savedContent
-                const name = t.path.split('/').pop() ?? t.path
+              orderedPanelTabs.map((entry) => {
+                if (entry.type === 'diff') {
+                  const diffTab = entry.tab
+                  const name = diffTab.path.split('/').pop() ?? diffTab.path
+                  const scope = diffTab.staged ? t('已暂存') : t('未暂存')
+                  return (
+                    <ContextMenu key={diffTab.key}>
+                      <ContextMenuTrigger asChild>
+                        <PanelTab
+                          ref={(el: HTMLDivElement | null) => {
+                            if (el) tabElRefs.current.set(diffTab.key, el)
+                            else tabElRefs.current.delete(diffTab.key)
+                          }}
+                          active={activeDiffKey === diffTab.key}
+                          label={`${name} · ${scope}`}
+                          title={`${diffTab.path} · ${scope}`}
+                          actions={reloadDiffAction(diffTab)}
+                          icon={<GitBranch className="size-3.5" />}
+                          onActivate={() => {
+                            activateDiff(diffTab.key)
+                            setPane('file')
+                          }}
+                          onClose={() => closeDiffTab(diffTab.key)}
+                          onAuxClick={(event) => {
+                            if (event.button === 1) closeDiffTab(diffTab.key)
+                          }}
+                          className="max-w-52 min-w-24 shrink-0"
+                        />
+                      </ContextMenuTrigger>
+                      <ContextMenuContent className="w-44">{tabMenuItems(diffTab.key)}</ContextMenuContent>
+                    </ContextMenu>
+                  )
+                }
+                const fileTab = entry.tab
+                const isActive = fileTab.path === activeId
+                const tabDirty = fileTab.content !== fileTab.savedContent
+                const name = fileTab.path.split('/').pop() ?? fileTab.path
                 return (
-                  // 右键菜单裹住**这一个**标签：关闭 / 关闭其他 / 关闭左右两侧 / 关闭全部
-                  // （手机端 Radix 的长按也能触出来，无需另做一套）
-                  <ContextMenu key={t.path}>
+                  <ContextMenu key={entry.key}>
                     <ContextMenuTrigger asChild>
-                      {/*
-                        标签本体是**共享的** `shared/components/PanelTab`（主区域 ViewPanel /
-                        对话右侧 SidePanel 同一颗）：底色 / 圆角 / hover 浮现的关闭 × 全部收在那里，
-                        文件标签才和别处肉眼上是同一套控件。
-
-                        「从磁盘重新读取」挂在 × 的**左侧**（`actions` 槽位，与 × 同一层浮层、
-                        同一套 hover 显隐）。每颗标签都有它、点哪颗刷新哪颗 —— 不是「只有激活
-                        标签才给」：那样标签宽度会随「谁被激活」变，和 PanelTab 文件头里
-                        「宽度稳定」那条是同一个道理。
-                      */}
                       <PanelTab
                         ref={(el: HTMLDivElement | null) => {
-                          if (el) tabElRefs.current.set(t.path, el)
-                          else tabElRefs.current.delete(t.path)
+                          if (el) tabElRefs.current.set(entry.key, el)
+                          else tabElRefs.current.delete(entry.key)
                         }}
                         active={isActive}
                         label={name}
-                        title={t.path}
-                        actions={reloadAction(t.path)}
-                        // 未保存时在文件图标右上角叠一个小黄点。图标包一层 span 是为了放点，
-                        // 顺带在本地把 svg 压到 size-3.5（与 ViewPanel 图标同尺寸）
+                        title={fileTab.path}
+                        actions={reloadAction(fileTab.path)}
                         icon={
                           <span className="relative inline-flex [&>svg]:size-3.5">
                             <FileTypeIcon name={name} />
@@ -2762,17 +2749,15 @@ export function FilesPanel({
                             )}
                           </span>
                         }
-                        onActivate={() => setActiveId(t.path)}
-                        onClose={() => requestCloseTab(t.path)}
-                        // 鼠标中键关闭：和浏览器标签一致（挂在根节点上，PanelTab 把 rest 透到根 div）
-                        onAuxClick={(e) => {
-                          if (e.button === 1) requestCloseTab(t.path)
+                        onActivate={() => activateFile(fileTab.path)}
+                        onClose={() => requestCloseTab(fileTab.path)}
+                        onAuxClick={(event) => {
+                          if (event.button === 1) requestCloseTab(fileTab.path)
                         }}
-                        // 高度（h-7）与图标尺寸已由 PanelTab 统一，这里只给主区域同款宽度上限
                         className="max-w-52 min-w-24 shrink-0"
                       />
                     </ContextMenuTrigger>
-                    <ContextMenuContent className="w-44">{tabMenuItems(t.path)}</ContextMenuContent>
+                    <ContextMenuContent className="w-44">{tabMenuItems(entry.key)}</ContextMenuContent>
                   </ContextMenu>
                 )
               })
@@ -2841,7 +2826,7 @@ export function FilesPanel({
                 </>
               )}
               {editable && activeTab.viewMode === 'edit' && (
-                <IconTip label={t("保存（Ctrl+S）")}>
+                <IconTip label={isMobile ? t('保存') : t('保存（Ctrl+S）')}>
                   <Button
                     size="sm"
                     variant="ghost"
@@ -2864,143 +2849,19 @@ export function FilesPanel({
           )}
         </div>
 
-        <div className="min-h-0 flex-1 overflow-auto">
-          {panelError ? (
-            <div className="flex h-full items-center justify-center px-6">
-              <div className="max-w-md text-center text-sm text-foreground">
-                <FileIcon className="mx-auto mb-2 size-8 opacity-30" />
-                {panelError}
-              </div>
-            </div>
-          ) : activeTab && activeTab.kind === 'binary' ? (
-            <div className="flex h-full items-center justify-center px-6">
-              <div className="text-center text-sm text-foreground">
-                <FileIcon className="mx-auto mb-2 size-8 opacity-30" />
-                {t("该文件类型不支持预览")}
-              </div>
-            </div>
-          ) : activeTab && activeTab.kind === 'markdown' && activeTab.viewMode === 'preview' ? (
-            // md 预览：正文已在 read 阶段拿到（与源码同一份内容，无二次请求）
-            activeTab.loading ? (
-              <div className="flex h-full items-center justify-center">
-                <Loader2 className="size-6 animate-spin text-muted-foreground" />
-              </div>
-            ) : (
-              <div className="h-full overflow-auto">
-                <FileMarkdownPreview markdown={activeTab.content} />
-              </div>
-            )
-          ) : activeTab && activeTab.kind === 'html' && activeTab.viewMode === 'preview' ? (
-            // html 预览：沙箱 iframe + srcdoc。相对资源由预览组件自己取字节内联成
-            // data: URL（srcdoc 的 base URL 是宿主的，见 FileHtmlPreview 文件头）
-            activeTab.loading ? (
-              <div className="flex h-full items-center justify-center">
-                <Loader2 className="size-6 animate-spin text-muted-foreground" />
-              </div>
-            ) : (
-              <FileHtmlPreview
-                html={activeTab.content}
-                source={fsSource ?? undefined}
-                path={activeTab.path}
-              />
-            )
-          ) : activeTab && showPreview ? (
-            <div className="flex h-full items-center justify-center overflow-auto p-4">
-              {activeTab.mediaLoading ? (
-                <Loader2 className="size-6 animate-spin text-muted-foreground" />
-              ) : activeTab.kind === 'image' || activeTab.kind === 'svg' ? (
-                activeTab.mediaUrl ? (
-                  // 点击开全屏查看器（缩放 / 旋转 / 平移，工具条在底部；见 ImageViewer）
-                  <img
-                    src={activeTab.mediaUrl}
-                    alt={fileName ?? 'preview'}
-                    onClick={() => setImageZoomSrc(activeTab.mediaUrl ?? null)}
-                    className="max-h-full max-w-full cursor-zoom-in object-contain"
-                  />
-                ) : (
-                  <p className="text-sm text-muted-foreground">{t("预览加载失败")}</p>
-                )
-              ) : activeTab.kind === 'video' ? (
-                activeTab.mediaUrl ? (
-                  <video src={activeTab.mediaUrl} controls className="max-h-full max-w-full" style={{ maxWidth: '100%' }} />
-                ) : (
-                  <p className="text-sm text-muted-foreground">{t("预览加载失败")}</p>
-                )
-              ) : activeTab.mediaUrl ? (
-                <audio src={activeTab.mediaUrl} controls className="w-96" />
-              ) : (
-                <p className="text-sm text-muted-foreground">{t("预览加载失败")}</p>
-              )}
-            </div>
-          ) : activeTab ? (
-            /*
-              这个分支现在只负责「右侧这一块显示什么」：Markdown / HTML / SVG 走文件自带的
-              预览组件，其余走 Monaco 编辑区。
-
-              **两个控件都已经搬去上面那条标签条**（预览/编辑切换在最右端、刷新在每颗标签的
-              × 左侧）—— 这里一条工具栏都不再挂。此前它们挂在 Monaco 的 `toolbar` / `actions`
-              槽位里，问题在于**预览态下 Monaco 整块不挂**：切换钮只能靠一条补出来的窄条勉强
-              留住，刷新则彻底消失。而「Agent 刚改完盘上的文件、我想把新内容拉回来」恰恰在
-              预览 markdown 时最需要 —— 现在它就在标签上，两种模式下都在。
-            */
-            <MonacoEditor
-              value={activeTab.loading ? '' : activeTab.content}
-              onChange={(v) => patchTab(activeTab.path, { content: v })}
-              language={monacoLanguageOf(fileName)}
-              showLanguageSelector
-              showCopyButton
-              showHeader={activeTab.viewMode === 'edit'}
-              wordWrap={wordWrap}
-              lineNumbers={lineNumbers}
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center px-6">
-              <div className="text-center text-sm text-foreground">
-                <Files className="mx-auto mb-2 size-8 opacity-30" />
-                {t("从左侧选择一个文件查看或编辑")}
-              </div>
-            </div>
-          )}
-        </div>
+        <FilesPanelFileBody
+          activeTab={activeTab}
+          diffTab={activeDiff}
+          panelError={panelError}
+          fileName={fileName}
+          showPreview={showPreview}
+          source={fsSource ?? undefined}
+          wordWrap={wordWrap}
+          lineNumbers={lineNumbers}
+          onChange={(content) => activeTab && patchTab(activeTab.path, { content })}
+          onZoom={setImageZoomSrc}
+        />
       </PaneShell>
-
-      {/* 手机菜单（Sheet 从底部弹出） */}
-      <Sheet
-        open={mobileMenuEntry !== null}
-        onOpenChange={(open) => {
-          if (!open) setMobileMenuEntry(null)
-        }}
-      >
-        <SheetContent side="bottom">
-          <SheetHeader>
-            <SheetTitle className="text-left">
-              {mobileMenuEntry?.name}
-              <span className="ml-2 text-xs text-muted-foreground">
-                {mobileMenuEntry?.type === 'dir' ? t('文件夹') : t('文件')}
-              </span>
-            </SheetTitle>
-          </SheetHeader>
-          <div className="flex flex-col gap-1 pb-2">
-            {mobileMenuEntry &&
-              menuActionsOf(mobileMenuEntry).map((a) => (
-                <button
-                  key={a.label}
-                  type="button"
-                  disabled={a.disabled}
-                  className={cn(
-                    'flex items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-accent',
-                    'disabled:pointer-events-none disabled:opacity-50',
-                    a.danger && 'text-destructive hover:bg-destructive/10'
-                  )}
-                  onClick={a.run}
-                >
-                  {a.icon}
-                  {a.label}
-                </button>
-              ))}
-          </div>
-        </SheetContent>
-      </Sheet>
 
       {/* 上传：隐藏的本机选文件 input（仅 web 工作区渲染）。常挂在树上、靠 ref 触发 ——
           用「每次点按钮新建一个 input」的写法会在 Safari 上掉权限（用户手势与 click 之间
@@ -3021,210 +2882,45 @@ export function FilesPanel({
         />
       )}
 
-      {/* 同名冲突确认：绝不静默覆盖 —— 列清楚哪些文件会被盖掉，用户点头才带 overwrite 重传 */}
-      <Dialog
-        open={uploadConflict !== null}
-        onOpenChange={(open) => {
-          if (!open) setUploadConflict(null)
+      <FilesPanelOverlays
+        mobileMenuEntry={mobileMenuEntry}
+        menuActionsOf={menuActionsOf}
+        onCloseMobileMenu={() => setMobileMenuEntry(null)}
+        uploadConflict={uploadConflict}
+        onCloseUploadConflict={() => setUploadConflict(null)}
+        uploading={uploading}
+        onConfirmOverwrite={() => {
+          const pending = uploadConflict
+          if (!pending) return
+          setUploadConflict(null)
+          void runUpload(pending.dir, pending.files, true)
         }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t("覆盖同名文件？")}</DialogTitle>
-            <DialogDescription>
-              {uploadConflict
-                ? t("{files} 在 {dir} 下已经存在，继续会覆盖它们原来的内容（不可恢复）。", {
-                    files: uploadConflict.files.map((f) => `「${f.name}」`).join(t("、")),
-                    dir: uploadConflict.dir ? `「${uploadConflict.dir}」` : t("根目录"),
-                  })
-                : ''}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button data-dialog-dismiss="" autoFocus size="sm" variant="ghost" onClick={() => setUploadConflict(null)}>
-              {t("取消")}
-            </Button>
-            <Button
-              size="sm"
-              variant="destructive"
-              disabled={uploading.length > 0}
-              onClick={() => {
-                const pending = uploadConflict
-                if (!pending) return
-                setUploadConflict(null)
-                void runUpload(pending.dir, pending.files, true)
-              }}
-            >
-              {t("覆盖并上传")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* 删除确认弹窗（多选时列出前几个名字） */}
-      <Dialog
-        open={deletingEntries.length > 0}
-        onOpenChange={(open) => {
-          if (!open) setDeletingEntries([])
+        deletingEntries={deletingEntries}
+        onCloseDelete={() => setDeletingEntries([])}
+        onConfirmDelete={() => void confirmDelete()}
+        pastingDir={pastingDir}
+        clipboard={clipboard}
+        parentDirOf={parentDirOf}
+        onClosePaste={() => setPastingDir(null)}
+        onConfirmPaste={() => void confirmPaste()}
+        nameDialogText={nameDialogText}
+        nameInput={nameInput}
+        onNameInputChange={setNameInput}
+        nameBusy={nameBusy}
+        onCloseNameDialog={() => {
+          setNameDialog(null)
+          setNameInput('')
         }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {deletingEntries.length > 1
-                ? t("删除这 {count} 项？", { count: deletingEntries.length })
-                : t("删除{kind}？", { kind: deletingEntries[0]?.type === 'dir' ? t('文件夹') : t('文件') })}
-            </DialogTitle>
-            <DialogDescription>
-              {deletingEntries.length > 1
-                ? t("{names}{more}（含文件夹里的全部子内容）将被永久删除，无法恢复。", {
-                    names: deletingEntries.slice(0, 5).map((e) => `「${e.name}」`).join(t("、")),
-                    more: deletingEntries.length > 5 ? t(" 等 {count} 项", { count: deletingEntries.length }) : "",
-                  })
-                : t("「{name}」{suffix}将被永久删除，无法恢复。", {
-                    name: deletingEntries[0]?.name ?? "",
-                    suffix: deletingEntries[0]?.type === 'dir' ? t('及其全部子内容') : '',
-                  })}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button data-dialog-dismiss="" autoFocus size="sm" variant="ghost" onClick={() => setDeletingEntries([])}>
-              {t("取消")}
-            </Button>
-            <Button size="sm" variant="destructive" onClick={() => void confirmDelete()}>
-              {t("删除")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* 粘贴确认弹窗：粘贴会往工作区写（复制）或搬走（剪切）东西，先问一句 */}
-      <Dialog
-        open={pastingDir !== null}
-        onOpenChange={(open) => {
-          if (!open) setPastingDir(null)
+        onConfirmName={() => void confirmName()}
+        pendingReload={pendingReload}
+        onCloseReload={() => setPendingReload(null)}
+        onConfirmReload={(path) => {
+          setPendingReload(null)
+          void reloadTab(path)
         }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{clipboard?.mode === 'cut' ? t('移动到这里？') : t('粘贴到这里？')}</DialogTitle>
-            <DialogDescription>
-              {clipboard
-                ? t("把 {items}{action}「{dir}」。{note}", {
-                    items: clipboard.entries.length > 1
-                      ? t("{count} 项（{names}{more}）", {
-                          count: clipboard.entries.length,
-                          names: clipboard.entries.slice(0, 3).map((e) => `「${e.name}」`).join(t("、")),
-                          more: clipboard.entries.length > 3 ? t(" 等") : "",
-                        })
-                      : `「${clipboard.entries[0].name}」`,
-                    action: clipboard.mode === 'cut' ? t('移动到') : t('复制到'),
-                    dir: pastingDir || '/',
-                    note: clipboard.mode === 'cut' &&
-                      clipboard.entries.every((e) => pastingDir === parentDirOf(e.path))
-                      ? t('（它们已经在这个目录里了）')
-                      : '',
-                  })
-                : ''}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button data-dialog-dismiss="" size="sm" variant="ghost" onClick={() => setPastingDir(null)}>
-              {t("取消")}
-            </Button>
-            <Button size="sm" onClick={() => void confirmPaste()}>
-              {clipboard?.mode === 'cut' ? t('移动') : t('粘贴')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* 命名弹窗：「新建文件 / 文件夹」与「重命名」共用一套 UI，按 nameDialog.mode / kind 区分 */}
-      <Dialog
-        open={nameDialog !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setNameDialog(null)
-            setNameInput('')
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{nameDialogText?.title}</DialogTitle>
-            <DialogDescription>{nameDialogText?.description}</DialogDescription>
-          </DialogHeader>
-          <div className="py-2">
-            <Input
-              variant="muted"
-              value={nameInput}
-              onChange={(e) => setNameInput(e.target.value)}
-              placeholder={nameDialogText?.placeholder}
-              autoFocus
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void confirmName()
-              }}
-            />
-          </div>
-          <DialogFooter>
-            <Button data-dialog-dismiss=""
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setNameDialog(null)
-                setNameInput('')
-              }}
-            >
-              {t("取消")}
-            </Button>
-            <Button size="sm" onClick={() => void confirmName()} disabled={nameBusy || !nameInput.trim()}>
-              {nameBusy ? nameDialogText?.busy : nameDialogText?.confirm}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* 刷新脏标签确认：拉磁盘上的最新内容会覆盖本地未保存的改动 */}
-      <Dialog
-        open={pendingReload !== null}
-        onOpenChange={(open) => {
-          if (!open) setPendingReload(null)
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t("刷新未保存的文件？")}</DialogTitle>
-            <DialogDescription>
-              {t("「{name}」有未保存的改动，刷新会用磁盘上的最新内容覆盖它们。", {
-                name: pendingReload?.split('/').pop() ?? '',
-              })}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button data-dialog-dismiss="" autoFocus size="sm" variant="ghost" onClick={() => setPendingReload(null)}>
-              {t("取消")}
-            </Button>
-            <Button
-              size="sm"
-              variant="destructive"
-              onClick={() => {
-                const path = pendingReload
-                setPendingReload(null)
-                if (path) void reloadTab(path)
-              }}
-            >
-              {t("丢弃并刷新")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* 图片全屏查看器（portal 到 body，放这儿只为挂在组件树里） */}
-      <ImageViewer
-        src={imageZoomSrc ?? ''}
-        alt={fileName ?? 'preview'}
-        open={imageZoomSrc !== null}
-        onOpenChange={(open) => {
+        imageZoomSrc={imageZoomSrc}
+        fileName={fileName}
+        onImageZoomOpenChange={(open) => {
           if (!open) setImageZoomSrc(null)
         }}
       />

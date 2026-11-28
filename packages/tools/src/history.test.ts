@@ -5,7 +5,7 @@ import type { AgentChatMessage } from '@fizz/contracts/types'
 
 const history: AgentChatMessage[] = [{ id: 'a1', role: 'assistant', createdAt: 1, parts: [
   { type: 'text', text: '修改完成，未验证' },
-  { type: 'tool-call', toolCallId: 't1', toolName: 'bash', input: { command: 'typecheck' },
+  { type: 'tool-call', toolCallId: 't1', toolName: 'shell', input: { command: 'typecheck' },
     output: `${'x'.repeat(9000)}TS2322` }
 ] }]
 const options = { toolCallId: 'test', messages: [], context: {} }
@@ -13,7 +13,7 @@ const options = { toolCallId: 'test', messages: [], context: {} }
 describe('会话证据工具', () => {
   it('长命令日志保留中段错误与尾部退出状态，且不超预算', () => {
     const text = `${'start\n'.repeat(1000)}error TS2322: incompatible type\n${'noise\n'.repeat(1000)}[exit code: 1]`
-    const summary = summarizeToolEvidence('bash', text, 2000)
+    const summary = summarizeToolEvidence('shell', text, 2000)
     expect(summary).toContain('error TS2322')
     expect(summary).toContain('[exit code: 1]')
     expect(summary.length).toBeLessThanOrEqual(2000)

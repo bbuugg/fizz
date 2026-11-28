@@ -82,7 +82,6 @@ function PickerPanel({
   header,
   footer,
   className,
-  onOpenAutoFocus,
   ...props
 }: React.ComponentProps<typeof PopoverContent> & {
   /** 顶部固定区（二级的「返回 + 标题」这类）；不传 = 没有这一块 */
@@ -101,15 +100,13 @@ function PickerPanel({
       {...props}
       {...glass.handlers}
       ref={attachPanel}
-      // 面板里第一颗就是搜索框（自己 `autoFocus`）；让 Radix 的 FocusScope 别再抢一次焦点
-      onOpenAutoFocus={(event) => {
-        event.preventDefault()
-        onOpenAutoFocus?.(event)
-      }}
+      // 面板里第一颗就是搜索框（自己 `autoFocus`）；别让浮层再抢一次焦点。
+      // Base UI 把 Radix 的 `onOpenAutoFocus` 换成了 `initialFocus`，`false` = 不动焦点。
+      initialFocus={false}
       className={cn(
         // 与弹窗 / 命令面板同一套液态玻璃外壳（见 `liquid-glass.tsx`）。
         // `ring-0` 顶掉 `PopoverContent` 自带的淡 ring —— 勾边只留玻璃那一圈，不要两层。
-        'flex max-h-[min(26rem,calc(var(--radix-popper-available-height,calc(100dvh_-_3rem))_-_var(--overlay-top,0px)))] w-72 flex-col gap-0 overflow-hidden rounded-xl p-0 ring-0',
+        'flex max-h-[min(26rem,calc(var(--available-height,calc(100dvh_-_3rem))_-_var(--overlay-top,0px)))] w-72 flex-col gap-0 overflow-hidden rounded-xl p-0 ring-0',
         glass.className,
         className
       )}

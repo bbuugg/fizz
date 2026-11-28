@@ -77,7 +77,7 @@ export function AcpPermissionPill({ app }: { app: AgentApp }) {
       {/* 与内置权限 pill 同一个**富面板**形状（header + 两行选项，见 packages/ui 的
           `SelectItem`）：两颗 pill 表达的是同一件事（放得多宽），长得不一样会让人以为是两套机制 */}
       <SelectContent
-        position="popper"
+        alignItemWithTrigger={false}
         side="top"
         align="start"
         sideOffset={6}

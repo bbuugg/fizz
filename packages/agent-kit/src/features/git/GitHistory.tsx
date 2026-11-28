@@ -79,14 +79,8 @@ function CommitDetail({ detail }: { detail: GitCommitDiffResult }) {
   const t = useT()
   /** 这次提交里正在看哪个文件的 diff */
   const [openPath, setOpenPath] = useState<string | null>(null)
-  // 空提交 / 纯 merge：git 不给 diff。明说「没有文件改动」，别渲染一个空区让人以为加载失败
-  if (detail.files.length === 0) {
-    return (
-      <div className="px-2 py-1.5 text-xs text-muted-foreground">
-        {t('这次提交没有文件改动（空提交，或合并提交默认不带 diff）。')}
-      </div>
-    )
-  }
+  // 空提交 / 纯 merge：git 不给 diff。组内没有东西就什么都不画（不要再补一句「没有文件改动」）
+  if (detail.files.length === 0) return null
   /*
    * 文件清单与 diff 段按路径对上：`splitDiffByFile` 的 path 取自 `diff --git a/x b/x`
    * （rename 时是 `-M` 归一化之后的新路径），与 `files` 里的 `path` 同源。
@@ -97,7 +91,7 @@ function CommitDetail({ detail }: { detail: GitCommitDiffResult }) {
   return (
     <div className="space-y-1 py-1">
       {/* 文件清单：状态字母 + 路径 + 增删行数。点一行就展开它的 diff */}
-      <div className="space-y-0.5">
+      <div>
         {detail.files.map((f) => {
           const expanded = openPath === f.path
           const label = f.oldPath ? `${f.oldPath} → ${f.path}` : f.path
@@ -112,7 +106,7 @@ function CommitDetail({ detail }: { detail: GitCommitDiffResult }) {
                     : t('查看 {path} 在这次提交里的改动', { path: label })
                 }
                 onClick={() => setOpenPath(expanded ? null : f.path)}
-                className="flex w-full items-center gap-2 rounded py-0.5 pl-7 pr-2 text-left text-xs hover:bg-foreground/5"
+                className="flex w-full items-center gap-1.5 py-1 pl-10 pr-2 text-left text-sm hover:bg-foreground/10"
               >
                 <span className={statusTone(f.status) + ' w-3 shrink-0 text-center font-mono font-semibold'} title={f.status}>
                   {f.status}
@@ -132,20 +126,15 @@ function CommitDetail({ detail }: { detail: GitCommitDiffResult }) {
                 </span>
               </button>
               {expanded && (
-                // pl-12 = 行内 pl-7 + 状态字母 w-3 + gap-2：diff 正文与文件名左对齐
-                <div className="pl-12">
-                  <FileDiffView path={label} hunks={hunksByPath.get(f.path) ?? []} hideHeader />
+                // pl-14 ≈ 文件行 pl-10 + 状态字母 w-3 + gap-1.5：diff 正文与文件名左对齐
+                <div className="pl-14">
+                  <FileDiffView path={label} hunks={hunksByPath.get(f.path) ?? []} hideHeader wrap />
                 </div>
               )}
             </div>
           )
         })}
       </div>
-      {!detail.diff && (
-        <div className="px-2 py-1.5 text-xs text-muted-foreground">
-          {t('这次提交没有可显示的文本改动（可能全是二进制文件或纯 mode 变更）。')}
-        </div>
-      )}
     </div>
   )
 }
@@ -231,20 +220,24 @@ export function GitHistory({
 
   return (
     <div>
-      {/* 标题行 sticky：跟「更改」组同一套 —— 滚到这一段时标题钉在顶部；-mx-1 + px-1 把背景铺满左右 */}
-      <div className="sticky top-0 z-10 -mx-1 bg-background px-1">
+      {/* 标题行 sticky：跟「更改」组同一套 —— 滚到这一段时标题钉在顶部。
+          ⚠️ 不要再用 `-mx-1 + px-1` 铺满底色：整列已经没有左右 padding，负外边距只会让
+          这一行比内容宽 8px，滚动容器上就多出一条横向滚动条 */}
+      <div className="sticky top-0 z-10 bg-background">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-sm font-medium text-muted-foreground hover:bg-foreground/5"
+          className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-sm font-medium text-muted-foreground hover:bg-foreground/10"
         >
           {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
           {t('历史提交')}
         </button>
       </div>
       {open && (
-        <div className="pl-2">
-          {commits.length ? (
+        // 不再给整列 `pl-*`：hover 底色要**贴到面板左缘**（内边距留给行内内容），
+        // 否则灰底左侧会空出一截，和上面「更改」组的行对不齐
+        <div>
+          {commits.length > 0 && (
             <>
               {commits.map((c) => {
               const expanded = openHash === c.hash
@@ -260,23 +253,23 @@ export function GitHistory({
                   */}
                   <ContextMenu>
                     <ContextMenuTrigger asChild>
-                      <div className="flex items-center gap-2 rounded px-2 py-1 text-xs hover:bg-foreground/5">
+                      <div className="flex items-center gap-1.5 py-1 pr-2 text-sm hover:bg-foreground/10">
                         {/* 展开开关：整行只有它一个按钮，点行内其它地方不触发展开（避免误触） */}
                         <button
                           type="button"
                           aria-label={expanded ? t('收起 {short} 的改动', { short: c.short }) : t('查看 {short} 改了什么', { short: c.short })}
                           aria-expanded={expanded}
                           onClick={() => setOpenHash(expanded ? null : c.hash)}
-                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                          className="flex min-w-0 flex-1 items-center gap-1.5 pl-5 text-left"
                         >
                           {expanded ? (
-                            <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+                            <ChevronDown className="size-3.5 shrink-0" />
                           ) : (
-                            <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
+                            <ChevronRight className="size-3.5 shrink-0" />
                           )}
                           <span className="shrink-0 font-mono text-muted-foreground">{c.short}</span>
                           <span
-                            className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap no-scrollbar"
+                            className="min-w-0 flex-1 truncate"
                             title={`${c.subject}\n${c.author} · ${c.date}`}
                           >
                             {c.subject}
@@ -310,11 +303,11 @@ export function GitHistory({
                   </ContextMenu>
                   {expanded &&
                     (loading ? (
-                      <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground">
+                      <div className="flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground">
                         <Loader2 className="size-3.5 animate-spin" /> {t('读取这次提交…')}
                       </div>
                     ) : error ? (
-                      <div className="px-3 py-1.5 text-xs text-destructive">
+                      <div className="px-2 py-1.5 text-sm text-destructive">
                         {t('读取失败：{error}', { error })}
                       </div>
                     ) : detail ? (
@@ -342,8 +335,6 @@ export function GitHistory({
               </div>
             )}
             </>
-          ) : (
-            <div className="px-2 py-1 text-xs text-muted-foreground">{t('还没有提交')}</div>
           )}
         </div>
       )}

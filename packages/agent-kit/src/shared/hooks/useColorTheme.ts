@@ -55,7 +55,6 @@ import {
 } from '@fizz/agent-kit/shared/lib/background-video'
 
 const STORE_KEY = 'fizz.web.colorThemes'
-const LEGACY_KEY = 'fizz.web.colorTheme'
 const STYLE_ID = 'fizz-color-themes'
 const CHANGED_EVENT = 'fizz:color-theme-changed'
 
@@ -528,10 +527,7 @@ function sanitizeValue(spec: ThemeVarSpec, value: string): string {
   return HEX_COLOR.test(value) ? value : ''
 }
 
-function normalizeTheme(
-  value: unknown,
-  legacyBackground?: ThemeBackground | null
-): CustomColorTheme | null {
+function normalizeTheme(value: unknown): CustomColorTheme | null {
   if (!value || typeof value !== 'object') return null
   const raw = value as Partial<CustomColorTheme>
   if (typeof raw.id !== 'string' || !raw.id) return null
@@ -542,9 +538,7 @@ function normalizeTheme(
     radius: typeof raw.radius === 'number' && Number.isFinite(raw.radius) ? raw.radius : 0.875,
     texture: isThemeTexture(raw.texture) ? raw.texture : 'none',
     vars: { light: normalizeVars(vars.light), dark: normalizeVars(vars.dark) },
-    background: normalizeBackground(raw.background) ??
-      legacyBackground ??
-      { ...DEFAULT_THEME_BACKGROUND }
+    background: normalizeBackground(raw.background) ?? { ...DEFAULT_THEME_BACKGROUND }
   }
 }
 
@@ -596,22 +590,9 @@ export function normalizeStore(value: unknown): ColorThemeStore {
   if (!value || typeof value !== 'object') return { ...EMPTY_STORE }
   const raw = value as Partial<ColorThemeStore> & { backgrounds?: unknown }
 
-  // 老版本把背景存在按主题 id 索引的 `backgrounds` 里；现在背景属于主题本身。
-  // 读到就当迁移源：自定义主题搬进 `custom[].background`，内置主题搬进 `overrides`。
-  const legacy: Record<string, ThemeBackground> = {}
-  if (raw.backgrounds && typeof raw.backgrounds === 'object') {
-    for (const [id, config] of Object.entries(raw.backgrounds)) {
-      const normalized = normalizeBackground(config)
-      if (normalized) legacy[id] = normalized
-    }
-  }
-
   const custom = Array.isArray(raw.custom)
     ? raw.custom
-        .map((item) => {
-          const id = item && typeof item === 'object' ? (item as { id?: unknown }).id : undefined
-          return normalizeTheme(item, typeof id === 'string' ? legacy[id] : undefined)
-        })
+        .map(normalizeTheme)
         .filter((theme): theme is CustomColorTheme => theme !== null)
     : []
 
@@ -624,12 +605,6 @@ export function normalizeStore(value: unknown): ColorThemeStore {
       if (override) overrides[id] = override
     }
   }
-  // 老数据里内置主题的背景（新格式已经写过该 id 的以新格式为准）
-  for (const [id, background] of Object.entries(legacy)) {
-    if (!isBuiltinThemeId(id) || overrides[id]) continue
-    overrides[id] = { background }
-  }
-
   const active = typeof raw.active === 'string' ? raw.active : DEFAULT_COLOR_THEME
   return {
     active: isThemeId(active, custom) ? active : DEFAULT_COLOR_THEME,
@@ -642,9 +617,6 @@ export function loadStore(): ColorThemeStore {
   try {
     const stored = localStorage.getItem(STORE_KEY)
     if (stored) return normalizeStore(JSON.parse(stored))
-    // 旧版本只存了 id，读一次迁移过来（写回交给下一次 commit，读路径不落盘）
-    const legacy = localStorage.getItem(LEGACY_KEY)
-    if (legacy && isThemeId(legacy, [])) return { ...EMPTY_STORE, active: legacy }
   } catch {
     /* localStorage 被禁用 / 内容被手改成非 JSON —— 落回默认，不阻塞启动 */
   }
@@ -1138,24 +1110,6 @@ function applyBackgroundVoid(store: ColorThemeStore): void {
 let voidObserverBound = false
 
 /**
- * 这个窗口要不要画背景媒体。默认要。
- *
- * **目前没有调用方**（桌面设置窗口曾经在这里被关掉，后来发现那只挡视频、图片照旧透出来，
- * 反而更割裂，已恢复默认）。保留这个开关是给「整块不透明、且不该白解码视频」的窗口用：
- * 关掉之后 `applyBackgroundVideo` 立刻摘掉视频层。
- *
- * 用模块级开关而不是给 `applyColorTheme` 加参数：设置窗口里的 `useColorTheme`（外观 Tab）
- * 会自己再调一次 `applyColorTheme`，参数传不进去。
- */
-let backgroundMediaEnabled = true
-
-/** 关掉之后本窗口不再挂背景媒体（已经挂上的立刻摘掉） */
-export function setBackgroundMediaEnabled(enabled: boolean): void {
-  backgroundMediaEnabled = enabled
-  if (!enabled) detachBackgroundVideo()
-}
-
-/**
  * 把当前主题的视频背景贴到 `#fizz-bg-video`（样式在 `themes.css`）。
  *
  * 为什么是异步的：视频本体在 IndexedDB 里，要读出来再 `URL.createObjectURL`。
@@ -1163,10 +1117,6 @@ export function setBackgroundMediaEnabled(enabled: boolean): void {
  */
 async function applyBackgroundVideo(store: ColorThemeStore): Promise<void> {
   if (typeof document === 'undefined') return
-  if (!backgroundMediaEnabled) {
-    detachBackgroundVideo()
-    return
-  }
   // 首帧前调用时 body 可能还没解析出来：等 DOM 就绪再补一次，否则视频永远不出现
   if (!document.body) {
     window.addEventListener('DOMContentLoaded', () => void applyBackgroundVideo(store), {
@@ -1308,7 +1258,7 @@ export function bootstrapColorTheme(): void {
   applyColorTheme()
   revealBackgroundOnMount()
   window.addEventListener('storage', (event) => {
-    if (event.key === STORE_KEY || event.key === LEGACY_KEY) applyColorTheme()
+    if (event.key === STORE_KEY) applyColorTheme()
   })
   /**
    * 明暗能在**没有设置面板**的路径上变（跟随系统时系统切了、`useTheme` 在别处改了），

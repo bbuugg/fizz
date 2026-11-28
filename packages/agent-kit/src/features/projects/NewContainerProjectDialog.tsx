@@ -120,6 +120,7 @@ export function NewContainerProjectDialog({
             <Label>运行环境</Label>
             <Select
               value={image}
+              items={Object.fromEntries(CONTAINER_ENV_IMAGES.map((img) => [img.id, img.label]))}
               onValueChange={(v) => setImage(v as ContainerEnvId)}
               disabled={busy}
             >

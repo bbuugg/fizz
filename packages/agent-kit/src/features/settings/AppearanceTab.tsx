@@ -67,12 +67,13 @@ const THEME_MODES = [
 
 /**
  * 主题预览卡（`ToggleGroupItem`）的样式：卡片是「块」不是按钮，要把 Toggle 默认的
- * 居中 / 定高 / 内边距全部压掉；选中态走 `data-[state=on]`，不再按值拼两套类名。
+ * 居中 / 定高 / 内边距全部压掉；选中态走 `data-pressed`（Base UI 的 Toggle 用 presence
+ * 属性，不再有 `data-state="on"`），未选中态用 `not-data-pressed:`。
  */
 const THEME_CARD_ITEM = [
   'relative block h-auto w-full min-w-0 overflow-hidden rounded-lg border-border/60 p-0 text-left font-normal whitespace-normal transition-all',
-  'hover:border-border data-[state=off]:hover:bg-transparent',
-  'data-[state=on]:border-primary data-[state=on]:bg-primary/5 data-[state=on]:hover:border-primary data-[state=on]:hover:bg-primary/5'
+  'hover:border-border not-data-pressed:hover:bg-transparent',
+  'data-pressed:border-primary data-pressed:bg-primary/5 data-pressed:hover:border-primary data-pressed:hover:bg-primary/5'
 ].join(' ')
 
 /**
@@ -178,9 +179,6 @@ export function AppearanceTab() {
           <Sun className="size-3.5" />
           {tr('明暗')}
         </div>
-        <p className="text-xs leading-4 text-muted-foreground">
-          {tr('跟随系统时会自动切换明暗；每套配色都包含亮暗两份。')}
-        </p>
         <Segmented
           ariaLabel={tr('明暗')}
           value={mode}
@@ -216,14 +214,14 @@ export function AppearanceTab() {
           {tr('配色主题')}
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          {tr('同时更换配色、字体、圆角与背景；明暗独立。可在卡片右上角「微调」或「背景」。')}
+          {tr('点卡片右上角「微调」或「背景」')}
         </p>
         <ToggleGroup
-          type="single"
-          value={theme}
+          value={[theme]}
           onValueChange={(next) => {
-            // 再点一次选中的那项时 Radix 会回调空串：主题必须始终有一套，忽略即可
-            if (next) setTheme(next)
+            // 再点一次选中的那项时会给空数组：主题必须始终有一套，忽略即可
+            const picked = next[0]
+            if (picked) setTheme(picked)
           }}
           aria-label={tr('配色主题')}
           className="grid w-full grid-cols-[repeat(auto-fill,minmax(min(100%,16rem),1fr))] gap-2"
@@ -317,7 +315,7 @@ export function AppearanceTab() {
             <DialogHeader>
               <DialogTitle>{tr('「{name}」的背景', { name: tr(backdrop.label) })}</DialogTitle>
               <DialogDescription>
-                {tr('背景属于这套主题：换到别的主题就看不到它，切回来还在。图片与视频都只存在本机。')}
+                {tr('背景只属于这套主题，且只存在本机')}
               </DialogDescription>
             </DialogHeader>
             <ThemeBackgroundEditor

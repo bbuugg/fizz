@@ -453,7 +453,11 @@ const MonacoEditor = ({
               表现就是「语言框比旁边的图标钮高出一截、还带一圈边框」。
               这套 `!` 覆盖与 `composer.tsx` 的 `CHAT_PILL` 同源，改的时候一起看。
             */
-            <Select value={currentLanguage} onValueChange={handleLanguageChange}>
+            <Select
+              value={currentLanguage}
+              items={Object.fromEntries(MONACO_LANGUAGES.map((l) => [l.value, l.label]))}
+              onValueChange={handleLanguageChange}
+            >
               <SelectTrigger
                 title="语言"
                 aria-label="语言"
@@ -462,7 +466,7 @@ const MonacoEditor = ({
                 <SelectValue />
               </SelectTrigger>
               {/* popper + align=start：贴着触发器的左缘往下展开，长列表限高自己滚 */}
-              <SelectContent position="popper" align="start" className="max-h-72">
+              <SelectContent alignItemWithTrigger={false} align="start" className="max-h-72">
                 {MONACO_LANGUAGES.map((l) => (
                   <SelectItem key={l.value} value={l.value} className="text-xs">
                     {l.label}

@@ -61,17 +61,6 @@ const windowBridge: DesktopWindowBridge = {
     ipcRenderer.invoke(WINDOW_IPC.appUpdateDownload) as Promise<AppUpdateStatus>,
   appUpdateCancel: () => ipcRenderer.invoke(WINDOW_IPC.appUpdateCancel) as Promise<AppUpdateStatus>,
   appUpdateInstall: () => ipcRenderer.invoke(WINDOW_IPC.appUpdateInstall) as Promise<boolean>,
-  // 外部 Markdown 文件：先取存量（监听挂上之前就发完的那批），之后才靠事件接增量
-  takePendingExternalFiles: () =>
-    ipcRenderer.invoke(WINDOW_IPC.takePendingExternalFiles) as Promise<string[]>,
-  onExternalFileOpen: (cb: (path: string) => void) => {
-    const listener = (_e: unknown, path: string): void => cb(path)
-    ipcRenderer.on(WINDOW_IPC.externalFileOpen, listener)
-    return () => ipcRenderer.off(WINDOW_IPC.externalFileOpen, listener)
-  },
-  // 只推一个数字，主进程那边只更新缓存（退出拦截时读）—— 打得再频繁也没有开销
-  setDirtyTabCount: (count: number) =>
-    ipcRenderer.invoke(WINDOW_IPC.setDirtyTabCount, count) as Promise<void>,
   onMaximizedChange: (cb: (maximized: boolean) => void) => {
     const listener = (_e: unknown, maximized: boolean): void => cb(maximized)
     ipcRenderer.on(WINDOW_IPC.maximizedChanged, listener)

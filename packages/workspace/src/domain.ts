@@ -16,8 +16,6 @@ import type {
   AgentConversation,
   AgentChatMessage,
   AgentWorkspace,
-  CollabSettings,
-  CollabState,
   ApiGroup,
   ApiGroupInput,
   ApiGroupsAndRequests,
@@ -51,8 +49,6 @@ import type {
   HostInput,
   LocalHostConfig,
   LocalHostInput,
-  NotesRoot,
-  NotesRootInput,
   RemoteWorkspaceRef,
   SubagentTurnUsage,
   TransferImportResult,
@@ -61,8 +57,6 @@ import type {
   TurnUsage
 } from '@fizz/contracts/types'
 import {
-  normalizeCollabSettings,
-  normalizeCollabState,
   normalizeReasoningEffort
 } from '@fizz/contracts/types'
 import type { AcpAgentConfig, AcpAgentHealth, AcpModelOption } from '@fizz/acp'
@@ -883,63 +877,6 @@ export class AgentDomain {
       .find((w) => target === w.path || target.startsWith(`${w.path}\\`) || target.startsWith(`${w.path}/`))
   }
 
-  // ---------- 笔记根目录（= 笔记文件接口的路径白名单） ----------
-
-  listNotesRoots(): NotesRoot[] {
-    return this.store.snapshot().notesRoots
-  }
-
-  getNotesRoot(id: string): NotesRoot | undefined {
-    return this.store.snapshot().notesRoots.find((r) => r.id === id)
-  }
-
-  /**
-   * 登记一个目录当笔记根。
-   *
-   * 校验与 `addWorkspace` 同源：必须是**绝对路径**、必须**存在且是目录** ——
-   * 否则界面上会多出一个点开就报错的空行。
-   *
-   * 同一个目录重复登记**直接返回既有那条**（幂等）：用户在弹窗里手滑点两下、
-   * 或者两个端各加一次，都不该在侧栏里长出两行一模一样的。
-   */
-  async addNotesRoot(input: NotesRootInput): Promise<NotesRoot> {
-    const raw = input.path.trim()
-    if (!isAbsolute(raw)) throw new Error('笔记目录必须是绝对路径')
-    const path = resolve(raw)
-    const stat = await fs.stat(path).catch(() => null)
-    if (!stat?.isDirectory()) throw new Error(`目录不存在或不是目录：${path}`)
-
-    const existing = this.store.snapshot().notesRoots.find((r) => r.path === path)
-    if (existing) return existing
-
-    const root: NotesRoot = {
-      id: newId(),
-      path,
-      // 默认展示名 = 目录名（与工作区同一条规则，用户可在侧栏看到它是哪个目录）
-      name: input.name?.trim() || (path.split(/[\\/]/).filter(Boolean).pop() ?? path),
-      createdAt: Date.now()
-    }
-    this.store.mutate((d) => {
-      d.notesRoots = [...d.notesRoots, root]
-    })
-    return root
-  }
-
-  /**
-   * 移除一个笔记根：**只摘登记，不碰磁盘**。
-   *
-   * 刻意与 `deleteWorkspace` 不同（那个会把会话 / 任务 / 插件偏好一并清掉）——
-   * 笔记目录是用户自己的资料，我们只是「借来看」，移除登记绝不该让它少一个文件。
-   * 返回是否真的删掉了（没这条记录时返回 false，调用方据此决定要不要报 404）。
-   */
-  deleteNotesRoot(id: string): boolean {
-    if (!this.store.snapshot().notesRoots.some((r) => r.id === id)) return false
-    this.store.mutate((d) => {
-      d.notesRoots = d.notesRoots.filter((r) => r.id !== id)
-    })
-    return true
-  }
-
   // ---------- 会话 ----------
 
   /**
@@ -1230,7 +1167,6 @@ export class AgentDomain {
         throw new Error('该 ACP 会话已导入过：同一个 agent 会话只能绑定一个本地会话')
       }
     }
-    const kind: 'chat' | 'collab' = input.kind ?? prev?.kind ?? 'chat'
     // 思考强度按会话存：不传 = 沿用已有（改选请走 setConversationTarget）
     const nextReasoningEffort =
       input.reasoningEffort !== undefined
@@ -1240,12 +1176,6 @@ export class AgentDomain {
       id: input.id ?? prev?.id ?? newId(),
       workspaceId: input.workspaceId,
       title: input.title?.trim() || prev?.title || '新会话',
-      ...(kind === 'collab'
-        ? {
-            kind: 'collab' as const,
-            collab: normalizeCollabSettings(input.collab ?? prev?.collab)
-          }
-        : {}),
       // 显式给 messages 就整体覆盖（桌面端保存本地真值用）；否则沿用已有
       messages: isAcp ? [] : Array.isArray(input.messages) ? input.messages : (prev?.messages ?? []),
       backend: input.backend ?? prev?.backend,
@@ -1293,32 +1223,6 @@ export class AgentDomain {
         : {})
     }
     return this.commitConversation(conversation)
-  }
-
-  /** 覆盖协作配置（全量；增删改 Agent / 并行与单轮上限都走这里） */
-  setConversationCollab(id: string, collab: CollabSettings): AgentConversation {
-    const existing = this.getConversation(id)
-    if (!existing) throw new Error('会话不存在')
-    if (existing.kind !== 'collab') throw new Error('这不是多智能体协作会话')
-    return this.commitConversation({
-      ...existing,
-      collab: normalizeCollabSettings(collab),
-      updatedAt: Date.now()
-    })
-  }
-
-  /** 读协作运行态（服务端 `store.readCollabState` 的领域封装） */
-  async getCollabState(id: string): Promise<CollabState | null> {
-    const existing = this.getConversation(id)
-    if (!existing || existing.kind !== 'collab') return null
-    return this.store.readCollabState(id)
-  }
-
-  /** 写协作运行态（任务 / 消息 / 最近状态；fire-and-forget 串行写盘） */
-  saveCollabState(id: string, state: CollabState): void {
-    const existing = this.getConversation(id)
-    if (!existing || existing.kind !== 'collab') return
-    this.store.writeCollabState(id, normalizeCollabState(state))
   }
 
   /**
@@ -1708,7 +1612,7 @@ export class AgentDomain {
    *
    * 要加「可撤销」得先选形态：破坏性操作前落整份快照（读路径零改动，回滚 = 回到操作前）、
    * 还是给消息加 `deletedAt` 标记（真·逐条软删，但渲染 / 搜索 / 导出 / token 估算 / 压缩 /
-   * fork / collab 所有读 `messages` 的地方都要认这个字段，漏一处就是已删消息回流进上下文）。
+   * fork 等所有读 `messages` 的地方都要认这个字段，漏一处就是已删消息回流进上下文）。
    * 别在没定形态前零散加半个标记。
    */
   deleteMessage(id: string, messageId: string): AgentConversation {

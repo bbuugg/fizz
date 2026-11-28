@@ -42,7 +42,7 @@ export function PluginsDialog({
       <DialogContent className="flex h-[min(36rem,85dvh)] flex-col overflow-hidden sm:max-w-2xl">
         <DialogTitle>{tr('项目插件')}</DialogTitle>
         <DialogDescription>
-          {tr('这里管理项目自己的插件（.fizz/plugins）。全局插件请到设置 →「插件」管理。工具、提示词和钩子在下一轮对话生效。')}
+          {tr('工具 / 提示词下一轮生效。')}
         </DialogDescription>
 
         {/* `data-dialog-scroll`：滚动条贴弹窗右沿 + 没条时右侧也留满 16px（见 styles.css）。

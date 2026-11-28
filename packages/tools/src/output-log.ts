@@ -1,5 +1,5 @@
 /**
- * 超长工具输出的落盘：**bash** / **web_fetch** 结果太长时，把全文写进工作区的
+ * 超长工具输出的落盘：**shell** / **web_fetch** 结果太长时，把全文写进工作区的
  * `.fizz/tool-output/`，只回「头 + 尾」正文，外加一组**行号坐标**让模型自己把剩下的读完。
  *
  * ## 为什么落进工作区，而不是数据目录
@@ -9,7 +9,7 @@
  *
  * 1. **只有专用工具能读**。数据目录在工作区之外，`read` 的 `resolveInside` 够不着；
  *    于是模型想精读中段，只能用 `read_log`（字符偏移，与它熟悉的按行翻页是两套心智），
- *    或者 `bash` 拼 `sed`/`grep` —— 而只读模式下 bash 被 guardWrite 拦死，
+ *    或者 `shell` 拼 `sed`/`grep` —— 而只读模式下 shell 被 guardWrite 拦死，
  *    那份数据**根本读不回来**。
  * 2. **多一个要维护的工具**：schema、系统提示词、只读子任务白名单里都得带着它。
  *
@@ -38,7 +38,7 @@ import type { WorkspaceBackend } from '@fizz/contracts/workspace'
 /**
  * 单个工具结果回给模型的字符预算（也是命令输出落盘的触发阈值）。
  *
- * read / grep 用它做行裁剪提示的分界，bash 用它决定是否落盘。
+ * read / grep 用它做行裁剪提示的分界，shell 用它决定是否落盘。
  */
 export const MAX_TOOL_RESULT_CHARS = 4000
 

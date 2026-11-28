@@ -37,12 +37,10 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Bot,
   Box,
   Check,
   ChevronDown,
   Files,
-  GitBranch,
   Globe,
   MonitorPlay,
   PanelRightClose,
@@ -61,10 +59,8 @@ import {
 import { Button } from '@fizz/ui/button'
 import { Skeleton } from '@fizz/ui/skeleton'
 import { ChatPanel } from '@fizz/agent-kit/features/chat/ChatPanel'
-import { CollabWorkspace } from '@fizz/agent-kit/features/collab/CollabWorkspace'
 import { MobilePanelMenu } from '@fizz/agent-kit/features/chat/MobilePanelMenu'
 import { FilesPanel } from '@fizz/agent-kit/features/files/FilesPanel'
-import { GitPanel } from '@fizz/agent-kit/features/git/GitPanel'
 import { SidePanel, useContainerWidth, type SidePanelTab } from '@fizz/agent-kit/features/chat/SidePanel'
 import { TerminalPanel } from '@fizz/agent-kit/features/terminal/TerminalPanel'
 import { BrowserPane } from '@fizz/agent-kit/features/chat/BrowserPane'
@@ -85,21 +81,6 @@ import { registerTabCloseGuard } from '@fizz/agent-kit/shared/lib/tab-close'
 import { useChoose, useConfirm } from '@fizz/agent-kit/shared/components/ConfirmProvider'
 import { toast } from 'sonner'
 import { openExternal } from '@fizz/agent-client/web-host'
-import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
-import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-  usePanelRef
-} from '@fizz/ui/resizable'
-import {
-  defaultCollabChatWidth,
-  maxCollabChatWidth,
-  minCollabChatWidth,
-  resetCollabChatWidth,
-  setCollabChatWidth,
-  useCollabChatWidth
-} from '@fizz/agent-kit/shared/lib/collab-chat-width'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 
@@ -116,7 +97,7 @@ export function ConversationTab({
    * 这个标签是不是它所在组**当前显示的那一个**（`PanelContentLayer` 的 `owner.active`）。
    *
    * 标签内容一律常挂载，非活动标签只是 `hidden` 藏在原地 —— 所以「是不是这个面板在屏幕上」
-   * 不能只看侧栏停在哪个标签（见下面 `gitVisible`）。缺省 `true`：单独渲染这个标签时
+   * 不能只看侧栏停在哪个标签。缺省 `true`：单独渲染这个标签时
    * 按「正被看着」处理。
    */
   active?: boolean
@@ -237,24 +218,6 @@ export function ConversationTab({
 
   /** 面板容器的实测宽度（算面板默认宽度与拖拽上限） */
   const [contentRef, contentWidth] = useContainerWidth()
-  /** 协作布局这一行的实测宽度：最右侧对话面板的默认宽 / 拖拽上限按它算 */
-  const [collabRef, collabWidth] = useContainerWidth()
-  const isMobile = useIsMobile()
-  const userCollabChatWidth = useCollabChatWidth()
-  /** 右侧对话面板的命令式句柄：拖拽结束读回像素宽落盘、双击复位直接改尺寸都靠它 */
-  const chatPanelRef = usePanelRef()
-  const collabChatMin = minCollabChatWidth(collabWidth)
-  const collabChatMax = maxCollabChatWidth(collabWidth)
-  const collabChatWidth =
-    userCollabChatWidth === null
-      ? defaultCollabChatWidth(collabWidth)
-      : Math.min(Math.max(userCollabChatWidth, collabChatMin), collabChatMax)
-  /** 双击拖拽条：清掉记忆值，面板回到「按容器算的默认宽」（不是固定 320） */
-  const resetChatPanelWidth = () => {
-    resetCollabChatWidth()
-    chatPanelRef.current?.resize(defaultCollabChatWidth(collabWidth))
-  }
-
   const panel = panelOf(key)
   const sideTab = panel?.sideTab ?? null
   /**
@@ -265,7 +228,6 @@ export function ConversationTab({
    * 快捷键会同时打到后台那几个面板上（它们服务的是别的工作区，可能根本不是仓库），
    * 表现出来就是「当前仓库明明有远端，却弹出『管理远端』」。
    */
-  const gitVisible = active && sideTab === 'git'
   /** 刷新守卫读的「面板里挂着几条终端」（见上面守卫的注释）—— 每次渲染刷一次 ref */
   guardRef.current.terminals = panel?.terminals.length ?? 0
 
@@ -276,10 +238,6 @@ export function ConversationTab({
   const conversation = conversationId
     ? app.conversations.find((c) => c.id === conversationId)
     : undefined
-  /**
-   * 协作布局左侧的 Agent 名单由 `CollabWorkspace` 自己管；右侧始终是**同一条共享会话**
-   * （所有 Agent 的回复都带名字进这条时间线）。不再有「点节点看子 Agent 独立消息」。
-   */
   const workspaceId = conversation?.workspaceId ?? app.activeWorkspaceId ?? ''
   const workspace = app.workspaces.find((w) => w.id === workspaceId)
   /**
@@ -360,8 +318,7 @@ export function ConversationTab({
   const tabKeys = useMemo(() => {
     const mounted = [
       ...(panel?.terminals ?? []).map((t) => terminalTabKey(t.id)),
-      ...(panel?.filesMounted ? ['files'] : []),
-      ...(panel?.gitMounted ? ['git'] : []),
+      ...((panel?.filesMounted || panel?.gitMounted) ? ['files'] : []),
       ...(panel?.browserMounted ? ['browser'] : []),
       // 预览只在容器型项目下挂得出来：项目从容器改成普通 / 被删掉时，别把这条标签
       // 恢复成一个点开只有「这个项目已经不存在」的壳
@@ -418,27 +375,11 @@ export function ConversationTab({
             app={app}
             workspaceId={workspaceId}
             panelKey={key}
-            visible={sideTab === 'files'}
-          />
-        ),
-        onClose: () => closeSideTabOf(key, tabKey)
-      }
-    }
-    if (tabKey === 'git') {
-      return {
-        key: tabKey,
-        label: tr('源码管理'),
-        title: tr('源代码管理 · {name}', { name: workspaceName }),
-        icon: <GitBranch className="size-4" />,
-        content: (
-          <GitPanel
-            app={app}
-            workspaceId={workspaceId}
-            visible={gitVisible}
-            // 推送快捷键要再判一次「本标签是不是焦点组正在显示的那个」（分屏防重复推送）
-            tabKey={key}
-            // 面板刷完把改动数 + 当前分支回报到**本会话**的面板上
-            onChanges={(info) =>
+            visible={active && (sideTab === 'files' || sideTab === 'git')}
+            mode={sideTab === 'git' ? 'git' : 'files'}
+            onModeChange={(mode) => showSideTabOf(key, mode)}
+            gitMounted={panel?.gitMounted ?? false}
+            onGitChanges={(info) =>
               patchPanelOf(key, (base) => ({
                 ...base,
                 gitChanges: info,
@@ -515,17 +456,6 @@ export function ConversationTab({
               : `${workspaceName}（${workspace.path}）`
             : undefined
         }
-        afterTitle={
-          conversation?.kind === 'collab' ? (
-            <span
-              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-foreground/5 px-2 py-0.5 text-xs text-muted-foreground"
-              title={tr('@ 点名由该智能体处理；不点名时全体判断是否需要接手')}
-            >
-              <Bot className="size-3 shrink-0" />
-              {tr('多智能体协作')}
-            </span>
-          ) : undefined
-        }
         /* 分支与文件入口集中在 composer 下方状态条，顶栏只留会话标题与其他工具。 */
         trailing={
           <>
@@ -584,7 +514,7 @@ export function ConversationTab({
                         <DropdownMenuTrigger asChild>
                           <Button
                             variant="outline"
-                            className="h-7! w-5! rounded-l-none p-0! data-[state=open]:bg-accent"
+                            className="h-7! w-5! rounded-l-none p-0! data-popup-open:bg-accent"
                             aria-label={tr('选择终端')}
                             disabled={!workspaceId}
                           >
@@ -598,7 +528,7 @@ export function ConversationTab({
                       align="end"
                       className="w-48"
                       /* 选完 shell 焦点别弹回工具栏按钮：终端面板打开时会自己 focus */
-                      onCloseAutoFocus={(e) => e.preventDefault()}
+                      finalFocus={false}
                     >
                       <DropdownMenuLabel className="text-xs text-muted-foreground">{tr('选择终端')}</DropdownMenuLabel>
                       {/*
@@ -751,85 +681,13 @@ export function ConversationTab({
       {/* 内容区：左边对话、右边多标签面板 */}
       <div ref={contentRef} className="relative flex min-h-0 flex-1">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {conversation?.kind === 'collab' ? (
-            /*
-              协作布局：左边 Agent 名单（增删改 / 实时状态），右边**同一条共享会话**。
-              所有 Agent 的回复都带名字进这条时间线，不再有「点节点看子 Agent 独立消息」。
-            */
-            <div
-              ref={collabRef}
-              className={cn('flex min-h-0 flex-1', isMobile ? 'flex-col' : 'flex-row')}
-            >
-              {isMobile ? (
-                <div className="flex min-h-0 flex-1 flex-col">
-                  <div className="max-h-[38dvh] shrink-0 overflow-y-auto border-b">
-                    <CollabWorkspace app={app} />
-                  </div>
-                  <div className="min-h-0 flex-1">
-                    <ChatPanel app={app} panelKey={key} draftKey={conversationId ?? DRAFT_PANEL_SCOPE} />
-                  </div>
-                </div>
-              ) : (
-                <ResizablePanelGroup
-                  orientation="horizontal"
-                  className="min-h-0"
-                  onLayoutChanged={(_, meta) => {
-                    /*
-                      只记**用户拖出来的**尺寸：挂载、容器变化、`defaultSize` 变更也会触发这个
-                      回调（`meta.isUserInteraction` 为 false），把那些值写回 localStorage 会
-                      冲掉用户调好的宽度。
-                    */
-                    if (!meta.isUserInteraction) return
-                    const px = chatPanelRef.current?.getSize().inPixels
-                    if (px && px > 0) setCollabChatWidth(px)
-                  }}
-                >
-                  <ResizablePanel
-                    className="flex min-h-0 flex-col"
-                    style={{ overflow: 'hidden' }}
-                  >
-                    <CollabWorkspace app={app} />
-                  </ResizablePanel>
-                  {collabChatMax > collabChatMin && (
-                    <ResizableHandle
-                      /*
-                        库自带的双击复位会回到 `defaultSize`（= 用户记忆的宽度），而这里要的是
-                        「回到按容器算的默认宽」，所以关掉它自己接。
-                      */
-                      disableDoubleClick
-                      onDoubleClick={resetChatPanelWidth}
-                      className="relative z-10 cursor-col-resize"
-                    />
-                  )}
-                  <ResizablePanel
-                    panelRef={chatPanelRef}
-                    defaultSize={collabChatWidth}
-                    minSize={collabChatMin}
-                    maxSize={collabChatMax}
-                    /*
-                      窗口缩放时对话面板保持像素宽、名单吃剩下的（改造前就是这个行为）。
-                      默认的按比例缩放会把窄窗口里的聊天框一路压小。
-                    */
-                    groupResizeBehavior="preserve-pixel-size"
-                    className={cn(
-                      'flex min-h-0 flex-col',
-                      collabChatMax <= collabChatMin && 'border-l'
-                    )}
-                    style={{ overflow: 'hidden' }}
-                  >
-                    <ChatPanel app={app} panelKey={key} draftKey={conversationId ?? DRAFT_PANEL_SCOPE} />
-                  </ResizablePanel>
-                </ResizablePanelGroup>
-              )}
-            </div>
-          ) : (
-            <ChatPanel app={app} panelKey={key} draftKey={conversationId ?? DRAFT_PANEL_SCOPE} />
-          )}
+          <ChatPanel app={app} panelKey={key} draftKey={conversationId ?? DRAFT_PANEL_SCOPE} />
         </div>
         <SidePanel
           open={sideTab !== null && tabs.length > 0}
           tabs={tabs}
-          activeKey={sideTab}
+          // 「git」仍是面板现场里的模式选择；SidePanel 只装配一颗稳定的统一文件面板标签。
+          activeKey={sideTab === 'git' ? 'files' : sideTab}
           // 标签条上点标签只是「切过去」；收起是点正看着的那个顶栏按钮 / 标签条右边的按钮
           onSelect={(k) => showSideTabOf(key, k)}
           onCollapse={() => collapseSidePanelOf(key)}

@@ -222,7 +222,7 @@ export function HostMonitorBadge({
         // 玻璃外壳与边缘流光：与状态栏那颗本机监控 / 上下文圆环同一份（`useGlassPanel`）。
         // 滚动下放到内层，保证流光钉在面板边缘、不随内容滚走。
         className={cn(
-          'h-[min(480px,var(--radix-popover-content-available-height,480px))] w-[380px] max-w-[85vw] overflow-hidden rounded-xl p-0 ring-0',
+          'h-[min(480px,var(--available-height,480px))] w-[380px] max-w-[85vw] overflow-hidden rounded-xl p-0 ring-0',
           glass.className
         )}
         {...glass.handlers}

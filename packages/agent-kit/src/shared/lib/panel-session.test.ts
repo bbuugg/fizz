@@ -10,9 +10,13 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  aliveTabs,
+  focusTab,
+  isTabMounted,
   resolvePanelWorkspace,
   resolveTerminalCwd,
   retargetPanelWorkspace,
+  withoutMounted,
   type PanelSession
 } from './panel-session'
 
@@ -98,6 +102,40 @@ describe('resolvePanelWorkspace', () => {
       workspaceId: 'w-x',
       cwd: null
     })
+  })
+})
+
+/** Git 与文件模式共用一颗侧栏标签，切换时不替换 FilesPanel 实例。 */
+describe('unified file and Git side panel', () => {
+  it('mounting Git creates one files tab while retaining Git mode as the selected view', () => {
+    const next = focusTab(panel({}), 'git')
+    expect(next.filesMounted).toBe(true)
+    expect(next.gitMounted).toBe(true)
+    expect(next.sideTab).toBe('git')
+    expect(aliveTabs(next)).toEqual(['files'])
+    expect(isTabMounted(next, 'files')).toBe(true)
+    expect(isTabMounted(next, 'git')).toBe(true)
+  })
+
+  it('closing the unified files panel clears both mode markers', () => {
+    const mounted = focusTab(panel({}), 'git')
+    const next = withoutMounted(mounted, 'files')
+    expect(next.filesMounted).toBe(false)
+    expect(next.gitMounted).toBe(false)
+    expect(aliveTabs(next)).toEqual([])
+  })
+
+  it('将旧版独立 Git 标签归一到共享文件标签且不重复', () => {
+    const legacy = panel({
+      gitMounted: true,
+      sideTab: 'git',
+      lastSideTab: 'git',
+      terminals: [{ id: 'term-1', shellId: null, cwd: 'D:/a' }],
+      tabOrder: ['terminal:term-1', 'git']
+    })
+    const next = focusTab(legacy, 'files')
+    expect(next.tabOrder).toEqual(['terminal:term-1', 'files'])
+    expect(aliveTabs(next)).toEqual(['terminal:term-1', 'files'])
   })
 })
 

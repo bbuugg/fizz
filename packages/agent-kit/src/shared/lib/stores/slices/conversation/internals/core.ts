@@ -9,7 +9,7 @@ import type {
   AgentChatMessage,
   AiReasoningEffort,
 } from "@fizz/contracts/agent-api";
-import type { AiModelEntry, CollabSettings, QueuedMessage } from "@fizz/contracts/types";
+import type { AiModelEntry, QueuedMessage } from "@fizz/contracts/types";
 import { type BrowserSettings } from "@fizz/contracts";
 import { loadLastTarget } from "@fizz/agent-kit/shared/lib/last-target";
 import { errorMessage } from "@fizz/agent-kit/shared/lib/stores/shared";
@@ -507,45 +507,6 @@ export function createConversationCore(deps: ConvDeps) {
 
   /** 拉某个会话的完整消息（列表接口刻意不带消息体）。结果写进**该会话自己的 slice** */
 
-  const saveCollabSettings = async (
-    settings: CollabSettings,
-    scope?: string | null,
-  ): Promise<boolean> => {
-    const conversationId = resolveConvId(scope);
-    const api = get().getApi();
-    if (!conversationId || !api) return false;
-    try {
-      const updated = await api.saveCollabSettings(conversationId, settings);
-      set({
-        conversations: get().conversations.map((c) =>
-          c.id === conversationId
-            ? { ...c, kind: "collab", collab: updated.collab ?? settings }
-            : c,
-        ),
-      });
-      return true;
-    } catch (err) {
-      get().setError(errorMessage(err));
-      return false;
-    }
-  };
-
-  const cancelCollabTask = async (
-    taskId: string,
-    scope?: string | null,
-  ): Promise<boolean> => {
-    const conversationId = resolveConvId(scope);
-    const api = get().getApi();
-    if (!conversationId || !api) return false;
-    try {
-      const result = await api.cancelCollabTask(conversationId, taskId);
-      return result.ok;
-    } catch (err) {
-      get().setError(errorMessage(err));
-      return false;
-    }
-  };
-
   const fetchQueue = async (
     conversationId: string,
   ): Promise<QueuedMessage[] | null> => {
@@ -699,8 +660,6 @@ export function createConversationCore(deps: ConvDeps) {
     persistReasoningEffort,
     persistMcp,
     persistBrowserSettings,
-    saveCollabSettings,
-    cancelCollabTask,
     fetchQueue,
     syncQueueToServer,
     syncSteerOrder,

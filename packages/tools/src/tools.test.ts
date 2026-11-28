@@ -181,9 +181,9 @@ describe('buildAgentTools · 全部经后端路由', () => {
     expect(await run(toolsWith(backend), 'glob', { pattern: '*.md' })).toBe('No files found')
   })
 
-  it('bash 走 backend.exec，退出码以 `[exit code: N]` 标注', async () => {
+  it('shell 走 backend.exec，退出码以 `[exit code: N]` 标注', async () => {
     const backend = fakeBackend()
-    const out = await run(toolsWith(backend), 'bash', { command: 'echo hi', intent: 'say hi' })
+    const out = await run(toolsWith(backend), 'shell', { command: 'echo hi', intent: 'say hi' })
     expect(out).toBe('ok')
     expect(backend.exec).toHaveBeenCalledWith(
       'echo hi',
@@ -191,7 +191,7 @@ describe('buildAgentTools · 全部经后端路由', () => {
     )
   })
 
-  it('bash 非 0 退出时补 `[exit code: N]`', async () => {
+  it('shell 非 0 退出时补 `[exit code: N]`', async () => {
     const backend = fakeBackend()
     backend.exec = vi.fn(async () => ({
       stdout: '',
@@ -200,14 +200,14 @@ describe('buildAgentTools · 全部经后端路由', () => {
       reason: 'exit' as const,
       truncated: false
     }))
-    const out = await run(toolsWith(backend), 'bash', { command: 'false', intent: 'fail' })
+    const out = await run(toolsWith(backend), 'shell', { command: 'false', intent: 'fail' })
     expect(out).toContain('[stderr]\nboom')
     expect(out).toContain('[exit code: 2]')
   })
 
-  it('bash 在远端后端上拒绝 run_in_background', async () => {
+  it('shell 在远端后端上拒绝 run_in_background', async () => {
     const backend = fakeBackend('remote')
-    const out = await run(toolsWith(backend), 'bash', {
+    const out = await run(toolsWith(backend), 'shell', {
       command: 'npm run dev',
       intent: 'dev server',
       run_in_background: true
@@ -220,11 +220,11 @@ describe('buildAgentTools · 全部经后端路由', () => {
     const backend = fakeBackend('remote')
     const onBackgroundCommand = vi.fn().mockResolvedValue({ id: 'ssh-task' })
     const tools = toolsWith(backend, { permissionMode: 'readonly', onBackgroundCommand })
-    await run(tools, 'bash', { command: 'build', run_in_background: true })
+    await run(tools, 'shell', { command: 'build', run_in_background: true })
     expect(onBackgroundCommand).not.toHaveBeenCalled()
     const requestConfirm = vi.fn().mockResolvedValue(true)
     const approved = toolsWith(backend, { permissionMode: 'confirm', requestConfirm, onBackgroundCommand })
-    expect(await run(approved, 'bash', { command: 'build', run_in_background: true })).toContain('ssh-task')
+    expect(await run(approved, 'shell', { command: 'build', run_in_background: true })).toContain('ssh-task')
     expect(requestConfirm).toHaveBeenCalledTimes(1)
     expect(onBackgroundCommand).toHaveBeenCalledWith(expect.objectContaining({ command: 'build', cwd: ROOT }))
     expect(backend.exec).not.toHaveBeenCalled()

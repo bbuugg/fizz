@@ -215,7 +215,7 @@ const acpName = (name: unknown): string | undefined =>
  * 把这次 update 带的入参并进记忆里（后到的覆盖先到的）。
  *
  * 为什么需要累积：**不少 ACP agent 的入参是分几次给的** —— 第一条 `tool_call` 只带
- * 一部分（opencode 的 bash 就只给了 `cwd`），完整参数在后面 `tool_call_update` 里补。
+ * 一部分（opencode 的 shell 就只给了 `cwd`），完整参数在后面 `tool_call_update` 里补。
  * 只在第一条上取 `rawInput`，卡片上就会是「只有 cwd、看不到命令」。
  *
  * 兜底：参数始终是空的 / 只有 cwd 这种「聊胜于无」的字段时，把 agent 给的展示用

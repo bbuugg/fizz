@@ -556,14 +556,15 @@ function EffortSliderControl<Value extends string | null>({
           // 细步长让拖动连续顺滑，松手时再按最近档位吸附
           step={0.001}
           value={[shownPreview]}
-          onValueChange={([next]) => {
-            if (!liveDisabled.current && !cancelled.current) updatePreview(next ?? 0)
+          onValueChange={(next) => {
+            const value = Array.isArray(next) ? (next[0] ?? 0) : next
+            if (!liveDisabled.current && !cancelled.current) updatePreview(value)
           }}
           /*
-           * 吸附只认**最新指针位置**（previewRef）：Radix 回调里的值是它上一次渲染的
+           * 吸附只认**最新指针位置**（previewRef）：回调里给的值是它上一次渲染的
            * 快照，快速甩动时会比指针落后一两步。两处各自取整还会「先吸到 A 再漂到 B」。
            */
-          onValueCommit={() => { if (!cancelled.current) commit(previewRef.current) }}
+          onValueCommitted={() => { if (!cancelled.current) commit(previewRef.current) }}
           onPointerDownCapture={onPointerDownCapture}
           onPointerMoveCapture={onPointerMoveCapture}
           onPointerUpCapture={onPointerUpCapture}

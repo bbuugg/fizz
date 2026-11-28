@@ -39,12 +39,6 @@ import type {
   HostGroupInput,
   HostGroupsAndHosts,
   HostInput,
-  NotesCreateResult,
-  NotesDirResult,
-  NotesFileResult,
-  NotesRenameResult,
-  NotesRoot,
-  NotesRootInput,
   SshTunnel,
   SshTunnelInput,
   SshTunnelRuntime,
@@ -209,14 +203,6 @@ export interface ServerListsSlice {
    * 首帧先用 localStorage 里的值，连接后由 `refresh()` 对账覆盖。
    */
   language: AppLanguage
-  /**
-   * 已登记的**笔记根目录**（侧栏「笔记」功能区的顶层）。
-   *
-   * 走 state-ws 的 `notesRoots` 快照域：任意一端登记 / 移除都会推给所有端。
-   * 树本身**不进 store** —— 笔记根是用户挑的任意目录、可能很大，展开某层时才现拉
-   * （懒加载，见 `NotesSidebar`）。
-   */
-  notesRoots: NotesRoot[]
 
   /** 保存界面语言（同时更新本机 i18n 单例与 localStorage） */
   saveLanguage: (language: AppLanguage) => Promise<boolean>
@@ -230,11 +216,6 @@ export interface ServerListsSlice {
   renameConversation: (id: string, title: string) => Promise<void>
   /** 归档 / 取消归档（不删数据；侧栏据此把会话收进 / 放出「已归档」区） */
   archiveConversation: (id: string, archived: boolean) => Promise<void>
-  /**
-   * @deprecated 已合并到 reloadAcpSession；保留旧调用签名，同样重连并同步本地历史。
-   * 空闲时恢复原会话，运行中只同步快照；失败原因留在该会话的 error。
-   */
-  restartAcpSession: (agentId: string, conversationId: string) => Promise<boolean>
 
   // ---------- 配置类动作（写成功刷一遍全量列表，失败写 error） ----------
   saveAcpAgent: (input: AcpAgentInput) => Promise<boolean>
@@ -597,28 +578,6 @@ export interface ServerListsSlice {
   listServerDirs: (path: string) => ReturnType<AgentApi['listServerDirs']>
   createServerDir: (parent: string, name: string) => Promise<string>
   listTerminalShells: () => ReturnType<AgentApi['listTerminalShells']>
-
-  // ---------- 笔记（登记目录 + 管理其中的 Markdown） ----------
-  //
-  // 根目录清单是**快照域**（`notesRoots`），登记 / 移除后靠 WS 推送 + 一次全量刷新兜底；
-  // 文件操作是**一问一答**、没有缓存（磁盘才是真源），出错一律抛给调用方 ——
-  // 树要能显示「这一层为什么列不出来」，静默返回空列表会让人以为目录是空的。
-  /** 登记一个目录为笔记根；成功返回那条记录（已刷新列表），失败返回 null（原因进 error） */
-  addNotesRoot: (input: NotesRootInput) => Promise<NotesRoot | null>
-  /** 移除登记（**只摘登记，不碰磁盘**） */
-  removeNotesRoot: (id: string) => Promise<boolean>
-  /** 列某一层（`dir` 留空 = 根目录）；出错抛 ApiError（含 403 越界 / 404 根不存在） */
-  listNoteFiles: (rootId: string, dir?: string) => Promise<NotesDirResult>
-  /** 读一篇笔记 */
-  readNoteFile: (rootId: string, path: string) => Promise<NotesFileResult>
-  /** 覆盖保存一篇笔记（不存在则创建） */
-  writeNoteFile: (rootId: string, path: string, content: string) => ReturnType<AgentApi['writeNoteFile']>
-  /** 在 `dir` 下新建一篇空笔记，返回它的相对路径 */
-  createNoteFile: (rootId: string, dir?: string) => Promise<NotesCreateResult>
-  /** 重命名（只换文件名），返回新的相对路径 */
-  renameNoteFile: (rootId: string, path: string, name: string) => Promise<NotesRenameResult>
-  /** 删除一篇笔记（真删，无回收站） */
-  deleteNoteFile: (rootId: string, path: string) => ReturnType<AgentApi['deleteNoteFile']>
 }
 
 export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerListsSlice> = (
@@ -704,7 +663,6 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
     browserInstalled: false,
     systemMonitorSettings: null,
     language: getLanguage(),
-    notesRoots: [],
 
     refresh: async (): Promise<void> => {
       const api = get().getApi()
@@ -730,8 +688,7 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
           nextSubagents,
           nextBrowserRuntime,
           nextSystemMonitor,
-          nextLanguage,
-          nextNotesRoots
+          nextLanguage
         ] = await Promise.all([
           api.health(),
           api.listModels(),
@@ -758,9 +715,7 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
           // 漏了这一条，关掉监控后状态栏的监控条不会消失（开关也会弹回去）。
           api.getSystemMonitorSettings(),
           // 界面语言：服务端是权威值（工具 / 提示词都按它生成）
-          api.getLanguage(),
-          // 笔记根目录清单：主路径是 WS 快照域推送，这里兜底对一次账（连接后 / 登记移除后）
-          api.listNotesRoots()
+          api.getLanguage()
         ])
         set({
           health: nextHealth,
@@ -786,7 +741,6 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
           browserInstalled: nextBrowserRuntime.runtime.installed,
           systemMonitorSettings: nextSystemMonitor,
           language: nextLanguage.language,
-          notesRoots: nextNotesRoots,
           error: null
         })
         // 服务端语言同步进本机 i18n 单例（工具 / 提示词已按它生成）
@@ -851,9 +805,7 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
         ['scriptGroups', (v) => set({ scriptGroups: (v as ScriptGroup[]) ?? [] })],
         ['workspaces', (v) => set({ workspaces: (v as AgentWorkspace[]) ?? [] })],
         ['conversations', (v) => set({ conversations: (v as ConversationSummary[]) ?? [] })],
-        ['skills', (v) => set({ skills: (v as SkillListResult | null) ?? null })],
-        // 笔记根目录：任意一端登记 / 移除都推给所有端（快照域，见 state-ws）
-        ['notesRoots', (v) => set({ notesRoots: (v as NotesRoot[]) ?? [] })]
+        ['skills', (v) => set({ skills: (v as SkillListResult | null) ?? null })]
       ]
       const offs = bindings.map(([key, setter]) => {
         const apply = () => setter(getSnapshot(key))
@@ -884,8 +836,6 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
       }
     },
 
-    /** @deprecated 兼容旧调用方，统一走恢复锁、进程重连与历史同步。 */
-    restartAcpSession: (_agentId, conversationId) => get().reloadAcpSession(conversationId),
 
     // ---------- 配置类动作 ----------
     saveAcpAgent: (input) => withRefresh(() => requireApi().saveAcpAgent(input)),
@@ -1649,36 +1599,6 @@ export const createServerListsSlice: StateCreator<AgentStore, [], [], ServerList
     listTerminalShells: () => {
       const api = get().getApi()
       return api ? api.listTerminalShells() : Promise.reject(new Error('未连接服务端'))
-    },
-
-    // ---------- 笔记（登记目录 + 管理其中的 Markdown） ----------
-    /**
-     * 登记一个目录为笔记根。成功**刷一遍全量列表**（与其他配置类动作一致）——
-     * 清单是快照域，WS 也会推，但那是异步的，刷一次能让「刚加的那条」立刻在侧栏出现。
-     */
-    addNotesRoot: async (input) => {
-      const api = get().getApi()
-      if (!api) {
-        get().setError('未连接服务端')
-        return null
-      }
-      try {
-        const root = await api.addNotesRoot(input)
-        await get().refresh()
-        return root
-      } catch (err) {
-        get().setError(errorMessage(err))
-        return null
-      }
-    },
-    removeNotesRoot: (id) => withRefresh(() => requireApi().removeNotesRoot(id)),
-    // 文件操作是**一问一答**：原样透传 api 的 Promise（错误抛给调用方 —— 树 / 编辑器
-    // 要显示「为什么没读出来」，在这里吞掉就只剩一句「加载失败」）。
-    listNoteFiles: (rootId, dir = '') => requireApi().listNoteFiles(rootId, dir),
-    readNoteFile: (rootId, path) => requireApi().readNoteFile(rootId, path),
-    writeNoteFile: (rootId, path, content) => requireApi().writeNoteFile(rootId, path, content),
-    createNoteFile: (rootId, dir = '') => requireApi().createNoteFile(rootId, dir),
-    renameNoteFile: (rootId, path, name) => requireApi().renameNoteFile(rootId, path, name),
-    deleteNoteFile: (rootId, path) => requireApi().deleteNoteFile(rootId, path)
+    }
   }
 }

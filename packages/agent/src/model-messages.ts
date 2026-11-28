@@ -72,7 +72,7 @@ const MAX_STRUCTURED_OUTPUT_CHARS = 8000
 /**
  * 工具结果 -> 模型消息的输出结构（字符串走 text，其余序列化成 json；失败走 error-text）。
  *
- * 这里**不做落盘**：output-log（全文落盘 + 行号续读）只用于 bash /
+ * 这里**不做落盘**：output-log（全文落盘 + 行号续读）只用于 shell /
  * web_fetch（见 @fizz/tools 的 output-log.ts），其余工具的超长输出要么靠自己的参数
  * 分页（read / grep），要么在这里按字符上限截断 —— 结构化结果至少
  * 要有上限，否则一个返回大数组的工具能把整轮上下文顶爆。

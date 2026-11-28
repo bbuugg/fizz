@@ -12,7 +12,7 @@ import {
 import { cn } from "cn"
 import Color from "color"
 import { PipetteIcon } from "lucide-react"
-import { Slider } from "radix-ui"
+import { Slider as SliderPrimitive } from "@base-ui/react/slider"
 import {
     type ComponentProps,
     createContext,
@@ -252,54 +252,62 @@ export const ColorPickerSelection = memo(({ className, ...props }: ColorPickerSe
 
 ColorPickerSelection.displayName = "ColorPickerSelection"
 
-export type ColorPickerHueProps = ComponentProps<typeof Slider.Root>
+export type ColorPickerHueProps = ComponentProps<typeof SliderPrimitive.Root>
 
 export const ColorPickerHue = ({ className, ...props }: ColorPickerHueProps) => {
     const { hue, setHue } = useColorPicker()
 
     return (
-        <Slider.Root
+        <SliderPrimitive.Root
             className={cn("relative flex h-4 w-full touch-none", className)}
             max={360}
-            onValueChange={([hue]) => setHue(hue)}
+            onValueChange={(next) =>
+                setHue(Array.isArray(next) ? (next[0] ?? 0) : next)
+            }
             step={1}
             value={[hue]}
             {...props}
         >
-            <Slider.Track className="relative my-0.5 h-3 w-full grow rounded-full bg-[linear-gradient(90deg,#FF0000,#FFFF00,#00FF00,#00FFFF,#0000FF,#FF00FF,#FF0000)]">
-                <Slider.Range className="absolute h-full" />
-            </Slider.Track>
-            <Slider.Thumb className="block h-4 w-4 rounded-full border border-primary/50 bg-background shadow transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50" />
-        </Slider.Root>
+            <SliderPrimitive.Control className="relative flex h-4 w-full touch-none items-center">
+                <SliderPrimitive.Track className="relative my-0.5 h-3 w-full grow rounded-full bg-[linear-gradient(90deg,#FF0000,#FFFF00,#00FF00,#00FFFF,#0000FF,#FF00FF,#FF0000)]">
+                    <SliderPrimitive.Indicator className="h-full" />
+                    <SliderPrimitive.Thumb className="block h-4 w-4 rounded-full border border-primary/50 bg-background shadow transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50" />
+                </SliderPrimitive.Track>
+            </SliderPrimitive.Control>
+        </SliderPrimitive.Root>
     )
 }
 
-export type ColorPickerAlphaProps = ComponentProps<typeof Slider.Root>
+export type ColorPickerAlphaProps = ComponentProps<typeof SliderPrimitive.Root>
 
 export const ColorPickerAlpha = ({ className, ...props }: ColorPickerAlphaProps) => {
     const { alpha, setAlpha } = useColorPicker()
 
     return (
-        <Slider.Root
+        <SliderPrimitive.Root
             className={cn("relative flex h-4 w-full touch-none", className)}
             max={100}
-            onValueChange={([alpha]) => setAlpha(alpha)}
+            onValueChange={(next) =>
+                setAlpha(Array.isArray(next) ? (next[0] ?? 0) : next)
+            }
             step={1}
             value={[alpha]}
             {...props}
         >
-            <Slider.Track
-                className="relative my-0.5 h-3 w-full grow rounded-full"
-                style={{
-                    background:
-                        'url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAMUlEQVQ4T2NkYGAQYcAP3uCTZhw1gGGYhAGBZIA/nYDCgBDAm9BGDWAAJyRCgLaBCAAgXwixzAS0pgAAAABJRU5ErkJggg==") left center',
-                }}
-            >
-                <div className="absolute inset-0 rounded-full bg-gradient-to-r from-transparent to-black/50" />
-                <Slider.Range className="absolute h-full rounded-full bg-transparent" />
-            </Slider.Track>
-            <Slider.Thumb className="block h-4 w-4 rounded-full border border-primary/50 bg-background shadow transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50" />
-        </Slider.Root>
+            <SliderPrimitive.Control className="relative flex h-4 w-full touch-none items-center">
+                <SliderPrimitive.Track
+                    className="relative my-0.5 h-3 w-full grow rounded-full"
+                    style={{
+                        background:
+                            'url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAMUlEQVQ4T2NkYGAQYcAP3uCTZhw1gGGYhAGBZIA/nYDCgBDAm9BGDWAAJyRCgLaBCAAgXwixzAS0pgAAAABJRU5ErkJggg==") left center',
+                    }}
+                >
+                    <div className="absolute inset-0 rounded-full bg-gradient-to-r from-transparent to-black/50" />
+                    <SliderPrimitive.Indicator className="h-full rounded-full bg-transparent" />
+                    <SliderPrimitive.Thumb className="block h-4 w-4 rounded-full border border-primary/50 bg-background shadow transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50" />
+                </SliderPrimitive.Track>
+            </SliderPrimitive.Control>
+        </SliderPrimitive.Root>
     )
 }
 
@@ -338,20 +346,29 @@ export const ColorPickerEyeDropper = ({ className, ...props }: ColorPickerEyeDro
 
 export type ColorPickerOutputProps = ComponentProps<typeof SelectTrigger>
 
-const formats = ["hex", "rgb", "css", "hsl"]
+/**
+ * 输出格式的选项标题（`items` 与选项共用同一份，避免两处字面量漂移）。
+ * Base UI 不给 `items` 时触发器里显示的是原始 value（`hex` / `rgb` …）。
+ */
+const formatLabels: Record<string, string> = {
+    hex: "HEX",
+    rgb: "RGB",
+    css: "CSS",
+    hsl: "HSL",
+}
 
 export const ColorPickerOutput = ({ className, ...props }: ColorPickerOutputProps) => {
     const { mode, setMode } = useColorPicker()
 
     return (
-        <Select onValueChange={setMode} value={mode}>
+        <Select items={formatLabels} onValueChange={(next) => next && setMode(next)} value={mode}>
             <SelectTrigger className={cn("h-8 w-20 shrink-0 text-xs", className)} {...props}>
                 <SelectValue placeholder="Mode" />
             </SelectTrigger>
             <SelectContent>
-                {formats.map(format => (
-                    <SelectItem className="text-xs" key={format} value={format}>
-                        {format.toUpperCase()}
+                {Object.entries(formatLabels).map(([value, label]) => (
+                    <SelectItem className="text-xs" key={value} value={value}>
+                        {label}
                     </SelectItem>
                 ))}
             </SelectContent>

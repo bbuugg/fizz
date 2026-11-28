@@ -119,7 +119,7 @@ describe('容器 Agent 装配', () => {
         dir: '/workspace/.agents/skills/example',
         file: body.skills[0]!.path
       }])
-      const confirmation = options.requestConfirm!({ toolCallId: 'command-1', toolName: 'bash', command: 'pwd' })
+      const confirmation = options.requestConfirm!({ toolCallId: 'command-1', toolName: 'shell', command: 'pwd' })
       const followup = mocks.buildAskFollowupTool.mock.calls[0]![0].ask({ question: '继续？' })
       const frames = res.write.mock.calls
         .map(([chunk]) => String(chunk))

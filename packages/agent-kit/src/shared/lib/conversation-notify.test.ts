@@ -32,7 +32,7 @@ function confirmEvent(
       id: 'confirm-1',
       requestId: 'req-1',
       toolCallId: 'tool-1',
-      toolName: 'bash',
+       toolName: 'shell',
       command: 'rm -rf build',
       ...confirm
     }
@@ -98,8 +98,8 @@ describe('conversationNotify · 用户正看着这一屏', () => {
 describe('conversationNotify · 内容与 tag', () => {
   it('审批优先给命令，没有命令退回工具名', () => {
     expect(conversationNotify(confirmEvent(), null).options.body).toBe('等待你确认：rm -rf build')
-    const noCommand = confirmEvent({ command: '   ', toolName: 'bash' })
-    expect(conversationNotify(noCommand, null).options.body).toBe('等待你确认：bash')
+    const noCommand = confirmEvent({ command: '   ', toolName: 'shell' })
+    expect(conversationNotify(noCommand, null).options.body).toBe('等待你确认：shell')
   })
 
   it('提问取第一题的问题文本，没题就退回表单标题', () => {

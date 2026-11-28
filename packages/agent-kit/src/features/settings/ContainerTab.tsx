@@ -244,7 +244,7 @@ function ImageRow({
       {users.length > 0 && (
         <div className="space-y-1 rounded-md bg-muted/40 p-2">
           <div className="text-xs leading-5 text-muted-foreground">
-            {tr('{count} 个项目在用这个镜像（重建镜像后需重建容器才生效）。重建容器会重启容器，正在运行的会话会中断。', { count: users.length })}
+            {tr('{count} 个项目在用这个镜像；重建容器会中断运行中的会话。', { count: users.length })}
           </div>
           {users.map((user) => (
             <div key={user.id} className="flex items-center gap-2">
@@ -367,11 +367,11 @@ function PublicAccessSection({ app }: { app: AgentApp }) {
         {tr('公网访问')}
       </div>
       <p className="text-xs leading-5 text-muted-foreground">
-        {tr('每个容器项目会在每个域名下获得')}
+        {tr('每个项目会获得')}
         <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
           &lt;项目 slug&gt;.&lt;域名&gt;
         </code>
-        {tr('子域；不填则只能用内网地址。')}
+        {tr('子域。')}
       </p>
 
       <div className="space-y-2">
@@ -603,7 +603,7 @@ export function ContainerTab({ app }: { app: AgentApp }) {
         <div className="min-w-0 flex-1">
           <h3 className="text-sm font-medium">{tr('容器运行环境')}</h3>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            {tr('容器型项目在独立容器中运行；镜像全局共享，重建会影响所有使用它的项目。')}
+            {tr('镜像全局共享，重建会影响所有项目')}
           </p>
         </div>
         <Button
@@ -654,7 +654,7 @@ export function ContainerTab({ app }: { app: AgentApp }) {
             onRebuild={() => undefined}
           />
           <p className="-mt-1 px-1 text-[11px] leading-4 text-muted-foreground">
-            {tr('基础层被所有环境镜像共用：重建它之后，环境镜像还要各自重建一次才会用到新层。')}
+            {tr('重建基础层后，环境镜像需各自重建')}
           </p>
 
           {snapshot.envs.map((info) => (

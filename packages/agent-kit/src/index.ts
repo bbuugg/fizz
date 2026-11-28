@@ -32,20 +32,6 @@ export { hydrateConnection } from '@fizz/agent-kit/shared/lib/stores/agent-store
 export { toolErrorText, textOf, toolState, toolLabel } from '@fizz/agent-kit/shared/lib/parts'
 
 /**
- * 侧边栏折叠状态：导出给**另一棵 React 树**（宿主窗口）用，保证它和 AgentApp 读同一个值。
- *
- * ⚠️ 目前包外没有调用方：desktop 自绘标题栏那颗「收起侧栏」按钮已在标题栏精简时移除，
- * 侧栏自己那几颗也在改成 `SidebarTopBar` 时移除（那个动作现在归活动栏）。
- * 留着是给宿主备用的公共 API；原先还有一个 `toggleSidebarCollapsed`（取反），
- * 随最后一批按钮一起删了。
- */
-export {
-  useSidebarCollapsed,
-  setSidebarCollapsed,
-  getSidebarCollapsed
-} from '@fizz/agent-kit/shared/lib/sidebar-collapsed'
-
-/**
  * 自定义标题栏（desktop 宿主，另一棵 React 树）的功能按钮：按钮按下时广播一个动作，
  * 由 app-shell 接住执行（复用快捷键那套分发）。参数是动作名字符串 —— 宿主不必为了
  * 一个名字把 shortcuts 模块整个拖进来。

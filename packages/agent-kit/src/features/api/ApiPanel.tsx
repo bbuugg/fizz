@@ -777,6 +777,16 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
     />
   )
 
+  /**
+   * 三处分组下拉的可见标题（`items` 与列表共用同一份摊平结果，避免两处字面量漂移）。
+   * Base UI 不给 `items` 时触发器里显示的是原始 value（分组 id / 哨兵值）。
+   */
+  const groupItems: Record<string, string> = Object.fromEntries(
+    flatGroupOptions(groupTree).map((o) => [o.value, o.label])
+  )
+  const topGroupItems: Record<string, string> = { [TOP_GROUP]: '顶级分组', ...groupItems }
+  const noGroupItems: Record<string, string> = { [NO_GROUP]: '未分组', ...groupItems }
+
   return (
     <SectionShell minHeight={280}>
       {/*
@@ -847,6 +857,7 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
             {!groupEdit?.id && (
               <Select
                 value={groupEdit?.parentId ?? TOP_GROUP}
+                items={topGroupItems}
                 onValueChange={(v) =>
                   setGroupEdit((g) => (g ? { ...g, parentId: v === TOP_GROUP ? undefined : v } : g))
                 }
@@ -891,13 +902,14 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>修改分组与名称</DialogTitle>
-            <DialogDescription>确定后立即生效，不需要再去详情页按「保存」。</DialogDescription>
+            <DialogDescription>立即生效，无需再保存。</DialogDescription>
           </DialogHeader>
           <div className="grid gap-3">
             <div className="grid gap-1.5">
               <Label htmlFor="api-req-group">分组</Label>
               <Select
                 value={metaGroupId ?? NO_GROUP}
+                items={noGroupItems}
                 onValueChange={(v) => setMetaGroupId(v === NO_GROUP ? undefined : v)}
               >
                 <SelectTrigger variant="muted" id="api-req-group" className="w-full">
@@ -943,10 +955,10 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
           <DialogHeader>
             <DialogTitle>移动分组「{moveTarget?.name ?? ''}」</DialogTitle>
             <DialogDescription>
-              选择新的父分组：选「顶级分组」把它移到最外层；该分组连同所有子分组一起移动。
+              连同所有子分组一起移动。
             </DialogDescription>
           </DialogHeader>
-          <Select value={moveParent} onValueChange={setMoveParent}>
+          <Select value={moveParent} items={topGroupItems} onValueChange={setMoveParent}>
             <SelectTrigger variant="muted" className="w-full">
               <SelectValue placeholder="选择父分组" />
             </SelectTrigger>
@@ -1038,8 +1050,8 @@ function ApiSidebarBody({ app }: { app: AgentApp }) {
             <DialogTitle>导入 cURL 命令</DialogTitle>
             <DialogDescription>
               {curlGroupId
-                ? '粘贴 curl 命令，解析后保存为一条新请求并放入当前分组'
-                : '粘贴 curl 命令，解析后保存为一条新的请求并打开'}
+                ? '解析后保存到当前分组'
+                : '解析后保存并打开'}
             </DialogDescription>
           </DialogHeader>
           <Textarea

@@ -14,7 +14,6 @@ import { AGENT } from './dict/agent'
 import { CHAT } from './dict/chat'
 import { HOSTS } from './dict/hosts'
 import { API } from './dict/api'
-import { NOTES } from './dict/notes'
 import { WORKSPACE } from './dict/workspace'
 
 export const EN: Record<string, string> = {
@@ -24,6 +23,5 @@ export const EN: Record<string, string> = {
   ...CHAT,
   ...HOSTS,
   ...API,
-  ...NOTES,
   ...WORKSPACE,
 }

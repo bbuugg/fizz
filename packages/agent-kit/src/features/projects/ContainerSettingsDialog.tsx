@@ -193,10 +193,10 @@ export function ContainerSettingsDialog({
         <DialogHeader>
           <DialogTitle>容器设置{workspace ? ` · ${workspace.name}` : ''}</DialogTitle>
           <DialogDescription>
-            限制这个项目容器能用的内存与 CPU。留空 = 不限制（用宿主机的全部资源）。
+            留空 = 不限制。
             <br />
-            这两项只在容器创建时生效：改完选「仅保存」不会打断正在跑的容器，下次启动自动按新配置重建；
-            选「保存并重启」会立刻停掉并重建容器，正在跑的会话会中断（<span className="font-mono">/workspace</span> 里的项目文件不受影响）。
+            「仅保存」下次启动生效；「保存并重启」会立即重建容器、中断正在跑的会话（
+            <span className="font-mono">/workspace</span> 里的文件不受影响）。
           </DialogDescription>
         </DialogHeader>
 

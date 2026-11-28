@@ -1,15 +1,25 @@
 import * as React from "react"
 import { cva } from "class-variance-authority"
 import { cn } from "cn"
-import { NavigationMenu as NavigationMenuPrimitive } from "radix-ui"
+import { NavigationMenu as NavigationMenuPrimitive } from "@base-ui/react/navigation-menu"
 import { ChevronDownIcon } from "lucide-react"
+import { asChildSlot } from "./polymorphic"
 
+/**
+ * 导航菜单。
+ *
+ * ⚠️ 结构变化最大的一支：Radix 的 `Viewport` 是挂在 Root 上、由 Root 自己量宽高的
+ * 一块**共享面板**；Base UI 的弹层模型是真正的锚定定位 ——
+ * `Portal > Positioner > Popup > Viewport`，每个 `Content` 在被激活时被搬进 `Viewport`。
+ * `viewport` 布尔值因此没有对应物（保留入参只为调用点不用改）。
+ */
 function NavigationMenu({
   className,
   children,
   viewport = true,
   ...props
-}: React.ComponentProps<typeof NavigationMenuPrimitive.Root> & {
+}: NavigationMenuPrimitive.Root.Props & {
+  /** @deprecated Base UI 没有这个开关，恒为「有共享面板」；传 false 也不会变 */
   viewport?: boolean
 }) {
   return (
@@ -31,7 +41,7 @@ function NavigationMenu({
 function NavigationMenuList({
   className,
   ...props
-}: React.ComponentProps<typeof NavigationMenuPrimitive.List>) {
+}: NavigationMenuPrimitive.List.Props) {
   return (
     <NavigationMenuPrimitive.List
       data-slot="navigation-menu-list"
@@ -47,7 +57,7 @@ function NavigationMenuList({
 function NavigationMenuItem({
   className,
   ...props
-}: React.ComponentProps<typeof NavigationMenuPrimitive.Item>) {
+}: NavigationMenuPrimitive.Item.Props) {
   return (
     <NavigationMenuPrimitive.Item
       data-slot="navigation-menu-item"
@@ -58,14 +68,14 @@ function NavigationMenuItem({
 }
 
 const navigationMenuTriggerStyle = cva(
-  "group/navigation-menu-trigger inline-flex h-8 w-max items-center justify-center rounded-lg px-2.5 py-1.5 text-sm font-medium transition-all outline-none hover:bg-muted focus:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 data-popup-open:bg-muted/50 data-popup-open:hover:bg-muted data-open:bg-muted/50 data-open:hover:bg-muted data-open:focus:bg-muted"
+  "group/navigation-menu-trigger inline-flex h-8 w-max items-center justify-center rounded-lg px-2.5 py-1.5 text-sm font-medium transition-all outline-none hover:bg-muted focus:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 data-popup-open:bg-muted/50 data-popup-open:hover:bg-muted data-popup-open:focus:bg-muted"
 )
 
 function NavigationMenuTrigger({
   className,
   children,
   ...props
-}: React.ComponentProps<typeof NavigationMenuPrimitive.Trigger>) {
+}: NavigationMenuPrimitive.Trigger.Props) {
   return (
     <NavigationMenuPrimitive.Trigger
       data-slot="navigation-menu-trigger"
@@ -73,7 +83,10 @@ function NavigationMenuTrigger({
       {...props}
     >
       {children}{" "}
-      <ChevronDownIcon className="relative top-px ml-1 size-3 transition duration-300 group-data-popup-open/navigation-menu-trigger:rotate-180 group-data-open/navigation-menu-trigger:rotate-180" aria-hidden="true" />
+      <ChevronDownIcon
+        className="relative top-px ml-1 size-3 transition duration-300 group-data-popup-open/navigation-menu-trigger:rotate-180"
+        aria-hidden="true"
+      />
     </NavigationMenuPrimitive.Trigger>
   )
 }
@@ -81,12 +94,14 @@ function NavigationMenuTrigger({
 function NavigationMenuContent({
   className,
   ...props
-}: React.ComponentProps<typeof NavigationMenuPrimitive.Content>) {
+}: NavigationMenuPrimitive.Content.Props) {
   return (
     <NavigationMenuPrimitive.Content
       data-slot="navigation-menu-content"
       className={cn(
-        "top-0 left-0 w-full p-1 ease-[cubic-bezier(0.22,1,0.36,1)] group-data-[viewport=false]/navigation-menu:top-full group-data-[viewport=false]/navigation-menu:mt-1.5 group-data-[viewport=false]/navigation-menu:overflow-hidden group-data-[viewport=false]/navigation-menu:rounded-lg group-data-[viewport=false]/navigation-menu:bg-popover group-data-[viewport=false]/navigation-menu:text-popover-foreground group-data-[viewport=false]/navigation-menu:shadow group-data-[viewport=false]/navigation-menu:ring-1 group-data-[viewport=false]/navigation-menu:ring-foreground/10 group-data-[viewport=false]/navigation-menu:duration-300 data-[motion=from-end]:slide-in-from-right-52 data-[motion=from-start]:slide-in-from-left-52 data-[motion=to-end]:slide-out-to-right-52 data-[motion=to-start]:slide-out-to-left-52 data-[motion^=from-]:animate-in data-[motion^=from-]:fade-in data-[motion^=to-]:animate-out data-[motion^=to-]:fade-out **:data-[slot=navigation-menu-link]:focus:ring-0 **:data-[slot=navigation-menu-link]:focus:outline-none md:absolute md:w-auto group-data-[viewport=false]/navigation-menu:data-open:animate-in group-data-[viewport=false]/navigation-menu:data-open:fade-in-0 group-data-[viewport=false]/navigation-menu:data-open:zoom-in-95 group-data-[viewport=false]/navigation-menu:data-closed:animate-out group-data-[viewport=false]/navigation-menu:data-closed:fade-out-0 group-data-[viewport=false]/navigation-menu:data-closed:zoom-out-95",
+        // 进出场方向：Radix 的 `data-motion=from-start/to-end…` 换成了
+        // `data-activation-direction=left|right|up|down`（新激活的触发器相对上一个的方向）。
+        "top-0 left-0 w-full p-1 ease-[cubic-bezier(0.22,1,0.36,1)] data-[activation-direction=left]:slide-in-from-right-52 data-[activation-direction=right]:slide-in-from-left-52 **:data-[slot=navigation-menu-link]:focus:ring-0 **:data-[slot=navigation-menu-link]:focus:outline-none md:absolute md:w-auto",
         className
       )}
       {...props}
@@ -94,35 +109,51 @@ function NavigationMenuContent({
   )
 }
 
+/**
+ * 共享面板：`Portal > Positioner > Popup > Viewport`。
+ *
+ * 名字沿用 `NavigationMenuViewport`，但它现在**必须**和 `Content` 同处一棵树
+ *（`Content` 会被 Base UI 搬进这里的 `Viewport`），不能再当成一个独立浮层随意摆放。
+ */
 function NavigationMenuViewport({
   className,
   ...props
-}: React.ComponentProps<typeof NavigationMenuPrimitive.Viewport>) {
+}: NavigationMenuPrimitive.Viewport.Props) {
   return (
-    <div
-      className={cn(
-        "absolute top-full left-0 isolate z-50 flex justify-center"
-      )}
-    >
-      <NavigationMenuPrimitive.Viewport
-        data-slot="navigation-menu-viewport"
-        className={cn(
-          "origin-top-center relative mt-1.5 h-(--radix-navigation-menu-viewport-height) w-full overflow-hidden rounded-lg bg-popover text-popover-foreground shadow ring-1 ring-foreground/10 duration-100 md:w-(--radix-navigation-menu-viewport-width) data-open:animate-in data-open:zoom-in-90 data-closed:animate-out data-closed:zoom-out-90",
-          className
-        )}
-        {...props}
-      />
-    </div>
+    <NavigationMenuPrimitive.Portal>
+      <NavigationMenuPrimitive.Positioner
+        sideOffset={6}
+        className="isolate z-50 flex justify-center"
+      >
+        <NavigationMenuPrimitive.Popup
+          className="origin-(--transform-origin) overflow-hidden rounded-lg bg-popover text-popover-foreground shadow ring-1 ring-foreground/10 duration-100 data-open:animate-in data-open:zoom-in-90 data-closed:animate-out data-closed:zoom-out-90"
+        >
+          <NavigationMenuPrimitive.Viewport
+            data-slot="navigation-menu-viewport"
+            className={cn(
+              // 高度 / 宽度改读 Popup 上的 `--popup-height` / `--popup-width`
+              //（Radix 是 `--radix-navigation-menu-viewport-*`）。
+              "relative h-(--popup-height) w-(--popup-width) overflow-hidden",
+              className
+            )}
+            {...props}
+          />
+        </NavigationMenuPrimitive.Popup>
+      </NavigationMenuPrimitive.Positioner>
+    </NavigationMenuPrimitive.Portal>
   )
 }
 
 function NavigationMenuLink({
+  asChild,
+  children,
   className,
   ...props
-}: React.ComponentProps<typeof NavigationMenuPrimitive.Link>) {
+}: NavigationMenuPrimitive.Link.Props & { asChild?: boolean }) {
   return (
     <NavigationMenuPrimitive.Link
       data-slot="navigation-menu-link"
+      {...asChildSlot(asChild, children)}
       className={cn(
         "flex items-center gap-2 rounded-lg p-2 text-sm transition-all outline-none hover:bg-muted focus:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-1 in-data-[slot=navigation-menu-content]:rounded-md data-active:bg-muted/50 data-active:hover:bg-muted data-active:focus:bg-muted [&_svg:not([class*='size-'])]:size-4",
         className
@@ -132,21 +163,28 @@ function NavigationMenuLink({
   )
 }
 
+/**
+ * 触发器上的小箭头。
+ *
+ * ⚠️ 语义与 Radix 的 `Indicator` **不同**：Radix 那颗会跟着当前激活的触发器在列表下方
+ * 滑动；Base UI 的 `Icon` 只是 Trigger 内部的一枚图标（`data-popup-open` 时高亮）。
+ * 没有「跟随激活项滑动」的对应部件 —— 需要那个视觉就用 Popup 里的 `Arrow`。
+ */
 function NavigationMenuIndicator({
   className,
   ...props
-}: React.ComponentProps<typeof NavigationMenuPrimitive.Indicator>) {
+}: NavigationMenuPrimitive.Icon.Props) {
   return (
-    <NavigationMenuPrimitive.Indicator
+    <NavigationMenuPrimitive.Icon
       data-slot="navigation-menu-indicator"
       className={cn(
-        "top-full z-1 flex h-1.5 items-end justify-center overflow-hidden data-[state=hidden]:animate-out data-[state=hidden]:fade-out data-[state=visible]:animate-in data-[state=visible]:fade-in",
+        "top-full z-1 flex h-1.5 items-end justify-center overflow-hidden",
         className
       )}
       {...props}
     >
       <div className="relative top-[60%] h-2 w-2 rotate-45 rounded-tl-sm bg-border shadow-md" />
-    </NavigationMenuPrimitive.Indicator>
+    </NavigationMenuPrimitive.Icon>
   )
 }
 

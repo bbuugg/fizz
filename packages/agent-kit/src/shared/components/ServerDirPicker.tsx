@@ -54,6 +54,7 @@ import {
 import { Input } from '@fizz/ui/input'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
+import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
 import { formatShortcut } from '@fizz/agent-kit/shared/lib/shortcuts'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
 import type { AgentApp } from '@fizz/agent-kit/shared/hooks/useAgentApp'
@@ -131,6 +132,7 @@ export function DirectoryBrowser({
   onPick: (path: string) => void
 }) {
   const tr = useT()
+  const isMobile = useIsMobile()
   const [data, setData] = useState<DirPickerListing | null>(null)
   /** 输入框里的路径：回车才跳转，免得边打字边发请求 */
   const [draft, setDraft] = useState('')
@@ -348,9 +350,13 @@ export function DirectoryBrowser({
                 视觉重量比内容本身还重。动作与快捷键放进 tooltip（⌘/Ctrl + ⏎）。
               */}
               <IconTip
-                label={tr('选择当前目录（{shortcut}）', {
-                  shortcut: formatShortcut('CommandOrControl+Enter')
-                })}
+                label={
+                  isMobile
+                    ? tr('选择当前目录')
+                    : tr('选择当前目录（{shortcut}）', {
+                        shortcut: formatShortcut('CommandOrControl+Enter')
+                      })
+                }
               >
                 <Button
                   variant="ghost"
@@ -595,6 +601,7 @@ export function ServerDirPicker({
   initialPath?: string
 }) {
   const tr = useT()
+  const isMobile = useIsMobile()
   return (
     <CommandDialog
       open={open}
@@ -602,7 +609,7 @@ export function ServerDirPicker({
       title={title ?? tr('选择目录')}
       description={
         description ??
-        tr('这里列的是服务端上的目录（Agent 就跑在那台机器上）。选中的目录会登记为项目。')
+        tr('选中的目录会登记为项目。')
       }
       // 面板自己不画标题 / 关闭叉：跟命令面板同一副外壳，退出走 Esc / 点外面
       showCloseButton={false}
@@ -641,12 +648,14 @@ export function ServerDirPicker({
         就白设了。左组加 `min-w-0` 才压得窄 —— flex 项默认 `min-width: auto`，内容宽就顶开。
       */}
       <CommandFooter className="flex-nowrap items-center justify-between gap-x-3">
-        <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-          <CommandFooterHint keys={['↑', '↓']} label={tr('选择')} />
-          <CommandFooterHint keys={['⏎']} label={tr('进入')} />
-          <CommandFooterHint keys={['Backspace']} label={tr('上一级')} />
-          <CommandFooterHint keys={['Esc']} label={tr('关闭')} />
-        </span>
+        {!isMobile && (
+          <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+            <CommandFooterHint keys={['↑', '↓']} label={tr('选择')} />
+            <CommandFooterHint keys={['⏎']} label={tr('进入')} />
+            <CommandFooterHint keys={['Backspace']} label={tr('上一级')} />
+            <CommandFooterHint keys={['Esc']} label={tr('关闭')} />
+          </span>
+        )}
         {/* 远端工作区（`source` 是 SFTP）不给本机入口：那目录不在这台机器的文件系统里 */}
         {source || !onPickNative ? null : (
           <SystemDirPickerLink className="shrink-0" onPick={onPickNative} />

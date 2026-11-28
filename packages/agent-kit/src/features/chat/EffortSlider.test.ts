@@ -75,8 +75,8 @@ describe('动态档位滑块', () => {
     expect(onChange).not.toHaveBeenCalled()
     slider.onPointerUpCapture!(pointer(30))
     // 故意传旧快照；应以最新 previewRef 吸附到第三档。
-    slider.onValueCommit!([0])
-    slider.onValueCommit!([0])
+    slider.onValueCommitted!([0])
+    slider.onValueCommitted!([0])
     expect(onChange.mock.calls).toEqual([['vendor:deep']])
   })
 
@@ -86,7 +86,7 @@ describe('动态档位滑块', () => {
     slider.onPointerDownCapture!(pointer())
     slider.onValueChange!([2])
     slider.onPointerCancel!(pointer())
-    slider.onValueCommit!([2])
+    slider.onValueCommitted!([2])
     expect(onChange).not.toHaveBeenCalled()
     if (cleanup) cleanup()
     slider.onKeyDownCapture!(key('End'))
@@ -99,7 +99,7 @@ describe('动态档位滑块', () => {
     expect(html).toContain('disabled=""')
     slider.onPointerDownCapture!(pointer())
     slider.onValueChange!([2])
-    slider.onValueCommit!([2])
+    slider.onValueCommitted!([2])
     slider.onKeyDownCapture!(key('End'))
     expect(onChange).not.toHaveBeenCalled()
   })
@@ -125,7 +125,7 @@ describe('动态档位滑块', () => {
     expect(slider.thumbProps?.['aria-valuetext']).toBe('未选择')
     expect(html).not.toContain('aria-pressed="true"')
     slider.onPointerDownCapture!(pointer())
-    slider.onValueCommit!([0])
+    slider.onValueCommitted!([0])
     expect(onChange).toHaveBeenCalledWith('vendor:eco')
   })
 

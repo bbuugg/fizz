@@ -47,7 +47,6 @@ import type {
   AiReasoningEffort,
   AskFollowupAnswer,
   BrowserSettings,
-  CollabSettings,
   UploadFileRef,
 } from "@fizz/contracts";
 import { DEFAULT_BROWSER_SETTINGS } from "@fizz/contracts";
@@ -89,7 +88,7 @@ export type { QueuedMessage };
  * 现在**所有**会话级动作都收 `scope?: string | null`（`undefined` = 活跃会话，`null` =
  * 没有会话，有值 = 那条），这里逐个把 `conversationId` 传下去：`send` / `steer` / `stop` /
  * `stopCommand` / 队列与插话的全部增删改 / 队列泵 `pump` / 消息的删除与编辑重发 /
- * 审批与追问的答复 / 会话分叉 `forkConversation` / 权限档 / 上下文压缩 / 协作配置 /
+ * 审批与追问的答复 / 会话分叉 `forkConversation` / 权限档 / 上下文压缩 /
  * 四个现场 setter。`scripts/check-conversation-scope.mjs` 保证 store 里不再出现
  * 「读焦点当默认目标」的写法（新增动作漏传 scope 会在那里红）。
  *
@@ -162,8 +161,6 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     scripts: s.scripts,
     /** 脚本分组（**单层**；侧栏归类 + 排序） */
     scriptGroups: s.scriptGroups,
-    /** 已登记的笔记根目录（侧栏「笔记」功能区的顶层；走快照域推送） */
-    notesRoots: s.notesRoots,
     /**
      * 本轮后端（null = 跟随默认）。**这个视图所属会话**的那份 —— 分屏时非焦点标签
      * 读的是它自己会话上的配置（见 `scopedSettingsOf`），不是焦点会话的。
@@ -222,14 +219,6 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     messages: activeSlice?.messages ?? NO_MESSAGES,
     /** 最近一次上下文交接文档（流式生成中 / 已完成）；null = 没有可展示的 */
     compaction: activeSlice?.compaction ?? null,
-    /** 协作会话的运行态（任务 / 消息 / Agent 状态 + 实时文本）；普通会话 = null */
-    collab: activeSlice?.collab ?? null,
-    /** 覆盖协作配置（增删改 Agent / 并行与单轮运行上限） */
-    saveCollabSettings: (settings: CollabSettings) =>
-      s.saveCollabSettings(settings, conversationId),
-    /** 取消协作会话里某个正在跑的子任务 */
-    cancelCollabTask: (taskId: string) =>
-      s.cancelCollabTask(taskId, conversationId),
     /**
      * 会话切换后历史还没拉回来的装载中标记（消息区此时显示装载中而不是旧列表）。
      *
@@ -365,7 +354,6 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     /** 重接一条进行中的对话（连接中断后把现场接回来；页面从后台回来时也会自动调） */
     reconnectRun: s.reconnectRun,
     newConversation: s.newConversation,
-    newCollabConversation: s.newCollabConversation,
     deleteConversation: s.deleteConversation,
     /**
      * 发送一轮。带上本视图的会话：分屏时两个标签同时可见，不能靠「谁是活跃会话」
@@ -413,8 +401,6 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     renameConversation: s.renameConversation,
     /** 归档 / 取消归档会话（不删数据；侧栏据此收进 / 放出「已归档」区） */
     archiveConversation: s.archiveConversation,
-    /** @deprecated 重启已合并至重新加载，兼容调用同样同步历史并共用恢复锁。 */
-    restartAcpSession: s.restartAcpSession,
     /** 统一 ACP 恢复：空闲时重连并同步历史，运行中只合并快照和接回直播。 */
     reloadAcpSession: s.reloadAcpSession,
     /**
@@ -651,21 +637,6 @@ export function agentAppFrom(s: AgentStore, conversationId: string | null) {
     deleteWorkspace: s.deleteWorkspace,
     /** 列服务端目录（只列子目录）：web 端「选服务端目录」弹窗用 */
     listServerDirs: s.listServerDirs,
-    /** 登记一个目录为笔记根（成功返回记录并刷新清单，失败 null） */
-    addNotesRoot: s.addNotesRoot,
-    /** 移除笔记根登记（只摘登记，不碰磁盘） */
-    removeNotesRoot: s.removeNotesRoot,
-    /**
-     * 笔记文件操作（一问一答，出错抛 `ApiError`）。
-     *
-     * 树是**懒加载**的：`listNoteFiles` 一次只列一层，展开子目录时再调一次。
-     */
-    listNoteFiles: s.listNoteFiles,
-    readNoteFile: s.readNoteFile,
-    writeNoteFile: s.writeNoteFile,
-    createNoteFile: s.createNoteFile,
-    renameNoteFile: s.renameNoteFile,
-    deleteNoteFile: s.deleteNoteFile,
     /**
      * 在服务端某个目录下新建文件夹（同上，web 端专用），返回新目录的绝对路径。
      *

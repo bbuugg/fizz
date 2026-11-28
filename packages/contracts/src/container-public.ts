@@ -76,22 +76,10 @@ function normalizeDomainList(value: unknown): string[] {
   return out
 }
 
-/**
- * 收敛：手改坏的数据文件 / 老版本缺字段都不该让读接口抛错（同 `normalizeSystemMonitorSettings`）。
- *
- * ⚠️ 兼容**老形状**：v2 及以前这里存的是单个 `domain: string`。读时若没有 `domains` 数组、
- * 但有 `domain`，就把它包成一项 —— 老用户配的那个域名升级后照常生效。归一化回去之后再落盘
- * 就是新形状（见 `store.ts` 的 `DATA_VERSION` 迁移）。
- */
+/** 收敛：手改坏的数据文件 / 缺字段都不该让读接口抛错（同 `normalizeSystemMonitorSettings`）。 */
 export function normalizeContainerPublicSettings(value: unknown): ContainerPublicSettings {
-  const raw = value as { domains?: unknown; domain?: unknown } | undefined
-  const source =
-    raw?.domains !== undefined
-      ? raw.domains
-      : raw?.domain !== undefined && raw.domain !== ''
-        ? [raw.domain]
-        : []
-  return { domains: normalizeDomainList(source) }
+  const raw = value as { domains?: unknown } | undefined
+  return { domains: normalizeDomainList(raw?.domains) }
 }
 
 /**

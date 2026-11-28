@@ -155,7 +155,7 @@ export function SystemMonitorBadge({ api }: { api: AgentApi | null }) {
         // `GLASS_PANEL_CLASS`，跟随指针的边缘流光由 `LiquidGlassPanel` 铺。
         // 滚动下放到内层，保证流光钉在面板上、不随内容滚走。
         className={cn(
-          'h-[min(380px,var(--radix-popover-content-available-height,380px))] w-[380px] max-w-[85vw] overflow-hidden rounded-xl p-0 ring-0',
+          'h-[min(380px,var(--available-height,380px))] w-[380px] max-w-[85vw] overflow-hidden rounded-xl p-0 ring-0',
           glass.className
         )}
         {...glass.handlers}

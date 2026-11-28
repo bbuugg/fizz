@@ -111,8 +111,7 @@ export function DeleteConversationDialog({
             <span className="min-w-0 flex-1">
               <span className="block font-medium">同时删除 ACP agent 侧的会话</span>
               <span className="block text-xs text-muted-foreground">
-                本地只存绑定关系，历史在 agent 侧；勾选后调它的 session/delete
-                （agent 不支持时只删本地）。
+                历史在 agent 侧，勾选后一并删除
               </span>
             </span>
           </label>

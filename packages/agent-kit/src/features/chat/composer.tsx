@@ -23,9 +23,11 @@ import { WorkBars } from '@fizz/agent-kit/shared/ai-elements/work-bars'
 import { IconTip } from '@fizz/agent-kit/shared/components/IconTip'
 import { useVoiceInput } from '@fizz/agent-kit/shared/hooks/useVoiceInput'
 import { useTheme } from '@fizz/agent-kit/shared/hooks/useTheme'
+import { useIsMobile } from '@fizz/agent-kit/shared/hooks/useIsMobile'
 import { usePrefersReducedMotion } from '@fizz/agent-kit/shared/hooks/usePrefersReducedMotion'
 import { APP_EVENTS, type VoiceShortcutDetail } from '@fizz/agent-kit/shared/lib/app-events'
 import { permissionOption, permissionOptions } from '@fizz/agent-kit/shared/lib/permission'
+import { insertTranscript } from '@fizz/agent-kit/shared/lib/voice-insert'
 import { useT } from '@fizz/agent-kit/shared/lib/language'
 import { t } from '@fizz/i18n'
 import type { SlashCommand, SlashCommandContext } from '@fizz/agent-kit/shared/lib/slash-commands'
@@ -50,7 +52,6 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@fizz/ui/select'
 import type { AiPermissionMode } from '@fizz/contracts/types'
 import {
-  AtSign,
   ChevronDown,
   Clock,
   Eye,
@@ -195,14 +196,6 @@ interface ComposerProps {
   /** 命令执行上下文（与 slashCommands 一同传） */
   slashContext?: SlashCommandContext
   /**
-   * `@` 点名的候选 Agent（只在多智能体协作会话传）。
-   *
-   * 输入框里敲 `@` 时在**上方**浮出名单（与斜线命令同一套浮层逻辑）：↑↓ 选择、
-   * Tab / Enter 补全、Esc 只关浮层。补全只是把 `@名字` 写进草稿 —— 真正的路由在
-   * 服务端按消息文本解析（见 `@fizz/agent` 的 `resolveCollabMentions`）。
-   */
-  mentionCandidates?: Array<{ id: string; name: string; role?: string }>
-  /**
    * 紧凑输入框：初始高度收成一行的量级（而不是默认的三行）。
    *
    * 给**窄面板**里的助手用 —— 面板只有 ~384px 宽（可拖到 320），默认 `min-h-[72px]`
@@ -253,12 +246,12 @@ export function Composer({
   onAttachFiles,
   slashCommands,
   slashContext,
-  mentionCandidates,
   compact = false,
   voiceScope
 }: ComposerProps) {
   // 订阅语言：下面这些文案都在渲染期求值（`t()`）
   const tr = useT()
+  const isMobile = useIsMobile()
   /** 流光按当前实际亮暗调色（库自带 dark / light 两套透明度，不能用系统偏好猜） */
   const { theme } = useTheme()
   const reducedMotion = usePrefersReducedMotion()
@@ -312,49 +305,6 @@ export function Composer({
     command.run(slashContext, args)
   }
 
-  // ---------- @ 点名 ----------
-  /**
-   * 只认「`@` 前面是空白 / 标点或行首」且到光标为止没有空白的那一小段。
-   * 名字本身可以带空格，那种情况用户只能从候选里选（选中后写入完整的 `@名字`）。
-   */
-  const [caret, setCaret] = useState(value.length)
-  const [mentionDismissed, setMentionDismissed] = useState(false)
-  const [mentionHighlight, setMentionHighlight] = useState(0)
-  const mentionToken = useMemo(() => {
-    if (disabled || !mentionCandidates?.length) return null
-    const before = value.slice(0, caret)
-    const match = /(?:^|[\s(（，,：:；;])@([^\s@]*)$/.exec(before)
-    if (!match) return null
-    const query = match[1]
-    return { query, start: before.length - query.length - 1 }
-  }, [value, caret, disabled, mentionCandidates])
-  const mentionMatches = useMemo(() => {
-    if (!mentionToken || !mentionCandidates) return []
-    const q = mentionToken.query.trim().toLowerCase()
-    return mentionCandidates.filter(
-      (agent) =>
-        !q || agent.name.toLowerCase().includes(q) || (agent.role ?? '').toLowerCase().includes(q)
-    )
-  }, [mentionToken, mentionCandidates])
-  const mentionVisible =
-    !!mentionToken && !mentionDismissed && mentionMatches.length > 0 && !paletteOpen
-  useEffect(() => {
-    // 换一个 `@` 或继续打字后，Esc 关闭状态与高亮都复位
-    setMentionDismissed(false)
-    setMentionHighlight(0)
-  }, [mentionToken?.start, mentionToken?.query])
-  const completeMention = (agent: { name: string }): void => {
-    if (!mentionToken) return
-    const next = `${value.slice(0, mentionToken.start)}@${agent.name} ${value.slice(caret)}`
-    const position = mentionToken.start + agent.name.length + 2
-    onChange(next)
-    setCaret(position)
-    requestAnimationFrame(() => {
-      textareaRef?.current?.focus()
-      textareaRef?.current?.setSelectionRange(position, position)
-    })
-  }
-
   /**
    * 语音输入：只在浏览器支持时出按钮，收音结果并到输入框（受控组件的 value 归调用方管）
    * 静音超时（秒）→ 毫秒；0 = 不自动停（useVoiceInput 里 <=0 视为不限）
@@ -367,8 +317,23 @@ export function Composer({
   const silenceSec = useVoiceSilenceTimeout()
   const voice = useVoiceInput({
     onTranscript: (text) => {
-      const separator = value && !value.endsWith(' ') ? ' ' : ''
-      onChange(value + separator + text)
+      /*
+       * 从 textarea 现读光标 / 选区：用户可能先语音输入一段、把光标移到中间再按麦，
+       * 这时识别内容必须插在光标处，不能拼到 value 末尾（2026-11 的 bug）。
+       * 点麦克风按钮会让 textarea 失焦，但 selectionStart/End 保留着，照常可读。
+       */
+      const el = textareaRef?.current
+      const current = el?.value ?? value
+      const start = el?.selectionStart ?? current.length
+      const end = el?.selectionEnd ?? start
+      const next = insertTranscript(current, text, start, end)
+      onChange(next.value)
+      requestAnimationFrame(() => {
+        const target = textareaRef?.current
+        if (!target) return
+        target.focus()
+        target.setSelectionRange(next.caret, next.caret)
+      })
     },
     silenceTimeoutMs: silenceSec > 0 ? silenceSec * 1000 : 0,
     /*
@@ -669,34 +634,9 @@ export function Composer({
               value={value}
               onChange={(e) => {
                 onChange(e.target.value)
-                setCaret(e.target.selectionStart)
               }}
-              onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
               onPaste={handlePaste}
               onKeyDown={(e) => {
-                // @ 点名浮层打开时先接管导航键（与斜线命令同一套交互）
-                if (mentionVisible) {
-                  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                    e.preventDefault()
-                    setMentionHighlight((h) =>
-                      e.key === 'ArrowDown'
-                        ? (h + 1) % mentionMatches.length
-                        : (h - 1 + mentionMatches.length) % mentionMatches.length
-                    )
-                    return
-                  }
-                  if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing)) {
-                    e.preventDefault()
-                    const agent = mentionMatches[mentionHighlight]
-                    if (agent) completeMention(agent)
-                    return
-                  }
-                  if (e.key === 'Escape') {
-                    e.preventDefault()
-                    setMentionDismissed(true)
-                    return
-                  }
-                }
                 // 斜线命令浮层打开时先接管导航键：↑↓ 选择、Tab 补全、Enter 执行/补全、
                 // Esc 只关浮层（不触发「停止本轮」——用户是在选命令，不是要刹车）
                 if (paletteOpen && candidates.length > 0 && slashContext) {
@@ -782,7 +722,13 @@ export function Composer({
               <div className="flex min-w-0 items-center gap-2">
                 {trailing}
                 {!isDesktopHost && voice.supported && (
-                  <IconTip label={voice.listening ? tr('停止录音') : tr('语音输入（也可按住 Alt+V 说话）')}>
+                  <IconTip
+                    label={
+                      voice.listening
+                        ? tr('停止录音')
+                        : tr(isMobile ? '语音输入' : '语音输入（也可按住 Alt+V 说话）')
+                    }
+                  >
                     {/*
                       与停止 / 发送同一套材质（`LiquidGlassButton`），开没开都是玻璃：
                       - 没开：`contrast` 档 —— 这颗压在 `bg-card/70` 的卡片里，纯白玻璃在浅色主题
@@ -926,56 +872,29 @@ export function Composer({
           </div>
         </PopoverAnchor>
       </BorderBeam>
-      {(paletteVisible || mentionVisible) && (
+      {paletteVisible && (
         <PopoverContent
           side="top"
           align="start"
           sideOffset={8}
-          onOpenAutoFocus={(e) => e.preventDefault()}
-          onInteractOutside={(e) => e.preventDefault()}
-          onEscapeKeyDown={(e) => e.preventDefault()}
+          // 焦点始终留在输入框里（Radix 时代是 `onOpenAutoFocus` 里 preventDefault）。
+          // 面板是受控 open，外部交互 / Esc 本来也关不掉它。
+          initialFocus={false}
           role="listbox"
-          aria-label={mentionVisible ? tr('点名智能体') : tr('斜线命令')}
+          aria-label={tr('斜线命令')}
           // 玻璃外壳与边缘流光（指针追踪）由 `useGlassPanel` 统一给
           {...paletteGlass.handlers}
           className={cn(
             // 与模型选择面板同一套：实色底 + 淡描边 + 景深投影来自 `useGlassPanel`，
             // `ring-0` 顶掉 `PopoverContent` 自带的淡 ring —— 勾边只留玻璃那一圈。
-            'flex max-h-64 w-[var(--radix-popover-trigger-width)] min-w-64 flex-col gap-0 overflow-hidden rounded-xl p-0 ring-0',
+            'flex max-h-64 w-[var(--anchor-width)] min-w-64 flex-col gap-0 overflow-hidden rounded-xl p-0 ring-0',
             paletteGlass.className
           )}
         >
           {paletteGlass.edge}
           {/* 滚动下放到内层：边缘流光那两层是 `absolute inset-0`，放在滚动容器里会跟着名单滚走 */}
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1">
-            {mentionVisible
-              ? mentionMatches.map((agent, i) => (
-                  <button
-                    key={agent.id}
-                    type="button"
-                    role="option"
-                    aria-selected={i === mentionHighlight}
-                    className={cn(
-                      'flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors',
-                      i === mentionHighlight ? 'bg-foreground/10' : 'hover:bg-foreground/5'
-                    )}
-                    onMouseEnter={() => setMentionHighlight(i)}
-                    onClick={() => completeMention(agent)}
-                  >
-                    <AtSign className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-xs font-medium text-foreground">
-                        @{agent.name}
-                      </span>
-                      {agent.role && (
-                        <span className="block truncate text-xs text-muted-foreground">
-                          {agent.role}
-                        </span>
-                      )}
-                    </span>
-                  </button>
-                ))
-              : candidates.map((command, i) => (
+            {candidates.map((command, i) => (
                   <button
                     key={command.name}
                     type="button"
@@ -1078,7 +997,7 @@ export function PermissionPill({
           `SelectItem`）：三档名字自解释不了「点下去到底放宽了什么」，说明必须跟选项长在一起；
           头部那句是全局前提（查看 / 搜索永远放行、下一轮才生效），写一遍就够。 */}
       <SelectContent
-        position="popper"
+        alignItemWithTrigger={false}
         side="top"
         align="start"
         sideOffset={6}

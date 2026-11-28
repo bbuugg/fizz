@@ -9,7 +9,7 @@ RUN npm ci && npm run build:server && npm prune --omit=dev
 FROM node:24-bookworm-slim AS system
 RUN apt-get update && apt-get install -y --no-install-recommends \
       bash ca-certificates curl git openssh-client python3 python3-pip \
-      ripgrep procps less lrzsz \
+      ripgrep procps less lrzsz bubblewrap \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /opt/fizz /data /workspace /root /tmp /dev/shm /proc /sys /run
 # Docker 注入的 resolv.conf 不能带到手机；启动时原生层写入当前网络的 DNS。

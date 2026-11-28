@@ -3,7 +3,7 @@
  *
  * ## 1. 「已是当前会话」早退必须带上「本地现场还在」
  *
- * 「多智能体协作」建完会话后消息区**永远停在骨架屏**（用户报「打开后消息列表始终
+ * 新建会话后消息区**永远停在骨架屏**（用户报「打开后消息列表始终
  * 显示 loading」）：
  *
  * 1. `newConversation` 建完会话就把 `activeConversationId` 设成它（界面要立刻切进去）；
@@ -30,22 +30,20 @@ import { describe, expect, it, vi } from 'vitest'
 import { createConversationSlice } from '../index'
 import type { ConvSlice } from '../types'
 
-const CONVERSATION_ID = 'conv-collab'
+const CONVERSATION_ID = 'conv-chat'
 
-/** 协作会话的最小 api 桩：装载链路会读的那几个方法（其余缺失由各处的 catch / 兜底吃掉） */
+/** 普通会话的最小 api 桩：装载链路会读的那几个方法 */
 function makeApi() {
   return {
     getConversation: vi.fn(async () => ({
       id: CONVERSATION_ID,
       workspaceId: 'ws-1',
       backend: 'builtin',
-      title: '多智能体协作',
+      title: '新会话',
       messages: [],
       createdAt: 1,
       updatedAt: 1
     })),
-    // 协作运行态（`loadConversation` 的 collab 分支）
-    getCollabState: vi.fn(async () => ({ collab: null })),
     // 收尾时 `attachRun` 的探测：null = 这条会话没有在跑的 run
     activeRun: vi.fn(async () => ({ run: null })),
     // 打开会话顺带同步队列
@@ -55,18 +53,17 @@ function makeApi() {
 
 /** 最小 store：只给 `openConversation` / `loadConversation` 这条链路实际会读的字段 */
 function makeStore(api: Record<string, unknown>) {
-  const collabConversation = {
+  const conversation = {
     id: CONVERSATION_ID,
     backend: 'builtin',
-    kind: 'collab',
     configId: 'cfg-1',
     workspaceId: 'ws-1',
-    title: '多智能体协作',
+    title: '普通会话',
     createdAt: 1,
     updatedAt: 1
   }
   const boot = {
-    conversations: [collabConversation],
+    conversations: [conversation],
     conversationsLoaded: true,
     workspaces: [{ id: 'ws-1', path: '/tmp/ws', name: 'ws' }],
     runningConversations: {},

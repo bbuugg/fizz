@@ -119,7 +119,7 @@ describe('formatConfirm / formatFollowup', () => {
   it('待确认：正文里有操作与意图', () => {
     const message = formatConfirm({
       ...base,
-      confirm: { id: 'c1', toolName: 'bash', command: 'rm -rf build', intent: '清理构建产物' }
+      confirm: { id: 'c1', toolName: 'shell', command: 'rm -rf build', intent: '清理构建产物' }
     })
     expect(message.title).toBe('待确认')
     expect(message.content).toContain('操作：rm -rf build')

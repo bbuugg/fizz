@@ -32,7 +32,6 @@ import { errorMessage, nextLocalId } from "@fizz/agent-kit/shared/lib/stores/sha
 import { loadQueue, loadQueuePaused, saveQueue } from "../storage";
 import { subscribing, reconciling, sleep, sleepReconnect } from "../reconnect";
 import { isSteerAssistant } from "../state";
-import { applyCollabEvent } from "../collab";
 import type { ConvCore } from "./context";
 
 /** 历史提供顺序；当前轮及更新代次的本地消息仍由直播持有，不能被旧快照覆盖。 */
@@ -562,33 +561,6 @@ export function createConversationRunLoop(ctx: ConvCore) {
       }));
       return;
     }
-    // -----------------------------------------------------------------------
-    // 多智能体协作：旁路事件，只更新 collab 现场，不碰主消息
-    // -----------------------------------------------------------------------
-    if (
-      event.type === "collab-task" ||
-      event.type === "collab-message" ||
-      event.type === "collab-agent" ||
-      event.type === "collab-delta" ||
-      event.type === "collab-tool"
-    ) {
-      writeSlice(conversationId, (s) => {
-        const base = s.collab ?? {
-          state: {
-            version: 1 as const,
-            tasks: [],
-            messages: [],
-            statuses: {},
-            updatedAt: Date.now(),
-          },
-          liveText: {},
-          liveParts: {},
-        };
-        const collab = applyCollabEvent(base, event);
-        return { ...s, collab };
-      });
-      return;
-    }
     if (event.type === "context-usage") {
       // 上下文占用快照（`used` / `size`）。两条来源都走这里、同一形状：
       // - **ACP agent** 上报（session/update 的 usage_update）——ACP 拿不到 finish.usage，
@@ -780,19 +752,6 @@ export function createConversationRunLoop(ctx: ConvCore) {
         let restored = fetched !== null;
         if (get().runningConversations[conversationId] && !readSlice(conversationId).request)
           return restored;
-
-        if (conversation?.kind === "collab") {
-          try {
-            const { collab } = await api.getCollabState(conversationId);
-            if (!current()) return false;
-            writeSlice(conversationId, (s) => ({
-              ...s,
-              collab: { state: collab, liveText: s.collab?.liveText ?? {}, liveParts: s.collab?.liveParts ?? {} },
-            }));
-          } catch (err) {
-            console.warn("[collab] Recovery failed:", err);
-          }
-        }
 
         if (conversation?.backend === "acp" && conversation.configId) {
           const cwd = get().workspaces.find((w) => w.id === conversation.workspaceId)?.path;
@@ -1171,6 +1130,7 @@ export function createConversationRunLoop(ctx: ConvCore) {
     const userMessage: AgentChatMessage = {
       id: nextLocalId("u"),
       role: "user",
+      animateOnSend: true,
       // files 在前、text 在后（与服务端落盘同一份 buildUserParts，两端形状才不会漂）
       parts: buildUserParts(trimmed, files),
       createdAt: Date.now(),

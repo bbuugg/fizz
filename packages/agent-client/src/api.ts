@@ -72,12 +72,8 @@ import type {
   ChatStreamFrame,
   CommandHistoryEntry,
   ConfirmReplyInput,
-  ClientToolResultInput,
   ConversationSummary,
   ConversationInput,
-  CollabSettings,
-  CollabStateResult,
-  CollabCancelResult,
   ConversationSearchHit,
   ConversationTargetInput,
   ConversationTargetResult,
@@ -147,13 +143,6 @@ import type {
   HostGroupInput,
   HostGroupsAndHosts,
   HostInput,
-  NotesCreateResult,
-  NotesDirResult,
-  NotesFileResult,
-  NotesRenameResult,
-  NotesRoot,
-  NotesRootInput,
-  NotesWriteInput,
   SshTunnelInput,
   SshTunnelsSnapshot,
   SubagentDefinition,
@@ -1086,69 +1075,6 @@ export function createApi(
         body: JSON.stringify(input),
       }),
 
-    // ---------- 笔记（登记任意目录，管理其中的 Markdown） ----------
-    //
-    // 分两类：**根目录清单**走 state-ws 的 `notesRoots` 快照域推送（下面的
-    // `listNotesRoots` 只在首次绑定失败时兜底用，正常路径是 store 里那份）；
-    // **文件读写**是一问一答，没有任何缓存 —— 磁盘上的文件才是真源。
-    /** 已登记的笔记根目录 */
-    listNotesRoots: () => request<NotesRoot[]>(API_ROUTES.notesRoots),
-    /**
-     * 登记一个目录当笔记根。
-     *
-     * 服务端会校验「绝对路径 + 目录存在」，并且**幂等**：同一个目录重复登记返回既有那条，
-     * 不会在侧栏里长出两行。
-     */
-    addNotesRoot: (input: NotesRootInput) =>
-      request<NotesRoot>(API_ROUTES.notesRoots, {
-        method: "POST",
-        body: JSON.stringify(input),
-      }),
-    /** 移除登记（**只摘登记，不碰磁盘** —— 笔记文件照旧留在原地） */
-    removeNotesRoot: (id: string) =>
-      request<null>(
-        API_ROUTES.notesRoot.replace(":id", encodeURIComponent(id)),
-        {
-          method: "DELETE",
-        },
-      ),
-    /** 列笔记目录的**某一层**（`dir` 留空 = 根目录）；前端展开子目录时逐层调它 */
-    listNoteFiles: (rootId: string, dir = "") =>
-      request<NotesDirResult>(
-        `${API_ROUTES.notesFiles}?rootId=${encodeURIComponent(rootId)}&dir=${encodeURIComponent(dir)}`,
-      ),
-    /** 读一篇笔记（只支持 `.md` / `.markdown`） */
-    readNoteFile: (rootId: string, path: string) =>
-      request<NotesFileResult>(
-        `${API_ROUTES.notesFile}?rootId=${encodeURIComponent(rootId)}&path=${encodeURIComponent(path)}`,
-      ),
-    /** 覆盖保存一篇笔记（文件不存在则创建；服务端会补建中间目录） */
-    writeNoteFile: (rootId: string, path: string, content: string) => {
-      const body: NotesWriteInput = { rootId, path, content };
-      return request<null>(API_ROUTES.notesFile, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-    },
-    /** 在 `dir` 下新建一篇空笔记，返回它的相对路径（调用方拿它直接开标签） */
-    createNoteFile: (rootId: string, dir = "") =>
-      request<NotesCreateResult>(API_ROUTES.notesFileNew, {
-        method: "POST",
-        body: JSON.stringify({ rootId, dir }),
-      }),
-    /** 重命名（只换文件名，不换目录），返回**新的**相对路径（标签登记表要跟着改） */
-    renameNoteFile: (rootId: string, path: string, name: string) =>
-      request<NotesRenameResult>(API_ROUTES.notesFileRename, {
-        method: "POST",
-        body: JSON.stringify({ rootId, path, name }),
-      }),
-    /** 删除一篇笔记（**真删，没有回收站** —— 界面上必须二次确认） */
-    deleteNoteFile: (rootId: string, path: string) =>
-      request<null>(
-        `${API_ROUTES.notesFile}?rootId=${encodeURIComponent(rootId)}&path=${encodeURIComponent(path)}`,
-        { method: "DELETE" },
-      ),
-
     listConversations: () =>
       request<ConversationSummary[]>(API_ROUTES.conversations),
     /**
@@ -1250,10 +1176,6 @@ export function createApi(
        */
       workspaceId?: string;
       title?: string;
-      /** 会话形态（缺省 = 普通对话）；`collab` 只支持内置 Agent 后端 */
-      kind?: "chat" | "collab";
-      /** 协作配置（仅 `kind: 'collab'`） */
-      collab?: CollabSettings;
       backend?: AgentBackend;
       configId?: string;
       modelId?: string;
@@ -1405,26 +1327,6 @@ export function createApi(
       ),
     getConversation: (id: string) =>
       request<AgentConversation>(`${API_ROUTES.conversations}/${id}/messages`),
-    /** 读协作会话的运行态快照（任务 / 消息 / 最近状态）；普通会话 400 */
-    getCollabState: (id: string) =>
-      request<CollabStateResult>(
-        API_ROUTES.conversationCollab.replace(":id", encodeURIComponent(id)),
-      ),
-    /** 全量覆盖协作配置（增删改 Agent / 并行与单轮上限） */
-    saveCollabSettings: (id: string, collab: CollabSettings) =>
-      request<AgentConversation>(
-        API_ROUTES.conversationCollab.replace(":id", encodeURIComponent(id)),
-        {
-          method: "PATCH",
-          body: JSON.stringify({ collab }),
-        },
-      ),
-    /** 取消协作会话里某个正在跑的子任务（找不到在跑的 run / 任务已结束 = ok:false） */
-    cancelCollabTask: (conversationId: string, taskId: string) =>
-      request<CollabCancelResult>(API_ROUTES.collabCancel, {
-        method: "POST",
-        body: JSON.stringify({ conversationId, taskId }),
-      }),
     deleteConversation: (id: string) =>
       request<ConversationSummary[]>(`${API_ROUTES.conversations}/${id}`, {
         method: "DELETE",
@@ -2478,7 +2380,7 @@ export function createApi(
       }),
 
     /**
-     * 只停这一条 bash（杀进程树，不影响整轮）。幂等：命令已结束 /
+      * 只停这一条 shell（杀进程树，不影响整轮）。幂等：命令已结束 /
      * run 已结束 = `{ stopped: false }`。
      */
     stopCommand: (requestId: string, toolCallId: string) =>
@@ -2611,18 +2513,6 @@ export function createApi(
         body: JSON.stringify(body),
       });
     },
-
-    /**
-     * 回填一次客户端工具的执行结果（服务端推来 `client-tool-call` 帧之后）。
-     *
-     * 与 resolveConfirm 同一套反向通道：SSE 只有下行，客户端执行完要另开一条 HTTP
-     * 把结果送回去。`ok: false` 表示**执行真的失败**；用户拒绝要用 `ok: true` + 文案。
-     */
-    resolveClientTool: (input: ClientToolResultInput) =>
-      request<{ resolved: boolean }>(API_ROUTES.chatClientToolResult, {
-        method: "POST",
-        body: JSON.stringify(input),
-      }),
 
     /**
      * 答复一次 ask 提问（同 confirm 的反向通道约定）。

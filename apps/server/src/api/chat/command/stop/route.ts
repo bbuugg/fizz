@@ -2,7 +2,7 @@
  * 单条命令停止：POST /api/chat/command/stop
  *
  * 形状照抄 confirm 路由（「另开的一条 HTTP 请求」）：SSE 只有下行，停一条在跑的
- * bash 要一条并行上行。命中 `run.commandStops` 就杀那一条命令的进程树
+ * shell 要一条并行上行。命中 `run.commandStops` 就杀那一条命令的进程树
  * （工具结果收尾成「（已中止）」，Agent 同一回合据此收场，整轮不受影响）。
  *
  * 幂等：命令已结束 / run 已结束 / toolCallId 拼错 = `{ stopped: false }`，不报错。

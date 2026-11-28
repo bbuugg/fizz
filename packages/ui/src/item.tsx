@@ -1,7 +1,7 @@
 import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
-import { Slot } from "radix-ui"
+import { usePolymorphic } from "./polymorphic"
 
 import { Separator } from "./separator"
 
@@ -60,19 +60,17 @@ function Item({
   variant = "default",
   size = "default",
   asChild = false,
+  children,
   ...props
 }: React.ComponentProps<"div"> &
   VariantProps<typeof itemVariants> & { asChild?: boolean }) {
-  const Comp = asChild ? Slot.Root : "div"
-  return (
-    <Comp
-      data-slot="item"
-      data-variant={variant}
-      data-size={size}
-      className={cn(itemVariants({ variant, size, className }))}
-      {...props}
-    />
-  )
+  return usePolymorphic("div", asChild, children, {
+    "data-slot": "item",
+    "data-variant": variant,
+    "data-size": size,
+    className: cn(itemVariants({ variant, size, className })),
+    ...props,
+  })
 }
 
 const itemMediaVariants = cva(

@@ -28,14 +28,6 @@ export const HOSTS_ACTIVITY_ID = 'hosts'
 export const API_CLIENT_ACTIVITY_ID = 'api-client'
 
 /**
- * 笔记：登记若干本地 / 服务端目录，在其中管理 Markdown。
- *
- * 与「主机」「接口请求」同款：**没有自己的主区域** —— 点树里的一篇笔记，就在
- * `PanelView` 里开一个 `note:<n>` 标签，和对话 / 终端标签并排、一起拖拽分屏。
- */
-export const NOTES_ACTIVITY_ID = 'notes'
-
-/**
  * 插件：**所有插件共用的一个入口**。
  *
  * 图标栏里只有这一颗，侧栏是「插件列表」（`features/plugins/PluginsSidebar.tsx`），

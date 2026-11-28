@@ -61,7 +61,7 @@ import {
   type InputLine
 } from '@fizz/agent-kit/shared/lib/terminal-prediction'
 import { useAgentStore } from '@fizz/agent-kit/shared/lib/stores/agent-store'
-import { useVirtualKeyBar } from '@fizz/agent-kit/shared/hooks/useVirtualKeyBar'
+import { isTouchOnlyInput, useVirtualKeyBar } from '@fizz/agent-kit/shared/hooks/useVirtualKeyBar'
 import { useThemeRevision } from '@fizz/agent-kit/shared/lib/code-theme'
 import { buildTheme } from '@fizz/agent-kit/features/terminal/terminal-theme'
 import { attachTerminalInteractions } from '@fizz/agent-kit/features/terminal/terminal-interactions'
@@ -88,7 +88,7 @@ import {
   setTerminalPhase,
   unregisterTerminal
 } from '@fizz/agent-kit/shared/lib/terminal/terminal-registry'
-import { stripAnsi } from '@fizz/agent-kit/shared/lib/terminal/terminal-mcp'
+import { stripAnsi } from '@fizz/agent-kit/shared/lib/terminal/display'
 import { useConfirm } from '@fizz/agent-kit/shared/components/ConfirmProvider'
 import { scalePx } from '@fizz/agent-kit/shared/lib/ui-scale'
 import { cn } from '@fizz/agent-kit/shared/lib/utils'
@@ -105,14 +105,6 @@ const MAX_FONT_SIZE = 40
  * （见 `styles.css` 的「手机端整体放大」）—— 直接返回 14 会变成「界面长大了、终端没长」。
  */
 const DEFAULT_FONT_SIZE = 14
-
-/**
- * 原始输出环形缓冲保留多少字符（给 AI 工具取增量用，见 `rawOutputRef`）。
- *
- * 64KB ≈ 一两千行普通日志，足够覆盖一次长任务的增量；再大只是在内存里堆一份没人看的东西。
- * 滚出去的会被 `readSince` 标成 `truncated`，工具据此告诉模型「前面丢了」。
- */
-const RAW_OUTPUT_KEEP = 64_000
 
 /**
  * 选择模式下，键条上这些功能键改去移动**选区端点**，不再写 PTY。
@@ -467,23 +459,6 @@ export function TerminalPanel({
     exitSelectionMode()
   }, [exitSelectionMode, tr])
   /**
-   * 输出活动（收到多少段 + 最后一段什么时候来的）：登记给 AI 工具，`run_in_terminal`
-   * 靠它判「命令的输出停了没有」，替代从前固定 sleep 3 秒的做法。
-   *
-   * 记在 **PTY 原始数据到达**这一层（不是 xterm 写完 / 渲染之后）：ZMODEM 排水期、
-   * 大段输出被丢弃这些情况都不影响「有没有新输出」这个事实。
-   */
-  const outputActivityRef = useRef({ seq: 0, at: 0 })
-  /**
-   * 原始输出环形缓冲：给 AI 工具取「这条命令的新增输出」（`readSince`）。
-   *
-   * 为什么不直接拿 xterm 缓冲截：滚动缓冲只有 1000 行，长任务几秒就顶满，之后
-   * `buffer.length` 不再增长（旧行被顶掉），「执行前后比长度」得到的是一段无意义的
-   * 碎片 —— 工具回「没捕获到新输出」，模型就反复连读。这里自己按字符累计一份，
-   * `offset` 单调递增，完全不受滚动 / 重排影响。
-   */
-  const rawOutputRef = useRef({ text: '', offset: 0 })
-  /**
    * 主题 revision 变了：保存自定义主题颜色时只有注入的 `<style>` 被重写，`data-theme` 不变，
    * 上面那个 MutationObserver 看不到 —— 这里单独重设一次主题，不重建 xterm。
    */
@@ -589,22 +564,7 @@ export function TerminalPanel({
       write: (data: string) => processRef.current?.write(data),
       // 焦点落回 xterm（脚本跑完后把光标还给用户）。读 ref 而不是闭包：term 换代不影响登记
       focus: () => termRef.current?.focus(),
-      isAlive: () => !!processRef.current && !exitedRef.current,
-      // 输出活动：给 `run_in_terminal` 判「安静了多久」，见 outputActivityRef 的说明
-      outputSeq: () => outputActivityRef.current.seq,
-      lastOutputAt: () => outputActivityRef.current.at,
-      // 增量取用：给工具取「这条命令之后的新输出」，见 rawOutputRef 的说明
-      outputOffset: () => rawOutputRef.current.offset,
-      readSince: (since) => {
-        const raw = rawOutputRef.current
-        // 环形缓冲的起点：累计偏移减去还留着的字符数
-        const keptStart = raw.offset - raw.text.length
-        const text = stripAnsi(raw.text.slice(Math.max(0, since - keptStart)))
-          // `\r` 是进度条 / 覆盖写：按换行处理，否则整段会挤成一行看不出来
-          .replace(/\r\n/g, '\n')
-          .replace(/\r/g, '\n')
-        return { text, offset: raw.offset, truncated: since < keptStart }
-      }
+      isAlive: () => !!processRef.current && !exitedRef.current
     })
     return () => unregisterTerminal(tabKey)
     // sshHostId / cwd 只在实例内恒定（换它们调用方会换 key 重建），不进依赖
@@ -1391,7 +1351,11 @@ export function TerminalPanel({
       sendInput,
       onPasteFailed: () => {
         // 浏览器（非 Electron）下 `readText` 可能弹权限框、用户拒了会 reject
-        showPasteHint('读取剪贴板失败（需要剪贴板权限），可改用 Ctrl+V')
+        showPasteHint(
+          isTouchOnlyInput()
+            ? '读取剪贴板失败（需要剪贴板权限），请检查剪贴板权限后重试'
+            : '读取剪贴板失败（需要剪贴板权限），可改用 Ctrl+V'
+        )
       },
       // 异步读剪贴板期间可能已经拆掉终端（换 shell / 关标签）
       isCurrent: () => termRef.current === term,
@@ -1539,18 +1503,6 @@ export function TerminalPanel({
          */
         let connectSettled = false
         /**
-         * 原始输出缓冲的**字节解码器**（只喂 `rawOutputRef`，不参与渲染 —— 渲染那条路
-         * 由 ZMODEM 控制器负责，见下面的 `zm.consume`）。
-         *
-         * ⚠️ `onData` 给的是 `Uint8Array`。直接 `raw.text += data` 会走
-         * `Array.prototype.toString`，把整段输出拼成「3,10,45,45,…」一串逗号分隔的数字
-         * —— 终端助手 `run_in_terminal` 读到的就是这串数字（用户实测的症状）。
-         *
-         * 流式解码还顺带修正了量纲：`raw.offset` 从此按**字符**累计，与 `raw.text.length`
-         * 同量纲，`readSince` 的切片才不会在中文 / emoji 上切歪（按字节算必然错位）。
-         */
-        const rawDecoder = new TextDecoder(sshCharset)
-        /**
          * 连上了：收起连接进度卡片 + 标签条换绿点。
          *
          * 两个入口共用（**同一处判定，别分叉**）：SSH 的 `ready` 帧、以及首帧输出
@@ -1589,17 +1541,6 @@ export function TerminalPanel({
          * 输出：PTY → xterm 渲染；输入：键盘 / 粘贴 → PTY（漏了这条终端就只能看不能敲）。
          */
         const offData = proc.onData((data) => {
-          // 输出活动（AI 工具的「安静了没有」靠它）：记在原始数据到达这一层，
-          // 不管下面 ZMODEM 怎么处理
-          outputActivityRef.current.seq += 1
-          outputActivityRef.current.at = Date.now()
-          // 原始输出留一份给 AI 工具取增量（见 rawOutputRef 的说明）。
-          // 摊还裁剪：超过 2 倍上限才切一次，别让每个 chunk 都拷一遍几十 KB
-          const raw = rawOutputRef.current
-          const chunk = rawDecoder.decode(data, { stream: true })
-          raw.offset += chunk.length
-          raw.text += chunk
-          if (raw.text.length > RAW_OUTPUT_KEEP * 2) raw.text = raw.text.slice(-RAW_OUTPUT_KEEP)
           // 收到首帧输出 = 连接已就绪（`ready` 帧之外再兜一道）：收起进度卡片、标签条换绿点
           if (!connectSettled) settleConnect()
           // 本机终端没有 `onProgress`：首帧输出就是「shell 起来了」的信号，在这里补写脚本
@@ -2101,7 +2042,7 @@ export function TerminalPanel({
           >
             {/* 头部固定：说明行不随命令列表滚走 */}
             <div className="shrink-0 border-b border-border/60 px-2 py-1 text-muted-foreground">
-              命令预测 · → 接受 · Ctrl+↑/↓ 选择 · Esc 收起
+              {showKeyBar ? '命令预测' : '命令预测 · → 接受 · Ctrl+↑/↓ 选择 · Esc 收起'}
             </div>
             {/* 滚动下放到内层：边缘流光那两层是 `absolute inset-0`，放在滚动容器里会跟着列表滚走 */}
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1">

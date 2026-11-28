@@ -49,7 +49,6 @@ export const emptySlice = (): ConvSlice => ({
   scrollResetSeq: 0,
   liveTps: null,
   touchedAt: Date.now(),
-  collab: null,
 });
 
 /** 只描述真实请求阶段；连接与历史回放是同一个响应，不虚构拆开的进度。由视图翻译。 */

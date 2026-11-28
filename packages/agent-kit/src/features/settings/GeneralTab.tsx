@@ -16,7 +16,7 @@
  *   见 `AppUpdateSection`。静默只检查、**下载必须用户点**（产品约定）。
  */
 import { useEffect, useState, type ReactNode } from 'react'
-import { Activity, Bell, Copy, ExternalLink, Globe, Languages, Mic, Sun } from 'lucide-react'
+import { Activity, Bell, Copy, ExternalLink, Globe, Languages, MessageSquareText, Mic, Sun } from 'lucide-react'
 import { Button } from '@fizz/ui/button'
 import { Input } from '@fizz/ui/input'
 import { NumberField } from '@fizz/ui/number-field'
@@ -69,6 +69,14 @@ import {
   Segmented,
   type SegmentedOption
 } from '@fizz/agent-kit/shared/components/Segmented'
+import {
+  saveMessageDisplayPrefs,
+  useMessageDisplayPrefs,
+  type GroupAutoCollapse,
+  type MessageDisplayPrefs,
+  type ReasoningAutoCollapse,
+  type ToolAutoCollapse
+} from '@fizz/agent-kit/shared/lib/message-display-prefs'
 
 /** 屏幕常亮的档位：关 / 只在一轮 Agent 跑的时候 / 页面在前台就始终 */
 const WAKE_LOCK_OPTIONS: ReadonlyArray<SegmentedOption<WakeLockMode>> = [
@@ -85,8 +93,74 @@ const WAKE_LOCK_OPTIONS: ReadonlyArray<SegmentedOption<WakeLockMode>> = [
   }
 ]
 
+const FOLD_DEFAULT_OPTIONS: ReadonlyArray<SegmentedOption<'closed' | 'open'>> = [
+  { value: 'closed', label: '折叠' },
+  { value: 'open', label: '展开' }
+]
+
+const GROUP_COLLAPSE_OPTIONS: ReadonlyArray<SegmentedOption<GroupAutoCollapse>> = [
+  { value: 'never', label: '从不' },
+  { value: 'turn-end', label: '整轮结束后' }
+]
+
+const TOOL_COLLAPSE_OPTIONS: ReadonlyArray<SegmentedOption<ToolAutoCollapse>> = [
+  { value: 'never', label: '从不' },
+  { value: 'tool-end', label: '工具完成后' },
+  { value: 'turn-end', label: '整轮结束后' }
+]
+
+const REASONING_COLLAPSE_OPTIONS: ReadonlyArray<SegmentedOption<ReasoningAutoCollapse>> = [
+  { value: 'never', label: '从不' },
+  { value: 'reasoning-end', label: '思考结束后' },
+  { value: 'turn-end', label: '整轮结束后' }
+]
+
+function MessageFoldPreferenceRow<T extends string>({
+  title,
+  defaultOpen,
+  autoCollapse,
+  autoCollapseOptions,
+  onDefaultOpenChange,
+  onAutoCollapseChange
+}: {
+  title: string
+  defaultOpen: boolean
+  autoCollapse: T
+  autoCollapseOptions: ReadonlyArray<SegmentedOption<T>>
+  onDefaultOpenChange: (open: boolean) => void
+  onAutoCollapseChange: (value: T) => void
+}) {
+  const tr = useT()
+  return (
+    // 三列均分：名称 / 默认状态 / 自动折叠，各占 1/3（窄屏 `<sm` 上下堆叠）
+    <div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-3 sm:items-center">
+      <div className="text-sm font-medium">{tr(title)}</div>
+      <div className="space-y-1.5">
+        <p className="text-xs text-muted-foreground">{tr('默认状态')}</p>
+        <Segmented
+          ariaLabel={tr('{name}默认状态', { name: tr(title) })}
+          value={defaultOpen ? 'open' : 'closed'}
+          onChange={(value) => onDefaultOpenChange(value === 'open')}
+          options={FOLD_DEFAULT_OPTIONS}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <p className="text-xs text-muted-foreground">{tr('自动折叠')}</p>
+        <Segmented
+          ariaLabel={tr('{name}自动折叠时机', { name: tr(title) })}
+          value={autoCollapse}
+          onChange={onAutoCollapseChange}
+          options={autoCollapseOptions}
+        />
+      </div>
+    </div>
+  )
+}
+
 export function GeneralTab({ app }: { app: AgentApp }) {
   const tr = useT()
+  const messageDisplayPrefs = useMessageDisplayPrefs()
+  const saveMessageDisplay = (next: MessageDisplayPrefs): void => saveMessageDisplayPrefs(next)
   /** 语音输入在 desktop 宿主不可用（宿主缺语音服务）：下面那一节整块不渲染 */
   const isDesktopHost = !getAgentHost().capabilities.voice
 
@@ -189,13 +263,64 @@ export function GeneralTab({ app }: { app: AgentApp }) {
         />
       </section>
 
+      <section className="space-y-3">
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          <MessageSquareText className="size-3.5" />
+          {tr('消息展开与折叠')}
+        </div>
+        <div className="space-y-2">
+          <MessageFoldPreferenceRow
+            title="过程组"
+            defaultOpen={messageDisplayPrefs.group.defaultOpen}
+            autoCollapse={messageDisplayPrefs.group.autoCollapse}
+            autoCollapseOptions={GROUP_COLLAPSE_OPTIONS}
+            onDefaultOpenChange={(defaultOpen) => saveMessageDisplay({
+              ...messageDisplayPrefs,
+              group: { ...messageDisplayPrefs.group, defaultOpen }
+            })}
+            onAutoCollapseChange={(autoCollapse) => saveMessageDisplay({
+              ...messageDisplayPrefs,
+              group: { ...messageDisplayPrefs.group, autoCollapse }
+            })}
+          />
+          <MessageFoldPreferenceRow
+            title="工具调用"
+            defaultOpen={messageDisplayPrefs.tool.defaultOpen}
+            autoCollapse={messageDisplayPrefs.tool.autoCollapse}
+            autoCollapseOptions={TOOL_COLLAPSE_OPTIONS}
+            onDefaultOpenChange={(defaultOpen) => saveMessageDisplay({
+              ...messageDisplayPrefs,
+              tool: { ...messageDisplayPrefs.tool, defaultOpen }
+            })}
+            onAutoCollapseChange={(autoCollapse) => saveMessageDisplay({
+              ...messageDisplayPrefs,
+              tool: { ...messageDisplayPrefs.tool, autoCollapse }
+            })}
+          />
+          <MessageFoldPreferenceRow
+            title="思考内容"
+            defaultOpen={messageDisplayPrefs.reasoning.defaultOpen}
+            autoCollapse={messageDisplayPrefs.reasoning.autoCollapse}
+            autoCollapseOptions={REASONING_COLLAPSE_OPTIONS}
+            onDefaultOpenChange={(defaultOpen) => saveMessageDisplay({
+              ...messageDisplayPrefs,
+              reasoning: { ...messageDisplayPrefs.reasoning, defaultOpen }
+            })}
+            onAutoCollapseChange={(autoCollapse) => saveMessageDisplay({
+              ...messageDisplayPrefs,
+              reasoning: { ...messageDisplayPrefs.reasoning, autoCollapse }
+            })}
+          />
+        </div>
+      </section>
+
       <section className="space-y-2">
         <div className="flex items-center gap-1.5 text-sm font-medium">
           <Activity className="size-3.5" />
           {tr('系统监控')}
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          {tr('状态栏左侧的服务器性能监控。关闭后服务端停止采样，状态栏也不再显示。默认开启。')}
+          {tr('关闭后停止采样并隐藏监控')}
         </p>
         <div className="flex items-center gap-3">
           <Switch
@@ -221,7 +346,7 @@ export function GeneralTab({ app }: { app: AgentApp }) {
             {tr('语音输入静音超时')}
           </div>
           <p className="text-xs leading-4 text-muted-foreground">
-            {tr('连续静音多久后停止语音输入。0 = 不自动停止。')}
+            {tr('0 = 不自动停止')}
           </p>
           <div className="flex items-center gap-2">
             <NumberField
@@ -247,7 +372,7 @@ export function GeneralTab({ app }: { app: AgentApp }) {
           {tr('结束通知')}
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
-          {tr('任务结束、出错、被中断或对话回复完成时提醒一次；后台走系统通知，前台走应用内提示。')}
+          {tr('后台走系统通知，前台走应用内提示。')}
           {nativeShell && tr(' 安卓端为本地通知，App 被系统清理后收不到。')}
         </p>
         {supported ? (
@@ -272,8 +397,8 @@ export function GeneralTab({ app }: { app: AgentApp }) {
             {permission === 'denied' && (
               <p className="text-xs leading-4 text-muted-foreground">
                 {nativeShell
-                  ? tr('系统通知权限已被关闭，页面无法再次申请。请到 系统设置 → 应用 → Fizz → 通知 里允许，回到 App 后这里会自动更新。在此之前：前台的右下角提示仍然会用，只有切到后台（含锁屏）时的系统提醒发不出去。')
-                  : tr('通知权限已被浏览器拒绝，且无法由页面再次申请。请在地址栏的站点设置里把「通知」改为允许，刷新本页后即可开启。在此之前：前台的右下角提示仍然会用，只有切到后台时的系统提醒发不出去。')}
+                  ? tr('已被关闭，页面无法再申请。请到 系统设置 → 应用 → Fizz → 通知 允许；在此之前只有前台提示。')
+                  : tr('已被浏览器拒绝，页面无法再申请。请在站点设置里把「通知」改为允许并刷新；在此之前只有前台提示。')}
               </p>
             )}
             {(permission === 'default' || permission === 'stuck') && (
@@ -287,17 +412,17 @@ export function GeneralTab({ app }: { app: AgentApp }) {
                 </Button>
                 <span className="text-xs text-muted-foreground">
                   {permission === 'stuck'
-                    ? tr('授权弹窗一直没弹出来 —— 多半被浏览器的「安静模式」拦截了（以前关过几次弹窗的站点会这样）。点地址栏左侧的小图标，或到 浏览器设置 → 网站设置 → 通知 里把本站改为「允许」，刷新后再试。')
+                    ? tr('弹窗被浏览器「安静模式」拦截：点地址栏左侧图标或到 网站设置 → 通知 改为「允许」后刷新。')
                     : nativeShell
-                      ? tr('未开启系统通知，点此授权；后台提醒需要它，前台提示不需要。')
-                      : tr('未授权通知，点此在浏览器中允许；后台提醒需要它。')}
+                      ? tr('点此授权；只有后台提醒需要它')
+                      : tr('点此允许；只有后台提醒需要它')}
                 </span>
               </div>
             )}
           </>
         ) : (
           <p className="text-xs leading-4 text-muted-foreground">
-            {tr('当前浏览器不支持系统通知（部分环境在非 HTTPS 下也会禁用）：切到后台时发不出提醒，但前台的右下角提示仍然会用。')}
+            {tr('浏览器不支持系统通知，只有前台提示')}
           </p>
         )}
       </section>
@@ -307,9 +432,6 @@ export function GeneralTab({ app }: { app: AgentApp }) {
           <Sun className="size-3.5" />
           {tr('屏幕常亮')}
         </div>
-        <p className="text-xs leading-4 text-muted-foreground">
-          {tr('有任务运行时保持屏幕常亮；跑完自动释放，切到后台也会释放，回来后按需重新获取。')}
-        </p>
         {wakeSupported ? (
           <>
             <Segmented
@@ -332,13 +454,13 @@ export function GeneralTab({ app }: { app: AgentApp }) {
             </div>
             {wakeDesired && lockState === 'error' && (
               <p className="text-xs leading-4 text-muted-foreground">
-                {tr('浏览器没把锁给下来（系统省电策略、或页面刚从后台回来还没拿到前台权限时会这样）。点「再试一次」；仍不行就手动锁一次屏再解锁。')}
+                {tr('点「再试一次」，或手动锁屏再解锁')}
               </p>
             )}
           </>
         ) : (
           <p className="text-xs leading-4 text-muted-foreground">
-            {tr('当前浏览器不支持屏幕唤醒锁（iOS Safari 与部分桌面浏览器尚未实现），页面里没有这个开关能开的替代方案 —— 需要的话改用系统的「屏幕常亮」设置。')}
+            {tr('浏览器不支持唤醒锁，可改用系统设置')}
           </p>
         )}
       </section>
@@ -512,9 +634,6 @@ function RemoteAccessSection({ app }: { app: AgentApp }) {
         <Globe className="size-3.5" />
         {tr('远程访问（局域网）')}
       </div>
-      <p className="text-xs leading-4 text-muted-foreground">
-        {tr('把这台机器的 Agent 后端开放到局域网，其他设备用浏览器即可访问完整工作台。')}
-      </p>
       <div className="flex items-center gap-3">
         <Switch
           checked={state?.enabled === true}
@@ -563,7 +682,7 @@ function RemoteAccessSection({ app }: { app: AgentApp }) {
           </div>
           <div className="flex items-center gap-2">
             <span className="min-w-0 flex-1 text-muted-foreground">
-              {tr('首次用浏览器打开登录页时设置密码（只保存哈希），之后用这个密码登录。')}
+              {tr('首次打开时设置密码（只存哈希）')}
             </span>
             <Button size="xs" variant="outline" onClick={() => setPasswordOpen(true)}>
               {tr('修改密码')}
@@ -581,7 +700,7 @@ function RemoteAccessSection({ app }: { app: AgentApp }) {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{tr('修改远程访问密码')}</DialogTitle>
-            <DialogDescription>{tr('先输入当前密码，再设置新密码。新密码只保存哈希。')}</DialogDescription>
+            <DialogDescription>{tr('新密码只保存哈希')}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1.5">

@@ -25,7 +25,6 @@ import type {
   AgentChatMessage,
   AiReasoningEffort,
   BrowserSettings,
-  CollabSettings,
   ConversationInput
 } from '@fizz/contracts'
 
@@ -43,9 +42,6 @@ export interface ConversationCreateBody {
    */
   workspaceId?: string
   title?: string
-  /** 会话形态（缺省 = 普通对话）；`collab` 只支持内置 Agent 后端 */
-  kind?: 'chat' | 'collab'
-  collab?: CollabSettings
   backend?: 'builtin' | 'acp'
   configId?: string
   modelId?: string
@@ -75,8 +71,6 @@ export function conversationCreateFields(
 ): Omit<ConversationInput, 'id' | 'workspaceId'> {
   return {
     ...(body.title ? { title: body.title } : {}),
-    ...(body.kind === 'collab' ? { kind: 'collab' as const } : {}),
-    ...(body.kind === 'collab' && body.collab ? { collab: body.collab } : {}),
     ...(body.backend ? { backend: body.backend } : {}),
     ...(body.configId ? { configId: body.configId } : {}),
     ...(body.modelId ? { modelId: body.modelId } : {}),

@@ -9,7 +9,6 @@
  * - `models-probe.ts` —— 上游 provider 模型清单探测（设置页用）。
  * - `subagents.ts` —— 子任务（supervisor 模式）：只读 explorer / reviewer / image_reader
  *   与派活工具（image_reader 收图片，一个工具都不带）。
- * - `collab.ts` —— 多智能体协作编排器：@ 点名 / 广播判定、SendMessage 投递、状态快照。
  */
 export * from './agent'
 export * from './prompt'
@@ -18,4 +17,3 @@ export * from './project-doc'
 export * from './models-probe'
 export * from './context'
 export * from './subagents'
-export * from './collab'

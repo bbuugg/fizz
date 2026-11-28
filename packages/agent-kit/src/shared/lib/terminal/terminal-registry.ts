@@ -34,40 +34,8 @@ export interface TerminalHandle {
    * 由调用方决定，见 `features/scripts/run-script-command.ts`。
    */
   focus(): void
-  /** 底层进程是否还活着（false = 已退出，工具该拒绝而不是静默丢弃） */
+  /** 底层进程是否还活着（false = 已退出，调用方该拒绝而不是静默丢弃） */
   isAlive(): boolean
-  /**
-   * 输出活动计数：每收到一段 PTY 数据 +1（含命令回显）。
-   *
-   * 给 `run_in_terminal` 判「这条命令还在往外吐东西吗」用 —— 轮询只读这个数，
-   * 不去 `read()` 整段缓冲（那个是 O(缓冲长度)，大缓冲上每 100ms 读一遍并不便宜）。
-   */
-  outputSeq(): number
-  /**
-   * 最后一次收到输出的时间（`Date.now()` 毫秒；这条终端还没输出过 = 0）。
-   *
-   * 与 {@link outputSeq} 一起构成「安静了多久」这个信号：输出停下来就是命令大概率跑完了，
-   * 比固定 sleep 一个猜的时长准得多。
-   */
-  lastOutputAt(): number
-  /**
-   * 累计输出偏移：这条终端**建立以来收到的全部输出**的字符数（含已经滚出屏幕 / 缓冲的部分）。
-   *
-   * 与 {@link outputSeq} 分工：seq 只回答「还在不在动」，offset 用来取「从那之后的新输出」。
-   *
-   * ⚠️ 取增量**必须**用它，不能拿 xterm 缓冲的长度做差：滚动缓冲只有 1000 行，长任务
-   * 几秒就顶满，之后长度不再增长（旧行被顶掉），按长度做差得到的是无意义的碎片 ——
-   * 工具回一句「没捕获到新输出」，模型就会连读（用户看到的「快速不停地读取」）。
-   */
-  outputOffset(): number
-  /**
-   * 取 `since`（一次 {@link outputOffset} 的返回值）之后收到的输出，已剥掉 ANSI、
-   * `\r` 统一成换行。
-   *
-   * `truncated: true` = 起点已经滚出环形缓冲，返回的是**还能拿到的那部分**（调用方
-   * 据此告诉模型「前面丢了」）；`offset` 是取完之后的累计偏移，可以直接作为下一次的 `since`。
-   */
-  readSince(since: number): { text: string; offset: number; truncated: boolean }
 }
 
 const terminals = new Map<string, TerminalHandle>()
@@ -87,11 +55,6 @@ export function unregisterTerminal(tabKey: string): void {
 
 export function getTerminal(tabKey: string): TerminalHandle | undefined {
   return terminals.get(tabKey)
-}
-
-/** 列出所有登记在册的终端（工具 `list_terminal_sessions` 用） */
-export function listTerminals(): TerminalHandle[] {
-  return [...terminals.values()]
 }
 
 /**

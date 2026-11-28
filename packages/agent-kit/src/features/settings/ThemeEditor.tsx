@@ -16,8 +16,6 @@ import { Button } from '@fizz/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@fizz/ui/tabs'
 import {
   DEFAULT_THEME_BACKGROUND,
-  TEXTURE_CSS,
-  TEXTURE_SIZE,
   THEME_TEXTURES,
   THEME_VAR_GROUPS,
   clampThemeNumber,
@@ -74,7 +72,7 @@ export interface ThemeEditorProps {
  * 自定义主题编辑器：**6 个页签**（颜色 / 字体 / 尺度 / 质感 / 代码 / 背景），亮暗各一份草稿。
  *
  * 编辑的是草稿（`draft`），保存才写盘 —— 否则每拖一下滑块都在 localStorage 里重写一份
- * 带 base64 背景图的配置，输入框会卡。顶部的预览条用同一份草稿内联变量渲染，所见即所得。
+ * 带 base64 背景图的配置，输入框会卡。
  *
  * 圆角 / 纹理这类**不在变量表里**的字段（`CustomColorTheme.radius` / `.texture`）在
  * 尺度 / 质感页签里编辑，保存时与 `vars` 一起交给 `updateCustom`。
@@ -165,8 +163,6 @@ export function ThemeEditor({
               options={MODES.map(({ key, label }) => ({ value: key, label }))}
             />
           </div>
-
-          <ThemePreview vars={vars[mode]} radius={radius} texture={texture} />
         </div>
 
         <Tabs
@@ -229,7 +225,7 @@ export function ThemeEditor({
                 <span className="font-mono text-xs">const theme = 1</span>
               </div>
               <p className="text-[11px] leading-4 text-muted-foreground">
-                {tr('字体栈按 CSS 写法填（逗号分隔，可带引号）。留空回落到默认：正文系统无衬线、标题跟随正文、等宽用系统等宽字体。')}
+                {tr('按 CSS 写法填，逗号分隔；留空跟随默认')}
               </p>
             </TabsContent>
 
@@ -270,7 +266,7 @@ export function ThemeEditor({
                 </div>
               </div>
               <p className="text-[11px] leading-4 text-muted-foreground">
-                {tr('字号倍率只覆盖正文的 9 档字号（xs…5xl）；密度调的是全局间距基准。')}
+                {tr('倍率只管正文 9 档字号；密度是全局间距')}
               </p>
             </TabsContent>
 
@@ -303,7 +299,7 @@ export function ThemeEditor({
                   options={THEME_TEXTURES}
                 />
                 <p className="text-[11px] leading-4 text-muted-foreground">
-                  {tr('纹理画在整个窗口的底色上，纯 CSS、不耗素材。配了背景图 / 视频的主题会以媒体为准，纹理自动让位。')}
+                  {tr('配了背景图 / 视频时纹理自动让位')}
                 </p>
               </section>
             </TabsContent>
@@ -313,7 +309,7 @@ export function ThemeEditor({
                 <ColorGroup key={group.id} group={group} vars={vars[mode]} onChange={setVar} />
               ))}
               <p className="mt-2 text-[11px] leading-4 text-muted-foreground">
-                {tr('这 8 个颜色驱动代码块（Shiki）与 Monaco 编辑器；保存后已打开的编辑器也会跟着刷新。')}
+                {tr('驱动代码块与 Monaco 编辑器')}
               </p>
             </TabsContent>
 
@@ -324,7 +320,7 @@ export function ThemeEditor({
                 themeLabel={name.trim() || theme.name}
               />
               <p className="mt-2 text-[11px] leading-4 text-muted-foreground">
-                {tr('背景改动即时生效（素材选中就要落盘，没法当草稿回滚），点「取消」不会撤回。')}
+                {tr('背景改动即时生效，关掉弹窗也不撤回')}
               </p>
             </TabsContent>
           </div>
@@ -341,9 +337,6 @@ export function ThemeEditor({
             {tab === 'background' ? tr('清除背景') : tr('恢复默认')}
           </Button>
           {error && <p className="mr-auto text-xs text-destructive">{error}</p>}
-          <Button data-dialog-dismiss="" variant="ghost" size="sm" onClick={onClose}>
-            {tr('取消')}
-          </Button>
           <Button size="sm" onClick={handleSave}>
             {tr('保存')}
           </Button>
@@ -431,49 +424,6 @@ function NumberRow({
       <span className="w-12 shrink-0 text-right font-mono text-xs text-muted-foreground">
         {spec?.unit === '×' ? `${current.toFixed(2)}×` : current.toFixed(2)}
       </span>
-    </div>
-  )
-}
-
-/** 顶部预览：直接用草稿变量 + 圆角 + 纹理内联渲染，改一项立刻能看到 */
-function ThemePreview({
-  vars,
-  radius,
-  texture
-}: {
-  vars: ThemeVars
-  radius: number
-  texture: ThemeTexture
-}) {
-  const tr = useT()
-  return (
-    <div
-      className="rounded-lg border border-border p-3"
-      style={
-        {
-          ...vars,
-          '--radius': `${radius}rem`,
-          backgroundColor: 'var(--background)',
-          backgroundImage: 'var(--fizz-theme-texture, none)',
-          backgroundSize: 'var(--fizz-texture-size, auto)',
-          // 草稿里没有纹理这个「变量」，直接从枚举派生（与 buildStyle 同源）
-          '--fizz-theme-texture': TEXTURE_CSS[texture],
-          '--fizz-texture-size': TEXTURE_SIZE[texture]
-        } as CSSProperties
-      }
-    >
-      <div className="space-y-1.5 px-1">
-        <p className="font-heading text-sm font-semibold text-foreground">{tr('标题：一套设计语法')}</p>
-        <p className="font-sans text-xs text-muted-foreground">
-          {tr('正文预览：字号、间距与配色都由当前草稿决定。')}
-        </p>
-        <p className="font-mono text-[11px]" style={{ color: 'var(--syntax-keyword)' }}>
-          const theme = 'fizz'
-        </p>
-        <span className="inline-flex items-center rounded-md bg-primary px-2.5 py-1 text-[11px] text-primary-foreground">
-          {tr('主按钮')}
-        </span>
-      </div>
     </div>
   )
 }

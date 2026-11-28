@@ -169,13 +169,13 @@ export function TitleBar() {
         - 窗口置顶：带勾选，状态仍由主进程落盘（重启后保持），与原来的图钉同一份偏好。
       */}
       <Menubar
-        value={viewMenuOpen ? 'view' : ''}
-        onValueChange={(value) => setViewMenuOpen(value === 'view')}
         // 窄到手机宽度时整条菜单入口收起：与中间搜索框**同一个断点**（`md`）——
         // 那边文字一消失、只剩一颗搜索图标，这边再挂一条「视图(V)」就只有它挤不下。
         className="app-no-drag ml-3 h-auto gap-0 border-0 bg-transparent p-0 max-md:hidden"
       >
-        <MenubarMenu value="view">
+        {/* Base UI 的 Menubar 没有「当前打开哪个菜单」的 value 体系：开关状态挂在这个
+            Menu 自己的 `open` 上（Alt+V 快捷键按下时就是它在驱动） */}
+        <MenubarMenu open={viewMenuOpen} onOpenChange={setViewMenuOpen}>
           {/*
             `h-6 py-0 leading-none`：原语靠 `py-[2px] + text-sm 行高` 撑高度，换成
             固定 24px 高、行高 1 之后，中文按 em 盒在按钮里严格居中 —— 原来那套

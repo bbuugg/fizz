@@ -213,7 +213,7 @@ export function BrowserTab({ app }: { app: AgentApp }) {
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
           {tr(
-            'Playwright 自带的 Chromium（headless shell），约 150MB，不随安装包分发。浏览器工具、网页抓取（JS 渲染）与网页截图共用这一份 —— 没装时聊天工具条上不会出现浏览器开关。'
+            '约 150MB，不随安装包分发；没装时没有浏览器工具'
           )}
         </p>
 
@@ -310,7 +310,7 @@ export function BrowserTab({ app }: { app: AgentApp }) {
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
           {tr(
-            '每个会话各存一份独立的浏览数据（Cookie、登录状态、本地存储与缓存），互不共享 —— 所以才会「这个会话登着、那个会话没登」。删除会话时会一并清掉；只想换账号请到右侧「浏览器」面板里清那一个会话，这里只做兜底。'
+            '每个会话各存一份，互不共享；换账号请用右侧「浏览器」面板'
           )}
         </p>
 
@@ -355,7 +355,7 @@ export function BrowserTab({ app }: { app: AgentApp }) {
         </div>
         <p className="text-xs leading-4 text-muted-foreground">
           {tr(
-            '不想装这份运行时，可以在「MCP」页加一条 Playwright 官方 MCP（npx @playwright/mcp@latest）。会话里挂了带同名工具的 MCP 时，内置浏览器工具会自动让位，不需要手动关。注意两点：MCP 用自己的浏览器实例，右侧「浏览器」面板看不到它的画面；没装这份运行时，网页截图工具不会挂出来，网页抓取也只剩不需要浏览器的 fetch 引擎。'
+            '在「MCP」页加 npx @playwright/mcp@latest；它的画面不在右侧面板里'
           )}
         </p>
       </section>

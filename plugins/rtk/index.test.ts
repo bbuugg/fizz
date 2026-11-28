@@ -1,7 +1,7 @@
 /**
  * rtk 插件的**接线**测试：钩子有没有注册、按工具名匹配对不对、改写结果有没有替换到入参上。
  *
- * 防的回归：2026-11 内置命令工具从 `execute_command` 改名成 `bash`（对齐 dsh 工具集），
+ * 防的回归：命令工具注册名与 RTK 插件的拦截名必须保持一致。
  * 而本插件是按**工具名**匹配的 `tool:call` 钩子 —— 名字对不上就原样放行，不报错、不打日志，
  * 用户看到的是「开关打开了，但 `git status` 还是原样跑」。
  *
@@ -61,14 +61,14 @@ describe('rtk 插件 · 接线', () => {
   it('默认关：连钩子都不注册，只登记设置项', () => {
     const { hooks, settings } = mount({})
     expect(hooks.size).toBe(0)
-    expect(settings).toEqual(['enabled', 'terminal', 'bin', 'timeoutMs'])
+    expect(settings).toEqual(['enabled', 'bin', 'timeoutMs'])
     expect(spawn).not.toHaveBeenCalled()
   })
 
-  it.each([0, 3])('打开后 bash 的命令被改写（退出码 %s）', (status) => {
+  it.each([0, 3])('打开后 shell 的命令被改写（退出码 %s）', (status) => {
     spawn.mockReturnValue(result(status, 'rtk git status\n'))
     const { hooks } = mount({ enabled: true })
-    expect(call(hooks, 'bash', { command: 'git status', description: '查看状态' })).toEqual({
+    expect(call(hooks, 'shell', { command: 'git status', description: '查看状态' })).toEqual({
       command: 'rtk git status',
       description: '查看状态'
     })
@@ -83,32 +83,23 @@ describe('rtk 插件 · 接线', () => {
     expect(call(hooks, 'read', input)).toBe(input)
   })
 
-  it('run_in_terminal 受单独开关控制', () => {
-    const off = mount({ enabled: true })
-    const input = { command: 'git log' }
-    expect(call(off.hooks, 'run_in_terminal', input)).toBe(input)
-
-    const on = mount({ enabled: true, terminal: true })
-    expect(call(on.hooks, 'run_in_terminal', input)).toEqual({ command: 'rtk git log' })
-  })
-
   it('已经是 rtk 开头的命令不套娃', () => {
     const { hooks } = mount({ enabled: true })
     const input = { command: 'rtk status' }
-    expect(call(hooks, 'bash', input)).toBe(input)
+    expect(call(hooks, 'shell', input)).toBe(input)
   })
 
   it('命令为空 / 不是字符串时不动', () => {
     const { hooks } = mount({ enabled: true })
-    expect(call(hooks, 'bash', { command: '   ' })).toEqual({ command: '   ' })
-    expect(call(hooks, 'bash', {})).toEqual({})
+    expect(call(hooks, 'shell', { command: '   ' })).toEqual({ command: '   ' })
+    expect(call(hooks, 'shell', {})).toEqual({})
   })
 
   it.each([1, 2, null])('未改写、拒绝或超时保留原输入（退出码 %s）', (status) => {
     spawn.mockReturnValue(result(status, 'rtk git status'))
     const { hooks } = mount({ enabled: true })
     const input = { command: 'git status' }
-    expect(call(hooks, 'bash', input)).toBe(input)
+    expect(call(hooks, 'shell', input)).toBe(input)
   })
 
   it('可执行文件不可用只警告一次，不缓存失败，恢复后重新改写', () => {
@@ -119,10 +110,10 @@ describe('rtk 插件 · 接线', () => {
     })
     const { hooks, warn } = mount({ enabled: true })
     const input = { command: 'git status' }
-    expect(call(hooks, 'bash', input)).toBe(input)
-    expect(call(hooks, 'bash', input)).toBe(input)
+    expect(call(hooks, 'shell', input)).toBe(input)
+    expect(call(hooks, 'shell', input)).toBe(input)
     expect(warn).toHaveBeenCalledOnce()
-    expect(call(hooks, 'bash', input)).toEqual({ command: 'rtk git status' })
+    expect(call(hooks, 'shell', input)).toEqual({ command: 'rtk git status' })
     expect(spawn).toHaveBeenCalledTimes(3)
   })
 })

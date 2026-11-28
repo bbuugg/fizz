@@ -83,7 +83,13 @@ function AlertDialogTrigger(props: React.ComponentProps<typeof DrawerTrigger>) {
 
 function AlertDialogPortal(props: React.ComponentProps<typeof DrawerPortal>) {
   const modal = useIsSheetForm()
-  return modal ? <Desktop.AlertDialogPortal {...props} /> : <DrawerPortal {...props} />
+  // 两个库的 `container` 类型不同（vaul 收 Element/DocumentFragment，Base UI 收
+  // HTMLElement/ShadowRoot/ref），这里只做转交，直接按目标组件的类型断言。
+  return modal ? (
+    <Desktop.AlertDialogPortal {...(props as React.ComponentProps<typeof Desktop.AlertDialogPortal>)} />
+  ) : (
+    <DrawerPortal {...props} />
+  )
 }
 
 function AlertDialogOverlay(props: React.ComponentProps<typeof DrawerOverlay>) {
@@ -162,6 +168,7 @@ function AlertDialogMedia(props: React.ComponentProps<typeof Desktop.AlertDialog
 
 function AlertDialogAction({
   className,
+  style,
   variant = 'default',
   size = 'default',
   ...props
@@ -169,18 +176,27 @@ function AlertDialogAction({
   const modal = useIsSheetForm()
   if (modal) {
     return (
-      <Desktop.AlertDialogAction className={className} variant={variant} size={size} {...props} />
+      <Desktop.AlertDialogAction className={className} style={style} variant={variant} size={size} {...props} />
     )
   }
+  // 抽屉形态落到普通 Button：Button 只收静态 className / style，
+  // 而 Base UI 的这两个 prop 可能是 `(state) => …` 的函数形式，这里挑静态的那支。
   return (
     <DrawerClose asChild>
-      <Button className={className} variant={variant} size={size} {...props} />
+      <Button
+        className={typeof className === 'string' ? className : undefined}
+        style={typeof style === 'object' ? style : undefined}
+        variant={variant}
+        size={size}
+        {...props}
+      />
     </DrawerClose>
   )
 }
 
 function AlertDialogCancel({
   className,
+  style,
   variant,
   size = 'default',
   ...props
@@ -189,12 +205,18 @@ function AlertDialogCancel({
   // 居中形态照旧交给桌面版（它自己默认 ghost，不能在这里替它填死）
   if (modal) {
     return (
-      <Desktop.AlertDialogCancel className={className} variant={variant} size={size} {...props} />
+      <Desktop.AlertDialogCancel className={className} style={style} variant={variant} size={size} {...props} />
     )
   }
   return (
     <DrawerClose asChild>
-      <Button className={className} variant={variant ?? 'outline'} size={size} {...props} />
+      <Button
+        className={typeof className === 'string' ? className : undefined}
+        style={typeof style === 'object' ? style : undefined}
+        variant={variant ?? 'outline'}
+        size={size}
+        {...props}
+      />
     </DrawerClose>
   )
 }

@@ -120,8 +120,6 @@ export function isShortcutRecording(): boolean {
 }
 
 const STORAGE_KEY = 'fizz.agent.shortcuts'
-/** 快捷键独立存于 localStorage；旧数组没有版本号，视为 v0。 */
-const DATA_VERSION = 1
 
 interface ShortcutStorage {
   version: number
@@ -137,7 +135,6 @@ export function loadShortcuts(): AgentShortcutConfig[] {
     const stored = JSON.parse(raw) as Partial<ShortcutStorage> | Partial<AgentShortcutConfig>[] | null
     const parsed = Array.isArray(stored) ? stored : stored?.shortcuts
     if (!Array.isArray(parsed)) return fallback()
-    const version = !Array.isArray(stored) && typeof stored?.version === 'number' ? stored.version : 0
     // 以缺省清单为准（新增动作能自动补上），只采用用户存过的 accelerator。
     const shortcuts = DEFAULT_AGENT_SHORTCUTS.map((def) => {
       const found = parsed.find((s) => s?.action === def.action)
@@ -145,20 +142,6 @@ export function loadShortcuts(): AgentShortcutConfig[] {
         typeof found?.accelerator === 'string' ? found.accelerator : def.accelerator
       return { action: def.action, accelerator }
     })
-    if (version < 1) {
-      // v0 → v1：只迁移旧侧栏默认值，保留自定义 / 禁用；新组合被其他动作占用时不抢键。
-      const sidebar = shortcuts.find((s) => s.action === 'toggle-sidebar-alt')
-      const nextAccelerator = 'CommandOrControl+B'
-      const occupied = shortcuts.some((s) => (
-        s.action !== 'toggle-sidebar-alt' &&
-        normalizeAccelerator(s.accelerator) === normalizeAccelerator(nextAccelerator)
-      ))
-      if (sidebar && normalizeAccelerator(sidebar.accelerator) === 'alt+1' && !occupied) {
-        sidebar.accelerator = nextAccelerator
-      }
-    }
-    // 写回版本，确保用户之后主动改回 Alt+1 时不会再次被迁移覆盖。
-    if (version < DATA_VERSION) saveShortcuts(shortcuts)
     return shortcuts
   } catch {
     return fallback()
@@ -167,7 +150,7 @@ export function loadShortcuts(): AgentShortcutConfig[] {
 
 export function saveShortcuts(shortcuts: AgentShortcutConfig[]): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: DATA_VERSION, shortcuts }))
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 1, shortcuts }))
   } catch {
     // 存不进去也不致命：本次会话内仍生效
   }

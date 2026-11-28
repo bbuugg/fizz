@@ -3,21 +3,19 @@
 import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
-import { Tabs as TabsPrimitive } from "radix-ui"
+import { Tabs as TabsPrimitive } from "@base-ui/react/tabs"
 
 function Tabs({
   className,
   orientation = "horizontal",
   ...props
-}: React.ComponentProps<typeof TabsPrimitive.Root>) {
+}: TabsPrimitive.Root.Props) {
   return (
     <TabsPrimitive.Root
       data-slot="tabs"
       data-orientation={orientation}
-      className={cn(
-        "group/tabs flex gap-2 data-horizontal:flex-col",
-        className
-      )}
+      orientation={orientation}
+      className={cn("group/tabs flex gap-2 data-horizontal:flex-col", className)}
       {...props}
     />
   )
@@ -42,8 +40,7 @@ function TabsList({
   className,
   variant = "default",
   ...props
-}: React.ComponentProps<typeof TabsPrimitive.List> &
-  VariantProps<typeof tabsListVariants>) {
+}: TabsPrimitive.List.Props & VariantProps<typeof tabsListVariants>) {
   return (
     <TabsPrimitive.List
       data-slot="tabs-list"
@@ -57,9 +54,9 @@ function TabsList({
 function TabsTrigger({
   className,
   ...props
-}: React.ComponentProps<typeof TabsPrimitive.Trigger>) {
+}: TabsPrimitive.Tab.Props) {
   return (
-    <TabsPrimitive.Trigger
+    <TabsPrimitive.Tab
       data-slot="tabs-trigger"
       className={cn(
         "relative inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-1.5 py-0.5 text-sm font-medium whitespace-nowrap text-foreground/60 transition-all group-data-vertical/tabs:w-full group-data-vertical/tabs:justify-start hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50 has-data-[icon=inline-end]:pr-1 has-data-[icon=inline-start]:pl-1 dark:text-muted-foreground dark:hover:text-foreground group-data-[variant=default]/tabs-list:data-active:shadow-sm group-data-[variant=line]/tabs-list:data-active:shadow-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
@@ -77,25 +74,22 @@ function TabsTrigger({
   )
 }
 
+/**
+ * 页签内容面板。
+ *
+ * Base UI 的极性是反的：它给**隐藏**的那页打 `data-hidden`（Radix 是给激活页打
+ * `data-state=active`）。所以原来那条「按 data-state 立刻隐藏旧页」的补丁改成
+ * `data-hidden:hidden` —— 目的不变：旧页不该参与这一帧的布局（外层按内容撑高度的
+ * 容器会先量到两者之和，表现为弹窗弹跳）。
+ */
 function TabsContent({
   className,
   ...props
-}: React.ComponentProps<typeof TabsPrimitive.Content>) {
+}: TabsPrimitive.Panel.Props) {
   return (
-    <TabsPrimitive.Content
+    <TabsPrimitive.Panel
       data-slot="tabs-content"
-      className={cn(
-        "flex-1 text-sm outline-none",
-        /*
-          切页签时 Radix 的 `Presence` 会把**旧页**多留一帧：`hidden` 要等下一次 commit 才
-          置上，那一帧里新旧两个 panel 同时可见、同时参与布局。外层「按内容撑高度」的容器
-          （如 `DialogContent` 的 `useHeightTransition`）会先量到两者之和 —— 弹窗先被撑大、
-          下一帧旧页卸载再缩回，看起来就是「弹跳」（主题编辑器切页签时用户报过）。
-          按 `data-state` 立刻隐藏旧页：它本来就是 inactive，不该参与这一帧的布局。
-        */
-        "data-[state=inactive]:hidden",
-        className
-      )}
+      className={cn("flex-1 text-sm outline-none data-hidden:hidden", className)}
       {...props}
     />
   )
