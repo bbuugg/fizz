@@ -13,7 +13,103 @@
 import type { DiffHunk } from '@fizz/agent-kit/shared/lib/diff'
 
 /** unified diff 里切分文件的边界行（`diff --git a/x b/x`） */
-const FILE_HEADER = /^diff --git a\/(.*) b\/(.*)$/
+const FILE_HEADER = /^diff --git (.+)$/
+
+const GIT_PATH_ESCAPES: Record<string, number> = {
+  a: 0x07,
+  b: 0x08,
+  f: 0x0c,
+  n: 0x0a,
+  r: 0x0d,
+  t: 0x09,
+  v: 0x0b,
+  '"': 0x22,
+  '\\': 0x5c
+}
+
+type GitPathToken = { value: string; end: number }
+
+type ParsedDiffFile = {
+  path: string
+  oldPath?: string | null
+  newPath?: string | null
+  hunks: DiffHunk[]
+}
+
+/**
+ * 读 Git 的 C 风格带引号路径。
+ *
+ * `core.quotePath=false` 只会让普通非 ASCII 字符保持原样；路径里的引号、控制字符等
+ * 仍会被 Git 转义（例如 `"a/file \\"quoted\\".txt"`）。这里不能用 `JSON.parse`：Git
+ * 还会使用 `\\303\\244` 这样的八进制 UTF-8 字节转义。
+ */
+function readQuotedGitPath(text: string, start: number): GitPathToken | null {
+  if (text[start] !== '"') return null
+  const bytes: number[] = []
+  const encoder = new TextEncoder()
+
+  for (let i = start + 1; i < text.length; i++) {
+    const ch = text[i]!
+    if (ch === '"') {
+      return { value: new TextDecoder().decode(new Uint8Array(bytes)), end: i + 1 }
+    }
+    if (ch !== '\\') {
+      bytes.push(...encoder.encode(ch))
+      continue
+    }
+
+    const escaped = text[++i]
+    if (escaped === undefined) return null
+    if (escaped >= '0' && escaped <= '7') {
+      let octal = escaped
+      while (
+        octal.length < 3 &&
+        text[i + 1] !== undefined &&
+        text[i + 1]! >= '0' &&
+        text[i + 1]! <= '7'
+      ) {
+        octal += text[++i]!
+      }
+      bytes.push(Number.parseInt(octal, 8))
+      continue
+    }
+    bytes.push(GIT_PATH_ESCAPES[escaped] ?? escaped.charCodeAt(0))
+  }
+  return null
+}
+
+function stripGitPathPrefix(path: string, prefix: 'a/' | 'b/'): string | null {
+  if (path === '/dev/null') return null
+  return path.startsWith(prefix) ? path.slice(prefix.length) : null
+}
+
+/** 从 `---` / `+++` 元信息行中取路径；元信息比 `diff --git` 头更可靠，因为路径可含空格。 */
+function patchMetadataPath(line: string, prefix: 'a/' | 'b/'): string | null | undefined {
+  const raw = line.slice(4).endsWith('\t') ? line.slice(4, -1) : line.slice(4)
+  if (raw.startsWith('"')) {
+    const token = readQuotedGitPath(raw, 0)
+    return token ? stripGitPathPrefix(token.value, prefix) : undefined
+  }
+  return stripGitPathPrefix(raw, prefix)
+}
+
+/**
+ * `diff --git` 的非引号路径可能含空格，不能按空白切 token。这里先取一个尽力而为的
+ * 结果；有文本 hunk 的文件随后会用 `+++` / `---` 元信息覆盖它。
+ */
+function headerPath(line: string): string {
+  const body = line.slice('diff --git '.length)
+  if (body.startsWith('"')) {
+    const first = readQuotedGitPath(body, 0)
+    if (!first) return ''
+    let secondStart = first.end
+    while (body[secondStart] === ' ') secondStart++
+    const second = readQuotedGitPath(body, secondStart)
+    return second ? (stripGitPathPrefix(second.value, 'b/') ?? '') : ''
+  }
+  const separator = body.lastIndexOf(' b/')
+  return separator >= 0 ? body.slice(separator + 3) : ''
+}
 
 /** hunk 头（`@@ -1,5 +1,7 @@`）—— 与 `parseUnifiedDiff` 的正则逐字一致，别只改一边 */
 const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/
@@ -31,17 +127,24 @@ const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/
  * 话，TS 的控制流分析解除不了 null 窄化，每个 `current.hunks` 都会报 `never`。
  */
 export function splitDiffByFile(diff: string): { path: string; hunks: DiffHunk[] }[] {
-  const out: { path: string; hunks: DiffHunk[] }[] = []
-  let current: { path: string; hunks: DiffHunk[] } | undefined
+  const out: ParsedDiffFile[] = []
+  let current: ParsedDiffFile | undefined
   for (const line of diff.split('\n')) {
     const header = FILE_HEADER.exec(line)
     if (header) {
-      // `b/<path>` 是新路径（重命名时 `a/` 是旧名）；带引号的路径原样留着，这里不解析它
-      current = { path: header[2] ?? header[1] ?? '', hunks: [] }
+      current = { path: headerPath(line), hunks: [] }
       out.push(current)
       continue
     }
     if (!current) continue
+    // `diff --git` 头对含空格路径并不总是可无歧义解析；对真正有文本 diff 的文件，
+    // `+++` / `---` 行给出了完整路径，而且引号与转义规则也更容易独立处理。
+    if (current.hunks.length === 0 && line.startsWith('--- ')) {
+      current.oldPath = patchMetadataPath(line, 'a/')
+    } else if (current.hunks.length === 0 && line.startsWith('+++ ')) {
+      current.newPath = patchMetadataPath(line, 'b/')
+      current.path = current.newPath ?? current.oldPath ?? current.path
+    }
     if (line.startsWith('@@')) {
       const m = HUNK_HEADER.exec(line)
       current.hunks.push({
@@ -60,5 +163,10 @@ export function splitDiffByFile(diff: string): { path: string; hunks: DiffHunk[]
     // `\ No newline at end of file` 等元信息忽略（parseUnifiedDiff 同样忽略）
   }
   // 一个 hunk 都没有的段（纯 mode 变更 / 空文件）不留：渲染出来是个空壳文件头
-  return out.filter((seg) => seg.hunks.length > 0)
+  return out
+    .filter((seg) => seg.hunks.length > 0)
+    .map(({ path, oldPath, newPath, hunks }) => ({
+      path: newPath ?? oldPath ?? path,
+      hunks
+    }))
 }

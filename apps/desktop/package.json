@@ -107,7 +107,6 @@
       "out/**/*",
       "resources/**/*",
       "package.json",
-      "!**/node_modules/node-pty/build/**",
       "!**/node_modules/node-pty/prebuilds/darwin-*",
       "!**/node_modules/node-pty/prebuilds/win32-arm64",
       "!**/node_modules/node-pty/**/*.pdb",
