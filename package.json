@@ -1,6 +1,6 @@
 {
   "name": "fizz",
-  "version": "0.0.37",
+  "version": "0.0.39",
   "description": "Fizz",
   "private": true,
   "type": "module",
